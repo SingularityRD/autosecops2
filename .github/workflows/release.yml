@@ -17,6 +17,13 @@
 #   • "Read and write" Packages permission on the repo
 #     (Settings → Actions → General → Workflow permissions)
 
+#
+# AutoSecOps (SingularityRD/autosecops2): DISABLED on purpose. Every job keeps
+# the upstream guard `github.repository == 'Vigil-SOC/vigil'`, which is never
+# true here, because the image names (ghcr.io/vigil-soc/*) and OCI source labels
+# are upstream's. Retarget to ghcr.io/singularityrd/* together with
+# release-please.yml once a release process is agreed.
+
 name: Release
 
 on:

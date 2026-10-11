@@ -8,12 +8,12 @@ import { ToastProvider } from './toast'
 import type { BoardLink } from './commandBarModel'
 
 const { execute, createCase, deleteCase, readDoc, checkCoverage, attachDocument, getCase, getFinding, getIntegrations, apiGet, apiPost } = vi.hoisted(() => ({
-  execute: vi.fn((..._args: unknown[]) => Promise.resolve({ data: {} })),
-  createCase: vi.fn((..._args: unknown[]) => Promise.resolve({ data: { case_id: 'case-new' } })),
-  deleteCase: vi.fn((..._args: unknown[]) => Promise.resolve({ data: {} })),
-  readDoc: vi.fn((..._args: unknown[]) => Promise.resolve({ data: { text: '', pages: 1, condensed: false } })),
-  checkCoverage: vi.fn((..._args: unknown[]) => Promise.resolve({ data: {} })),
-  attachDocument: vi.fn((..._args: unknown[]) => Promise.resolve({ data: {} })),
+  execute: vi.fn<(...args: unknown[]) => Promise<unknown>>(() => Promise.resolve({ data: {} })),
+  createCase: vi.fn<(...args: unknown[]) => Promise<unknown>>(() => Promise.resolve({ data: { case_id: 'case-new' } })),
+  deleteCase: vi.fn<(...args: unknown[]) => Promise<unknown>>(() => Promise.resolve({ data: {} })),
+  readDoc: vi.fn<(...args: unknown[]) => Promise<unknown>>(() => Promise.resolve({ data: { text: '', pages: 1, condensed: false } })),
+  checkCoverage: vi.fn<(...args: unknown[]) => Promise<unknown>>(() => Promise.resolve({ data: {} })),
+  attachDocument: vi.fn<(...args: unknown[]) => Promise<unknown>>(() => Promise.resolve({ data: {} })),
   getCase: vi.fn(),
   getFinding: vi.fn(),
   getIntegrations: vi.fn(),

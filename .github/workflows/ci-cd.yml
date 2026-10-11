@@ -18,11 +18,13 @@ jobs:
   # ============================================================================
   lint-backend:
     name: Lint Backend
-    # Canonical repo only. Forks can't run this pipeline (missing secrets) so
-    # pushes to a fork's main/develop just email the owner
-    # a failure. For pull_request events github.repository is the BASE repo, so
-    # contributor PRs against Vigil-SOC/vigil still run CI as normal.
-    if: github.repository == 'Vigil-SOC/vigil'
+    # Canonical repo only: AutoSecOps (hard fork of Vigil) runs CI in
+    # SingularityRD/autosecops2. Other forks skip (not fail) so their owners get
+    # no failure mail. For pull_request events github.repository is the BASE
+    # repo, so PRs into SingularityRD/autosecops2 run CI as normal. No secret is
+    # required: CLAUDEAPI is empty when unset and the tests that need it are
+    # marked external_service and deselected.
+    if: github.repository == 'SingularityRD/autosecops2'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -82,7 +84,7 @@ jobs:
 
   lint-frontend:
     name: Lint Frontend
-    if: github.repository == 'Vigil-SOC/vigil'
+    if: github.repository == 'SingularityRD/autosecops2'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -100,15 +102,15 @@ jobs:
       
       - name: Run ESLint
         working-directory: clients/web
+        # Gates: ESLint errors fail the job (warnings do not).
         run: npm run lint
-        continue-on-error: true
 
   # Regenerating the committed OpenAPI types must be a no-op. The spec is
   # dumped from app.openapi() (no running server); unannotated routes staying
   # empty in the output is expected.
   check-generated-api-types:
     name: Generated API Types
-    if: github.repository == 'Vigil-SOC/vigil'
+    if: github.repository == 'SingularityRD/autosecops2'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -145,7 +147,7 @@ jobs:
 
   lint-docker:
     name: Lint Dockerfiles
-    if: github.repository == 'Vigil-SOC/vigil'
+    if: github.repository == 'SingularityRD/autosecops2'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -174,7 +176,7 @@ jobs:
   # clean, does it start.
   build-agent-image:
     name: Agent Image
-    if: github.repository == 'Vigil-SOC/vigil'
+    if: github.repository == 'SingularityRD/autosecops2'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -245,7 +247,7 @@ jobs:
   # their own Pythons, and proving those are ignored is the point.
   test-setup-matrix:
     name: Setup Path (${{ matrix.os }})
-    if: github.repository == 'Vigil-SOC/vigil'
+    if: github.repository == 'SingularityRD/autosecops2'
     runs-on: ${{ matrix.os }}
     strategy:
       # One OS failing should not hide the result on the others.
@@ -318,7 +320,7 @@ jobs:
 
   test-unit-backend:
     name: Unit Tests - Backend
-    if: github.repository == 'Vigil-SOC/vigil'
+    if: github.repository == 'SingularityRD/autosecops2'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -362,7 +364,7 @@ jobs:
 
   test-unit-frontend:
     name: Unit Tests - Frontend
-    if: github.repository == 'Vigil-SOC/vigil'
+    if: github.repository == 'SingularityRD/autosecops2'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -387,7 +389,7 @@ jobs:
   # than NODE_VERSION because services/agent/package.json requires it.
   test-agent-layer:
     name: Unit Tests - Agent Layer
-    if: github.repository == 'Vigil-SOC/vigil'
+    if: github.repository == 'SingularityRD/autosecops2'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -474,7 +476,7 @@ jobs:
   # snapshot differs from the previous v* tag.
   schema-snapshot-patch-gate:
     name: Schema Snapshot Patch Gate
-    if: github.repository == 'Vigil-SOC/vigil' && github.event_name == 'pull_request'
+    if: github.repository == 'SingularityRD/autosecops2' && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -503,7 +505,7 @@ jobs:
   # ============================================================================
   test-integration:
     name: Integration Tests
-    if: github.repository == 'Vigil-SOC/vigil'
+    if: github.repository == 'SingularityRD/autosecops2'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -696,7 +698,7 @@ jobs:
   # ============================================================================
   test-unit-backend-db:
     name: Unit Tests - Backend (DB-backed)
-    if: github.repository == 'Vigil-SOC/vigil'
+    if: github.repository == 'SingularityRD/autosecops2'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -768,7 +770,7 @@ jobs:
   # provisions in that order, as those roles, from the chart's own Job.
   test-helm-install-schema:
     name: Helm Install Schema
-    if: github.repository == 'Vigil-SOC/vigil'
+    if: github.repository == 'SingularityRD/autosecops2'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -915,7 +917,7 @@ jobs:
   # ============================================================================
   security-scan-python:
     name: Security Scan - Python
-    if: github.repository == 'Vigil-SOC/vigil'
+    if: github.repository == 'SingularityRD/autosecops2'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -946,7 +948,7 @@ jobs:
 
   security-scan-npm:
     name: Security Scan - NPM
-    if: github.repository == 'Vigil-SOC/vigil'
+    if: github.repository == 'SingularityRD/autosecops2'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -976,7 +978,9 @@ jobs:
     name: Build Docker Images
     runs-on: ubuntu-latest
     needs: [lint-backend, test-unit-backend, test-unit-backend-db, test-integration]
-    if: false  # Disabled - enable if you need Docker images
+    # Disabled. Pushes to ghcr.io/<owner>/<repo>-*; keep off until the
+    # AutoSecOps image publishing plan exists.
+    if: false
     permissions:
       contents: read
       packages: write
@@ -1045,7 +1049,7 @@ jobs:
     # (tsc); gating it to post-merge let type errors land on main. The
     # pull_request build compiles the PR merged into its base, so it also
     # catches breakage that only appears after the merge.
-    if: github.repository == 'Vigil-SOC/vigil'
+    if: github.repository == 'SingularityRD/autosecops2'
     steps:
       - uses: actions/checkout@v7
       
