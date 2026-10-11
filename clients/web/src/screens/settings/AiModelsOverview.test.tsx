@@ -114,7 +114,7 @@ describe('model for each agent', () => {
       data: { agents: [{ id: 'custom-a', name: 'Phishing', model: 'haiku', fallback_model: null, enable_thinking: true }] },
     })
     mount()
-    expect(screen.getByText('Chat (Ask Vigil)')).toBeTruthy()
+    expect(screen.getByText('Chat (Ask AutoSecOps)')).toBeTruthy()
     expect(screen.getByText('Triage agent')).toBeTruthy()
     expect(await screen.findByText('Phishing')).toBeTruthy()
     expect(screen.getByPlaceholderText('Stops')).toBeTruthy()
@@ -154,7 +154,7 @@ describe('model for each agent', () => {
 
   it('asks before changing chat_default, and cancelling saves nothing', async () => {
     mount()
-    pickModel('Chat (Ask Vigil)', 'Haiku')
+    pickModel('Chat (Ask AutoSecOps)', 'Haiku')
     expect(await screen.findByText('Change the default model?')).toBeTruthy()
     expect(assign).not.toHaveBeenCalled()
 
@@ -165,7 +165,7 @@ describe('model for each agent', () => {
 
   it('saves chat_default once confirmed', async () => {
     mount()
-    pickModel('Chat (Ask Vigil)', 'Haiku')
+    pickModel('Chat (Ask AutoSecOps)', 'Haiku')
     fireEvent.click(await screen.findByRole('button', { name: 'Change default' }))
     await waitFor(() => expect(assign).toHaveBeenCalledWith('chat_default', 'anthropic-default', 'haiku', {}))
   })
@@ -210,8 +210,8 @@ describe('model for each agent', () => {
     mount()
     expect(within(rowOf('Triage agent')).getByText('Haiku')).toBeTruthy()
     expect(within(rowOf('Triage agent')).queryByText('default')).toBeNull()
-    expect(within(rowOf('Chat (Ask Vigil)')).queryByText('default')).toBeNull()
-    expect(rowOf('Chat (Ask Vigil)').querySelector('button.field-select')).not.toBeNull()
+    expect(within(rowOf('Chat (Ask AutoSecOps)')).queryByText('default')).toBeNull()
+    expect(rowOf('Chat (Ask AutoSecOps)').querySelector('button.field-select')).not.toBeNull()
     expect(within(rowOf('Reporting agent')).getByText('Sonnet')).toBeTruthy()
     expect(within(rowOf('Reporting agent')).getByText('default')).toBeTruthy()
   })
@@ -240,9 +240,9 @@ describe('model for each agent', () => {
     expect(within(row).getByRole('button', { name: 'Change' })).toBeTruthy()
   })
 
-  it('offers no Use default on Chat (Ask Vigil)', () => {
+  it('offers no Use default on Chat (Ask AutoSecOps)', () => {
     mount()
-    const row = rowOf('Chat (Ask Vigil)')
+    const row = rowOf('Chat (Ask AutoSecOps)')
     fireEvent.click(within(row).getByRole('button', { name: 'Change' }))
     fireEvent.click(row.querySelectorAll('button.field-select')[0])
     expect(screen.queryByRole('option', { name: 'Use default' })).toBeNull()
@@ -314,8 +314,8 @@ describe('fallback for the built-in components', () => {
   it('shows Stops when unset, disabled for a row on Use default or with no model', () => {
     assignment.mockReturnValue(withFallback())
     mount()
-    expect(fallbackTrigger('Chat (Ask Vigil)').textContent).toBe('Stops')
-    expect(fallbackTrigger('Chat (Ask Vigil)').disabled).toBe(false)
+    expect(fallbackTrigger('Chat (Ask AutoSecOps)').textContent).toBe('Stops')
+    expect(fallbackTrigger('Chat (Ask AutoSecOps)').disabled).toBe(false)
     expect(fallbackTrigger('Triage agent').textContent).toBe('Stops')
     expect(fallbackTrigger('Triage agent').disabled).toBe(true)
   })
@@ -323,16 +323,16 @@ describe('fallback for the built-in components', () => {
   it('lists the same provider’s other models, shows the stored one, and a row on Use default shows the default’s', () => {
     assignment.mockReturnValue(withFallback('haiku'))
     mount()
-    expect(fallbackTrigger('Chat (Ask Vigil)').textContent).toBe('Haiku')
+    expect(fallbackTrigger('Chat (Ask AutoSecOps)').textContent).toBe('Haiku')
     expect(fallbackTrigger('Triage agent').textContent).toBe('Haiku')
-    fireEvent.click(fallbackTrigger('Chat (Ask Vigil)'))
+    fireEvent.click(fallbackTrigger('Chat (Ask AutoSecOps)'))
     expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['Stops', 'Haiku'])
   })
 
   it('saves on select without the default-model confirm, and Stops clears it', async () => {
     assignment.mockReturnValue(withFallback())
     const { unmount } = mount()
-    fireEvent.click(fallbackTrigger('Chat (Ask Vigil)'))
+    fireEvent.click(fallbackTrigger('Chat (Ask AutoSecOps)'))
     fireEvent.click(screen.getByRole('option', { name: 'Haiku' }))
     await waitFor(() => expect(assign).toHaveBeenCalledWith('chat_default', 'anthropic-default', 'sonnet', { fallback_model_id: 'haiku' }))
     expect(screen.queryByText('Change the default model?')).toBeNull()
@@ -340,7 +340,7 @@ describe('fallback for the built-in components', () => {
 
     assignment.mockReturnValue(withFallback('haiku'))
     mount()
-    fireEvent.click(fallbackTrigger('Chat (Ask Vigil)'))
+    fireEvent.click(fallbackTrigger('Chat (Ask AutoSecOps)'))
     fireEvent.click(screen.getByRole('option', { name: 'Stops' }))
     await waitFor(() => expect(assign).toHaveBeenCalledWith('chat_default', 'anthropic-default', 'sonnet', { fallback_model_id: null }))
   })
@@ -349,7 +349,7 @@ describe('fallback for the built-in components', () => {
     assignment.mockReturnValue(withFallback())
     assign.mockRejectedValueOnce(new Error('nope'))
     mount()
-    fireEvent.click(fallbackTrigger('Chat (Ask Vigil)'))
+    fireEvent.click(fallbackTrigger('Chat (Ask AutoSecOps)'))
     fireEvent.click(screen.getByRole('option', { name: 'Haiku' }))
     await waitFor(() => expect(notify).toHaveBeenCalledWith('err', 'nope'))
   })
@@ -370,7 +370,7 @@ describe('reset to defaults', () => {
     expect(resetButton().disabled).toBe(true)
   })
 
-  it('starts one undo fuse whose commit clears every own row but Chat (Ask Vigil)', async () => {
+  it('starts one undo fuse whose commit clears every own row but Chat (Ask AutoSecOps)', async () => {
     withOwn()
     mount()
     fireEvent.click(resetButton())
@@ -389,7 +389,7 @@ describe('reset to defaults', () => {
     toast.mockReturnValue({ notify, notifyUndoable, pending: ['ai-model-reset'], settled: 0 })
     const { rerender } = mount()
     expect(within(rowOf('Triage agent')).getByText('default')).toBeTruthy()
-    expect(within(rowOf('Chat (Ask Vigil)')).queryByText('default')).toBeNull()
+    expect(within(rowOf('Chat (Ask AutoSecOps)')).queryByText('default')).toBeNull()
     expect(resetButton().disabled).toBe(true)
     expect(reload).not.toHaveBeenCalled()
 

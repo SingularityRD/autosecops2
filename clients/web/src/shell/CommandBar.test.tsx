@@ -91,8 +91,8 @@ vi.mock('../services/api', () => ({
 
 const BOARDS: BoardLink[] = [
   { key: 'cases', label: 'Cases', icon: 'folder', desc: 'Manage investigation cases' },
-  { key: 'workflows', label: 'Agents & workflows', icon: 'flow', desc: 'How Vigil works a case' },
-  { key: 'settings', label: 'Settings', icon: 'gear', desc: 'Configure Vigil' },
+  { key: 'workflows', label: 'Agents & workflows', icon: 'flow', desc: 'How AutoSecOps works a case' },
+  { key: 'settings', label: 'Settings', icon: 'gear', desc: 'Configure AutoSecOps' },
   { key: 'dashboard', label: 'Dashboard', icon: 'grid', desc: 'Security operations overview' },
   { key: 'metrics', label: 'Case Metrics', icon: 'bars', desc: 'Real-time SOC performance analytics' },
 ]
@@ -220,7 +220,7 @@ describe('CommandBar', () => {
   it('opens with ⌘K, and Esc and Tab write no recent search', () => {
     const { onOpenChat } = renderBar()
     fireEvent.keyDown(window, { key: 'k', metaKey: true })
-    const input = screen.getByRole('combobox', { name: 'Find a case, ask Vigil, or run a command' })
+    const input = screen.getByRole('combobox', { name: 'Find a case, ask AutoSecOps, or run a command' })
     expect(input).toHaveFocus()
     expect(screen.getByRole('listbox')).toBeInTheDocument()
 
@@ -239,7 +239,7 @@ describe('CommandBar', () => {
     const { onOpenChat } = renderBar()
     const input = screen.getByRole('combobox')
     fireEvent.keyDown(window, { key: 'k', metaKey: true })
-    expect(screen.getByText('Tab').parentElement).toHaveTextContent('Tab ask Vigil')
+    expect(screen.getByText('Tab').parentElement).toHaveTextContent('Tab ask AutoSecOps')
     fireEvent.change(input, { target: { value: '   ' } })
     fireEvent.keyDown(input, { key: 'Tab' })
     expect(onOpenChat).not.toHaveBeenCalled()
@@ -263,7 +263,7 @@ describe('CommandBar', () => {
         'Beacon host',
         'Cases',
         'Case Metrics',
-        'Ask Vigil: “case”',
+        'Ask AutoSecOps: “case”',
       ])
     })
     expect(tags()).toEqual([
@@ -273,9 +273,9 @@ describe('CommandBar', () => {
       'Opens case',
       'Opens page',
       'Opens page',
-      'Opens Ask Vigil',
+      'Opens Ask AutoSecOps',
     ])
-    expect(sections()).toEqual(['Cases', 'Pages', 'Ask Vigil'])
+    expect(sections()).toEqual(['Cases', 'Pages', 'Ask AutoSecOps'])
     const descs = screen.getAllByRole('option').map((o) => o.querySelector('.vg-command-desc')?.textContent)
     expect(descs).toEqual([
       'high · open',
@@ -306,8 +306,8 @@ describe('CommandBar', () => {
     localStorage.setItem(RECENTS, JSON.stringify(['beacon']))
     renderBar()
     fireEvent.focus(screen.getByRole('combobox'))
-    expect(labels()).toEqual(['beacon', '/investigate', '/hunt', '/replay', '/ask', '/ticket', 'Ask Vigil about this page'])
-    expect(sections()).toEqual(['Recent searches', 'Commands', 'Ask Vigil'])
+    expect(labels()).toEqual(['beacon', '/investigate', '/hunt', '/replay', '/ask', '/ticket', 'Ask AutoSecOps about this page'])
+    expect(sections()).toEqual(['Recent searches', 'Commands', 'Ask AutoSecOps'])
     expect(tags()[0]).toBe('Search')
     expect(screen.queryByRole('option', { name: /\/hold/ })).not.toBeInTheDocument()
   })
@@ -401,16 +401,16 @@ describe('CommandBar', () => {
     expect(screen.getAllByText('↵')).toHaveLength(1)
   })
 
-  it('opens chat from the Ask Vigil rows, with the query when there is one', () => {
+  it('opens chat from the Ask AutoSecOps rows, with the query when there is one', () => {
     const { onOpenChat } = renderBar()
     const input = screen.getByRole('combobox')
     fireEvent.focus(input)
-    fireEvent.click(screen.getByRole('option', { name: /Ask Vigil about this page/ }))
+    fireEvent.click(screen.getByRole('option', { name: /Ask AutoSecOps about this page/ }))
     expect(onOpenChat).toHaveBeenLastCalledWith(undefined)
 
     fireEvent.change(input, { target: { value: 'why this beacon' } })
     const rows = screen.getAllByRole('option')
-    expect(rows[rows.length - 1]).toHaveTextContent('Ask Vigil: “why this beacon”')
+    expect(rows[rows.length - 1]).toHaveTextContent('Ask AutoSecOps: “why this beacon”')
     fireEvent.click(rows[rows.length - 1])
     expect(onOpenChat).toHaveBeenLastCalledWith('why this beacon')
     expect(localStorage.getItem(RECENTS)).toBeNull()
@@ -438,7 +438,7 @@ describe('CommandBar', () => {
     expect(input).toHaveFocus()
     expect(screen.queryByRole('button', { name: 'Clear search' })).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Ask Vigil' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Ask AutoSecOps' }))
     expect(onOpenChat).toHaveBeenCalledWith()
   })
 

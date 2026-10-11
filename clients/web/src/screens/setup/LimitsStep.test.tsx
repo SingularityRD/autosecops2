@@ -92,7 +92,7 @@ describe('LimitsStep', () => {
     expect(screen.getByText('3 agents at once, $5.00 per investigation')).toBeInTheDocument()
     expect(screen.getByText('5 agents at once, $15.00 per investigation')).toBeInTheDocument()
     expect(screen.getAllByText('Recommended')).toHaveLength(1)
-    expect(screen.getByText(/Vigil stops an investigation that reaches its limits/)).toBeInTheDocument()
+    expect(screen.getByText(/AutoSecOps stops an investigation that reaches its limits/)).toBeInTheDocument()
     // the gateway checks the ceiling, not the profile limits
     expect(screen.getAllByText(/model gateway checks it before every call/)).toHaveLength(1)
     expect(screen.queryByText('$20.00 / h')).not.toBeInTheDocument()

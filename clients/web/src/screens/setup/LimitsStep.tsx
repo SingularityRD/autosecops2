@@ -100,7 +100,7 @@ export default function LimitsStep() {
     <>
       <SettingsCard
         title="Spending"
-        desc="Pick a starting profile. Vigil stops an investigation that reaches its limits."
+        desc="Pick a starting profile. AutoSecOps stops an investigation that reaches its limits."
       >
         <div className="flex flex-col gap-3.5">
           {profilesPhase === 'loading' && <p className="text-tx-3 text-sm">Loading limits…</p>}

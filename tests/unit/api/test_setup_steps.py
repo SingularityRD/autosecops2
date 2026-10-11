@@ -205,7 +205,7 @@ def test_custom_skill_step_is_open_last_with_the_board_line_when_none_exist():
     assert _step(body, "custom_skill") == {
         "id": "custom_skill",
         "title": "Add a custom skill",
-        "state_line": "Teach Vigil your team’s playbooks",
+        "state_line": "Teach AutoSecOps your team’s playbooks",
         "done": False,
         "href": "/workflows?tab=skills",
     }
@@ -251,4 +251,4 @@ def test_endpoint_counts_custom_skills_and_survives_a_bad_skills_folder():
 
     step = _step(get(boom), "custom_skill")
     assert step["done"] is False
-    assert step["state_line"] == "Teach Vigil your team’s playbooks"
+    assert step["state_line"] == "Teach AutoSecOps your team’s playbooks"

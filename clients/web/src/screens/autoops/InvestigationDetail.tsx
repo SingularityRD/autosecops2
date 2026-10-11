@@ -87,7 +87,7 @@ export default function InvestigationDetail({ id, onBack, openChat, busy, wake, 
           className="btn primary"
           onClick={() => openChat(`Review autonomous investigation ${id}${detail ? ` (${detail.skill_id})` : ''}. Summarize the findings and recommend next steps.`)}
         >
-          <Icon name="sparkle" /> Ask Vigil
+          <Icon name="sparkle" /> Ask AutoSecOps
         </button>
       </div>
 

@@ -23,7 +23,7 @@ export const COMMANDS: CommandDef[] = [
   { id: 'investigate', name: '/investigate', hint: '<finding or context>', desc: 'Run incident response on a finding or a description of what you saw', runs: 'Incident response workflow', later: false, workflowId: 'incident-response' },
   { id: 'hunt', name: '/hunt', hint: '<hypothesis>', desc: 'Start a hypothesis-driven threat hunt', runs: 'Threat hunt workflow', later: false, workflowId: 'threat-hunt' },
   { id: 'replay', name: '/replay', hint: '<case>', desc: "Watch a case's latest run", runs: 'Opens Watch a run', later: false },
-  { id: 'ask', name: '/ask', hint: '<question>', desc: 'Ask Vigil your question in chat', runs: 'Opens Ask Vigil', later: false },
+  { id: 'ask', name: '/ask', hint: '<question>', desc: 'Ask AutoSecOps your question in chat', runs: 'Opens Ask AutoSecOps', later: false },
   { id: 'ticket', name: '/ticket', hint: '<case>', desc: 'Create a Jira ticket from a case', runs: 'Exports the case to Jira', later: false },
   { id: 'hold', name: '/hold', hint: '<case or kind>', desc: 'Hold a case, or every case of one kind', runs: '—', later: true },
   { id: 'isolate', name: '/isolate', hint: '<host>', desc: 'Isolate a host. Irreversible, always asks you to confirm', runs: '—', later: true },
@@ -42,7 +42,7 @@ export type Section =
   | 'Cases'
   | 'Alerts'
   | 'Pages'
-  | 'Ask Vigil'
+  | 'Ask AutoSecOps'
 
 export interface BoardLink {
   key: string
@@ -228,7 +228,7 @@ export function tagText(row: PaletteRow): string {
     case 'Recent':
       return 'Search'
     case 'Ask':
-      return 'Opens Ask Vigil'
+      return 'Opens Ask AutoSecOps'
     case 'Command':
       return row.disabled ? 'Later' : 'Command'
   }
@@ -319,7 +319,7 @@ export function commandPreview(
         : { line: 'Add a case id', disabled: true }
     case 'ask':
       return a
-        ? { line: `Ask Vigil: ${a}`, disabled: false }
+        ? { line: `Ask AutoSecOps: ${a}`, disabled: false }
         : { line: 'Add a question', disabled: true }
     case 'ticket':
       if (!a) return { line: 'Add a case id', disabled: true }
@@ -382,10 +382,10 @@ function askRow(query: string): PaletteRow {
   const q = query.trim()
   return {
     key: 'ask:vigil',
-    label: q ? `Ask Vigil: “${q}”` : 'Ask Vigil about this page',
+    label: q ? `Ask AutoSecOps: “${q}”` : 'Ask AutoSecOps about this page',
     hint: '',
     dest: 'Ask',
-    section: 'Ask Vigil',
+    section: 'Ask AutoSecOps',
     icon: 'sparkle',
     desc: q ? 'Opens chat with your question' : 'Opens chat with this page as context',
     disabled: false,

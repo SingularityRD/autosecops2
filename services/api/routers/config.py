@@ -754,7 +754,7 @@ def build_setup_steps(
         ),
         _step(
             "notify",
-            "Where Vigil pings you",
+            "Where AutoSecOps pings you",
             (
                 "Slack or PagerDuty route is set"
                 if notify_done
@@ -788,7 +788,7 @@ def build_setup_steps(
                 "custom_skill",
                 "Add a custom skill",
                 (
-                    "Teach Vigil your team’s playbooks"
+                    "Teach AutoSecOps your team’s playbooks"
                     if custom_skills == 0
                     else f"{custom_skills} custom skill{'s' if custom_skills != 1 else ''}"
                 ),

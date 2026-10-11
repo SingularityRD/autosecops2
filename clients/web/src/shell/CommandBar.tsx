@@ -495,11 +495,11 @@ export default function CommandBar({
         <input
           ref={inputRef}
           role="combobox"
-          aria-label="Find a case, ask Vigil, or run a command"
+          aria-label="Find a case, ask AutoSecOps, or run a command"
           aria-expanded={open}
           aria-controls="vg-command-results"
           aria-activedescendant={open && rows[highlighted] ? rows[highlighted].key : undefined}
-          placeholder="Ask Vigil, search, or type / for a command"
+          placeholder="Ask AutoSecOps, search, or type / for a command"
           value={query}
           onChange={(event) => {
             setQuery(event.target.value)
@@ -540,7 +540,7 @@ export default function CommandBar({
           }}
         >
           <Icon name="sparkle" size={13} />
-          Ask Vigil
+          Ask AutoSecOps
         </button>
       </div>
       {open && (
@@ -677,7 +677,7 @@ export default function CommandBar({
           <div className="vg-command-foot">
             <span><kbd>↑↓</kbd> move</span>
             <span><kbd>Enter</kbd> open</span>
-            <span><kbd>Tab</kbd> {caseOpen ? 'ask on this case' : 'ask Vigil'}</span>
+            <span><kbd>Tab</kbd> {caseOpen ? 'ask on this case' : 'ask AutoSecOps'}</span>
             <span><kbd>/</kbd> commands</span>
           </div>
         </div>

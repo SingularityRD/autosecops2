@@ -176,7 +176,7 @@ describe('SetupProviderStep', () => {
     expect(screen.getByText(/\(Hosted: data leaves your site\)/)).toBeInTheDocument()
   })
 
-  describe('What Vigil will use', () => {
+  describe('What AutoSecOps will use', () => {
     it('renders a row per component with its model, "Provider default" and the description', async () => {
       gateway({})
       vi.mocked(aiConfigApi.getConfig).mockResolvedValue({

@@ -544,7 +544,7 @@ describe('workflow catalog cards', () => {
       expect(document.activeElement).not.toBe(later)
     }
     expect(within(row('Custom commands')).getAllByRole('cell')[3]).toHaveTextContent('')
-    expect(screen.getByText(/^Type a command in search or in Ask Vigil\. Each command runs a workflow or an action;/)).toBeInTheDocument()
+    expect(screen.getByText(/^Type a command in search or in Ask AutoSecOps\. Each command runs a workflow or an action;/)).toBeInTheDocument()
     expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Command', 'What it does', 'Runs', 'Arguments', 'Status'])
     // what each live command starts, as the bar's run() does; Later rows start nothing
     const cells = (name: string) => within(row(name)).getAllByRole('cell').map((c) => c.textContent)

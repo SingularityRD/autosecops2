@@ -67,7 +67,7 @@ export default function AiModelsOverview({ notify }: SectionProps) {
         <EmptyState error compact icon="alert" title="Couldn’t reach the Bifrost gateway" body={bf.error} primary={{ label: 'Retry', onClick: bf.reload, icon: 'refresh' }} />
       )}
       {bf.phase === 'ready' && names.length === 0 && (
-        <EmptyState compact icon="sparkle" title="No providers yet" body="Add a provider under Keys below, then pick the models Vigil uses." />
+        <EmptyState compact icon="sparkle" title="No providers yet" body="Add a provider under Keys below, then pick the models AutoSecOps uses." />
       )}
       {bf.phase === 'ready' && names.length > 0 && (
         <>
@@ -344,7 +344,7 @@ function AgentModelTable({ ma, notify }: { ma: ReturnType<typeof useModelAssignm
       wide
       id={AGENT_MODEL_TABLE_ID}
       title="Model for each agent"
-      desc="Pick a model per agent, and optionally how hard it thinks, or leave it on the default. Unassigned rows use Chat (Ask Vigil). Workflow runs use the investigation assignment."
+      desc="Pick a model per agent, and optionally how hard it thinks, or leave it on the default. Unassigned rows use Chat (Ask AutoSecOps). Workflow runs use the investigation assignment."
       actions={
         <button className="btn ghost" disabled={resettable.length === 0 || resetting} onClick={resetAll}>
           Reset to defaults
@@ -356,7 +356,7 @@ function AgentModelTable({ ma, notify }: { ma: ReturnType<typeof useModelAssignm
       {phase === 'ready' && (
         <>
           {providerIds.length === 0 && (
-            <EmptyState compact icon="sparkle" title="No assignable models discovered" body="Add and test at least one active provider before assigning models to Vigil components." />
+            <EmptyState compact icon="sparkle" title="No assignable models discovered" body="Add and test at least one active provider before assigning models to AutoSecOps components." />
           )}
           <div className="table-wrap">
             <table className="tbl aim-table">
@@ -500,7 +500,7 @@ function AgentModelTable({ ma, notify }: { ma: ReturnType<typeof useModelAssignm
         open={!!pending}
         danger={false}
         title="Change the default model?"
-        body="Chat (Ask Vigil) is the model every agent without its own assignment falls back to, including custom agents. The change is logged with your name."
+        body="Chat (Ask AutoSecOps) is the model every agent without its own assignment falls back to, including custom agents. The change is logged with your name."
         confirmLabel="Change default"
         onConfirm={confirm}
         onClose={cancel}

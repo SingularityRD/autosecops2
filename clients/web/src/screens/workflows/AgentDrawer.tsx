@@ -320,7 +320,7 @@ export function AgentDrawer({
                 <div className="vg-side-assist">
                   <Icon name="sparkle" size={16} />
                   <label htmlFor="vg-a-change" className="vg-side-assist-text">
-                    Describe a change and Vigil drafts it: “be more careful with finance hosts”
+                    Describe a change and AutoSecOps drafts it: “be more careful with finance hosts”
                   </label>
                   <input
                     id="vg-a-change"

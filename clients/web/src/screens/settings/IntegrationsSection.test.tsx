@@ -280,7 +280,7 @@ describe('Integrations: Custom tab', () => {
     expect(screen.queryByRole('button', { name: /Save as draft|Test read-only/ })).not.toBeInTheDocument()
   })
 
-  it('shows loading while Vigil drafts, then the draft: settings, tools and editable code', async () => {
+  it('shows loading while AutoSecOps drafts, then the draft: settings, tools and editable code', async () => {
     let finish: (v: unknown) => void = () => {}
     const pending = new Promise((r) => { finish = r })
     const base = vi.mocked(fetch).getMockImplementation()!
@@ -290,7 +290,7 @@ describe('Integrations: Custom tab', () => {
     await open()
     fireEvent.change(screen.getByLabelText(/^API documentation/), { target: { value: 'GET /v2/findings' } })
     fireEvent.click(screen.getByRole('button', { name: 'Generate draft' }))
-    expect(await screen.findByText(/Vigil is reading the documentation/)).toBeInTheDocument()
+    expect(await screen.findByText(/AutoSecOps is reading the documentation/)).toBeInTheDocument()
     finish(null)
 
     expect(await screen.findByText('acme_list_findings')).toBeInTheDocument()

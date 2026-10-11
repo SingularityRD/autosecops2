@@ -584,10 +584,10 @@ def _record_handoff(case_id: str, run_id: str, handoff: TerminalHandoff) -> None
 # What the analyst reads under a checkpoint's question. Never the class name or a
 # threshold: those are config, not an explanation.
 _CHECKPOINT_REASONS = {
-    "hypothesis_approval": "Vigil wants your go-ahead on the hypothesis it will test.",
-    "verdict_review": "Vigil wants your review before the hunt settles on a verdict.",
-    "scope_extension": "Vigil wants your go-ahead to look beyond the scope you set.",
-    "budget_anomaly": "Vigil's hunt lead is asking a person to look at this run.",
+    "hypothesis_approval": "AutoSecOps wants your go-ahead on the hypothesis it will test.",
+    "verdict_review": "AutoSecOps wants your review before the hunt settles on a verdict.",
+    "scope_extension": "AutoSecOps wants your go-ahead to look beyond the scope you set.",
+    "budget_anomaly": "The AutoSecOps hunt lead is asking a person to look at this run.",
 }
 
 

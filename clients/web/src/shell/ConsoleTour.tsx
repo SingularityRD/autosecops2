@@ -9,16 +9,16 @@ const tab = (key: ConsoleScreenKey) => NAV.find(n => n[2] === key)?.[1] ?? key
 const COPY: Record<TourStopId, { title: string; body: string; selector: string }> = {
   nav: {
     title: 'Pages are grouped by what you are doing',
-    body: `Watch intake (${tab('overview')}, ${tab('triage')}), work cases (${tab('cases')}), or change how Vigil works (${tab('workflows')}, ${tab('settings')}). A number on a tab means it has something for you.`,
+    body: `Watch intake (${tab('overview')}, ${tab('triage')}), work cases (${tab('cases')}), or change how AutoSecOps works (${tab('workflows')}, ${tab('settings')}). A number on a tab means it has something for you.`,
     selector: 'nav[aria-label="Primary"]',
   },
   attention: {
     title: 'Decisions wait here',
-    body: 'Needs your attention lists what Vigil stopped to ask you, oldest first. Approve or reject here, or open the case.',
+    body: 'Needs your attention lists what AutoSecOps stopped to ask you, oldest first. Approve or reject here, or open the case.',
     selector: 'section[aria-label="Needs your attention"]',
   },
   ask: {
-    title: 'Ask Vigil anywhere',
+    title: 'Ask AutoSecOps anywhere',
     body: 'Ask about the page you are on or any case. Conversations are private to you and kept in your history.',
     selector: '.vg-command-ask',
   },

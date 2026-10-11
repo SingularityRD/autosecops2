@@ -16,9 +16,9 @@ function BackendUnreachable({ onRetry }: { onRetry: () => void }) {
     >
       <div className="soc-loader-inner soc-unreachable" role="alert">
         <VigilMark className="soc-loader-mark" />
-        <h1 className="soc-unreachable-title">Can't reach Vigil</h1>
+        <h1 className="soc-unreachable-title">Can't reach AutoSecOps</h1>
         <p className="soc-unreachable-body">
-          The console couldn't get an answer from the Vigil API. Check that the backend is running, then retry.
+          The console couldn't get an answer from the AutoSecOps API. Check that the backend is running, then retry.
         </p>
         <button type="button" className="btn primary" onClick={onRetry}>
           <Icon name="refresh" />

@@ -55,11 +55,11 @@ describe('UserMenu', () => {
     expect(screen.getByText('TU')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Account menu' }))
     expect(screen.getAllByText('Test User').length).toBeGreaterThan(0)
-    expect(await screen.findByText('About Vigil · 9.9.9')).toBeInTheDocument()
+    expect(await screen.findByText('About AutoSecOps · 9.9.9')).toBeInTheDocument()
     const feedback = screen.getByRole('menuitem', { name: /^Share feedback/ })
     const href = feedback.getAttribute('href') || ''
     const url = new URL(href)
-    expect(url.origin + url.pathname).toBe('https://github.com/Vigil-SOC/vigil/issues/new')
+    expect(url.origin + url.pathname).toBe('https://github.com/SingularityRD/autosecops2/issues/new')
     expect(url.searchParams.get('labels')).toBe('console-feedback')
     expect(url.searchParams.get('body')).toContain('Screen: cases')
     expect(url.searchParams.get('body')).toContain('Version: 9.9.9')
@@ -89,7 +89,7 @@ describe('UserMenu', () => {
     expect(rows).toEqual([
       'Setup guide',
       'Take the tour',
-      expect.stringMatching(/^Share feedbackAbout Vigil · 9\.9\.9$/),
+      expect.stringMatching(/^Share feedbackAbout AutoSecOps · 9\.9\.9$/),
       'Switch to light mode',
       'Settings',
       'Sign out',

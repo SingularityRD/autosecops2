@@ -123,7 +123,7 @@ export default function ProviderKeyCard({
         )}
         <p className="su-note">
           {kind === 'local'
-            ? 'Vigil talks to Ollama over your network. No data leaves this site. Leave blank to use the address the deployment already set.'
+            ? 'AutoSecOps talks to Ollama over your network. No data leaves this site. Leave blank to use the address the deployment already set.'
             : kind === 'cloud'
               ? 'Credentials are stored encrypted in the model gateway and never shown again. Vertex takes a service-account JSON.'
               : 'Stored encrypted in the model gateway and never shown again.'}

@@ -22,7 +22,7 @@ export default function ModelPlan() {
 
   let body
   if (state.phase === 'loading') {
-    body = <p className="su-note">Loading what Vigil will use…</p>
+    body = <p className="su-note">Loading what AutoSecOps will use…</p>
   } else if (state.phase === 'error') {
     body = (
       <div className="flex flex-col gap-2">
@@ -56,7 +56,7 @@ export default function ModelPlan() {
   }
 
   return (
-    <SettingsCard title="What Vigil will use" desc="Change any of them in Settings › AI models.">
+    <SettingsCard title="What AutoSecOps will use" desc="Change any of them in Settings › AI models.">
       {body}
     </SettingsCard>
   )

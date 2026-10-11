@@ -8,7 +8,7 @@ import LoglmCard from './LoglmCard'
 import type { SectionProps } from './types'
 
 const RETENTION_NOTE =
-  'Vigil does not record how long uploaded data is kept. No schedule deletes uploaded findings or cases. ' +
+  'AutoSecOps does not record how long uploaded data is kept. No schedule deletes uploaded findings or cases. ' +
   'The daemon’s cleanup cutoff (daemon_cleanup_retention_days, 90 days by default) only prunes the episodic memory read log.'
 
 // Cards above the rule sources settle after load; keep the anchor in view until the reader scrolls.
@@ -47,7 +47,7 @@ export default function DataUploadsSection({ notify }: SectionProps) {
         <DetectionRulesPanel notify={notify} />
       </div>
       <DemoDataClear notify={notify} />
-      <SettingsCard title="Retention" desc="How long Vigil keeps the data you bring in.">
+      <SettingsCard title="Retention" desc="How long AutoSecOps keeps the data you bring in.">
         <NotMeasured tip={RETENTION_NOTE} />
       </SettingsCard>
     </div>

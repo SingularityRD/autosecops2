@@ -279,8 +279,8 @@ export default function OverviewScreen({ go, openCase, setViewFull, setWallMode,
             <h1>Overview</h1>
             <p>
               {data?.empty
-                ? 'Where your data comes from, what Vigil does with it, and what comes out. Nothing is connected yet, so each part below shows where to connect.'
-                : `Where your data comes from, what Vigil does with it, and what came out. ${data ? `Today, UTC ${data.day}.` : ''}`.trim()}
+                ? 'Where your data comes from, what AutoSecOps does with it, and what comes out. Nothing is connected yet, so each part below shows where to connect.'
+                : `Where your data comes from, what AutoSecOps does with it, and what came out. ${data ? `Today, UTC ${data.day}.` : ''}`.trim()}
             </p>
           </div>
           <div className="ov-head-r">

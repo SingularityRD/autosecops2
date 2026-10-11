@@ -346,7 +346,7 @@ def start(
     spec = _spec(name)
     if not spec.startable:
         return ActionResult(
-            False, f"{name} cannot be started by Vigil", code="not_startable"
+            False, f"{name} cannot be started by AutoSecOps", code="not_startable"
         )
     if spec.container is None:
         kwargs = {} if post_start_sync is None else {"post_start_sync": post_start_sync}
@@ -367,11 +367,11 @@ def stop(name: str) -> ActionResult:
     spec = _spec(name)
     if not spec.stoppable:
         return ActionResult(
-            False, f"{name} cannot be stopped by Vigil", code="not_stoppable"
+            False, f"{name} cannot be stopped by AutoSecOps", code="not_stoppable"
         )
     if spec.container is None:
         return ActionResult(
-            False, f"{name} is not managed by Vigil", code="not_stoppable"
+            False, f"{name} is not managed by AutoSecOps", code="not_stoppable"
         )
     return _compose_action(spec, ["stop", spec.compose_service], "stop", 60)
 
@@ -380,11 +380,11 @@ def restart(name: str) -> ActionResult:
     spec = _spec(name)
     if not spec.stoppable:
         return ActionResult(
-            False, f"{name} cannot be restarted by Vigil", code="not_stoppable"
+            False, f"{name} cannot be restarted by AutoSecOps", code="not_stoppable"
         )
     if spec.container is None:
         return ActionResult(
-            False, f"{name} is not managed by Vigil", code="not_stoppable"
+            False, f"{name} is not managed by AutoSecOps", code="not_stoppable"
         )
     return _compose_action(spec, ["restart", spec.compose_service], "restart", 120)
 

@@ -44,7 +44,7 @@ STRIP_INFO = {
         "calculation": "The number of distinct cases across those rows.",
     },
     "trust_floor": {
-        "source": "Not recorded yet: Vigil keeps no per-source trust score.",
+        "source": "Not recorded yet: AutoSecOps keeps no per-source trust score.",
         "calculation": "The lowest score a finding needs before it is picked up automatically.",
         "limit": "No score is computed, so no floor can be shown.",
     },
@@ -58,8 +58,8 @@ _KIND_LABELS = {
 
 # One sentence each for the figures a row's breakdown does not have yet.
 BREAKDOWN_INFO = {
-    "trust": "Vigil keeps no per-source trust score yet, so none is used in the ranking.",
-    "weight": "Vigil keeps no per-row weight yet, so none is used in the ranking.",
+    "trust": "AutoSecOps keeps no per-source trust score yet, so none is used in the ranking.",
+    "weight": "AutoSecOps keeps no per-row weight yet, so none is used in the ranking.",
     "score": "No score is computed, so there is nothing to compare against a floor.",
 }
 

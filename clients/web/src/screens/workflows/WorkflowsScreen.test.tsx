@@ -42,7 +42,7 @@ describe('Agents & workflows header', () => {
   it('has one level-1 heading with the board description', () => {
     mount()
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Agents & workflows')
-    expect(screen.getByText(/^How Vigil works a case\./)).toBeInTheDocument()
+    expect(screen.getByText(/^How AutoSecOps works a case\./)).toBeInTheDocument()
   })
 
   it('counts each tab from its list; a real zero shows 0', async () => {

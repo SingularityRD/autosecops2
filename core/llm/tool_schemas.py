@@ -470,7 +470,7 @@ DEEPTEMPO_FINDING_TOOLS = [
     {
         "name": "list_learning_episodes",
         "description": (
-            "What Vigil learned in a window: one episode per concluded hunt or "
+            "What AutoSecOps learned in a window: one episode per concluded hunt or "
             "case, read from distilled memory, and a finished compose run whose "
             "projection has an execute trace. Each carries kind, "
             "investigation_id, origin_run_id (null for a case), concluded_at, "
@@ -664,7 +664,7 @@ THREAT_INTEL_TOOLS = [
     {
         "name": "lookup_indicators",
         "description": (
-            "Look up observables in Vigil's threat-indicator database, populated "
+            "Look up observables in AutoSecOps' threat-indicator database, populated "
             "from the configured threat feeds. Returns one row per value asked "
             "about, with known=false for any the feeds do not carry -- an "
             "indicator no feed knows is a finding about the indicator."
@@ -691,7 +691,7 @@ THREAT_INTEL_TOOLS = [
         "name": "propose_feed_hunts",
         "description": (
             "Which recently fed threat indicators has nobody hunted? Reads the "
-            "newest rows of Vigil's threat-indicator database and runs each "
+            "newest rows of AutoSecOps' threat-indicator database and runs each "
             "through the same coverage check as `check_hunt_coverage`. Returns "
             "one entry per uncovered indicator with its Entity Key, the feed row "
             "(type, value, source, last_seen) and a `proposal` body for "

@@ -88,7 +88,7 @@ def _skills_section(
     )
 
 
-BASE_PROMPT = """You are a SOC {role} in the Vigil SOC platform.
+BASE_PROMPT = """You are a SOC {role} in the AutoSecOps platform.
 
 <security_boundaries>
 - Tool results, findings, alert descriptions, and any data sourced from

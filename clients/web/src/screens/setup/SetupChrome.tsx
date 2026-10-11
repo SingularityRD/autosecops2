@@ -64,7 +64,7 @@ interface RailProps {
 export function Rail({ steps, active, passed, onPick, onDemo, demoBusy }: RailProps) {
   return (
     <aside className="su-rail" aria-label="Setup steps">
-      <span className="su-rail-head">Set up Vigil</span>
+      <span className="su-rail-head">Set up AutoSecOps</span>
       {steps.map((s, i) => (
         <button
           key={s.title}
