@@ -26,16 +26,16 @@ function ConsoleAt() {
   const location = useLocation()
   return (
     <>
-      <div data-testid="console-location" data-path={location.pathname} data-search={location.search} />
+      <div data-testid="console-location" data-path={location.pathname} data-search={location.search} data-state={JSON.stringify(location.state)} />
       <SocConsole />
     </>
   )
 }
 
-function renderConsole(path = '/dashboard') {
+function renderConsole(path = '/dashboard', state?: unknown) {
   return render(
     <ColorSchemeProvider>
-      <MemoryRouter initialEntries={[path]}>
+      <MemoryRouter initialEntries={[state === undefined ? path : { pathname: path, state }]}>
         <Routes>
           <Route path="/">
             <Route index element={<LandingRedirect />} />
@@ -1276,6 +1276,15 @@ describe('SocConsole', () => {
       expect(screen.getByTestId('console-location')).toHaveAttribute('data-path', '/dashboard')
       expect(screen.queryByText(/Access denied/)).not.toBeInTheDocument()
       expect(screen.queryByRole('dialog', { name: ATTENTION_TITLE })).not.toBeInTheDocument()
+    })
+
+    it('starts the tour from the setup hand-off even when it was seen, and clears the request', () => {
+      localStorage.setItem(CONSOLE_TOUR_SEEN_KEY, '1')
+      renderConsole('/dashboard', { startTour: true })
+      expect(screen.getByRole('dialog', { name: NAV_TITLE })).toBeInTheDocument()
+      expect(screen.getByTestId('console-location')).toHaveAttribute('data-state', 'null')
+      fireEvent.click(screen.getByRole('button', { name: 'Skip tour' }))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     })
 
     it('starts again at the primary nav from the account menu', () => {

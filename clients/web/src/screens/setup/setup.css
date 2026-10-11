@@ -679,3 +679,338 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+/* Agents and workflows. Board: boards/OnboardingAgents.dc.html */
+.su-chip.good {
+  background: var(--good-bg);
+  color: var(--good);
+}
+
+.su-choices.su-tiers {
+  max-width: 640px;
+}
+
+.su-lock {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--tx1);
+}
+
+.su-lock svg {
+  flex: none;
+  color: var(--tx2);
+}
+
+.su-wf-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.5fr) 120px;
+  gap: 4px 12px;
+  align-items: center;
+  padding: 10px 2px;
+  border-top: 1px solid var(--ln0);
+}
+
+.su-wf-head {
+  padding: 4px 2px 8px;
+  border-top: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--tx2);
+}
+
+.su-wf-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.su-wf-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--tx0);
+  overflow-wrap: anywhere;
+}
+
+.su-wf-id {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--tx2);
+  overflow-wrap: anywhere;
+}
+
+.su-wf-when {
+  font-size: 12px;
+  color: var(--tx1);
+}
+
+.su-wf-switch {
+  justify-self: end;
+}
+
+.su-wf-locked {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--tx1);
+}
+
+.su-wf-err {
+  grid-column: 1 / -1;
+  font-size: 12px;
+}
+
+.su-auto {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px 18px;
+  background: var(--bg1);
+  border: 1px solid var(--ln0);
+  border-radius: 14px;
+}
+
+.su-auto-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.su-auto-title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--tx0);
+}
+
+.su-auto-hint {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--tx2);
+}
+
+/* The card head wraps so the link drops under the title instead of squeezing it */
+.su-root .settings-card .card-h {
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.su-root .settings-card-head {
+  flex: 1 1 220px;
+}
+
+/* Limits and alerts. Board: boards/OnboardingLimits.dc.html */
+.su-choices.three {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+}
+
+.su-ceiling {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: flex-start;
+}
+
+.su-ceiling-field {
+  display: flex;
+  flex: 0 1 320px;
+  flex-direction: column;
+  gap: 6px;
+  min-width: min(100%, 220px);
+}
+
+.su-ceiling-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.su-money {
+  position: relative;
+  display: flex;
+  flex: 1 1 140px;
+  min-width: 0;
+  align-items: center;
+}
+
+.su-money > span {
+  position: absolute;
+  left: 10px;
+  font-size: 13px;
+  color: var(--tx2);
+  pointer-events: none;
+}
+
+.su-money .field-input {
+  padding-left: 22px;
+}
+
+.su-later {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px dashed var(--ln1);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--tx2);
+}
+
+.su-estimate {
+  display: flex;
+  flex: 1 1 220px;
+  align-items: center;
+  min-height: 34px;
+  margin-top: 21px;
+  padding: 0 14px;
+  border-radius: 10px;
+  background: var(--bg2);
+  font-size: 13px;
+}
+
+.su-route {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.su-route-ico {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--bg3);
+  color: var(--tx0);
+}
+
+.su-route-text {
+  display: flex;
+  flex: 1 1 200px;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.su-route-t {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--tx0);
+}
+
+.su-route-s {
+  font-size: 12px;
+  color: var(--tx2);
+}
+
+.su-route-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--good);
+}
+
+/* Narrow: the trigger drops under the name and the switch stays at the right */
+@media (max-width: 640px) {
+  .su-wf-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .su-wf-head span:nth-child(2) {
+    display: none;
+  }
+
+  .su-wf-when {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .su-choices.su-tiers {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Vigil is ready. Board: boards/OnboardingDone.dc.html */
+.su-done-head {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.su-done-tile {
+  flex: none;
+  width: 64px;
+  height: 64px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 20px;
+  background: var(--good-bg);
+  color: var(--good);
+}
+
+.su-eyebrow.good {
+  color: var(--good);
+}
+
+.su-sum-row {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 10px 2px;
+  border-top: 1px solid var(--ln0);
+}
+
+.su-sum-row .btn {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.su-sum-k {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--tx1);
+}
+
+.su-sum-v {
+  min-width: 0;
+  font-size: 13px;
+  color: var(--tx0);
+  overflow-wrap: anywhere;
+}
+
+.su-sum-v.wait {
+  color: var(--tx3);
+}
+
+.su-sum-v.err {
+  color: var(--poor);
+}
+
+.su-next .su-choice-icon {
+  background: var(--ac-bg);
+  color: var(--ac);
+}
+
+.su-foot .btn svg {
+  flex: none;
+}
