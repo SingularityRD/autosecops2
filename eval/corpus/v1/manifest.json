@@ -27,8 +27,46 @@
           "malicious": 36
         }
       },
+      "pairs": [
+        "cl01",
+        "cl02",
+        "cl03",
+        "cl04",
+        "cl06",
+        "cl08",
+        "id01",
+        "id02",
+        "id03",
+        "id05",
+        "id06",
+        "id08",
+        "mw01",
+        "mw02",
+        "mw03",
+        "mw04",
+        "mw05",
+        "mw07",
+        "nw01",
+        "nw02",
+        "nw03",
+        "nw04",
+        "nw05",
+        "nw07",
+        "ot01",
+        "ot02",
+        "ot03",
+        "ot04",
+        "ot05",
+        "ot07",
+        "ph01",
+        "ph02",
+        "ph03",
+        "ph04",
+        "ph06",
+        "ph08"
+      ],
       "rows": 432,
-      "sha256": "963d069d1df721ad24454541bd8dafc77b302b718fc936c272f4db89329aa3f6"
+      "sha256": "f447d521fd3a0db3d9a3805dd05f0edeb29cf6d11830fef8c2bff1e1da29346d"
     },
     "test.jsonl": {
       "counts": {
@@ -57,8 +95,90 @@
           "malicious": 36
         }
       },
+      "pairs": [
+        "cl01",
+        "cl02",
+        "cl03",
+        "cl04",
+        "cl06",
+        "cl08",
+        "id01",
+        "id02",
+        "id03",
+        "id05",
+        "id06",
+        "id08",
+        "mw01",
+        "mw02",
+        "mw03",
+        "mw04",
+        "mw05",
+        "mw07",
+        "nw01",
+        "nw02",
+        "nw03",
+        "nw04",
+        "nw05",
+        "nw07",
+        "ot01",
+        "ot02",
+        "ot03",
+        "ot04",
+        "ot05",
+        "ot07",
+        "ph01",
+        "ph02",
+        "ph03",
+        "ph04",
+        "ph06",
+        "ph08"
+      ],
       "rows": 432,
-      "sha256": "971511c8e007023d4bc0b80037a572789156a3e821879d7a892ee333f78aaa4d"
+      "sha256": "be5346a164d602d51beb1a62d8545f2ec82d5035a83d0b8e13fe6caa59535e6f"
+    },
+    "test_unseen.jsonl": {
+      "counts": {
+        "cloud": {
+          "benign": 60,
+          "malicious": 60
+        },
+        "identity": {
+          "benign": 60,
+          "malicious": 60
+        },
+        "malware": {
+          "benign": 60,
+          "malicious": 60
+        },
+        "network": {
+          "benign": 60,
+          "malicious": 60
+        },
+        "other": {
+          "benign": 60,
+          "malicious": 60
+        },
+        "phishing": {
+          "benign": 60,
+          "malicious": 60
+        }
+      },
+      "pairs": [
+        "cl05",
+        "cl07",
+        "id04",
+        "id07",
+        "mw06",
+        "mw08",
+        "nw06",
+        "nw08",
+        "ot06",
+        "ot08",
+        "ph05",
+        "ph07"
+      ],
+      "rows": 720,
+      "sha256": "7b86a5da1b2d5e8290ae679aa0c50ef3df08722d9c8846a3d28c781fb2f44392"
     },
     "train.jsonl": {
       "counts": {
@@ -87,15 +207,67 @@
           "malicious": 108
         }
       },
+      "pairs": [
+        "cl01",
+        "cl02",
+        "cl03",
+        "cl04",
+        "cl06",
+        "cl08",
+        "id01",
+        "id02",
+        "id03",
+        "id05",
+        "id06",
+        "id08",
+        "mw01",
+        "mw02",
+        "mw03",
+        "mw04",
+        "mw05",
+        "mw07",
+        "nw01",
+        "nw02",
+        "nw03",
+        "nw04",
+        "nw05",
+        "nw07",
+        "ot01",
+        "ot02",
+        "ot03",
+        "ot04",
+        "ot05",
+        "ot07",
+        "ph01",
+        "ph02",
+        "ph03",
+        "ph04",
+        "ph06",
+        "ph08"
+      ],
       "rows": 1296,
-      "sha256": "f190a81308b2d44b8d27c7179fec0dabaa0018a7a56a672c45f903ab16d8bb03"
+      "sha256": "6c627ff0db6c9da16401c6ca7555ea695abbd8985c4fdc1904cc60301f47e4c5"
     }
   },
-  "generator": "v1.0",
+  "generator": "v1.1",
+  "heldout_pairs": [
+    "cl05",
+    "cl07",
+    "id04",
+    "id07",
+    "mw06",
+    "mw08",
+    "nw06",
+    "nw08",
+    "ot06",
+    "ot08",
+    "ph05",
+    "ph07"
+  ],
   "injection": {
     "path": "eval/suites/injection/v1.jsonl",
     "rows": 240,
-    "sha256": "60d4dc4703c7171bdc6f8fa6bf17ad740e8b62bd1758f05708041d258b2f7b9c"
+    "sha256": "d773a86a127a8f446189b2cab46469b65e2552654dd3cafe5ded4b98e3b9439f"
   },
   "seed": 7
 }
