@@ -140,4 +140,30 @@ describe("the root-cause projection", () => {
     ]);
     expect(ended).toMatchObject({ status: "terminal", outcome: "completed", reason: "the trace finished", open_checkpoint: null });
   });
+
+  it("goes back to running once the permit is answered, and carries no row a search returned", () => {
+    const permit = event("checkpoint", { checkpoint_id: "cp-root-cause-permit", checkpoint_class: "hypothesis_approval", question: "Permit?", raised_at: AT });
+    const folded = rootCauseProjection(RUN, [
+      permit,
+      event("resolution", { checkpoint_id: "cp-root-cause-permit", actor: "sam", answer: "approve", text: "", resolved_at: AT }),
+      search("index=main", [{ secret: "row-content" }]),
+      // A gated-call approval journals a dispatch with no call: not a search.
+      event("dispatch", { dispatch_id: "gate", agent_id: "lead", status: "complete", question_id: null, failure_reason: null }),
+    ]);
+    expect(folded).toMatchObject({ status: "running", open_checkpoint: null, searches: 1 });
+    expect(folded.recent_searches).toEqual([{ tool: PROVER_TOOL, args: "index=main", rows: 1, failed: false }]);
+    expect(JSON.stringify(folded)).not.toContain("row-content");
+  });
+
+  it("folds an empty ledger", () => {
+    expect(rootCauseProjection(RUN, [])).toMatchObject({
+      status: "running",
+      cost_usd: null,
+      steps: [],
+      proven: 0,
+      searches: 0,
+      recent_searches: [],
+      notices: [],
+    });
+  });
 });
