@@ -42,7 +42,7 @@ describe('McpSurfacePanel', () => {
     expect(await screen.findByText('the platform')).toBeInTheDocument()
     expect(screen.getByText('never used')).toBeInTheDocument()
     expect(screen.getByText('does not expire')).toBeInTheDocument()
-    expect(screen.getByRole('switch', { name: 'Vigil MCP server' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('switch', { name: 'AutoSecOps MCP server' })).toHaveAttribute('aria-checked', 'true')
   })
 
   it('shows an error with Retry instead of a blank panel', async () => {
@@ -65,7 +65,7 @@ describe('McpSurfacePanel', () => {
     vi.mocked(mcpApi.getSurface).mockResolvedValue(surface({ enabled: false }) as never)
     vi.mocked(mcpApi.setSurfaceEnabled).mockResolvedValue({} as never)
     const notify = setup()
-    fireEvent.click(await screen.findByRole('switch', { name: 'Vigil MCP server' }))
+    fireEvent.click(await screen.findByRole('switch', { name: 'AutoSecOps MCP server' }))
     await waitFor(() => expect(mcpApi.setSurfaceEnabled).toHaveBeenCalledWith(true))
     await waitFor(() => expect(notify).toHaveBeenCalledWith('info', expect.stringContaining('MCP surface is on')))
   })

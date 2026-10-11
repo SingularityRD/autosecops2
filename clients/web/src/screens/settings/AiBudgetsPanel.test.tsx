@@ -85,7 +85,7 @@ describe('AiBudgetsPanel', () => {
     expect(screen.getByText('Bifrost rejected the key.')).toBeInTheDocument()
   })
 
-  it('offers to create a key when none is configured, and points Vigil at the new one', async () => {
+  it('offers to create a key when none is configured, and points AutoSecOps at the new one', async () => {
     setup({ settings: { default_vk: '' }, quota: { configured: false, message: 'No key configured.' }, vks: [] })
     expect(screen.getByText('No spending limit yet')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /New key/ }))
@@ -187,7 +187,7 @@ describe('AiBudgetsPanel', () => {
 
   it('offers the paste field when the configured key cannot be matched', () => {
     setup({ vks: [{ ...VK, name: 'other', value: 'sk-bf-****' }] })
-    expect(screen.getByText('Vigil’s key can’t be edited here')).toBeInTheDocument()
+    expect(screen.getByText('AutoSecOps’ key can’t be edited here')).toBeInTheDocument()
     expect(screen.getByPlaceholderText('sk-bf-…')).toBeInTheDocument()
   })
 })

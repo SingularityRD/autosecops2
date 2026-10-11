@@ -1006,7 +1006,7 @@ export function CasePage({
             ) : (
               <section className="case-card case-checked">
                 <h3>
-                  What Vigil checked · {fold.calls.length} {fold.calls.length === 1 ? 'query' : 'queries'} · {fold.costUsd == null ? '—' : fmtCost(fold.costUsd)}
+                  What AutoSecOps checked · {fold.calls.length} {fold.calls.length === 1 ? 'query' : 'queries'} · {fold.costUsd == null ? '—' : fmtCost(fold.costUsd)}
                   <InfoTip
                     label="About the cost"
                     source="The run's total spend."

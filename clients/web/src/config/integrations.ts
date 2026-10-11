@@ -127,7 +127,7 @@ export const INTEGRATIONS: IntegrationMetadata[] = [
         type: 'text',
         required: false,
         placeholder: '/etc/vigil/certs/root-ca.pem',
-        helpText: 'PEM trusted for this integration only, in place of the default store: the private CA that signed the server certificate. A path on the Vigil backend host; mount it into the container. Leave blank for the default store. Ignored when SSL verification is off.',
+        helpText: 'PEM trusted for this integration only, in place of the default store: the private CA that signed the server certificate. A path on the AutoSecOps backend host; mount it into the container. Leave blank for the default store. Ignored when SSL verification is off.',
       },
     ],
     docs_url: 'https://www.misp-project.org/documentation/',
@@ -319,7 +319,7 @@ export const INTEGRATIONS: IntegrationMetadata[] = [
     name: 'LogLM',
     category: 'Detection & AI',
     description:
-      'DeepTempo LogLM anomaly detections stream into Vigil as findings, and the LogLM model-admin panel mounts natively inside the console. Requires the paid, opt-in LogLM connector.',
+      'DeepTempo LogLM anomaly detections stream into AutoSecOps as findings, and the LogLM model-admin panel mounts natively inside the console. Requires the paid, opt-in LogLM connector.',
     functionality_type: 'AI Detection & Model Admin',
     has_ui: true,
     fields: [
@@ -338,7 +338,7 @@ export const INTEGRATIONS: IntegrationMetadata[] = [
         type: 'password',
         required: true,
         helpText:
-          'Shared HMAC secret Vigil uses to request short-lived, user-scoped session tokens from the connector (matches the connector\'s CONNECTOR_BFF_SESSION_MINT_SECRET). Stored encrypted server-side; never sent to the browser.',
+          'Shared HMAC secret AutoSecOps uses to request short-lived, user-scoped session tokens from the connector (matches the connector\'s CONNECTOR_BFF_SESSION_MINT_SECRET). Stored encrypted server-side; never sent to the browser.',
       },
       {
         name: 'mcp_token',
@@ -395,7 +395,7 @@ export const INTEGRATIONS: IntegrationMetadata[] = [
         type: 'text',
         required: false,
         placeholder: '/etc/vigil/certs/root-ca.pem',
-        helpText: 'PEM trusted for this integration only, in place of the default store: the private CA that signed the server certificate. A path on the Vigil backend host; mount it into the container. Leave blank for the default store. Ignored when SSL verification is off.',
+        helpText: 'PEM trusted for this integration only, in place of the default store: the private CA that signed the server certificate. A path on the AutoSecOps backend host; mount it into the container. Leave blank for the default store. Ignored when SSL verification is off.',
       },
       {
         name: 'lookback_hours',
@@ -532,7 +532,7 @@ export const INTEGRATIONS: IntegrationMetadata[] = [
         type: 'text',
         required: false,
         placeholder: '/etc/vigil/certs/root-ca.pem',
-        helpText: 'PEM trusted for this integration only, in place of the default store: the private CA that signed the server certificate. A path on the Vigil backend host; mount it into the container. Leave blank for the default store. Ignored when SSL verification is off.',
+        helpText: 'PEM trusted for this integration only, in place of the default store: the private CA that signed the server certificate. A path on the AutoSecOps backend host; mount it into the container. Leave blank for the default store. Ignored when SSL verification is off.',
       },
     ],
     docs_url: 'https://www.elastic.co/guide/en/security/current/index.html',
@@ -595,7 +595,7 @@ export const INTEGRATIONS: IntegrationMetadata[] = [
         type: 'text',
         required: false,
         placeholder: '/etc/vigil/certs/root-ca.pem',
-        helpText: 'PEM trusted for this integration only, in place of the default store: the private CA that signed the server certificate. A path on the Vigil backend host; mount it into the container. Leave blank for the default store. Ignored when SSL verification is off.',
+        helpText: 'PEM trusted for this integration only, in place of the default store: the private CA that signed the server certificate. A path on the AutoSecOps backend host; mount it into the container. Leave blank for the default store. Ignored when SSL verification is off.',
       },
     ],
     docs_url: 'https://opensearch.org/docs/latest/security-analytics/',
@@ -794,7 +794,7 @@ export const INTEGRATIONS: IntegrationMetadata[] = [
         type: 'text',
         required: false,
         placeholder: '/etc/vigil/certs/root-ca.pem',
-        helpText: 'PEM trusted for this integration only, in place of the default store: the private CA that signed the server certificate. A path on the Vigil backend host; mount it into the container. Leave blank for the default store. Ignored when SSL verification is off.',
+        helpText: 'PEM trusted for this integration only, in place of the default store: the private CA that signed the server certificate. A path on the AutoSecOps backend host; mount it into the container. Leave blank for the default store. Ignored when SSL verification is off.',
       },
     ],
     docs_url: 'https://docs.paloaltonetworks.com/pan-os/10-0/pan-os-panorama-api',
@@ -804,7 +804,7 @@ export const INTEGRATIONS: IntegrationMetadata[] = [
     name: 'Cloudflare',
     category: 'Network Security',
     description:
-      'Cloudflare WAF, Zero Trust Gateway, and Access response actions, plus read-only IP/domain threat lookups. Lets Vigil propose and (with approval) execute WAF blocks, Gateway DNS/HTTP block policies, and Zero Trust session revocations.',
+      'Cloudflare WAF, Zero Trust Gateway, and Access response actions, plus read-only IP/domain threat lookups. Lets AutoSecOps propose and (with approval) execute WAF blocks, Gateway DNS/HTTP block policies, and Zero Trust session revocations.',
     functionality_type: 'Network Protection',
     fields: [
       {
@@ -838,7 +838,7 @@ export const INTEGRATIONS: IntegrationMetadata[] = [
     name: 'Cloudflare Cloudforce One',
     category: 'Threat Intelligence',
     description:
-      'Cloudforce One STIX/TAXII 2.1 threat-intel feeds. Vigil polls configured collections, normalizes indicators, and enriches findings whose IOCs match. Operates independently of the Cloudflare WAF/Zero Trust integration so customers can subscribe to either or both.',
+      'Cloudforce One STIX/TAXII 2.1 threat-intel feeds. AutoSecOps polls configured collections, normalizes indicators, and enriches findings whose IOCs match. Operates independently of the Cloudflare WAF/Zero Trust integration so customers can subscribe to either or both.',
     functionality_type: 'Data Enrichment',
     fields: [
       {
@@ -874,7 +874,7 @@ export const INTEGRATIONS: IntegrationMetadata[] = [
         type: 'number',
         required: false,
         default: 900,
-        helpText: 'How often Vigil pulls the latest indicators. Default 900 (15 min); minimum enforced server-side is 60.',
+        helpText: 'How often AutoSecOps pulls the latest indicators. Default 900 (15 min); minimum enforced server-side is 60.',
       },
     ],
     docs_url: 'https://developers.cloudflare.com/security-center/cloudforce-one/',
@@ -1092,7 +1092,7 @@ export const INTEGRATIONS: IntegrationMetadata[] = [
     id: 'atomic-red-team',
     name: 'Atomic Red Team',
     category: 'Forensics & Analysis',
-    description: 'Invoke one Atomic Red Team technique against a named range or staging replica. Operator installs the runner; Vigil does not vendor the atomics repo.',
+    description: 'Invoke one Atomic Red Team technique against a named range or staging replica. Operator installs the runner; AutoSecOps does not vendor the atomics repo.',
     functionality_type: 'Adversary Emulation',
     fields: [
       {
@@ -1120,7 +1120,7 @@ export const INTEGRATIONS: IntegrationMetadata[] = [
     name: 'CloudCurrent VStrike',
     category: 'Network Security',
     description:
-      "Embed VStrike's network topology UI inside Vigil case investigations. Vigil drives which network and what kill-chain to play; VStrike streams the visualization back via WebSocket. Provides segment, criticality, mission-system, blast-radius, and attack-path enrichment to every Vigil agent.",
+      "Embed VStrike's network topology UI inside AutoSecOps case investigations. AutoSecOps drives which network and what kill-chain to play; VStrike streams the visualization back via WebSocket. Provides segment, criticality, mission-system, blast-radius, and attack-path enrichment to every AutoSecOps agent.",
     functionality_type: 'Data Enrichment',
     fields: [
       {
@@ -1138,7 +1138,7 @@ export const INTEGRATIONS: IntegrationMetadata[] = [
         required: true,
         placeholder: 'deeptempo_manager',
         helpText:
-          'VStrike account username. Vigil exchanges username + password for a JWT via /mcp-login and refreshes it automatically — no API key paste needed.',
+          'VStrike account username. AutoSecOps exchanges username + password for a JWT via /mcp-login and refreshes it automatically — no API key paste needed.',
       },
       {
         name: 'password',
@@ -1161,7 +1161,7 @@ export const INTEGRATIONS: IntegrationMetadata[] = [
         type: 'text',
         required: false,
         placeholder: '/etc/vigil/certs/root-ca.pem',
-        helpText: 'PEM trusted for this integration only, in place of the default store: the private CA that signed the server certificate. A path on the Vigil backend host; mount it into the container. Leave blank for the default store. Ignored when SSL verification is off.',
+        helpText: 'PEM trusted for this integration only, in place of the default store: the private CA that signed the server certificate. A path on the AutoSecOps backend host; mount it into the container. Leave blank for the default store. Ignored when SSL verification is off.',
       },
     ],
     docs_url: 'https://cloudcurrent.biz/vstrike',

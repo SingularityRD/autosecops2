@@ -97,7 +97,7 @@ export default function ServicesSection({ notify }: SectionProps) {
 
       <SettingsCard
         title="Services"
-        desc="Start local services on demand. Vigil starts Ollama natively rather than in Docker so it keeps GPU acceleration."
+        desc="Start local services on demand. AutoSecOps starts Ollama natively rather than in Docker so it keeps GPU acceleration."
         actions={<button className="btn ghost icon" title="Refresh" onClick={() => void load()}><Icon name="refresh" /></button>}
         wide
       >
@@ -113,7 +113,7 @@ export default function ServicesSection({ notify }: SectionProps) {
                     <StatusPill s={s} />
                     {s.kind === 'host' && <span className="tag">host</span>}
                     {s.running && !s.managed_by_vigil && s.kind === 'host' && (
-                      <span className="muted" style={{ fontSize: 12 }}>started outside Vigil</span>
+                      <span className="muted" style={{ fontSize: 12 }}>started outside AutoSecOps</span>
                     )}
                   </div>
                   <span className="muted" style={{ fontSize: 12 }}>

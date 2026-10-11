@@ -74,7 +74,7 @@ export default function McpSurfacePanel({ notify }: SectionProps) {
       notify(
         enabled ? 'info' : 'ok',
         enabled
-          ? 'MCP surface is on. Vigil’s tools are reachable from the network.'
+          ? 'MCP surface is on. AutoSecOps’ tools are reachable from the network.'
           : 'MCP surface is off.',
       )
       load()
@@ -119,7 +119,7 @@ export default function McpSurfacePanel({ notify }: SectionProps) {
         error
         icon="alert"
         title="Couldn’t load the MCP server settings"
-        body="Vigil’s MCP surface could not be read, so its state and credentials are not shown."
+        body="AutoSecOps’ MCP surface could not be read, so its state and credentials are not shown."
         primary={{ label: 'Retry', onClick: load, icon: 'refresh' }}
       />
     ) : (
@@ -132,10 +132,10 @@ export default function McpSurfacePanel({ notify }: SectionProps) {
   return (
     <div className="mcp-card">
       <div className="mcp-head">
-        <h3>Vigil’s own MCP server</h3>
+        <h3>AutoSecOps’ own MCP server</h3>
         <p>
-          Vigil’s own tools — findings, cases, the approval queue — served at{' '}
-          <code>{surface.path}</code> so callers that are not Vigil can use them. Vigil’s own agent
+          AutoSecOps’ own tools — findings, cases, the approval queue — served at{' '}
+          <code>{surface.path}</code> so callers that are not AutoSecOps can use them. AutoSecOps’ own agent
           reaches the same tools either way, so leaving this off costs nothing internally.
         </p>
       </div>
@@ -143,9 +143,9 @@ export default function McpSurfacePanel({ notify }: SectionProps) {
       <div className="mcp-onoff">
         <span className="mcp-onoff-text">
           <b>{surface.enabled ? 'Reachable from the network' : 'Not served'}</b>
-          <span>When off, Vigil’s MCP server is not served at all</span>
+          <span>When off, AutoSecOps’ MCP server is not served at all</span>
         </span>
-        <Toggle checked={surface.enabled} label="Vigil MCP server" disabled={busy} onChange={toggle} />
+        <Toggle checked={surface.enabled} label="AutoSecOps MCP server" disabled={busy} onChange={toggle} />
       </div>
 
       {noCredentials && (
@@ -193,7 +193,7 @@ export default function McpSurfacePanel({ notify }: SectionProps) {
           compact
           icon="link"
           title="No credentials yet"
-          body="Mint one above to let a caller outside Vigil use its tools."
+          body="Mint one above to let a caller outside AutoSecOps use its tools."
         />
       ) : (
         <table className="int-table">

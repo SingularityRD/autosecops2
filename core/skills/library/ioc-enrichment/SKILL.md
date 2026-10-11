@@ -21,7 +21,7 @@ reporting or threat intelligence.
 
 2. **Recall before you look up.** Call `recall_entity` on each external
    indicator before spending an external lookup. Memory is read-only; it tells
-   you what Vigil has seen about the entity before and orients the search. It
+   you what AutoSecOps has seen about the entity before and orients the search. It
    never decides the outcome on its own.
 
 3. **Enrich in parallel with whatever you hold.** Issue independent lookups in

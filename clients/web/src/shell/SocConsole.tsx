@@ -83,7 +83,7 @@ const SCREEN_PERMS: Partial<Record<ConsoleScreenKey, string>> = {
 const CHAT_WIDTH = 400
 
 const setupTip = (left: number) =>
-  `Finish setting up Vigil: ${left === 1 ? '1 step is' : `${left} steps are`} left. Opens the setup guide.`
+  `Finish setting up AutoSecOps: ${left === 1 ? '1 step is' : `${left} steps are`} left. Opens the setup guide.`
 
 export default function SocConsole() {
   return (

@@ -223,7 +223,7 @@ export default function FindingPopup({
         const code = (e as { code?: string })?.code
         setError(
           code === 'ECONNABORTED'
-            ? 'The local Vigil API did not respond. It may be restarting.'
+            ? 'The local AutoSecOps API did not respond. It may be restarting.'
             : (e as { message?: string })?.message || 'Failed to load finding',
         )
         setPhase('error')

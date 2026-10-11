@@ -182,7 +182,7 @@ export default function CustomIntegrationBuilder({ notify, onWrote, onSaved }: P
       <div className="cb-head">
         <h3 className="cb-title">Build a custom integration</h3>
         <p className="cb-sub">
-          For a tool Vigil does not support yet. Paste its API documentation; Vigil drafts the connector and you review and
+          For a tool AutoSecOps does not support yet. Paste its API documentation; AutoSecOps drafts the connector and you review and
           edit it. Nothing is enabled until you configure it under Integrations.
         </p>
       </div>
@@ -204,7 +204,7 @@ export default function CustomIntegrationBuilder({ notify, onWrote, onSaved }: P
           <Field label="Category">
             <Select value={category} options={CATEGORY_OPTIONS} onSelect={setCategory} />
           </Field>
-          <Field label="Name" hint="Leave blank and Vigil names it from the documentation.">
+          <Field label="Name" hint="Leave blank and AutoSecOps names it from the documentation.">
             <TextInput value={integrationName} placeholder="e.g. Acme XDR" onChange={(e) => setIntegrationName(e.target.value)} />
           </Field>
           <Field label="API documentation" hint="Paste text, or upload a documentation file.">
@@ -229,26 +229,26 @@ export default function CustomIntegrationBuilder({ notify, onWrote, onSaved }: P
         </fieldset>
 
         <div className="cb-draft">
-          <span className="cb-draft-title">Vigil’s draft</span>
+          <span className="cb-draft-title">AutoSecOps’ draft</span>
 
           {!generated && !question && (
             <p className="cb-sub" role={busy === 'generate' ? 'status' : undefined}>
               {busy === 'generate'
-                ? 'Vigil is reading the documentation and drafting the connector…'
+                ? 'AutoSecOps is reading the documentation and drafting the connector…'
                 : 'Nothing drafted yet. Add the API documentation and choose Generate draft: the settings it will ask for, the tools agents will get and the code appear here.'}
             </p>
           )}
 
           {!generated && question && (
             <>
-              <div className="settings-banner info"><Icon name="info" size={14} /> Vigil needs more information. Answer the question below.</div>
+              <div className="settings-banner info"><Icon name="info" size={14} /> AutoSecOps needs more information. Answer the question below.</div>
               <p className="cb-question">{question}</p>
               <Field label="Your answer">
                 <textarea
                   className="field-input cb-answer"
                   value={userAnswer}
                   onChange={(e) => setUserAnswer(e.target.value)}
-                  placeholder="Be as specific as possible to help Vigil draft the best integration."
+                  placeholder="Be as specific as possible to help AutoSecOps draft the best integration."
                 />
               </Field>
               <div className="cb-actions">
@@ -288,7 +288,7 @@ export default function CustomIntegrationBuilder({ notify, onWrote, onSaved }: P
                   ))}
                 </ul>
               ) : (
-                <span className="cb-sub">Vigil did not list any tools. Check the code below.</span>
+                <span className="cb-sub">AutoSecOps did not list any tools. Check the code below.</span>
               )}
 
               <label className="cb-label" htmlFor="cb-code">Server code</label>

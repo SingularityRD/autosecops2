@@ -1,5 +1,5 @@
 appId: ai.deeptempo.vigil
-productName: Vigil
+productName: AutoSecOps
 directories:
   output: release
 files:

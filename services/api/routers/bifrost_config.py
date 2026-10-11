@@ -161,7 +161,7 @@ def _resolve_vertex_scope(vertex: Dict[str, Any], key_id: Optional[str]) -> None
                 "This Vertex key needs its "
                 + " and ".join(f.replace("_", " ") for f in missing)
                 + ". Bifrost masks both on read and will not reveal them, so a "
-                "key first configured outside Vigil has to have them retyped once."
+                "key first configured outside AutoSecOps has to have them retyped once."
             ),
         )
 
@@ -184,7 +184,7 @@ def _resolve_ollama_url(ollama: Dict[str, Any], key_id: Optional[str]) -> None:
             status_code=400,
             detail=(
                 "This Ollama key needs its server URL. Bifrost masks it on read "
-                "and will not reveal it, so a key first configured outside Vigil "
+                "and will not reveal it, so a key first configured outside AutoSecOps "
                 "has to have it retyped once."
             ),
         )

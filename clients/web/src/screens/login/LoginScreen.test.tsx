@@ -85,12 +85,12 @@ describe('LoginScreen', () => {
 
     it('blames the backend, not the credentials, on a network error', async () => {
       login.mockRejectedValueOnce(new Error('Network Error'))
-      expect(await submit()).toHaveTextContent("Can't reach the Vigil API. Is the backend running?")
+      expect(await submit()).toHaveTextContent("Can't reach the AutoSecOps API. Is the backend running?")
     })
 
     it('treats a 5xx without a detail as unreachable', async () => {
       login.mockRejectedValueOnce({ response: { status: 500, data: '' } })
-      expect(await submit()).toHaveTextContent("Can't reach the Vigil API")
+      expect(await submit()).toHaveTextContent("Can't reach the AutoSecOps API")
     })
 
     it('shows the server detail on a 5xx that has one', async () => {

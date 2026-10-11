@@ -392,7 +392,7 @@ describe('SetupScreen', () => {
         await openStep()
         expect(screen.queryByText('Connect data')).not.toBeInTheDocument()
         expect(screen.getByText('Connect CrowdStrike Falcon')).toBeInTheDocument()
-        expect(screen.getByText(/Vigil reads alerts only\. Tools that change something/)).toBeInTheDocument()
+        expect(screen.getByText(/AutoSecOps reads alerts only\. Tools that change something/)).toBeInTheDocument()
         expect(screen.getByText('Secrets are stored encrypted and never shown again.')).toBeInTheDocument()
         expect(screen.getByRole('link', { name: /Where do I find this/ })).toHaveAttribute(
           'href',

@@ -27,7 +27,7 @@ const ROWS: { key: string; label: string; target: SummaryTarget }[] = [
 const NEXT: { icon: IconName; title: string; sub: string; to: string }[] = [
   { icon: 'play', title: 'Take the 1-minute tour', sub: 'Where decisions, chat and search live', to: '' },
   { icon: 'link', title: 'Connect more sources', sub: 'Each source you add closes a blind spot', to: '/settings?section=integrations' },
-  { icon: 'flow', title: 'Watch a hunt run', sub: 'See how Vigil tests explanations, step by step', to: '/workflows' },
+  { icon: 'flow', title: 'Watch a hunt run', sub: 'See how AutoSecOps tests explanations, step by step', to: '/workflows' },
 ]
 
 const plural = (n: number) => `${n} optional step${n === 1 ? '' : 's'}`
@@ -141,7 +141,7 @@ export default function SummaryStep({ onChange }: { onChange: (target: SummaryTa
             </span>
             <div className="su-head">
               <span className="su-eyebrow good">Setup complete</span>
-              <h1>Vigil is ready</h1>
+              <h1>AutoSecOps is ready</h1>
               <p>
                 Triage starts on new alerts as they are collected. The first cases appear on Home,
                 and anything that needs you shows up in Needs your attention.

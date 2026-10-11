@@ -183,7 +183,7 @@ export default function ExtensionHost({ ext, mount, setViewFull }: Props) {
           <h2>{mount.navLabel} is unavailable</h2>
           <p>
             Couldn’t load this extension from {ext.connectorUrl}. The connector may be
-            offline or misconfigured. The rest of Vigil is unaffected.
+            offline or misconfigured. The rest of AutoSecOps is unaffected.
           </p>
           {errorMsg && <p style={{ opacity: 0.6, fontSize: 12 }}>{errorMsg}</p>}
         </div>

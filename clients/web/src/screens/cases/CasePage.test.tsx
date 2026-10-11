@@ -231,8 +231,8 @@ describe('case page', () => {
     expect(await screen.findByText('no login')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('tab', { name: /Checked/ }))
-    const card = (await screen.findByText(/What Vigil checked/)).closest('section') as HTMLElement
-    expect(card).toHaveTextContent('What Vigil checked · 2 queries · $0.20')
+    const card = (await screen.findByText(/What AutoSecOps checked/)).closest('section') as HTMLElement
+    expect(card).toHaveTextContent('What AutoSecOps checked · 2 queries · $0.20')
     expect(card).not.toHaveTextContent('no source')
     // the run's cost, not the row's; the row shows its own turn's cost and size in chars
     const row = within(card).getByText('who logged in').closest('li') as HTMLElement
@@ -552,7 +552,7 @@ describe('case page', () => {
     expect(within(doors).getByText('Nothing recalled')).toBeInTheDocument()
     await waitFor(() => expect(within(doors).getByText('2 rows · 1 chained')).toBeInTheDocument())
     fireEvent.click(within(doors).getByRole('button', { name: /^Checked/ }))
-    expect(await screen.findByText(/What Vigil checked/)).toBeInTheDocument()
+    expect(await screen.findByText(/What AutoSecOps checked/)).toBeInTheDocument()
   })
 
   it('shows a run started on the case with no investigation row, before it has reported', async () => {
@@ -685,8 +685,8 @@ describe('case page', () => {
         gaps: [{ dispatch_id: 'dsp-1', agent_id: 'worker', failure_reason: 'tool down', query_intent: 'list users' }],
       }))
       await openChecked()
-      const card = (await screen.findByText(/What Vigil checked/)).closest('section') as HTMLElement
-      expect(card.querySelector('h3')).toHaveTextContent('What Vigil checked · 1 query · — · 1 with no source')
+      const card = (await screen.findByText(/What AutoSecOps checked/)).closest('section') as HTMLElement
+      expect(card.querySelector('h3')).toHaveTextContent('What AutoSecOps checked · 1 query · — · 1 with no source')
       const rows = card.querySelectorAll('li')
       expect(rows).toHaveLength(2)
       expect(rows[0]).toHaveTextContent('okta')
@@ -702,8 +702,8 @@ describe('case page', () => {
     it('keeps the header and red rows when there are gaps but no calls', async () => {
       leadCase(lead({ cost_usd: 0.5, gaps: [{ dispatch_id: 'dsp-1', agent_id: 'worker', failure_reason: null, query_intent: 'list users' }] }))
       await openChecked()
-      const card = (await screen.findByText(/What Vigil checked/)).closest('section') as HTMLElement
-      expect(card.querySelector('h3')).toHaveTextContent('What Vigil checked · 0 queries · $0.50 · 1 with no source')
+      const card = (await screen.findByText(/What AutoSecOps checked/)).closest('section') as HTMLElement
+      expect(card.querySelector('h3')).toHaveTextContent('What AutoSecOps checked · 0 queries · $0.50 · 1 with no source')
       expect(card.querySelectorAll('li')).toHaveLength(1)
     })
 

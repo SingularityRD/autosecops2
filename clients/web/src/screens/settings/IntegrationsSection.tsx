@@ -119,7 +119,7 @@ export default function IntegrationsSection({ notify }: SectionProps) {
     ['connected', 'Connected', ready ? connected.length : null],
     ['add', 'Add integration', ready ? available : null],
     ['custom', 'Custom', customCount],
-    ['surface', 'Vigil MCP server', null],
+    ['surface', 'AutoSecOps MCP server', null],
   ]
   const first = attention[0]
   const tiles: [string, number, string][] = [

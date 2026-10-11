@@ -136,7 +136,7 @@ describe('OverviewScreen', () => {
   it('empty: four connect slots, five outcome slots, no counts, and every card kept', async () => {
     vi.mocked(overviewApi.get).mockResolvedValue({ data: payload({ empty: true, arrivals: [], feed: [], agents: [agent({ running: 0, current_step: null })] }) } as never)
     renderScreen()
-    const flow = await screen.findByRole('region', { name: 'How alerts flow through Vigil' })
+    const flow = await screen.findByRole('region', { name: 'How alerts flow through AutoSecOps' })
     expect(within(flow).getByText(/Nothing is connected yet\. Connect a source on the left/)).toBeInTheDocument()
     expect(within(flow).getByText('Waiting for data')).toBeInTheDocument()
     for (const name of ['Connect a SIEM', 'Connect an EDR', 'Connect identity', 'Connect the LogLM pipeline']) {
@@ -163,7 +163,7 @@ describe('OverviewScreen', () => {
   it('with data: its own heading and legend, a source node per arrival, no connect copy', async () => {
     vi.mocked(overviewApi.get).mockResolvedValue({ data: payload({ feed: [] }) } as never)
     renderScreen()
-    const flow = await screen.findByRole('region', { name: 'How alerts flow through Vigil' })
+    const flow = await screen.findByRole('region', { name: 'How alerts flow through AutoSecOps' })
     expect(screen.getByRole('heading', { name: 'Overview', level: 1 })).toBeInTheDocument()
     expect(screen.getByText(/Today, UTC 2026-10-01\./)).toBeInTheDocument()
     expect(screen.getByTitle('Health: Good 95% and up, Fair 85 to 95%, Poor under 85%.')).toBeInTheDocument()
@@ -221,7 +221,7 @@ describe('OverviewScreen', () => {
   it('shows five outcome nodes with counts, names the unmeasured ones, and opens the feed', async () => {
     vi.mocked(overviewApi.get).mockResolvedValue({ data: payload() } as never)
     const { setWallMode } = renderScreen()
-    const flow = await screen.findByRole('region', { name: 'How alerts flow through Vigil' })
+    const flow = await screen.findByRole('region', { name: 'How alerts flow through AutoSecOps' })
     const counts = { 'Resolved automatically': '0', 'Closed by a person': '0', 'Still working': '0', 'Needs you': '0', 'Not in a case': '2' }
     for (const [label, count] of Object.entries(counts)) {
       const node = within(flow).getByLabelText(label)
@@ -249,7 +249,7 @@ describe('OverviewScreen', () => {
     const arrivals = names.map((data_source, i) => ({ data_source, count: 10 - i, source_text: SOURCE }))
     vi.mocked(overviewApi.get).mockResolvedValue({ data: payload({ arrivals, feed: [] }) } as never)
     renderScreen()
-    const flow = await screen.findByRole('region', { name: 'How alerts flow through Vigil' })
+    const flow = await screen.findByRole('region', { name: 'How alerts flow through AutoSecOps' })
     expect(within(flow).getByText('52')).toBeInTheDocument() // 10+9+8+7+6+5+4+3, folded ones included
     expect(within(flow).getAllByRole('link', { name: /alerts/ })).toHaveLength(6)
     const more = within(flow).getByText('+2 more sources').closest('.ov-src')!
@@ -297,7 +297,7 @@ describe('OverviewScreen', () => {
   it('full screen hides the page heading and Agents running now, puts Exit in the diagram heading, and Escape leaves it', async () => {
     vi.mocked(overviewApi.get).mockResolvedValue({ data: payload() } as never)
     const { setWallMode } = renderScreen()
-    const flow = await screen.findByRole('region', { name: 'How alerts flow through Vigil' })
+    const flow = await screen.findByRole('region', { name: 'How alerts flow through AutoSecOps' })
     expect(screen.getByRole('heading', { name: 'Agents running now' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Overview', level: 1 })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Full screen' }))
@@ -316,7 +316,7 @@ describe('OverviewScreen', () => {
   it('Escape with an alert open closes only the popup, not full screen', async () => {
     vi.mocked(overviewApi.get).mockResolvedValue({ data: payload() } as never)
     const { setWallMode } = renderScreen()
-    await screen.findByRole('region', { name: 'How alerts flow through Vigil' })
+    await screen.findByRole('region', { name: 'How alerts flow through AutoSecOps' })
     fireEvent.click(screen.getByRole('button', { name: 'Full screen' }))
     fireEvent.click(screen.getByText('f-1'))
     expect(await screen.findByRole('dialog')).toBeInTheDocument()
@@ -520,7 +520,7 @@ describe('OverviewScreen', () => {
     first.unmount()
     expect(first.setViewFull).toHaveBeenLastCalledWith(false)
     renderScreen('/overview', true)
-    await screen.findByRole('region', { name: 'How alerts flow through Vigil' })
+    await screen.findByRole('region', { name: 'How alerts flow through AutoSecOps' })
     expect(screen.queryByRole('complementary', { name: 'Incoming alerts' })).not.toBeInTheDocument()
   })
 

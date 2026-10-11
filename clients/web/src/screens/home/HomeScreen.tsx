@@ -401,9 +401,9 @@ export default function HomeScreen({ openCase, startTour, fillCommand }: Console
         {!noAlerts && (
           <section aria-label="Setup">
             {sectionHead(
-              'Get more from Vigil',
+              'Get more from AutoSecOps',
               'Fixed order · most impact first',
-              <InfoTip label="How Get more from Vigil is calculated" align="start" {...SETUP_TIP} />,
+              <InfoTip label="How Get more from AutoSecOps is calculated" align="start" {...SETUP_TIP} />,
               <Link to="/settings?section=integrations">Browse integrations →</Link>,
             )}
             {setupError && <p role="alert">{setupError}</p>}
@@ -449,7 +449,7 @@ export default function HomeScreen({ openCase, startTour, fillCommand }: Console
             <div className="home-ready">
               <div className="home-ready-head">
                 <div>
-                  <h2>Get Vigil ready</h2>
+                  <h2>Get AutoSecOps ready</h2>
                   <p>Tick steps off as you go.</p>
                 </div>
                 <span className="home-ready-count" aria-live="polite">

@@ -552,7 +552,7 @@ describe('SocConsole', () => {
 
     read(true, false, false)
     const first = renderConsole()
-    const chip = await screen.findByRole('link', { name: 'Finish setting up Vigil: 2 steps are left. Opens the setup guide.' })
+    const chip = await screen.findByRole('link', { name: 'Finish setting up AutoSecOps: 2 steps are left. Opens the setup guide.' })
     expect(chip).toHaveTextContent('Finish setup')
     expect(chip).toHaveTextContent('2 left')
     expect(chip).toHaveAttribute('href', '/setup')
@@ -562,17 +562,17 @@ describe('SocConsole', () => {
 
     read(true, false)
     const second = renderConsole()
-    expect(await screen.findByRole('link', { name: 'Finish setting up Vigil: 1 step is left. Opens the setup guide.' })).toHaveTextContent('1 left')
+    expect(await screen.findByRole('link', { name: 'Finish setting up AutoSecOps: 1 step is left. Opens the setup guide.' })).toHaveTextContent('1 left')
     // a step finished elsewhere shows on the next screen change
     read(true, true)
     clickScreen('Cases')
-    await waitFor(() => expect(screen.queryByRole('link', { name: /Finish setting up Vigil/ })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('link', { name: /Finish setting up AutoSecOps/ })).not.toBeInTheDocument())
     second.unmount()
 
     vi.mocked(configApi.getSetupSteps).mockRejectedValue(new Error('boom'))
     renderConsole()
     await waitFor(() => expect(configApi.getSetupSteps).toHaveBeenCalled())
-    expect(screen.queryByRole('link', { name: /Finish setting up Vigil/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Finish setting up AutoSecOps/ })).not.toBeInTheDocument()
     vi.mocked(configApi.getSetupSteps).mockResolvedValue({
       data: { steps: [], alerts_exist: 1, demo_enabled: false },
     } as never)
@@ -751,7 +751,7 @@ describe('SocConsole', () => {
       renderConsole('/cases?case=case-2026-0142')
       await screen.findByRole('tab', { name: /Summary/ })
       expect(document.querySelector('.chat-fab')).not.toBeInTheDocument()
-      fireEvent.click(within(document.querySelector<HTMLElement>('.vg-header')!).getByRole('button', { name: 'Ask Vigil' }))
+      fireEvent.click(within(document.querySelector<HTMLElement>('.vg-header')!).getByRole('button', { name: 'Ask AutoSecOps' }))
       expect(screen.getByText('Ask about what you are looking at')).toBeInTheDocument()
     })
 
@@ -786,14 +786,14 @@ describe('SocConsole', () => {
 
   it('opens the chat dock without error', () => {
     renderConsole()
-    fireEvent.click(screen.getByRole('button', { name: 'Ask Vigil' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Ask AutoSecOps' }))
     expect(screen.getByText('Ask about what you are looking at')).toBeInTheDocument()
   })
 
   // the boards show one Ask Vigil, in the command bar; no floating button in a corner
-  it('renders one Ask Vigil button, in the command bar, with or without the dock open', () => {
+  it('renders one Ask AutoSecOps button, in the command bar, with or without the dock open', () => {
     renderConsole()
-    const asks = screen.getAllByRole('button', { name: /Ask Vigil/ })
+    const asks = screen.getAllByRole('button', { name: /Ask AutoSecOps/ })
     expect(asks).toHaveLength(1)
     expect(asks[0]).toHaveClass('vg-command-ask')
     expect(document.querySelector('.vg-header')).toContainElement(asks[0])
@@ -807,8 +807,8 @@ describe('SocConsole', () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
     renderConsole()
     expect(document.querySelector('.soc-console')).toHaveStyle({ '--chat-w': '400px' })
-    fireEvent.click(screen.getByRole('button', { name: 'Ask Vigil' }))
-    expect(screen.queryByRole('separator', { name: 'Resize Vigil Assistant' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Ask AutoSecOps' }))
+    expect(screen.queryByRole('separator', { name: 'Resize AutoSecOps Assistant' })).toBeNull()
     expect(localStorage.getItem('soc.chat.width.v1')).toBeNull()
   })
 
@@ -820,7 +820,7 @@ describe('SocConsole', () => {
 
   it('opens the dock on the current page without a per-chat model', () => {
     renderConsole()
-    fireEvent.click(screen.getByRole('button', { name: 'Ask Vigil' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Ask AutoSecOps' }))
     expect(screen.getByText('Using this page')).toBeInTheDocument()
     expect(document.querySelector('.cx-pill')).toHaveTextContent('Dashboard')
     expect(screen.queryByTitle('Chat settings')).toBeNull()
@@ -932,8 +932,8 @@ describe('SocConsole', () => {
     } as unknown as Response)
 
     renderConsole()
-    fireEvent.click(screen.getByRole('button', { name: 'Ask Vigil' }))
-    fireEvent.change(screen.getByPlaceholderText('Ask Vigil · @ to attach a case'), { target: { value: 'hi' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Ask AutoSecOps' }))
+    fireEvent.change(screen.getByPlaceholderText('Ask AutoSecOps · @ to attach a case'), { target: { value: 'hi' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
     // waitFor re-queries each poll, so it settles on the final message node and
@@ -1204,7 +1204,7 @@ describe('SocConsole', () => {
   describe('console tour', () => {
     const NAV_TITLE = 'Pages are grouped by what you are doing'
     const ATTENTION_TITLE = 'Decisions wait here'
-    const ASK_TITLE = 'Ask Vigil anywhere'
+    const ASK_TITLE = 'Ask AutoSecOps anywhere'
     let rectSpy: { mockRestore: () => void }
 
     beforeEach(() => {
@@ -1259,7 +1259,7 @@ describe('SocConsole', () => {
       expect(document.querySelector('.console-tour-card')).toHaveStyle({ top: '72px' })
     })
 
-    it('walks Home then Ask Vigil, and Done writes the seen flag', async () => {
+    it('walks Home then Ask AutoSecOps, and Done writes the seen flag', async () => {
       renderConsole('/cases')
       fireEvent.click(screen.getByRole('button', { name: 'Next' }))
       expect(screen.getByTestId('console-location')).toHaveAttribute('data-path', '/home')
@@ -1278,7 +1278,7 @@ describe('SocConsole', () => {
       expect(ask).toHaveAttribute('data-stop', 'ask')
       expect(ask).toHaveStyle({ top: '13px', left: '600px', width: '92px', height: '26px' })
       expect(document.querySelector('.console-tour-card')).toHaveStyle({ top: '60px', left: '600px' })
-      expect(document.querySelector('.vg-command-ask')).toHaveAccessibleName('Ask Vigil')
+      expect(document.querySelector('.vg-command-ask')).toHaveAccessibleName('Ask AutoSecOps')
       expect(document.querySelector('.chat-fab')).not.toBeInTheDocument()
 
       fireEvent.click(screen.getByRole('button', { name: 'Done' }))
@@ -1290,18 +1290,18 @@ describe('SocConsole', () => {
       renderConsole('/overview')
       await screen.findByRole('button', { name: 'Full screen' })
       // Tab in the command bar opens the dock.
-      const bar = screen.getByRole('combobox', { name: 'Find a case, ask Vigil, or run a command' })
+      const bar = screen.getByRole('combobox', { name: 'Find a case, ask AutoSecOps, or run a command' })
       fireEvent.change(bar, { target: { value: 'hello' } })
       fireEvent.keyDown(bar, { key: 'Tab' })
-      expect(screen.getByRole('dialog', { name: 'Ask Vigil' })).toBeInTheDocument()
+      expect(screen.getByRole('dialog', { name: 'Ask AutoSecOps' })).toBeInTheDocument()
       fireEvent.click(screen.getByRole('button', { name: 'Full screen' }))
 
       fireEvent.click(screen.getByRole('button', { name: 'Next' }))
       expect(await screen.findByRole('dialog', { name: ATTENTION_TITLE })).toBeInTheDocument()
       fireEvent.click(screen.getByRole('button', { name: 'Next' }))
       expect(screen.getByRole('navigation', { name: 'Primary' })).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'Ask Vigil' })).toHaveClass('vg-command-ask')
-      expect(screen.queryByRole('dialog', { name: 'Ask Vigil' })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Ask AutoSecOps' })).toHaveClass('vg-command-ask')
+      expect(screen.queryByRole('dialog', { name: 'Ask AutoSecOps' })).not.toBeInTheDocument()
       expect(document.querySelector('.console-tour-ring')).toHaveAttribute('data-stop', 'ask')
     })
 

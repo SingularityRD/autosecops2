@@ -9,7 +9,7 @@ import './overview.css'
 
 const CONNECT_DATA = '/settings?section=data'
 const EMPTY_TEXT =
-  'Nothing is connected yet. Connect a source on the left and its alerts flow through the Vigil engine to the outcomes on the right.'
+  'Nothing is connected yet. Connect a source on the left and its alerts flow through the AutoSecOps engine to the outcomes on the right.'
 const MAX_SOURCES = 7
 const MIN_W = 640
 const SRC_DOT_X = 206
@@ -192,9 +192,9 @@ export default function FlowDiagram({ data, wall, onToggleWall }: Props) {
   const leave = () => setHover(null)
 
   return (
-    <section className="ov-flow" aria-label="How alerts flow through Vigil">
+    <section className="ov-flow" aria-label="How alerts flow through AutoSecOps">
       <div className="ov-flow-h">
-        <h2>How alerts flow through Vigil</h2>
+        <h2>How alerts flow through AutoSecOps</h2>
         {!empty && (
           <InfoTip
             align="start"
@@ -315,7 +315,7 @@ export default function FlowDiagram({ data, wall, onToggleWall }: Props) {
             </div>
           )}
           <div className="ov-engine-label" style={{ left: cx - 92, top: cy + 96 }}>
-            <b>Vigil engine</b>
+            <b>AutoSecOps engine</b>
             {empty && <span>Waiting for data</span>}
           </div>
 

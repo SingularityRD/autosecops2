@@ -93,7 +93,7 @@ export function baseFindingColumns(
       render: (f) => (
         <span className="row-act">
           <button title="View" onClick={(e) => { e.stopPropagation(); onView(f) }}><Icon name="eye" /></button>
-          <button title="Investigate with Vigil" onClick={(e) => { e.stopPropagation(); onInvestigate(f) }}><Icon name="brain" /></button>
+          <button title="Investigate with AutoSecOps" onClick={(e) => { e.stopPropagation(); onInvestigate(f) }}><Icon name="brain" /></button>
         </span>
       ),
     },

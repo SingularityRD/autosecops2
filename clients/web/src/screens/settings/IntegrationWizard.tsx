@@ -339,7 +339,7 @@ function VerifyStep({ probe, onRun }: { probe: Probe; onRun: () => void }) {
     </div>
   )
   const note = (text: string) => <p className="text-[13px] text-tx-2 leading-[1.5]">{text}</p>
-  if (probe.state === 'idle') return <>{note('Vigil connects to each server behind this integration with the saved settings, then reads from the service with the saved URL and credentials.')}{again}</>
+  if (probe.state === 'idle') return <>{note('AutoSecOps connects to each server behind this integration with the saved settings, then reads from the service with the saved URL and credentials.')}{again}</>
   if (probe.state === 'running') return <p className="text-[13px] text-tx-3" role="status">Running the test…</p>
   if (probe.state === 'error') {
     return (
@@ -352,11 +352,11 @@ function VerifyStep({ probe, onRun }: { probe: Probe; onRun: () => void }) {
     )
   }
   const { result } = probe
-  if (result.reason === 'not_testable') return note('This integration has no server Vigil can test.')
+  if (result.reason === 'not_testable') return note('This integration has no server AutoSecOps can test.')
   const servers = result.servers ?? []
   return (
     <>
-      {note('Vigil connects to each server behind this integration with the saved settings, then reads from the service with the saved URL and credentials.')}
+      {note('AutoSecOps connects to each server behind this integration with the saved settings, then reads from the service with the saved URL and credentials.')}
       {servers.length === 0 && <Banner kind="err">{result.message || 'Nothing was tested.'}</Banner>}
       {servers.map((sv) => (
         <div key={sv.name} className={`int-probe ${sv.success ? 'pass' : 'fail'}`}>

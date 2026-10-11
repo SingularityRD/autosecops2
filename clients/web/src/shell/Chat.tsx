@@ -169,7 +169,7 @@ async function refusalOf(res: Response): Promise<string> {
   } catch {
     /* no body */
   }
-  return `Vigil refused the request (HTTP ${res.status})`
+  return `AutoSecOps refused the request (HTTP ${res.status})`
 }
 
 interface CaseHit {
@@ -616,7 +616,7 @@ export default function Chat({
       if (currentKeyRef.current && curText) {
         const summary = curText.replace(/[#*`_>[\]]/g, '').replace(/\s+/g, ' ').trim().slice(0, 140)
         notificationService.notifyInvestigationComplete({
-          title: 'Vigil',
+          title: 'AutoSecOps',
           summary: summary || 'Analysis complete',
         })
       }
@@ -632,7 +632,7 @@ export default function Chat({
       if (err?.name !== 'AbortError' && gen === turnGen.current) {
         // A reason the server sent is shown as is; only a failure to reach it blames the backend.
         const why = err?.message || String(e)
-        const text = reached || e instanceof ServerRefusal ? why : `Could not reach Vigil: ${why}. Is the backend running?`
+        const text = reached || e instanceof ServerRefusal ? why : `Could not reach AutoSecOps: ${why}. Is the backend running?`
         setMessages((m) => {
           const next: ChatMsg[] = [...m, { role: 'error', text }]
           messagesRef.current = next
@@ -960,7 +960,7 @@ export default function Chat({
       )}
       {messages.length === 0 && !loading && (
         pinned ? (
-          <div className="chat-empty">Ask Vigil to investigate a finding, correlate activity, or summarize a case.</div>
+          <div className="chat-empty">Ask AutoSecOps to investigate a finding, correlate activity, or summarize a case.</div>
         ) : (
           <div className="chat-empty dock">
             <div className="ce-head">
@@ -998,7 +998,7 @@ export default function Chat({
                 <Icon name="sparkle" size={14} className="vs-spark" />
               )}
               <span className="vs-label">
-                {isProcessingTools ? 'Vigil is running tools' : streamText ? 'Vigil is responding' : 'Vigil is working on it'}
+                {isProcessingTools ? 'AutoSecOps is running tools' : streamText ? 'AutoSecOps is responding' : 'AutoSecOps is working on it'}
                 …
               </span>
             </div>
@@ -1052,8 +1052,8 @@ export default function Chat({
         <textarea
           ref={taRef}
           rows={1}
-          placeholder={lockedCaseId ? 'Ask about this case' : 'Ask Vigil · @ to attach a case'}
-          aria-label={lockedCaseId ? 'Ask about this case' : 'Ask Vigil'}
+          placeholder={lockedCaseId ? 'Ask about this case' : 'Ask AutoSecOps · @ to attach a case'}
+          aria-label={lockedCaseId ? 'Ask about this case' : 'Ask AutoSecOps'}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
@@ -1228,7 +1228,7 @@ export default function Chat({
   return (
     <>
     {pinned ? (
-      <section className="case-composer" aria-label="Ask Vigil">
+      <section className="case-composer" aria-label="Ask AutoSecOps">
         {messages.length > 0 && (
           <button type="button" className="composer-fold" aria-expanded={threadOpen} onClick={() => setThreadOpen((openThread) => !openThread)}>
             <span className="composer-chev" aria-hidden="true">▾</span>
@@ -1250,13 +1250,13 @@ export default function Chat({
       ref={panelRef}
       className={`chat${open ? ' open' : ''}`}
       role="dialog"
-      aria-label="Ask Vigil"
+      aria-label="Ask AutoSecOps"
       aria-hidden={!open}
       onKeyDown={onPanelKeyDown}
     >
       <div className="chat-head">
         <span className="ch-ico"><VigilMark /></span>
-        <h3 className="ch-title">Ask Vigil</h3>
+        <h3 className="ch-title">Ask AutoSecOps</h3>
         <span className="ch-convo" title={convoTitle}>{convoTitle}</span>
         <div className="hbtns">
           <button
@@ -1283,7 +1283,7 @@ export default function Chat({
           >
             <Icon name="plus" />
           </button>
-          <button type="button" title="Close Ask Vigil" aria-label="Close Ask Vigil" onClick={onClose}><Icon name="close" /></button>
+          <button type="button" title="Close Ask AutoSecOps" aria-label="Close Ask AutoSecOps" onClick={onClose}><Icon name="close" /></button>
         </div>
       </div>
       {historyOpen ? (

@@ -6,7 +6,7 @@ export const FALLBACK_KEY = 'fallback_model_id'
 
 export const COMPONENT_LABELS: Record<string, { label: string; description: string }> = {
   chat_default: {
-    label: 'Chat (Ask Vigil)',
+    label: 'Chat (Ask AutoSecOps)',
     description: 'Default for chat and anything not set below',
   },
   triage: {
@@ -28,4 +28,4 @@ export const COMPONENT_LABELS: Record<string, { label: string; description: stri
 }
 
 export const AI_CONFIG_DESC =
-  'Which models Vigil uses, for which agent, and what happens when one is unavailable. Keys are stored encrypted and never shown again.'
+  'Which models AutoSecOps uses, for which agent, and what happens when one is unavailable. Keys are stored encrypted and never shown again.'

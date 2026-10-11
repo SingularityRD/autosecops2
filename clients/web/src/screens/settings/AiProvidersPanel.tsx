@@ -515,7 +515,7 @@ export function KeyDialog({
                 hint={
                   storedToken
                     ? 'Leave blank to keep the stored token.'
-                    : 'Whatever the proxy in front of Ollama expects. Stored encrypted in Vigil’s secret store and pushed to the gateway.'
+                    : 'Whatever the proxy in front of Ollama expects. Stored encrypted in AutoSecOps’ secret store and pushed to the gateway.'
                 }
               >
                 <PasswordInput
@@ -591,7 +591,7 @@ export function KeyDialog({
                   hint={
                     existing
                       ? 'Leave blank to keep the stored service account — paste a new one only to rotate it.'
-                      : 'The service-account key file — the one whose "type" is "service_account". A gcloud application-default login file is also accepted, but it is your own login and stops working on your org’s reauth schedule. Stored encrypted in Vigil’s secret store and pushed to the gateway.'
+                      : 'The service-account key file — the one whose "type" is "service_account". A gcloud application-default login file is also accepted, but it is your own login and stops working on your org’s reauth schedule. Stored encrypted in AutoSecOps’ secret store and pushed to the gateway.'
                   }
                 >
                   <textarea
@@ -611,7 +611,7 @@ export function KeyDialog({
                 hint={
                   existing
                     ? 'Leave blank to keep the stored credential.'
-                    : 'Stored encrypted in Vigil’s secret store and pushed to the gateway.'
+                    : 'Stored encrypted in AutoSecOps’ secret store and pushed to the gateway.'
                 }
               >
                 <PasswordInput
@@ -629,7 +629,7 @@ export function KeyDialog({
             hint={
               existing
                 ? 'Leave blank to keep the stored credential — a key configured directly in Bifrost has none held here yet, and saving will ask for it.'
-                : 'Stored encrypted in Vigil’s secret store and pushed to the gateway.'
+                : 'Stored encrypted in AutoSecOps’ secret store and pushed to the gateway.'
             }
           >
             <PasswordInput

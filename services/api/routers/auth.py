@@ -835,7 +835,7 @@ def password_reset_request(
             # Fall back to a raw token so a dev console backend still shows
             # something actionable when VIGIL_FRONTEND_URL isn't set.
             reset_link = f"(token) {token}"
-        subject = "Vigil SOC — password reset"
+        subject = "AutoSecOps — password reset"
         body_text = (
             f"Hello {user.full_name or user.username},\n\n"
             "A password reset was requested for this account. Use the link "

@@ -122,7 +122,7 @@ function CommandsTab() {
   return (
     <div className="px-[22px] py-5 flex flex-col gap-3">
       <span className="text-xs leading-[1.45] text-[var(--tx2)]">
-        Type a command in search or in Ask Vigil. Each command runs a workflow or an action; anything that changes something still asks you.
+        Type a command in search or in Ask AutoSecOps. Each command runs a workflow or an action; anything that changes something still asks you.
       </span>
       <div role="table" aria-label="Commands" className="bg-[var(--bg1)] border border-[var(--ln0)] rounded-[14px] overflow-hidden">
         <div role="row" className={`${CMD_GRID} py-[11px] text-[11px] font-bold text-[var(--tx2)]`}>
@@ -292,7 +292,7 @@ function WorkflowCatalog({ feed, onCreate, goSettings }: { feed: Feed<Workflow>;
             ))}
             <div className="wfk-new">
               <span className="text-[13px] font-semibold leading-[1.35] text-tx">Start from a description</span>
-              <span className="text-[12px] leading-[1.45] text-tx-2">Describe how your team works a case and Vigil drafts the workflow for you to edit.</span>
+              <span className="text-[12px] leading-[1.45] text-tx-2">Describe how your team works a case and AutoSecOps drafts the workflow for you to edit.</span>
               <button className="btn ghost wfk-btn self-start" onClick={onCreate}><Icon name="sparkle" /> Generate with AI</button>
             </div>
           </div>

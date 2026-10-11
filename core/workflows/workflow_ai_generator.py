@@ -100,7 +100,7 @@ class WorkflowAIGenerator:
 
     def _build_system_prompt(self) -> str:
         return (
-            "You are a SOC workflow designer for the Vigil SOC platform. "
+            "You are a SOC workflow designer for the AutoSecOps platform. "
             "Given a plain-English scenario, design a multi-phase agent workflow "
             "that uses only the agents and tools listed in the user message. "
             "Return STRICT JSON only \u2014 no prose, no markdown, no code fences."

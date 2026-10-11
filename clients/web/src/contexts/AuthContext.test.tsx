@@ -58,7 +58,7 @@ describe('AuthProvider /auth/me handling', () => {
   ])('shows the unreachable state on %s without leaving the page', async (_name, err) => {
     get.mockRejectedValueOnce(err)
     renderAt('/cases')
-    expect(await screen.findByText("Can't reach Vigil")).toBeInTheDocument()
+    expect(await screen.findByText("Can't reach AutoSecOps")).toBeInTheDocument()
     expect(screen.getByTestId('path')).toHaveTextContent('/cases')
     expect(screen.queryByText('login screen')).not.toBeInTheDocument()
   })

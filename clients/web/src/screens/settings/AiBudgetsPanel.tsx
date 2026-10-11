@@ -91,7 +91,7 @@ export default function AiBudgetsPanel({ notify }: SectionProps) {
     <div className="max-w-[560px]">
       <Field
         label="Virtual key (sk-bf-…)"
-        hint="Bifrost shows a key's secret only once, at creation. Paste it here to point Vigil at a key made earlier."
+        hint="Bifrost shows a key's secret only once, at creation. Paste it here to point AutoSecOps at a key made earlier."
       >
         <div className="flex items-center gap-2.5">
           <div className="grow">
@@ -179,11 +179,11 @@ export default function AiBudgetsPanel({ notify }: SectionProps) {
             <EmptyState
               compact
               icon="sparkle"
-              title={quota?.configured ? 'Vigil’s key can’t be edited here' : 'No spending limit yet'}
+              title={quota?.configured ? 'AutoSecOps’ key can’t be edited here' : 'No spending limit yet'}
               body={
                 quota?.configured
-                  ? 'Bifrost doesn’t list this key’s secret, so Vigil can’t tell which one it is. Paste its secret below, or create a new key.'
-                  : quota?.message || 'No key configured — calls run unmetered. Create a key with a ceiling and Vigil will send it on every call.'
+                  ? 'Bifrost doesn’t list this key’s secret, so AutoSecOps can’t tell which one it is. Paste its secret below, or create a new key.'
+                  : quota?.message || 'No key configured — calls run unmetered. Create a key with a ceiling and AutoSecOps will send it on every call.'
               }
               primary={{ label: 'New key', onClick: () => setCreating(true), icon: 'plus' }}
             />
@@ -201,9 +201,9 @@ export default function AiBudgetsPanel({ notify }: SectionProps) {
             // The secret is shown once and never again, so it is put to use in
             // the same breath rather than left for the operator to copy out.
             if (saved?.value && !isMasked(saved.value)) {
-              if (await persistVigilSide(saved.value)) notify('ok', `Created ${saved.name} and pointed Vigil at it.`)
+              if (await persistVigilSide(saved.value)) notify('ok', `Created ${saved.name} and pointed AutoSecOps at it.`)
             } else {
-              notify('ok', 'Virtual key created. Paste its secret to point Vigil at it.')
+              notify('ok', 'Virtual key created. Paste its secret to point AutoSecOps at it.')
             }
           }}
         />
@@ -355,7 +355,7 @@ function LimitForm({ vk, live, busy, onSave }: {
         title={confirming?.budget ? 'Raise the spend ceiling?' : 'Remove the spend ceiling?'}
         body={
           confirming?.budget
-            ? `This lets Vigil spend up to ${money(confirming.budget.max_limit)} per ${periodOf(confirming.budget.reset_duration)?.noun || 'period'} instead of ${money(stored?.max_limit || 0)} per ${noun || 'period'}.`
+            ? `This lets AutoSecOps spend up to ${money(confirming.budget.max_limit)} per ${periodOf(confirming.budget.reset_duration)?.noun || 'period'} instead of ${money(stored?.max_limit || 0)} per ${noun || 'period'}.`
             : 'With no ceiling, calls run unmetered and Bifrost will not stop a runaway agent.'
         }
         confirmLabel={confirming?.budget ? 'Raise ceiling' : 'Remove ceiling'}

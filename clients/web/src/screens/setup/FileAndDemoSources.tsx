@@ -102,7 +102,7 @@ export function DemoSource() {
           : []
 
   return (
-    <SettingsCard title="Try demo data" desc="The fastest way to see how Vigil works.">
+    <SettingsCard title="Try demo data" desc="The fastest way to see how AutoSecOps works.">
       <div className="flex flex-col gap-3.5">
         <div className="su-actions">
           <button type="button" className="btn ghost test" disabled={phase === 'busy'} onClick={turnOn}>

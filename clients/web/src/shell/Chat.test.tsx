@@ -90,16 +90,16 @@ function replyStream(text: string): Response {
   } as unknown as Response
 }
 
-describe('Ask Vigil dock', () => {
-  it('has an Ask Vigil header with history, new conversation and close only', () => {
+describe('Ask AutoSecOps dock', () => {
+  it('has an Ask AutoSecOps header with history, new conversation and close only', () => {
     renderChat()
-    const dialog = screen.getByRole('dialog', { name: 'Ask Vigil' })
+    const dialog = screen.getByRole('dialog', { name: 'Ask AutoSecOps' })
     const head = dialog.querySelector('.chat-head') as HTMLElement
-    expect(within(head).getByRole('heading', { name: 'Ask Vigil' })).toBeInTheDocument()
+    expect(within(head).getByRole('heading', { name: 'Ask AutoSecOps' })).toBeInTheDocument()
     expect(within(head).getAllByRole('button').map((b) => b.getAttribute('aria-label'))).toEqual([
       'Conversation history',
       'New conversation',
-      'Close Ask Vigil',
+      'Close Ask AutoSecOps',
     ])
     expect(screen.queryByTitle('SOC Agents')).toBeNull()
     expect(within(head).getByText('New conversation', { selector: '.ch-convo' })).toBeInTheDocument()
@@ -116,7 +116,7 @@ describe('Ask Vigil dock', () => {
 
   it('puts @ in the draft from the @ button and prompts for a case', async () => {
     renderChat()
-    const box = screen.getByPlaceholderText(/Ask Vigil/) as HTMLTextAreaElement
+    const box = screen.getByPlaceholderText(/Ask AutoSecOps/) as HTMLTextAreaElement
     fireEvent.change(box, { target: { value: 'look at' } })
     fireEvent.click(screen.getByRole('button', { name: 'Mention a case' }))
     expect(box.value).toBe('look at @')
@@ -154,8 +154,8 @@ describe('Ask Vigil dock', () => {
     vi.mocked(streamFetch).mockResolvedValue(emptyStream())
 
     renderChat()
-    const box = screen.getByPlaceholderText(/Ask Vigil/)
-    expect(box).toHaveAttribute('placeholder', 'Ask Vigil · @ to attach a case')
+    const box = screen.getByPlaceholderText(/Ask AutoSecOps/)
+    expect(box).toHaveAttribute('placeholder', 'Ask AutoSecOps · @ to attach a case')
     fireEvent.change(box, { target: { value: '@loader' } })
     fireEvent.click(await screen.findByRole('option', { name: /CASE-9/ }))
 
@@ -193,7 +193,7 @@ describe('Ask Vigil dock', () => {
     } as unknown as Response)
 
     renderChat()
-    const box = screen.getByPlaceholderText(/Ask Vigil/)
+    const box = screen.getByPlaceholderText(/Ask AutoSecOps/)
     fireEvent.change(box, { target: { value: 'hello' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await screen.findByTitle('Stop')
@@ -235,11 +235,11 @@ describe('Ask Vigil dock', () => {
     expect(screen.getByText('Case CASE-9')).toBeInTheDocument()
     expect(screen.getByText('Triage queue')).toBeInTheDocument()
     expect(screen.getByText('General')).toBeInTheDocument()
-    expect(screen.queryByPlaceholderText(/Ask Vigil/)).toBeNull()
+    expect(screen.queryByPlaceholderText(/Ask AutoSecOps/)).toBeNull()
 
     fireEvent.click(screen.getByText('Monday thread'))
     await waitFor(() => expect(conversationsApi.get).toHaveBeenCalledWith('newer'))
-    await screen.findByPlaceholderText(/Ask Vigil/)
+    await screen.findByPlaceholderText(/Ask AutoSecOps/)
     expect(screen.getByText('Monday thread', { selector: '.ch-convo' })).toBeInTheDocument()
   })
 
@@ -251,7 +251,7 @@ describe('Ask Vigil dock', () => {
     expect(screen.getByText('No conversations match.')).toBeInTheDocument()
 
     fireEvent.keyDown(document, { key: 'Escape' })
-    expect(screen.getByPlaceholderText(/Ask Vigil/)).toBeInTheDocument()
+    expect(screen.getByPlaceholderText(/Ask AutoSecOps/)).toBeInTheDocument()
     expect(onClose).not.toHaveBeenCalled()
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledTimes(1)
@@ -260,7 +260,7 @@ describe('Ask Vigil dock', () => {
   it('clears the transcript on New conversation', async () => {
     vi.mocked(streamFetch).mockResolvedValue(replyStream('All quiet.'))
     renderChat()
-    fireEvent.change(screen.getByPlaceholderText(/Ask Vigil/), { target: { value: 'status?' } })
+    fireEvent.change(screen.getByPlaceholderText(/Ask AutoSecOps/), { target: { value: 'status?' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     // the Reasoning trace button marks the settled reply, not the streaming one
     await screen.findByTitle('Reasoning trace', {}, { timeout: 5000 })
@@ -306,10 +306,10 @@ describe('pinned case composer', () => {
     await screen.findByTitle('Stop')
 
     fail(new Error('boom'))
-    expect(await screen.findByText(/Could not reach Vigil: boom/)).toBeInTheDocument()
+    expect(await screen.findByText(/Could not reach AutoSecOps: boom/)).toBeInTheDocument()
     const fold = screen.getByRole('button', { name: /2 messages · hide/ })
     fireEvent.click(fold)
-    expect(screen.queryByText(/Could not reach Vigil/)).toBeNull()
+    expect(screen.queryByText(/Could not reach AutoSecOps/)).toBeNull()
     expect(fold).toHaveTextContent('2 messages · show')
   })
 
@@ -334,7 +334,7 @@ describe('pinned case composer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
     expect(await screen.findByText('This case has more than Ask can read at once.')).toBeInTheDocument()
-    expect(screen.queryByText(/Could not reach Vigil|Is the backend running/)).toBeNull()
+    expect(screen.queryByText(/Could not reach AutoSecOps|Is the backend running/)).toBeNull()
   })
 })
 
@@ -355,7 +355,7 @@ describe('failed case-composer turns', () => {
     renderPinned()
     ask('why?')
     expect(await screen.findByText('Daily budget reached.')).toBeInTheDocument()
-    expect(screen.queryByText(/Could not reach Vigil/)).toBeNull()
+    expect(screen.queryByText(/Could not reach AutoSecOps/)).toBeNull()
 
     vi.mocked(streamFetch).mockResolvedValueOnce(emptyStream())
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
@@ -368,7 +368,7 @@ describe('failed case-composer turns', () => {
     vi.mocked(streamFetch).mockResolvedValueOnce(refused(503, {}))
     renderPinned()
     ask('why?')
-    expect(await screen.findByText(/Could not reach Vigil: HTTP 503\. Is the backend running\?/)).toBeInTheDocument()
+    expect(await screen.findByText(/Could not reach AutoSecOps: HTTP 503\. Is the backend running\?/)).toBeInTheDocument()
   })
 
   it('does not send an unanswered question with the next one', async () => {
@@ -445,7 +445,7 @@ describe('reasoning trace cost', () => {
     vi.mocked(streamFetch).mockResolvedValue(replyStream('All quiet.'))
 
     renderChat()
-    fireEvent.change(screen.getByPlaceholderText(/Ask Vigil/), { target: { value: 'status?' } })
+    fireEvent.change(screen.getByPlaceholderText(/Ask AutoSecOps/), { target: { value: 'status?' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     fireEvent.click(await screen.findByTitle('Reasoning trace', {}, { timeout: 5000 }))
 

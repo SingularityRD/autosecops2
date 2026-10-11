@@ -196,7 +196,7 @@ export default function SystemChecksStep() {
     <>
       <SettingsCard
         title="System checks"
-        desc="Vigil checked this server before you start."
+        desc="AutoSecOps checked this server before you start."
         actions={
           <button className="btn ghost" onClick={() => setNonce((n) => n + 1)}>
             <Icon name="refresh" size={14} /> Check again

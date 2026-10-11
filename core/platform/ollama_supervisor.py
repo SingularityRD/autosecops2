@@ -139,7 +139,7 @@ def status(spec: ServiceSpec) -> ServiceStatus:
     running = ollama_ping(base_url())
     if running:
         state = (
-            "running (started by Vigil)"
+            "running (started by AutoSecOps)"
             if _managed_by_vigil()
             else "running (external)"
         )
@@ -182,7 +182,7 @@ def start(
         return ActionResult(
             False,
             "Ollama binary not found. Install it with `brew install ollama` — "
-            "Vigil runs Ollama natively (a container would be CPU-only on macOS) "
+            "AutoSecOps runs Ollama natively (a container would be CPU-only on macOS) "
             "and will not fall back to Docker.",
             code="not_installed",
         )

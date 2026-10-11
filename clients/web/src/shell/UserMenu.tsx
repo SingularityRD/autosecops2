@@ -8,7 +8,7 @@ import { useColorScheme } from '../contexts/ColorSchemeContext'
 
 const FEEDBACK_BASE =
   import.meta.env.VITE_FEEDBACK_URL ||
-  'https://github.com/Vigil-SOC/vigil/issues/new?labels=console-feedback'
+  'https://github.com/SingularityRD/autosecops2/issues/new?labels=console-feedback'
 
 export function feedbackHref(screen: string, version: string): string {
   const url = new URL(FEEDBACK_BASE)
@@ -136,7 +136,7 @@ export default function UserMenu({
         <a role="menuitem" href={feedbackHref(current, version)} target="_blank" rel="noreferrer">
           <Icon name="note" size={15} />
           Share feedback
-          <span className="user-pop-note">About Vigil{version ? ` · ${version}` : ''}</span>
+          <span className="user-pop-note">About AutoSecOps{version ? ` · ${version}` : ''}</span>
         </a>
         <button role="menuitem" onClick={() => setScheme(scheme === 'dark' ? 'light' : 'dark')}>
           <Icon name={scheme === 'dark' ? 'sun' : 'moon'} size={15} />

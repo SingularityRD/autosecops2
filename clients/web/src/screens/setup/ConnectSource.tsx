@@ -119,7 +119,7 @@ export default function ConnectSource({
   return (
     <SettingsCard
       title={`Connect ${integration.name}`}
-      desc="Vigil reads alerts only. Tools that change something are granted separately, and always ask first."
+      desc="AutoSecOps reads alerts only. Tools that change something are granted separately, and always ask first."
       actions={
         integration.docs_url && (
           <a className="btn ghost" href={integration.docs_url} target="_blank" rel="noreferrer">

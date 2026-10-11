@@ -61,7 +61,7 @@ function mockQueue(items: NeedsYouItem[]) {
 
 const doneSteps = [
   { id: 'connect_tools', title: 'Connect more tools', state_line: '1 of 2 integrations connected', done: true, href: '/settings?section=integrations' },
-  { id: 'notify', title: 'Where Vigil pings you', state_line: 'Slack or PagerDuty route is set', done: true, href: '/settings?section=integrations' },
+  { id: 'notify', title: 'Where AutoSecOps pings you', state_line: 'Slack or PagerDuty route is set', done: true, href: '/settings?section=integrations' },
   { id: 'rules', title: 'Link detection rules', state_line: 'Detection rules are on disk', done: true, href: '/settings?section=data&tab=detection' },
   { id: 'per_agent', title: 'Pick a model per agent', state_line: 'Agents use more than one model', done: true, href: '/settings?section=ai-config&tab=assignment' },
 ]
@@ -204,7 +204,7 @@ describe('Home', () => {
     expect(await screen.findByText('Board clear.')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Needs your attention' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Cases →' })).toHaveAttribute('href', '/cases')
-    expect(screen.getByRole('heading', { name: 'Get more from Vigil' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Get more from AutoSecOps' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Browse integrations →' })).toHaveAttribute(
       'href',
       '/settings?section=integrations',
@@ -241,7 +241,7 @@ describe('Home', () => {
     expect(screen.queryByRole('heading', { name: 'Board clear' })).not.toBeInTheDocument()
   })
 
-  it('hides a step for this tab when alerts exist, and keeps Get more from Vigil', async () => {
+  it('hides a step for this tab when alerts exist, and keeps Get more from AutoSecOps', async () => {
     vi.mocked(approvalsApi.needsYou).mockResolvedValue({ data: { count: 0, items: [] } } as never)
     vi.mocked(configApi.getSetupSteps).mockResolvedValue({
       data: {
@@ -288,7 +288,7 @@ describe('Home', () => {
       'repeat(3, minmax(0, 1fr))',
     )
     expect(screen.getByText('Fixed order · most impact first')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'How Get more from Vigil is calculated' }))
+    fireEvent.click(screen.getByRole('button', { name: 'How Get more from AutoSecOps is calculated' }))
     expect(screen.getByRole('tooltip')).toHaveTextContent('Source Setup steps (B8)')
 
     fireEvent.click(within(rows()[0]).getByRole('button', { name: 'Not now' }))
@@ -300,7 +300,7 @@ describe('Home', () => {
   })
 
   it('serves the custom skill step as a fifth card whose Add opens the Skills tab, and counts it on first run', async () => {
-    const skill = { id: 'custom_skill', title: 'Add a custom skill', state_line: 'Teach Vigil your team’s playbooks', done: false, href: '/workflows?tab=skills' }
+    const skill = { id: 'custom_skill', title: 'Add a custom skill', state_line: 'Teach AutoSecOps your team’s playbooks', done: false, href: '/workflows?tab=skills' }
     vi.mocked(approvalsApi.needsYou).mockResolvedValue({ data: { count: 0, items: [] } } as never)
     vi.mocked(configApi.getSetupSteps).mockResolvedValue({
       data: { steps: [...doneSteps.map((step) => ({ ...step, done: false })), skill], alerts_exist: 5, demo_enabled: false },
@@ -331,12 +331,12 @@ describe('Home', () => {
       data: { steps: doneSteps, alerts_exist: 0, demo_enabled: false },
     } as never)
     renderHome()
-    await screen.findByText('Get Vigil ready')
+    await screen.findByText('Get AutoSecOps ready')
     const needs = screen.getByRole('region', { name: 'Needs your attention' })
     expect(within(needs).getByText('No alerts yet')).toBeInTheDocument()
     expect(within(needs).queryByText(/open · oldest first/)).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Board clear' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Get more from Vigil' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Get more from AutoSecOps' })).not.toBeInTheDocument()
     expect(screen.queryByText('Nothing to suggest right now.')).not.toBeInTheDocument()
   })
 
@@ -404,13 +404,13 @@ describe('Home', () => {
     renderHome()
 
     expect(await screen.findByText('1 of 3 done')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Get Vigil ready' })).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Get more from Vigil' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Get AutoSecOps ready' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Get more from AutoSecOps' })).not.toBeInTheDocument()
     const rows = within(screen.getByRole('list', { name: 'Setup steps' })).getAllByRole('listitem')
     expect(rows.map((row) => row.querySelector('h3')?.textContent)).toEqual([
       'Connect more tools',
       'Link detection rules',
-      'Where Vigil pings you (done)',
+      'Where AutoSecOps pings you (done)',
     ])
     expect(rows[2]).toHaveClass('done')
     expect(rows[0]).not.toHaveClass('done')
@@ -442,7 +442,7 @@ describe('Home', () => {
     const rows = within(screen.getByRole('list', { name: 'Setup steps' })).getAllByRole('listitem')
     const actions = rows.map((row) => row.querySelector('a') as HTMLElement)
     expect(rows.map((row) => row.querySelector('h3')?.textContent)).toEqual([
-      'Where Vigil pings you',
+      'Where AutoSecOps pings you',
       'Link detection rules',
       'Connect more tools (done)',
       'Pick a model per agent (done)',

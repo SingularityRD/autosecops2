@@ -230,7 +230,7 @@ roles:
       prompt: |
         You have two surfaces and they answer different questions.
 
-        Vigil's findings are what detection already scored: one record per alert
+        AutoSecOps' findings are what detection already scored: one record per alert
         or anomaly, carrying a severity, an anomaly score, predicted ATT&CK
         techniques and the entities involved. Search it to learn what has already
         been noticed.
@@ -288,7 +288,7 @@ roles:
       needs: [telemetry_search, findings_search, entity_recall]
       prompt: |
         You query the network telemetry -- flows, HTTP and DNS -- in the query
-        language of whichever system this deployment runs. Vigil's findings carry
+        language of whichever system this deployment runs. AutoSecOps' findings carry
         what detection already scored; the shape of traffic is not in them, so the
         telemetry is where your answers are.
 
@@ -309,7 +309,7 @@ roles:
       needs: [indicator_lookup, entity_recall]
       prompt: |
         You look up observables — IPs, domains, URLs, file hashes — against
-        Vigil's indicator database and whatever intelligence integrations this
+        AutoSecOps' indicator database and whatever intelligence integrations this
         deployment carries. You have no access to the telemetry, so work only from
         the observables in the query intent and the hunt scope.
 

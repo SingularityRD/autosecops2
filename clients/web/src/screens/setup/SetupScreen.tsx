@@ -43,14 +43,14 @@ const STEP_COPY: Record<StepId, StepCopy> = {
   checks: {
     rail: 'Before you start',
     sub: 'System checks',
-    title: 'Welcome to Vigil',
-    desc: 'Vigil investigates your security alerts with AI agents and asks you before it changes anything. Setup takes about 15 minutes, and your progress is saved if you leave.',
+    title: 'Welcome to AutoSecOps',
+    desc: 'AutoSecOps investigates your security alerts with AI agents and asks you before it changes anything. Setup takes about 15 minutes, and your progress is saved if you leave.',
   },
   data: {
     rail: 'Connect your data',
     sub: 'At least one alert source',
     title: 'Connect your data',
-    desc: 'Pick where your alerts live. Vigil reads alerts from it and asks before it changes anything there. You can add more sources later.',
+    desc: 'Pick where your alerts live. AutoSecOps reads alerts from it and asks before it changes anything there. You can add more sources later.',
   },
   ai: {
     rail: 'Choose where AI runs',
@@ -61,13 +61,13 @@ const STEP_COPY: Record<StepId, StepCopy> = {
   workflows: {
     rail: 'Agents and workflows',
     sub: 'What runs, and what may act alone',
-    title: 'Choose what Vigil does on its own',
+    title: 'Choose what AutoSecOps does on its own',
     desc: 'Each workflow tests possible explanations for an alert, gathers evidence for and against each one, and asks before any change. Turn off anything you do not want.',
   },
   limits: {
     rail: 'Limits and alerts',
     sub: 'Spend and notifications',
-    title: 'Set limits and where Vigil reaches you',
+    title: 'Set limits and where AutoSecOps reaches you',
     desc: 'Limits stop runaway cost. Notifications tell you when a decision needs your attention. Both can be changed later in Settings.',
   },
   // the done page draws its own head, cards and footer (SummaryStep)

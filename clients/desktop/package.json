@@ -1,8 +1,8 @@
 {
   "name": "vigil-desktop",
-  "productName": "Vigil",
+  "productName": "AutoSecOps",
   "version": "0.7.1",
-  "description": "Vigil SOC desktop shell — native launcher and window over the local stack.",
+  "description": "AutoSecOps desktop shell — native launcher and window over the local stack.",
   "license": "Apache-2.0",
   "main": "dist/main.js",
   "scripts": {
