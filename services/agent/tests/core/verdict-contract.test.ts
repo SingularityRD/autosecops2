@@ -15,6 +15,7 @@ import {
   parseVerdict,
   resolveAuthored,
   verdictFromModelOutput,
+  type Authored,
   type Verdict,
 } from "../../contracts/verdict.js";
 
@@ -23,6 +24,12 @@ const SCHEMA = JSON.parse(readFileSync(join(CONTRACTS, "verdict.schema.json"), "
 const CASES = JSON.parse(readFileSync(join(CONTRACTS, "verdict.cases.json"), "utf8")) as {
   base: Record<string, unknown>;
   cases: { name: string; valid: boolean; patch?: Record<string, unknown>; drop?: string[] }[];
+  provenance: { map: Record<string, Authored>; cases: { name: string; field: string; authored: Authored }[] };
+  assembly: {
+    provenance: Record<string, Authored>;
+    stamp: { model: string; prompt_version: string };
+    cases: { name: string; raw: unknown; ok: boolean; verdict?: string; authored?: Authored[]; gaps?: string[] }[];
+  };
 };
 
 const schemaValid = new Ajv2020({ allErrors: true, strict: true }).compile(SCHEMA);
@@ -57,11 +64,7 @@ describe("parseVerdict agrees with verdict.schema.json", () => {
   });
 });
 
-const PROVENANCE = {
-  "email.sender_ip": "sensor",
-  "email.headers": "adversary",
-  "intel.reputation": "third_party",
-} as const;
+const PROVENANCE = CASES.provenance.map;
 
 const benign = (cited: Verdict["cited_fields"]): Verdict => ({
   ...(CASES.base as unknown as Verdict),
@@ -69,14 +72,62 @@ const benign = (cited: Verdict["cited_fields"]): Verdict => ({
   cited_fields: cited,
 });
 
-describe("provenance is code's to say", () => {
-  it("resolves exact, then the longest dotted prefix, else adversary", () => {
-    expect(resolveAuthored("email.sender_ip", PROVENANCE)).toBe("sensor");
-    expect(resolveAuthored("email.headers.subject", PROVENANCE)).toBe("adversary");
-    expect(resolveAuthored("intel.reputation", PROVENANCE)).toBe("third_party");
-    expect(resolveAuthored("email.headersX", PROVENANCE)).toBe("adversary");
-    expect(resolveAuthored("made.up", PROVENANCE)).toBe("adversary");
+describe("resolveAuthored agrees with verdict.py (shared provenance cases)", () => {
+  it.each(CASES.provenance.cases.map((c) => [c.name, c] as const))("%s", (_name, c) => {
+    expect(resolveAuthored(c.field, PROVENANCE)).toBe(c.authored);
   });
+
+  it("covers children only through a .* key", () => {
+    expect(resolveAuthored("a.b", { a: "sensor" })).toBe("adversary");
+    expect(resolveAuthored("a.b", { "a.*": "sensor" })).toBe("sensor");
+    expect(resolveAuthored("email.headersX", PROVENANCE)).toBe("adversary");
+  });
+
+  it("throws on a malformed map", () => {
+    expect(() => resolveAuthored("x", { x: "model" as Authored })).toThrow();
+    expect(() => resolveAuthored("x.y", { "x.*": "model" as Authored })).toThrow();
+  });
+});
+
+describe("verdictFromModelOutput agrees with verdict.py (shared assembly cases)", () => {
+  const { provenance, stamp } = CASES.assembly;
+
+  it("has cases both ways", () => {
+    const ok = CASES.assembly.cases.filter((c) => c.ok).length;
+    expect(ok).toBeGreaterThanOrEqual(5);
+    expect(CASES.assembly.cases.length - ok).toBeGreaterThanOrEqual(5);
+  });
+
+  it.each(CASES.assembly.cases.map((c) => [c.name, c] as const))("%s", (_name, c) => {
+    const out = verdictFromModelOutput(structuredClone(c.raw), provenance, stamp);
+    expect(out.ok).toBe(c.ok);
+    if (!out.ok) return;
+    expect(out.verdict.verdict).toBe(c.verdict);
+    expect(out.verdict.cited_fields.map((f) => f.authored)).toEqual(c.authored);
+    expect(out.verdict.gaps).toEqual(c.gaps);
+    expect([out.verdict.model, out.verdict.prompt_version]).toEqual([stamp.model, stamp.prompt_version]);
+    expect(schemaValid(out.verdict)).toBe(true);
+  });
+
+  it("returns an error, never throws, for what JSON cannot express", () => {
+    const base = { verdict: "benign", confidence: 0.8, category: "phishing" };
+    // eslint-disable-next-line no-sparse-arrays
+    const holes = [[, "email.sender_ip"], ["email.sender_ip", ,]];
+    for (const cited_fields of holes) expect(verdictFromModelOutput({ ...base, cited_fields }, provenance, stamp).ok).toBe(false);
+    // eslint-disable-next-line no-sparse-arrays
+    expect(verdictFromModelOutput({ ...base, cited_fields: [], gaps: [, "x"] }, provenance, stamp).ok).toBe(false);
+    for (const raw of [undefined, null, 1, () => 1]) expect(verdictFromModelOutput(raw, provenance, stamp).ok).toBe(false);
+  });
+
+  it("parseVerdict refuses holes", () => {
+    // eslint-disable-next-line no-sparse-arrays
+    expect(parseVerdict({ ...CASES.base, gaps: [, "x"] }).ok).toBe(false);
+    // eslint-disable-next-line no-sparse-arrays
+    expect(parseVerdict({ ...CASES.base, cited_fields: [, (CASES.base.cited_fields as unknown[])[0]] }).ok).toBe(false);
+  });
+});
+
+describe("provenance is code's to say", () => {
 
   it("downgrades benign without a sensor citation, once", () => {
     for (const cited of [[], [{ field: "a", authored: "adversary" }], [{ field: "b", authored: "third_party" }]] as const) {

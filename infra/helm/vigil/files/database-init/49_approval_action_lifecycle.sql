@@ -27,7 +27,9 @@
 --   reverse_of       on the row that undoes another: that row's action_id.
 --   before_state,    what the executor observed before and after the change.
 --   after_state      reverse restores before_state.
---   second_approver  the two-person rule's second approver, never approved_by.
+--   second_approver  the two-person rule's second approver: only set once
+--                    approved_by is, and never approved_by in any letter case
+--                    (usernames compare case-insensitively).
 -- Timestamps are TIMESTAMP (no zone) like the table's other timestamps.
 
 ALTER TABLE approval_actions ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP;
@@ -49,7 +51,10 @@ ALTER TABLE approval_actions
     DROP CONSTRAINT IF EXISTS approval_actions_second_approver_distinct;
 ALTER TABLE approval_actions
     ADD CONSTRAINT approval_actions_second_approver_distinct
-        CHECK (second_approver IS NULL OR second_approver IS DISTINCT FROM approved_by);
+        CHECK (
+            second_approver IS NULL
+            OR (approved_by IS NOT NULL AND lower(second_approver) <> lower(approved_by))
+        );
 
 ALTER TABLE approval_actions
     DROP CONSTRAINT IF EXISTS approval_actions_reverse_of_fkey;
@@ -75,4 +80,4 @@ COMMENT ON COLUMN approval_actions.reverse_of IS
 COMMENT ON COLUMN approval_actions.before_state IS
     'Target state the executor observed before acting; reverse restores it.';
 COMMENT ON COLUMN approval_actions.second_approver IS
-    'Second approver under the two-person rule; must differ from approved_by.';
+    'Second approver under the two-person rule; requires approved_by and must differ from it case-insensitively.';

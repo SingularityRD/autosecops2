@@ -683,7 +683,10 @@ def add_approval_action_lifecycle(conn):
             DROP CONSTRAINT IF EXISTS approval_actions_second_approver_distinct;
         ALTER TABLE approval_actions
             ADD CONSTRAINT approval_actions_second_approver_distinct
-                CHECK (second_approver IS NULL OR second_approver IS DISTINCT FROM approved_by);
+                CHECK (
+                    second_approver IS NULL
+                    OR (approved_by IS NOT NULL AND lower(second_approver) <> lower(approved_by))
+                );
         ALTER TABLE approval_actions
             DROP CONSTRAINT IF EXISTS approval_actions_reverse_of_fkey;
         ALTER TABLE approval_actions

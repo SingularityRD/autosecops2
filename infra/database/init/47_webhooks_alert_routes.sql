@@ -6,6 +6,9 @@
 --
 -- Signing secrets are never stored here. secret_ref names the secret in the
 -- secrets manager (core/secrets_manager.py), the way integrations do.
+--
+-- Tenant isolation: deliveries and routes reference an endpoint by
+-- (tenant_id, id), so neither can point at another tenant's endpoint.
 
 CREATE TABLE IF NOT EXISTS webhook_endpoints (
     id            UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -18,7 +21,9 @@ CREATE TABLE IF NOT EXISTS webhook_endpoints (
     created_by    TEXT,
     created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    CONSTRAINT uq_webhook_endpoints_tenant_name UNIQUE (tenant_id, name)
+    CONSTRAINT uq_webhook_endpoints_tenant_name UNIQUE (tenant_id, name),
+    -- Target of the composite (tenant_id, endpoint) FKs below.
+    CONSTRAINT uq_webhook_endpoints_tenant_id UNIQUE (tenant_id, id)
 );
 
 -- One event owed to one endpoint. (endpoint_id, event_id) is unique so a
@@ -26,7 +31,7 @@ CREATE TABLE IF NOT EXISTS webhook_endpoints (
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
     id                BIGSERIAL    PRIMARY KEY,
     tenant_id         TEXT         NOT NULL DEFAULT 'default',
-    endpoint_id       UUID         NOT NULL REFERENCES webhook_endpoints (id) ON DELETE CASCADE,
+    endpoint_id       UUID         NOT NULL,
     event_type        TEXT         NOT NULL,
     event_id          TEXT         NOT NULL,
     payload           JSONB        NOT NULL,
@@ -40,7 +45,9 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
     last_error        TEXT,
     created_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
     delivered_at      TIMESTAMPTZ,
-    CONSTRAINT uq_webhook_deliveries_endpoint_event UNIQUE (endpoint_id, event_id)
+    CONSTRAINT uq_webhook_deliveries_endpoint_event UNIQUE (endpoint_id, event_id),
+    CONSTRAINT webhook_deliveries_endpoint_fkey FOREIGN KEY (tenant_id, endpoint_id)
+        REFERENCES webhook_endpoints (tenant_id, id) ON DELETE CASCADE
 );
 
 -- The sender's one query: what is due.
@@ -61,8 +68,7 @@ CREATE TABLE IF NOT EXISTS alert_routes (
     destination_kind      TEXT         NOT NULL
         CONSTRAINT alert_routes_destination_kind_check
         CHECK (destination_kind IN ('webhook', 'slack', 'email')),
-    -- RESTRICT: an endpoint a route sends to cannot be deleted out from under it.
-    webhook_endpoint_id   UUID         REFERENCES webhook_endpoints (id) ON DELETE RESTRICT,
+    webhook_endpoint_id   UUID,
     destination           JSONB        NOT NULL DEFAULT '{}'::jsonb,   -- channel / address for slack, email
     stop_processing       BOOLEAN      NOT NULL DEFAULT TRUE,          -- first match wins unless false
     enabled               BOOLEAN      NOT NULL DEFAULT TRUE,
@@ -70,6 +76,11 @@ CREATE TABLE IF NOT EXISTS alert_routes (
     created_at            TIMESTAMPTZ  NOT NULL DEFAULT now(),
     updated_at            TIMESTAMPTZ  NOT NULL DEFAULT now(),
     CONSTRAINT uq_alert_routes_tenant_name UNIQUE (tenant_id, name),
+    -- Composite, so a route can only send to its own tenant's endpoint
+    -- (MATCH SIMPLE: a NULL webhook_endpoint_id is not checked). RESTRICT: an
+    -- endpoint a route sends to cannot be deleted out from under it.
+    CONSTRAINT alert_routes_webhook_endpoint_fkey FOREIGN KEY (tenant_id, webhook_endpoint_id)
+        REFERENCES webhook_endpoints (tenant_id, id) ON DELETE RESTRICT,
     CONSTRAINT alert_routes_webhook_has_endpoint
         CHECK (destination_kind <> 'webhook' OR webhook_endpoint_id IS NOT NULL)
 );

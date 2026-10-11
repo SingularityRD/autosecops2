@@ -8,6 +8,10 @@
 -- (JSONB). verdict / category columns repeat the document's values so they can
 -- be counted without unpacking it; the CHECKs list the schema's enums.
 --
+-- Tenant isolation: a row that points at another table's row points at it by
+-- (tenant_id, id), so a child can never reference a parent in another tenant.
+-- Each referenced table carries UNIQUE (tenant_id, id) for that FK to target.
+--
 -- SQL-owned: no ORM model declares these tables, so create_all never builds
 -- them and the drift check never inspects them (the agent_* tables work the
 -- same way). Compose and Helm apply this file; scripts/seed_reference_data.py
@@ -28,7 +32,9 @@ CREATE TABLE IF NOT EXISTS eval_runs (
     metrics         JSONB        NOT NULL DEFAULT '{}'::jsonb,   -- precision/recall/etc., written at completion
     triggered_by    TEXT,
     started_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    finished_at     TIMESTAMPTZ
+    finished_at     TIMESTAMPTZ,
+    -- Target of eval_results' (tenant_id, run_id) FK.
+    CONSTRAINT uq_eval_runs_tenant_id UNIQUE (tenant_id, id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_eval_runs_tenant_started
@@ -39,7 +45,7 @@ CREATE INDEX IF NOT EXISTS idx_eval_runs_suite_version
 -- One labelled case in one eval run.
 CREATE TABLE IF NOT EXISTS eval_results (
     id                 BIGSERIAL     PRIMARY KEY,
-    run_id             UUID          NOT NULL REFERENCES eval_runs (id) ON DELETE CASCADE,
+    run_id             UUID          NOT NULL,
     tenant_id          TEXT          NOT NULL DEFAULT 'default',
     case_id            TEXT          NOT NULL,
     expected_verdict   TEXT          NOT NULL
@@ -62,7 +68,10 @@ CREATE TABLE IF NOT EXISTS eval_results (
     cost_usd           NUMERIC(12, 6),          -- NULL when unpriced, never 0 for unknown
     error              TEXT,
     created_at         TIMESTAMPTZ   NOT NULL DEFAULT now(),
-    CONSTRAINT uq_eval_results_run_case UNIQUE (run_id, case_id)
+    CONSTRAINT uq_eval_results_run_case UNIQUE (run_id, case_id),
+    -- Composite: a result belongs to a run of its own tenant.
+    CONSTRAINT eval_results_run_fkey FOREIGN KEY (tenant_id, run_id)
+        REFERENCES eval_runs (tenant_id, id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_eval_results_tenant_case

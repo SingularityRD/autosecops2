@@ -102,19 +102,31 @@ def test_round_trip_is_schema_valid():
 
 # --- provenance -------------------------------------------------------------
 
-PROVENANCE = {
-    "email.sender_ip": "sensor",
-    "email.headers": "adversary",
-    "intel.reputation": "third_party",
-}
+PROVENANCE = CASES["provenance"]["map"]
 
 
-def test_authored_resolves_exact_then_longest_dotted_prefix():
+@pytest.mark.parametrize("case", CASES["provenance"]["cases"], ids=lambda c: c["name"])
+def test_shared_provenance_cases(case):
+    assert resolve_authored(case["field"], PROVENANCE) == case["authored"]
+
+
+def test_provenance_cases_cover_the_traps():
+    # Made-up children, trailing dots and empty segments must be in the file,
+    # or a lenient resolver could pass it.
+    fields = {c["field"] for c in CASES["provenance"]["cases"]}
+    assert {"email.sender_ip.country", "email.sender_ip.", "edr..pid"} <= fields
+    assert any(c["authored"] == "sensor" for c in CASES["provenance"]["cases"])
+
+
+def test_authored_resolves_exact_then_longest_declared_prefix():
     assert resolve_authored("email.sender_ip", PROVENANCE) == "sensor"
     assert resolve_authored("email.headers.subject", PROVENANCE) == "adversary"
     assert resolve_authored("intel.reputation", PROVENANCE) == "third_party"
-    # "email.headersX" is not under "email.headers".
+    # "email.headersX" is not under "email.headers.*".
     assert resolve_authored("email.headersX", PROVENANCE) == UNKNOWN_FIELD_AUTHOR
+    # A plain key covers no children: only a ".*" key does.
+    assert resolve_authored("a.b", {"a": "sensor"}) == UNKNOWN_FIELD_AUTHOR
+    assert resolve_authored("a.b", {"a.*": "sensor"}) == "sensor"
 
 
 def test_unknown_field_is_least_trusted():
@@ -125,6 +137,39 @@ def test_unknown_field_is_least_trusted():
 def test_a_bad_provenance_map_is_refused():
     with pytest.raises(ValueError):
         resolve_authored("x", {"x": "model"})
+    with pytest.raises(ValueError):
+        resolve_authored("x.y", {"x.*": "model"})
+
+
+ASSEMBLY = CASES["assembly"]
+
+
+@pytest.mark.parametrize("case", ASSEMBLY["cases"], ids=lambda c: c["name"])
+def test_shared_assembly_cases(case):
+    def run():
+        return verdict_from_model_output(
+            copy.deepcopy(case["raw"]), ASSEMBLY["provenance"], **ASSEMBLY["stamp"]
+        )
+
+    if not case["ok"]:
+        # The one error a caller handles; TypeScript returns {ok: false}.
+        with pytest.raises(ValidationError):
+            run()
+        return
+    out = run()
+    assert out.verdict == case["verdict"]
+    assert [c.authored for c in out.cited_fields] == case["authored"]
+    assert list(out.gaps) == case["gaps"]
+    assert (out.model, out.prompt_version) == (
+        ASSEMBLY["stamp"]["model"],
+        ASSEMBLY["stamp"]["prompt_version"],
+    )
+    assert Draft202012Validator(SCHEMA).is_valid(out.to_json_dict())
+
+
+def test_assembly_cases_cover_both_outcomes():
+    ok = [c for c in ASSEMBLY["cases"] if c["ok"]]
+    assert len(ok) >= 5 and len(ASSEMBLY["cases"]) - len(ok) >= 5
 
 
 def test_attach_provenance_ignores_the_models_authored_claim():

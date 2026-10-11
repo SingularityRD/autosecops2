@@ -122,6 +122,19 @@ def test_an_old_table_gains_the_columns_and_constraints(apply):
                     conn, "action-same-approver", approved_by="a", second_approver="a"
                 )
             sp.rollback()
+            # The two-person rule: a second approver needs a first, and the
+            # two differ whatever the letter case.
+            for action_id, extra in (
+                (
+                    "action-case-only",
+                    {"approved_by": "Alice", "second_approver": "alice"},
+                ),
+                ("action-no-first", {"second_approver": "b"}),
+            ):
+                sp = conn.begin_nested()
+                with pytest.raises(IntegrityError):
+                    _insert(conn, action_id, **extra)
+                sp.rollback()
             sp = conn.begin_nested()
             with pytest.raises(IntegrityError):
                 _insert(conn, "action-dangling", reverse_of="no-such-action")

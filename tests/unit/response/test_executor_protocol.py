@@ -176,6 +176,116 @@ def test_idempotency_key_is_derived_and_stable():
     )
 
 
+def test_idempotency_key_without_parameters_matches_the_legacy_format():
+    # autonomous_response_service.py writes f"{ActionType.ISOLATE_HOST.value}:{target_key}"
+    # with target_key the IP; an executor's isolate_host on that IP must land
+    # on the same approval_actions row, not a second one.
+    from core.response.approval_service import ActionType
+
+    ip = "203.0.113.7"
+    legacy = f"{ActionType.ISOLATE_HOST.value}:{ip}"
+    assert derive_idempotency_key(ActionType.ISOLATE_HOST.value, ip, {}) == legacy
+    assert (
+        TypedAction(
+            action_type=ActionType.ISOLATE_HOST.value, target=ip
+        ).idempotency_key
+        == legacy
+    )
+
+
+def test_idempotency_key_with_parameters_appends_a_digest():
+    import hashlib
+    import json
+
+    params = {"duration": 3600, "scope": ["inbound", "outbound"]}
+    key = derive_idempotency_key("block_ip", "1.2.3.4", params)
+    digest = hashlib.sha256(
+        json.dumps(params, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
+    assert key == f"block_ip:1.2.3.4:{digest}"
+    assert key != derive_idempotency_key("block_ip", "1.2.3.4", {})
+    assert key != derive_idempotency_key("block_ip", "1.2.3.4", {"duration": 86400})
+    # The frozen form a TypedAction holds keys the same as the plain dict.
+    assert (
+        TypedAction(
+            action_type="block_ip", target="1.2.3.4", parameters=params
+        ).idempotency_key
+        == key
+    )
+
+
+def test_parameters_are_deeply_immutable():
+    source = {"duration": 60, "ports": [22, 443], "meta": {"why": "scan"}}
+    a = TypedAction(action_type="block_ip", target="1.2.3.4", parameters=source)
+    key = a.idempotency_key
+    # Mutating what was passed in does not reach the action.
+    source["duration"] = 86400
+    source["ports"].append(80)
+    source["meta"]["why"] = "other"
+    assert a.parameters["duration"] == 60
+    # Nor can the action's own copy be changed.
+    with pytest.raises(TypeError):
+        a.parameters["duration"] = 86400  # type: ignore[index]
+    with pytest.raises(TypeError):
+        a.parameters["meta"]["why"] = "other"  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        a.parameters["ports"].append(80)  # type: ignore[union-attr]
+    assert (
+        a.idempotency_key
+        == key
+        == derive_idempotency_key(
+            "block_ip",
+            "1.2.3.4",
+            {"duration": 60, "ports": [22, 443], "meta": {"why": "scan"}},
+        )
+    )
+    # What leaves the action is plain JSON-shaped data again.
+    plain = {"duration": 60, "ports": [22, 443], "meta": {"why": "scan"}}
+    assert a.to_approval_columns()["parameters"] == plain
+    assert a.model_dump()["parameters"] == plain
+    assert type(a.to_approval_columns()["parameters"]["meta"]) is dict
+
+
+def test_registry_snapshots_what_an_executor_declared():
+    reg = ExecutorRegistry()
+    fw = FakeFirewall()
+    fw.action_types = {"block_ip", "allow_ip"}  # mutable on purpose
+    fw.reversible_types = {"block_ip"}
+    reg.register(fw)
+
+    # Growing the executor's sets after registration changes nothing.
+    fw.reversible_types.add("allow_ip")
+    fw.action_types.add("wipe_host")
+    fw.reversible_types = frozenset({"block_ip", "allow_ip", "wipe_host"})
+    assert reg.reversibility_of("allow_ip") == "irreversible"
+    assert reg.get("wipe_host") is None
+    assert reg.action_types() == frozenset({"block_ip", "allow_ip"})
+    overstated = reg.validate(TypedAction(action_type="allow_ip", target="1.2.3.4"))
+    assert not overstated.allowed
+    no_undo = reg.validate(
+        TypedAction(
+            action_type="allow_ip",
+            target="1.2.3.4",
+            reversibility="irreversible",
+            reverse_of="a",
+        )
+    )
+    assert not no_undo.allowed
+    honest = reg.validate(
+        TypedAction(
+            action_type="allow_ip", target="1.2.3.4", reversibility="irreversible"
+        )
+    )
+    assert honest.allowed and honest.requires_approval
+
+    # Shrinking them does not take reversibility away either: the registry's
+    # answer is the one it gave at registration.
+    fw.reversible_types = frozenset()
+    assert reg.reversibility_of("block_ip") == "reversible"
+    with pytest.raises(UnknownActionType):
+        reg.reversibility_of("wipe_host")
+
+
 def test_typed_action_is_strict_and_frozen():
     with pytest.raises(ValidationError):
         TypedAction(action_type="t", target="x", surprise=1)

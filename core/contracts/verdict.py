@@ -27,7 +27,15 @@ email could cite itself as proof it is benign. ``verdict_from_model_output``
 discards whatever ``authored`` the model wrote and resolves each field
 against the map. A field the map does not know is attributed to
 ``adversary``, the least trusted source: a citation the code cannot place
-cannot be what makes a verdict stand. ``model`` and ``prompt_version`` are
+cannot be what makes a verdict stand.
+
+The map matches exactly. A key ``email.sender_ip`` covers that field and
+nothing under it: ``email.sender_ip.country`` or ``email.sender_ip.`` are
+inventions the code cannot vouch for. A key ending in ``.*`` (``edr.process.*``)
+declares that every child of its prefix has that author; a child must be one
+or more non-empty dotted segments of ``[A-Za-z0-9_-]``. The longest declared
+prefix wins, and an exact key beats any prefix. Empty segments, trailing dots,
+``*`` and other characters in a cited field never match a prefix. ``model`` and ``prompt_version`` are
 likewise stamped by the caller, not read from the model's output.
 
 ``enforce_provenance`` then applies the one rule the contract fixes: a
@@ -39,6 +47,7 @@ third party) said is the failure this contract exists to prevent.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Annotated, Any, Literal, Optional
@@ -129,24 +138,36 @@ def validate_verdict(document: Any) -> Verdict:
     return Verdict.model_validate(document)
 
 
-def resolve_authored(field: str, provenance: ProvenanceMap) -> Authored:
-    """Who authored ``field``: exact match, else the longest dotted prefix.
+# A provenance-map key ending in this covers every child of its prefix.
+CHILDREN_SUFFIX = ".*"
+_SEGMENT = re.compile(r"[A-Za-z0-9_-]+")
 
-    ``email.headers`` mapped to ``adversary`` covers ``email.headers.subject``.
-    A field nothing in the map covers is ``UNKNOWN_FIELD_AUTHOR``.
+
+def _checked(key: str, authored: Any) -> Authored:
+    if authored not in AUTHORED:
+        raise ValueError(f"provenance map gives {key!r} unknown author {authored!r}")
+    return authored
+
+
+def resolve_authored(field: str, provenance: ProvenanceMap) -> Authored:
+    """Who authored ``field``: an exact key, else the longest ``prefix.*`` key.
+
+    ``email.headers.*`` mapped to ``adversary`` covers ``email.headers.subject``;
+    a plain ``email.sender_ip`` key covers only that exact field. A field
+    nothing in the map covers is ``UNKNOWN_FIELD_AUTHOR``. A malformed map
+    (an author outside ``AUTHORED``) raises ``ValueError``: that is the
+    caller's bug, not the model's.
     """
-    path = field
-    while True:
-        authored = provenance.get(path)
-        if authored is not None:
-            if authored not in AUTHORED:
-                raise ValueError(
-                    f"provenance map gives {path!r} unknown author {authored!r}"
-                )
-            return authored
-        if "." not in path:
-            return UNKNOWN_FIELD_AUTHOR
-        path = path.rsplit(".", 1)[0]
+    if not field.endswith(CHILDREN_SUFFIX) and field in provenance:
+        return _checked(field, provenance[field])
+    segments = field.split(".")
+    if not all(_SEGMENT.fullmatch(s) for s in segments):
+        return UNKNOWN_FIELD_AUTHOR
+    for end in range(len(segments) - 1, 0, -1):
+        key = ".".join(segments[:end]) + CHILDREN_SUFFIX
+        if key in provenance:
+            return _checked(key, provenance[key])
+    return UNKNOWN_FIELD_AUTHOR
 
 
 def attach_provenance(
@@ -182,8 +203,24 @@ def enforce_provenance(v: Verdict) -> Verdict:
     return v.model_copy(update={"verdict": "inconclusive", "gaps": gaps})
 
 
+def _cite(item: Any, provenance: ProvenanceMap) -> Any:
+    """One model citation with ``authored`` set by code.
+
+    Anything that is not a non-empty field name (or a mapping holding one) is
+    passed on with the least trusted author for ``validate_verdict`` to
+    refuse, so a malformed citation fails validation rather than raising
+    something else.
+    """
+    field = item.get("field") if isinstance(item, Mapping) else item
+    if isinstance(field, str) and field:
+        return {"field": field, "authored": resolve_authored(field, provenance)}
+    if isinstance(item, (Mapping, str)):
+        return {"field": field, "authored": UNKNOWN_FIELD_AUTHOR}
+    return item
+
+
 def verdict_from_model_output(
-    raw: Mapping[str, Any],
+    raw: Any,
     provenance: ProvenanceMap,
     *,
     model: str,
@@ -194,17 +231,28 @@ def verdict_from_model_output(
     ``authored``, ``model`` and ``prompt_version`` come from code; whatever the
     model wrote for them is overwritten. The result has had
     ``enforce_provenance`` applied.
+
+    ``gaps`` and ``cited_fields`` that are absent or null mean none. Anything
+    else wrong with the answer (not an object, ``cited_fields`` not a list, a
+    citation without a field name, ...) raises ``pydantic.ValidationError``,
+    the one error a caller handles; ``verdictFromModelOutput`` in
+    services/agent/contracts/verdict.ts returns ``{ok: false}`` for exactly the
+    same inputs (verdict.cases.json ``assembly``). A malformed provenance map
+    raises ``ValueError`` in both, since it is the caller's bug.
     """
+    if not isinstance(raw, Mapping):
+        return validate_verdict(raw)  # raises ValidationError
     document = dict(raw)
-    cited = raw.get("cited_fields")
-    if not isinstance(cited, (list, tuple)):
-        cited = ()
-    document["cited_fields"] = [
-        c.model_dump() for c in attach_provenance(cited, provenance)
-    ]
+    cited = document.get("cited_fields")
+    if cited is None:
+        cited = []
+    if isinstance(cited, (list, tuple)):
+        cited = [_cite(c, provenance) for c in cited]
+    document["cited_fields"] = cited
+    if document.get("gaps") is None:
+        document["gaps"] = []
     document["model"] = model
     document["prompt_version"] = prompt_version
-    document.setdefault("gaps", [])
     return enforce_provenance(validate_verdict(document))
 
 
@@ -212,6 +260,7 @@ __all__ = [
     "AUTHORED",
     "CATEGORIES",
     "CASES_PATH",
+    "CHILDREN_SUFFIX",
     "NO_SENSOR_CITATION_GAP",
     "SCHEMA_PATH",
     "UNKNOWN_FIELD_AUTHOR",

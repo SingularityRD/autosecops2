@@ -37,10 +37,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from types import MappingProxyType
 from typing import Any, Literal, Optional, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 Reversibility = Literal["reversible", "irreversible"]
 ExecStatus = Literal["executed", "noop", "failed"]
@@ -50,22 +60,56 @@ VerifyStatus = Literal["verified", "failed", "unknown"]
 _FROZEN = ConfigDict(extra="forbid", frozen=True)
 
 
+def freeze(value: Any) -> Any:
+    """A deep read-only copy: mappings become MappingProxyType, lists tuples."""
+    if isinstance(value, Mapping):
+        return MappingProxyType({k: freeze(v) for k, v in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(freeze(v) for v in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(freeze(v) for v in value)
+    return value
+
+
+def thaw(value: Any) -> Any:
+    """A deep mutable (JSON-shaped) copy of what ``freeze`` made."""
+    if isinstance(value, Mapping):
+        return {k: thaw(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [thaw(v) for v in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted((thaw(v) for v in value), key=repr)
+    return value
+
+
 def derive_idempotency_key(
-    action_type: str, target: str, parameters: dict[str, Any]
+    action_type: str, target: str, parameters: Mapping[str, Any]
 ) -> str:
     """A stable key for "the same action on the same target".
 
     approval_actions keeps idempotency_key unique among non-failed rows, so two
-    requests to isolate one host become one row. Parameters are part of the
-    key: blocking an IP for an hour and for a day are different actions.
+    requests to isolate one host become one row.
+
+    Without parameters the key is ``{action_type}:{target}``, the format
+    ``autonomous_response_service.py`` already writes
+    (``f"{ActionType.ISOLATE_HOST.value}:{target_key}"``), so an executor's
+    isolate_host on an IP and the legacy path's isolate_host on that IP
+    dedupe to one row. ``parameters`` should therefore hold only what changes
+    the action (a block's duration), not context the legacy path stores
+    alongside it (hostname, correlation data).
+
+    With parameters, the first 16 hex characters of the SHA-256 of their
+    canonical JSON are appended: ``{action_type}:{target}:{digest}``. Blocking
+    an IP for an hour and for a day are different actions, and neither
+    collides with the parameterless key.
     """
+    if not parameters:
+        return f"{action_type}:{target}"
     canonical = json.dumps(
-        {"action_type": action_type, "target": target, "parameters": parameters},
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
+        thaw(parameters), sort_keys=True, separators=(",", ":"), default=str
     )
-    return f"{action_type}:{hashlib.sha256(canonical.encode()).hexdigest()[:32]}"
+    digest = hashlib.sha256(canonical.encode()).hexdigest()[:16]
+    return f"{action_type}:{target}:{digest}"
 
 
 class TypedAction(BaseModel):
@@ -76,6 +120,11 @@ class TypedAction(BaseModel):
     executor whose ``default_ttl`` is None makes permanent changes.
     ``reverse_of`` is set on the action that undoes another: same action_type
     and target, reverse_of = the original's action_id.
+
+    The model is frozen all the way down: ``parameters`` is a deep read-only
+    copy (``MappingProxyType``, lists as tuples), so the derived
+    ``idempotency_key`` always describes the parameters the action carries.
+    ``to_approval_columns`` and ``model_dump`` hand back plain dicts and lists.
     """
 
     model_config = _FROZEN
@@ -84,7 +133,7 @@ class TypedAction(BaseModel):
         min_length=1, max_length=40
     )  # approval_actions.action_type VARCHAR(40)
     target: str = Field(min_length=1)
-    parameters: dict[str, Any] = Field(default_factory=dict)
+    parameters: Mapping[str, Any] = Field(default_factory=dict)
     reversibility: Reversibility = "reversible"
     idempotency_key: Optional[str] = None
     ttl: Optional[timedelta] = None
@@ -92,6 +141,15 @@ class TypedAction(BaseModel):
     action_id: Optional[str] = Field(default=None, max_length=80)
     tenant_id: str = Field(default="default", min_length=1)
     requested_by: str = Field(default="system", min_length=1, max_length=100)
+
+    @field_validator("parameters", mode="after")
+    @classmethod
+    def _freeze_parameters(cls, value: Mapping[str, Any]) -> Mapping[str, Any]:
+        return freeze(value)
+
+    @field_serializer("parameters")
+    def _thaw_parameters(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        return thaw(value)
 
     @model_validator(mode="after")
     def _fill_key(self) -> "TypedAction":
@@ -123,7 +181,7 @@ class TypedAction(BaseModel):
         return {
             "action_type": self.action_type,
             "target": self.target,
-            "parameters": dict(self.parameters),
+            "parameters": thaw(self.parameters),
             "reversibility": self.reversibility,
             "idempotency_key": self.idempotency_key,
             "reverse_of": self.reverse_of,
@@ -262,19 +320,35 @@ class ExecutorConflict(ValueError):
     """An executor claims a type another already has, or is malformed."""
 
 
+@dataclass(frozen=True)
+class _Registration:
+    """What the registry took from an executor when it was registered."""
+
+    executor: Executor
+    reversible: bool
+
+
 class ExecutorRegistry:
-    """Action type -> the one executor that performs it."""
+    """Action type -> the one executor that performs it.
+
+    ``action_types`` and ``reversible_types`` are copied when an executor is
+    registered and the copies are what the registry consults afterwards. An
+    executor that later grows a set (or swaps it for another) cannot make an
+    action type reversible, and so auto-approvable, behind the registry's back.
+    To change what an executor declares, unregister and register it again.
+    """
 
     def __init__(self) -> None:
-        self._by_type: dict[str, Executor] = {}
+        self._by_type: dict[str, _Registration] = {}
 
     def register(self, executor: Executor) -> Executor:
         if not isinstance(executor, Executor):
             raise ExecutorConflict(f"{executor!r} does not implement Executor")
         types = frozenset(executor.action_types)
+        reversible = frozenset(executor.reversible_types)
         if not types:
             raise ExecutorConflict(f"{executor!r} declares no action types")
-        stray = frozenset(executor.reversible_types) - types
+        stray = reversible - types
         if stray:
             raise ExecutorConflict(
                 f"{executor!r} lists reversible types it does not execute: {sorted(stray)}"
@@ -286,30 +360,33 @@ class ExecutorRegistry:
         if ttl is not None and ttl <= timedelta(0):
             raise ExecutorConflict(f"{executor!r} default_ttl must be positive or None")
         for t in types:
-            self._by_type[t] = executor
+            self._by_type[t] = _Registration(executor, t in reversible)
         return executor
 
     def unregister(self, executor: Executor) -> None:
-        for t in [t for t, e in self._by_type.items() if e is executor]:
+        for t in [t for t, r in self._by_type.items() if r.executor is executor]:
             del self._by_type[t]
 
     def for_type(self, action_type: str) -> Executor:
         try:
-            return self._by_type[action_type]
+            return self._by_type[action_type].executor
         except KeyError:
             raise UnknownActionType(action_type) from None
 
     def get(self, action_type: str) -> Optional[Executor]:
-        return self._by_type.get(action_type)
+        registration = self._by_type.get(action_type)
+        return registration.executor if registration is not None else None
 
     def action_types(self) -> frozenset[str]:
         return frozenset(self._by_type)
 
     def reversibility_of(self, action_type: str) -> Reversibility:
-        executor = self.for_type(action_type)
-        return (
-            "reversible" if action_type in executor.reversible_types else "irreversible"
-        )
+        """As registered: the executor's reversible_types at register time."""
+        try:
+            registration = self._by_type[action_type]
+        except KeyError:
+            raise UnknownActionType(action_type) from None
+        return "reversible" if registration.reversible else "irreversible"
 
     def validate(self, action: TypedAction) -> PolicyResult:
         """The executor's verdict on the action, plus the registry's own checks.
@@ -318,24 +395,18 @@ class ExecutorRegistry:
         is refused: approval_actions.reversibility gates auto-approval, so
         overstating it would let an irreversible change skip a human.
         """
-        executor = self.get(action.action_type)
-        if executor is None:
+        registration = self._by_type.get(action.action_type)
+        if registration is None:
             return PolicyResult.deny(
                 f"no executor for action type {action.action_type!r}"
             )
-        if (
-            action.reversibility == "reversible"
-            and self.reversibility_of(action.action_type) == "irreversible"
-        ):
+        if action.reversibility == "reversible" and not registration.reversible:
             return PolicyResult.deny(
                 f"{action.action_type!r} cannot be reversed by its executor; mark it irreversible"
             )
-        if (
-            action.reverse_of is not None
-            and action.action_type not in executor.reversible_types
-        ):
+        if action.reverse_of is not None and not registration.reversible:
             return PolicyResult.deny(f"{action.action_type!r} has no reverse")
-        result = executor.validate(action)
+        result = registration.executor.validate(action)
         if (
             action.reversibility == "irreversible"
             and result.allowed

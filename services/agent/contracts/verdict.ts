@@ -12,6 +12,15 @@
 // authored the model wrote, resolves each field against the map (a field the map
 // does not cover is "adversary", the least trusted), stamps model and
 // prompt_version from the caller, and applies enforceProvenance.
+//
+// The map matches exactly: a key "email.sender_ip" covers that field and nothing
+// under it. A key ending in ".*" ("edr.process.*") covers every child of its
+// prefix, a child being one or more non-empty dotted segments of [A-Za-z0-9_-].
+// The longest declared prefix wins and an exact key beats any prefix. Made-up
+// children, trailing dots and empty segments resolve to "adversary".
+//
+// verdict.cases.json "provenance" and "assembly" pin resolveAuthored and
+// verdictFromModelOutput to core/contracts/verdict.py case by case.
 
 export const VERDICTS = ["malicious", "benign", "inconclusive"] as const;
 export type VerdictValue = (typeof VERDICTS)[number];
@@ -85,9 +94,11 @@ export function parseVerdict(value: unknown): VerdictParse {
   if (typeof c !== "number" || !Number.isFinite(c) || c < 0 || c > 1) errors.push("confidence must be a number in [0, 1]");
   if (!oneOf(CATEGORIES, value.category)) errors.push(`category must be one of ${CATEGORIES.join(", ")}`);
 
+  // Array.from, not forEach: forEach skips the holes of a sparse array, which
+  // would let [ , x] through.
   if (!Array.isArray(value.cited_fields)) errors.push("cited_fields must be an array");
   else
-    value.cited_fields.forEach((item, i) => {
+    Array.from(value.cited_fields as unknown[]).forEach((item, i) => {
       const at = `cited_fields[${i}]`;
       if (!isObject(item)) return void errors.push(`${at} must be an object`);
       onlyKeys(item, ["field", "authored"], at, errors);
@@ -96,7 +107,7 @@ export function parseVerdict(value: unknown): VerdictParse {
     });
 
   if (!Array.isArray(value.gaps)) errors.push("gaps must be an array");
-  else value.gaps.forEach((g, i) => nonEmpty(g) || errors.push(`gaps[${i}] must be a non-empty string`));
+  else Array.from(value.gaps as unknown[]).forEach((g, i) => nonEmpty(g) || errors.push(`gaps[${i}] must be a non-empty string`));
 
   const action = value.recommended_action;
   if (action !== undefined && action !== null) {
@@ -114,25 +125,33 @@ export function parseVerdict(value: unknown): VerdictParse {
   return errors.length ? { ok: false, errors } : { ok: true, verdict: value as unknown as Verdict };
 }
 
-// Exact match, else the longest dotted prefix: "email.headers" covers
-// "email.headers.subject" but not "email.headersX".
+// A provenance-map key ending in this covers every child of its prefix.
+export const CHILDREN_SUFFIX = ".*";
+const SEGMENT = /^[A-Za-z0-9_-]+$/;
+
+const own = (map: ProvenanceMap, key: string): boolean => Object.prototype.hasOwnProperty.call(map, key);
+
+function checked(key: string, authored: unknown): Authored {
+  if (!oneOf(AUTHORED, authored)) throw new Error(`provenance map gives ${key} unknown author ${String(authored)}`);
+  return authored;
+}
+
+// An exact key, else the longest "prefix.*" key, else adversary. A malformed map
+// (an author outside AUTHORED) throws: that is the caller's bug, not the model's.
 export function resolveAuthored(field: string, provenance: ProvenanceMap): Authored {
-  let path = field;
-  for (;;) {
-    if (Object.prototype.hasOwnProperty.call(provenance, path)) {
-      const authored = provenance[path];
-      if (!oneOf(AUTHORED, authored)) throw new Error(`provenance map gives ${path} unknown author ${String(authored)}`);
-      return authored;
-    }
-    const dot = path.lastIndexOf(".");
-    if (dot < 0) return UNKNOWN_FIELD_AUTHOR;
-    path = path.slice(0, dot);
+  if (!field.endsWith(CHILDREN_SUFFIX) && own(provenance, field)) return checked(field, provenance[field]);
+  const segments = field.split(".");
+  if (!segments.every((s) => SEGMENT.test(s))) return UNKNOWN_FIELD_AUTHOR;
+  for (let end = segments.length - 1; end > 0; end--) {
+    const key = segments.slice(0, end).join(".") + CHILDREN_SUFFIX;
+    if (own(provenance, key)) return checked(key, provenance[key]);
   }
+  return UNKNOWN_FIELD_AUTHOR;
 }
 
 // Each item is a field name or an object with a field; any authored it carries is ignored.
 export function attachProvenance(cited: readonly unknown[], provenance: ProvenanceMap): CitedField[] {
-  return cited.map((item) => {
+  return Array.from(cited).map((item) => {
     const field = isObject(item) ? item.field : item;
     if (!nonEmpty(field)) throw new Error(`cited field must be a non-empty string, got ${JSON.stringify(field)}`);
     return { field, authored: resolveAuthored(field, provenance) };
@@ -147,18 +166,29 @@ export function enforceProvenance(v: Verdict): Verdict {
   return { ...v, verdict: "inconclusive", gaps };
 }
 
+// One model citation with authored set by code. Anything that is not a non-empty
+// field name (or an object holding one) is passed on for parseVerdict to refuse,
+// as verdict.py's _cite passes it on for pydantic to refuse.
+function cite(item: unknown, provenance: ProvenanceMap): unknown {
+  const field = isObject(item) ? item.field : item;
+  if (nonEmpty(field)) return { field, authored: resolveAuthored(field, provenance) };
+  if (isObject(item) || typeof item === "string") return { field, authored: UNKNOWN_FIELD_AUTHOR };
+  return item;
+}
+
+// Never throws on what the model wrote: gaps and cited_fields that are absent or
+// null mean none, and anything else wrong (raw not an object, cited_fields not an
+// array, a citation without a field name, a hole in an array, ...) is
+// {ok: false}. verdict_from_model_output raises pydantic.ValidationError for
+// exactly the same inputs. A malformed provenance map throws in both.
 export function verdictFromModelOutput(
-  raw: Record<string, unknown>,
+  raw: unknown,
   provenance: ProvenanceMap,
   stamp: { model: string; prompt_version: string },
 ): VerdictParse {
-  const cited = Array.isArray(raw.cited_fields) ? raw.cited_fields : [];
-  let cited_fields: CitedField[];
-  try {
-    cited_fields = attachProvenance(cited, provenance);
-  } catch (e) {
-    return { ok: false, errors: [(e as Error).message] };
-  }
+  if (!isObject(raw)) return { ok: false, errors: ["model output must be an object"] };
+  const rawCited = raw.cited_fields ?? [];
+  const cited_fields = Array.isArray(rawCited) ? Array.from(rawCited as unknown[], (c) => cite(c, provenance)) : rawCited;
   const parsed = parseVerdict({
     ...raw,
     cited_fields,
