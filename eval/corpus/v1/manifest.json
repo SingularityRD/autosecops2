@@ -1,0 +1,101 @@
+{
+  "files": {
+    "dev.jsonl": {
+      "counts": {
+        "cloud": {
+          "benign": 36,
+          "malicious": 36
+        },
+        "identity": {
+          "benign": 36,
+          "malicious": 36
+        },
+        "malware": {
+          "benign": 36,
+          "malicious": 36
+        },
+        "network": {
+          "benign": 36,
+          "malicious": 36
+        },
+        "other": {
+          "benign": 36,
+          "malicious": 36
+        },
+        "phishing": {
+          "benign": 36,
+          "malicious": 36
+        }
+      },
+      "rows": 432,
+      "sha256": "963d069d1df721ad24454541bd8dafc77b302b718fc936c272f4db89329aa3f6"
+    },
+    "test.jsonl": {
+      "counts": {
+        "cloud": {
+          "benign": 36,
+          "malicious": 36
+        },
+        "identity": {
+          "benign": 36,
+          "malicious": 36
+        },
+        "malware": {
+          "benign": 36,
+          "malicious": 36
+        },
+        "network": {
+          "benign": 36,
+          "malicious": 36
+        },
+        "other": {
+          "benign": 36,
+          "malicious": 36
+        },
+        "phishing": {
+          "benign": 36,
+          "malicious": 36
+        }
+      },
+      "rows": 432,
+      "sha256": "971511c8e007023d4bc0b80037a572789156a3e821879d7a892ee333f78aaa4d"
+    },
+    "train.jsonl": {
+      "counts": {
+        "cloud": {
+          "benign": 108,
+          "malicious": 108
+        },
+        "identity": {
+          "benign": 108,
+          "malicious": 108
+        },
+        "malware": {
+          "benign": 108,
+          "malicious": 108
+        },
+        "network": {
+          "benign": 108,
+          "malicious": 108
+        },
+        "other": {
+          "benign": 108,
+          "malicious": 108
+        },
+        "phishing": {
+          "benign": 108,
+          "malicious": 108
+        }
+      },
+      "rows": 1296,
+      "sha256": "f190a81308b2d44b8d27c7179fec0dabaa0018a7a56a672c45f903ab16d8bb03"
+    }
+  },
+  "generator": "v1.0",
+  "injection": {
+    "path": "eval/suites/injection/v1.jsonl",
+    "rows": 240,
+    "sha256": "60d4dc4703c7171bdc6f8fa6bf17ad740e8b62bd1758f05708041d258b2f7b9c"
+  },
+  "seed": 7
+}
