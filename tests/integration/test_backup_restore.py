@@ -948,6 +948,62 @@ def test_key_held_outside_the_install_rotates_into_secrets(
     )
 
 
+def test_key_held_outside_the_install_is_reported_not_faked(
+    scratch_databases, tmp_path: Path
+):
+    root = tmp_path / "unheld"
+    root.mkdir()
+    paths = _layout(root, secret=None, signing_key=False)
+    (CORE_REPO_ROOT / ".env").write_text("OTHER_KEY=leave-me\n", encoding="utf-8")
+    _create_database("vigil_r_unheld", ledger=True)
+    ciphertext = _mfa_ciphertext(_STALE_ENV_KEY, _TOTP)
+    _install_app_rows("vigil_r_unheld", ciphertext)
+    repo = root / "repo"
+    passphrase = _passphrase(root / "pass")
+    env = _child_env(root, "vigil_r_unheld", **paths)
+    env["JWT_SECRET_KEY"] = _STALE_ENV_KEY
+    created = _create(env, repo, passphrase)
+    assert created.returncode == 0, created.stderr
+
+    dest_root = root / "dest"
+    dest_root.mkdir()
+    dest = _empty_layout(dest_root)
+    _create_database("vigil_r_unheld_dst", ledger=False)
+    dest_env = _child_env(dest_root, "vigil_r_unheld_dst", **dest)
+    # A deployment injects the key into the backend only: no file this install
+    # holds has it, and neither does the restoring process.
+    dest_env.pop("JWT_SECRET_KEY")
+    dest_env["RESTIC_CACHE_DIR"] = str(root / "cache")
+    restored = _restore(dest_env, repo, passphrase, "--actor", "restore-bot")
+
+    assert restored.returncode != 0
+    pre_name = next(n for n in _names() if "vigil_r_unheld_dst_pre_restore_" in n)
+    assert f"previous database: {pre_name}" in restored.stderr
+    assert "approvals expired: 2" in restored.stderr
+    assert "set outside this install" in restored.stderr
+    # No store is written: a key here would never be read.
+    assert not (dest["state"] / "jwt_secret").exists()
+    assert not (dest["state"] / "secrets.enc").exists()
+    assert (CORE_REPO_ROOT / ".env").read_text(encoding="utf-8") == (
+        "OTHER_KEY=leave-me\n"
+    )
+    live = "vigil_r_unheld_dst"
+    statuses = dict(_rows(live, "SELECT action_id, status FROM approval_actions"))
+    assert statuses["pend-plain"] == statuses["pend-run"] == "rejected"
+    audit = _rows(
+        live,
+        "SELECT new_value FROM config_audit_log WHERE config_type = 'backup'",
+    )
+    assert len(audit) == 1
+    payload = audit[0][0] if isinstance(audit[0][0], dict) else json.loads(audit[0][0])
+    assert payload["jwt_rotated"] is False
+    assert payload["expired_count"] == 2
+    # MFA is left wrapped with the key the deployment still uses.
+    assert _rows(live, "SELECT mfa_secret FROM users WHERE user_id = 'u-mfa'") == [
+        (ciphertext,)
+    ]
+
+
 _FAIL_SECOND_DIRECTORY = """
 import sys
 from core.backup import __main__, restore
