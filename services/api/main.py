@@ -20,9 +20,13 @@ project_root = str(_repo_root)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+from core.auth.dev_mode import announce_dev_mode
 from core.config import get_settings, validate_settings_or_exit
 
 validate_settings_or_exit()
+# Before any socket is bound: if authentication is off, say so, and say whether
+# the address it will listen on is reachable from the network.
+announce_dev_mode()
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exception_handlers import http_exception_handler
@@ -973,7 +977,11 @@ if __name__ == "__main__":
     logger.info("Starting Vigil SOC API server...")
     uvicorn.run(
         "services.api.main:app",
-        host="0.0.0.0",  # nosec B104 - containers must bind all interfaces
+        # settings.bind_host, not a hardcoded 0.0.0.0: the DEV_MODE banner reports
+        # this address, and a banner that says "loopback" while the socket is open
+        # to the network is worse than no banner. Export BIND_HOST to widen it.
+        # Containers do not come through here; their CMD runs uvicorn directly.
+        host=get_settings().bind_host,
         port=6987,
         reload=True,
         log_level="info",
