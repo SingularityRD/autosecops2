@@ -283,6 +283,7 @@ describe('SetupScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Finish setup' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Change Limits' }))
     expect(await screen.findByRole('radiogroup', { name: 'Limits profile' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Assist/ })).not.toBeInTheDocument()
     expect(screen.getByText('Step 5 of 5', { selector: '.su-eyebrow' })).toBeInTheDocument()
   })
 
