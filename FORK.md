@@ -23,9 +23,9 @@ Sync often (weekly). Conflicts grow much faster than the gap between syncs.
 
 ## Where this repository differs from upstream
 
-### 1. Database init file numbers 41–45
+### 1. Database init file numbers 41–49
 
-Upstream `main` ended at `40_drop_custom_workflow_graph_layout.sql`. Five files
+Upstream `main` ended at `40_drop_custom_workflow_graph_layout.sql`. Nine files
 were added here, in this order:
 
 | File | Came from |
@@ -35,6 +35,10 @@ were added here, in this order:
 | `43_medic_permissions.sql` | Medic series |
 | `44_findings_bulk_imported.sql` | Federation epic (upstream PR #1372, closed upstream) |
 | `45_skill_reads.sql` | Skill usage (upstream PRs #1843/#1997, open upstream) |
+| `46_eval_qa_canary.sql` | AutoSecOps W0.5 contracts (not upstream) |
+| `47_webhooks_alert_routes.sql` | AutoSecOps W0.5 contracts |
+| `48_autonomy_lessons_suppression_retention.sql` | AutoSecOps W0.5 contracts |
+| `49_approval_action_lifecycle.sql` | AutoSecOps W0.5 contracts |
 
 When upstream adds its own `41_…` or later, the numbers collide. Renumber so the
 order stays correct, and change all of these together:

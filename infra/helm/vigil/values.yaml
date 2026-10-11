@@ -437,6 +437,10 @@ dbInit:
     - 43_medic_permissions.sql
     - 44_findings_bulk_imported.sql
     - 45_skill_reads.sql
+    - 46_eval_qa_canary.sql
+    - 47_webhooks_alert_routes.sql
+    - 48_autonomy_lessons_suppression_retention.sql
+    - 49_approval_action_lifecycle.sql
   resources:
     requests:
       cpu: 50m

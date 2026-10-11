@@ -1,0 +1,72 @@
+{
+  "description": "Shared conformance cases for verdict.schema.json. tests/unit/contracts/test_verdict_contract.py and services/agent/tests/core/verdict-contract.test.ts run every case through the JSON Schema and through their own validator and require all three answers to agree.",
+  "base": {
+    "verdict": "malicious",
+    "confidence": 0.9,
+    "category": "phishing",
+    "cited_fields": [{ "field": "email.sender_ip", "authored": "sensor" }],
+    "gaps": [],
+    "model": "claude-opus-5-5",
+    "prompt_version": "triage-v1"
+  },
+  "cases": [
+    { "name": "base document", "valid": true, "patch": {} },
+    { "name": "benign", "valid": true, "patch": { "verdict": "benign" } },
+    { "name": "inconclusive", "valid": true, "patch": { "verdict": "inconclusive" } },
+    { "name": "unknown verdict", "valid": false, "patch": { "verdict": "suspicious" } },
+    { "name": "confidence zero", "valid": true, "patch": { "confidence": 0 } },
+    { "name": "confidence one", "valid": true, "patch": { "confidence": 1 } },
+    { "name": "confidence above one", "valid": false, "patch": { "confidence": 1.01 } },
+    { "name": "confidence below zero", "valid": false, "patch": { "confidence": -0.1 } },
+    { "name": "confidence as string", "valid": false, "patch": { "confidence": "0.9" } },
+    { "name": "confidence as boolean", "valid": false, "patch": { "confidence": true } },
+    { "name": "every category: malware", "valid": true, "patch": { "category": "malware" } },
+    { "name": "every category: identity", "valid": true, "patch": { "category": "identity" } },
+    { "name": "every category: network", "valid": true, "patch": { "category": "network" } },
+    { "name": "every category: cloud", "valid": true, "patch": { "category": "cloud" } },
+    { "name": "every category: other", "valid": true, "patch": { "category": "other" } },
+    { "name": "unknown category", "valid": false, "patch": { "category": "ransomware" } },
+    { "name": "no citations", "valid": true, "patch": { "cited_fields": [] } },
+    {
+      "name": "every authored value",
+      "valid": true,
+      "patch": {
+        "cited_fields": [
+          { "field": "a", "authored": "sensor" },
+          { "field": "b", "authored": "adversary" },
+          { "field": "c", "authored": "third_party" }
+        ]
+      }
+    },
+    { "name": "unknown authored", "valid": false, "patch": { "cited_fields": [{ "field": "a", "authored": "model" }] } },
+    { "name": "citation without authored", "valid": false, "patch": { "cited_fields": [{ "field": "a" }] } },
+    { "name": "citation with empty field", "valid": false, "patch": { "cited_fields": [{ "field": "", "authored": "sensor" }] } },
+    {
+      "name": "citation with extra key",
+      "valid": false,
+      "patch": { "cited_fields": [{ "field": "a", "authored": "sensor", "note": "x" }] }
+    },
+    { "name": "citations not a list", "valid": false, "patch": { "cited_fields": "email.sender_ip" } },
+    { "name": "gaps listed", "valid": true, "patch": { "gaps": ["no EDR telemetry for host"] } },
+    { "name": "empty gap string", "valid": false, "patch": { "gaps": [""] } },
+    { "name": "non-string gap", "valid": false, "patch": { "gaps": [3] } },
+    { "name": "recommended action", "valid": true, "patch": { "recommended_action": { "type": "block_ip", "target": "203.0.113.7" } } },
+    { "name": "recommended action null", "valid": true, "patch": { "recommended_action": null } },
+    { "name": "recommended action without target", "valid": false, "patch": { "recommended_action": { "type": "block_ip" } } },
+    {
+      "name": "recommended action with extra key",
+      "valid": false,
+      "patch": { "recommended_action": { "type": "block_ip", "target": "x", "ttl": 60 } }
+    },
+    { "name": "empty model", "valid": false, "patch": { "model": "" } },
+    { "name": "empty prompt_version", "valid": false, "patch": { "prompt_version": "" } },
+    { "name": "missing model", "valid": false, "drop": ["model"] },
+    { "name": "missing prompt_version", "valid": false, "drop": ["prompt_version"] },
+    { "name": "missing gaps", "valid": false, "drop": ["gaps"] },
+    { "name": "missing cited_fields", "valid": false, "drop": ["cited_fields"] },
+    { "name": "missing verdict", "valid": false, "drop": ["verdict"] },
+    { "name": "missing confidence", "valid": false, "drop": ["confidence"] },
+    { "name": "missing category", "valid": false, "drop": ["category"] },
+    { "name": "unknown top-level key", "valid": false, "patch": { "reasoning": "trust me" } }
+  ]
+}

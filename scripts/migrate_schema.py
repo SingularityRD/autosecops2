@@ -649,6 +649,59 @@ def fail_stub_isolation_actions(conn):
     )
 
 
+# Execution lifecycle columns (W0.5): the same statements as
+# infra/database/init/49_approval_action_lifecycle.sql, which says what each
+# column means. That file reaches Compose and Helm installs; this reaches a
+# bare-metal database the startup drift check finds without the columns.
+_APPROVAL_LIFECYCLE_COLUMNS = (
+    ("expires_at", "TIMESTAMP"),
+    ("verified_at", "TIMESTAMP"),
+    ("verify_status", "VARCHAR(16)"),
+    ("reversed_at", "TIMESTAMP"),
+    ("reverse_of", "VARCHAR(80)"),
+    ("before_state", "JSONB"),
+    ("after_state", "JSONB"),
+    ("second_approver", "VARCHAR(100)"),
+)
+
+
+@migration("Add approval_actions lifecycle columns")
+def add_approval_action_lifecycle(conn):
+    if not _table_exists(conn, 'approval_actions'):
+        return
+    for column, sql_type in _APPROVAL_LIFECYCLE_COLUMNS:
+        conn.execute(text(
+            f"ALTER TABLE approval_actions ADD COLUMN IF NOT EXISTS {column} {sql_type};"
+        ))
+    conn.execute(text("""
+        ALTER TABLE approval_actions
+            DROP CONSTRAINT IF EXISTS approval_actions_verify_status_check;
+        ALTER TABLE approval_actions
+            ADD CONSTRAINT approval_actions_verify_status_check
+                CHECK (verify_status IN ('verified', 'failed', 'unknown'));
+        ALTER TABLE approval_actions
+            DROP CONSTRAINT IF EXISTS approval_actions_second_approver_distinct;
+        ALTER TABLE approval_actions
+            ADD CONSTRAINT approval_actions_second_approver_distinct
+                CHECK (second_approver IS NULL OR second_approver IS DISTINCT FROM approved_by);
+        ALTER TABLE approval_actions
+            DROP CONSTRAINT IF EXISTS approval_actions_reverse_of_fkey;
+        ALTER TABLE approval_actions
+            ADD CONSTRAINT approval_actions_reverse_of_fkey
+                FOREIGN KEY (reverse_of) REFERENCES approval_actions (action_id) ON DELETE SET NULL;
+    """))
+    if not _index_exists(conn, 'idx_approval_actions_expiry'):
+        conn.execute(text("""
+            CREATE INDEX idx_approval_actions_expiry ON approval_actions (expires_at)
+            WHERE status = 'executed' AND reversed_at IS NULL AND expires_at IS NOT NULL;
+        """))
+    if not _index_exists(conn, 'idx_approval_actions_reverse_of'):
+        conn.execute(text("""
+            CREATE INDEX idx_approval_actions_reverse_of ON approval_actions (reverse_of)
+            WHERE reverse_of IS NOT NULL;
+        """))
+
+
 # ---------------------------------------------------------------------------
 # Seed data
 # ---------------------------------------------------------------------------
