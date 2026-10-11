@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from core.auth.auth_cookies import ACCESS_COOKIE_NAME
 from core.auth.auth_service import AuthService
+from core.auth.dev_mode import BYPASSED_GATES
 from core.auth.mcp_credential_service import looks_like_mcp_token
 from core.auth.token_blacklist import is_token_revoked
 from core.config import get_settings
@@ -30,22 +31,11 @@ ACCESS_TOKEN_TYPE = "access"
 # Dev mode flag - ONLY for development, never in production!
 DEV_MODE = get_settings().dev_mode
 
-# Every gate the flag opens, so the announcement says exactly what is exposed.
-# /internal is deliberately absent: core/agents/internal_auth.py is shared-secret
-# only and has no dev-mode branch.
-DEV_MODE_OPEN_GATES = (
-    "session auth (every request runs as a mock admin with full permissions)",
-    "vstrike inbound (POST /api/integrations/vstrike/findings accepts pushes "
-    "without its bearer key)",
-)
-
-if DEV_MODE:
-    logger.warning(
-        "⚠️  DEV_MODE is ENABLED - authentication is BYPASSED. Gates opened: %s. "
-        "This is for a developer's own machine only; set DEV_MODE=false in .env "
-        "to require a login.",
-        "; ".join(DEV_MODE_OPEN_GATES),
-    )
+# Every gate the flag opens. The startup announcement that names them -- and
+# says whether the bind is reachable from the network -- is
+# core.auth.dev_mode.announce_dev_mode, called by the API entrypoint; a second
+# warning here said less, in different words, so one startup reported it twice.
+DEV_MODE_OPEN_GATES = BYPASSED_GATES
 
 # The synthetic stand-in, for a database with no admin row. Cached because it is
 # never persisted: re-building it per request would hand out a new user_id each time.

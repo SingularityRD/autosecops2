@@ -168,7 +168,8 @@ USER vigil
 ENV HOME=/home/vigil \
     PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
-    PORT=6987
+    PORT=6987 \
+    BIND_HOST=0.0.0.0
 
 # Every catalog entry the image claims to run must find its launcher.
 RUN python -m core.integrations.mcp.verify_catalog
