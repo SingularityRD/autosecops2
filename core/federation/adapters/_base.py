@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 from core.time import utcnow
 
@@ -14,9 +14,14 @@ logger = logging.getLogger(__name__)
 # How far past a stuck instant the cursor steps. Elastic's ``date`` fields and
 # Security Hub's ``CreatedAt`` resolve to the millisecond, so a smaller step
 # would round back to the same instant on their side and re-read the same page
-# every tick; Defender and Sentinel compare finer than this and lose nothing
-# they were not already losing at that instant.
+# every tick. Defender and Sentinel record finer times, so on those two a step
+# also skips alerts later in the same millisecond.
 CURSOR_STEP = timedelta(milliseconds=1)
+
+# A drained window's cursor stops this far short of the fetch time, so an alert
+# the source had not finished indexing when we asked is read on the next tick
+# instead of falling behind the cursor. The overlap is re-read and deduped.
+SETTLING_MARGIN = timedelta(minutes=1)
 
 # Fractional seconds beyond microseconds: Defender emits seven digits, which
 # datetime.fromisoformat rejects.
@@ -47,6 +52,88 @@ def fresh_cursor() -> Dict[str, Any]:
     return {"last_poll_at": utcnow().isoformat()}
 
 
+def drained_cursor(now: datetime) -> Dict[str, Any]:
+    """Cursor value after a fetch that read its whole window, taken at ``now``."""
+    return cursor_at(now - SETTLING_MARGIN)
+
+
+def next_cursor(
+    times: Iterable[Optional[datetime]],
+    *,
+    truncated: bool,
+    start: datetime,
+    now: datetime,
+    step: timedelta = CURSOR_STEP,
+    source: str,
+    ids: Optional[Iterable[Optional[str]]] = None,
+    after: Optional[str] = None,
+    drained: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, Any], bool]:
+    """Where the next tick starts, and whether the source may hold more past it.
+
+    ``times`` are the returned alerts' times as naive UTC (None if unreadable),
+    ``start`` the tick's cursor and ``now`` the end of the window read: the
+    clock taken before the fetch, or a settled window's end. A short batch
+    drained its window and moves to ``drained``, by default ``now`` less the
+    settling margin. A full batch stops at the newest alert
+    returned, capped at ``now`` so a source clock ahead of ours cannot carry the
+    cursor into the future; the next tick re-reads that boundary alert (start
+    filters are inclusive) and dedup absorbs it. A full batch sitting entirely
+    at or before ``start`` steps past it, skipping whatever at that instant did
+    not fit, so the tick cannot fetch the same page forever.
+
+    ``ids`` (parallel to ``times``) is for a source that can resume strictly
+    after one alert: its full batch stores the last alert's ID beside the
+    time, and the next fetch starts after that alert instead of at the
+    instant, so a burst sharing one timestamp is paged rather than stepped
+    over. ``after`` is the ID the tick started from.
+    """
+    if drained is None:
+        drained = drained_cursor(now)
+    if not truncated:
+        return drained, False
+
+    times = list(times)
+    newest = max((t for t in times if t is not None), default=None)
+    if newest is None:
+        logger.warning(
+            "Federation %s: batch filled max_items but no alert carried a readable "
+            "time; cursor moves to now and the rest of the window is skipped",
+            source,
+        )
+        return drained, False
+
+    if newest > now:
+        logger.warning(
+            "Federation %s: newest alert time %s is past the window end %s; "
+            "capping the cursor there",
+            source,
+            newest.isoformat(),
+            now.isoformat(),
+        )
+        return cursor_at(now), True
+
+    if ids is not None:
+        at_newest = [i for t, i in zip(times, ids) if t == newest and i is not None]
+        tie = max(at_newest, default=None)
+        if tie is not None and (newest > start or after is None or tie > after):
+            return {**cursor_at(newest), "after_id": tie}, True
+
+    if newest <= start:
+        logger.warning(
+            "Federation %s: batch filled max_items with newest alert time %s not "
+            "past the tick start %s; stepping the cursor to %s. Alerts at that "
+            "instant beyond this batch are skipped",
+            source,
+            newest.isoformat(),
+            start.isoformat(),
+            (start + step).isoformat(),
+        )
+        newest = start + step
+
+    return cursor_at(newest), True
+
+
 def cursor_at(when: datetime) -> Dict[str, Any]:
     """Cursor value that resumes from ``when`` (naive UTC) rather than now.
 
@@ -54,63 +141,6 @@ def cursor_at(when: datetime) -> Dict[str, Any]:
     alert has not been read yet, so the next tick must start there.
     """
     return {"last_poll_at": when.isoformat()}
-
-
-def full_batch_cursor(
-    times: Iterable[Optional[datetime]],
-    *,
-    start: datetime,
-    now: datetime,
-    source: str,
-    count: int,
-) -> Optional[Dict[str, Any]]:
-    """Cursor after a batch that filled ``max_items`` (#1233).
-
-    ``times`` are the returned items' naive-UTC times (``None`` if unreadable).
-    The cursor stops at the newest one, capped at ``now`` (taken before the
-    fetch) so a future-stamped item cannot carry it ahead of the clock. The next
-    tick re-reads that boundary item (start filters are inclusive) and dedup
-    absorbs it. Returns ``None`` when no item had a readable time; the caller
-    then falls back to its drained cursor.
-    """
-    newest = max((t for t in times if t is not None), default=None)
-    if newest is None:
-        logger.warning(
-            "Federation %s: batch filled max_items=%d but no alert carried a "
-            "readable time; cursor moves to now and the rest of the window "
-            "is skipped",
-            source,
-            count,
-        )
-        return None
-
-    if newest > now:
-        logger.warning(
-            "Federation %s: newest alert time %s is ahead of this host's clock "
-            "(window end %s); capping the cursor there",
-            source,
-            newest.isoformat(),
-            now.isoformat(),
-        )
-        newest = now
-
-    if newest <= start:
-        # Every item in a full batch sits at or before the tick's start. Step
-        # just past that instant so the next tick cannot fetch the same page
-        # forever; items at the instant beyond this batch are skipped.
-        logger.warning(
-            "Federation %s: batch filled max_items=%d with newest alert time "
-            "%s not past the tick start %s; stepping the cursor to %s. Alerts "
-            "at that instant beyond this batch are skipped",
-            source,
-            count,
-            newest.isoformat(),
-            start.isoformat(),
-            (start + CURSOR_STEP).isoformat(),
-        )
-        newest = start + CURSOR_STEP
-
-    return cursor_at(newest)
 
 
 def parse_alert_time(raw: Any) -> Optional[datetime]:

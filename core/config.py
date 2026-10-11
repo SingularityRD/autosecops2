@@ -259,6 +259,8 @@ class Settings(BaseSettings):
 
     # Daemon
     daemon_log_level: str = "INFO"
+    # Deprecated: the legacy poll loops that read these are gone. Kept one
+    # release so the Federation upgrade rule can carry a tuned cadence over.
     daemon_splunk_poll_interval: int = 300
     daemon_crowdstrike_poll_interval: int = 60
     daemon_webhook_enabled: bool = True
@@ -267,6 +269,7 @@ class Settings(BaseSettings):
     daemon_auto_enrich: bool = True
     daemon_triage_timeout: int = 60
     daemon_enrich_max_inflight: int = 50
+    daemon_handoff_queue_maxsize: int = 1000
     daemon_enrich_backfill: bool = True
     daemon_enrich_backfill_interval: int = 300
     daemon_enrich_backfill_batch: int = 50

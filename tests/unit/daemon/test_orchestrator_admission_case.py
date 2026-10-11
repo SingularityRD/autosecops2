@@ -42,7 +42,7 @@ def _orchestrator(data_service) -> Orchestrator:
     orch = object.__new__(Orchestrator)
     orch.config = OrchestratorConfig()
     orch.shared_intel = MagicMock()
-    orch.shared_intel.check_overlap.return_value = None
+    orch.shared_intel.overlaps_by_finding.return_value = {}  # no overlap
     orch.stats = {"dedup_prevented": 0}
     orch._log_ai_decision = MagicMock()
     orch._create_investigation = AsyncMock()

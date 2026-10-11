@@ -435,6 +435,7 @@ dbInit:
     - 41_users_service_account.sql
     - 42_medic_last_seen.sql
     - 43_medic_permissions.sql
+    - 44_findings_bulk_imported.sql
   resources:
     requests:
       cpu: 50m
@@ -723,12 +724,12 @@ config:
   AWS_REGION: "us-east-1"
 
   # Daemon behaviour
-  DAEMON_SPLUNK_POLL_INTERVAL: "300"
-  DAEMON_CROWDSTRIKE_POLL_INTERVAL: "60"
   DAEMON_WEBHOOK_ENABLED: "true"
   DAEMON_WEBHOOK_PORT: "8081"
   DAEMON_AUTO_TRIAGE: "true"
   DAEMON_AUTO_ENRICH: "true"
+  DAEMON_ENRICH_MAX_INFLIGHT: "50"
+  DAEMON_HANDOFF_QUEUE_MAXSIZE: "1000"
   DAEMON_AUTO_RESPONSE: "true"
   DAEMON_CONFIDENCE_THRESHOLD: "0.90"
   DAEMON_REVIEW_THRESHOLD: "0.85"

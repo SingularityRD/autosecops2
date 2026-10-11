@@ -1768,6 +1768,10 @@
       "data_type": "double precision",
       "nullable": true
     },
+    "bulk_imported": {
+      "data_type": "boolean",
+      "nullable": true
+    },
     "cluster_id": {
       "data_type": "character varying(50)",
       "nullable": true

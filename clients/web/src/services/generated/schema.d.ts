@@ -3803,7 +3803,9 @@ export interface paths {
          *     me" entries without the daemon being up). Adapters whose integration is
          *     not configured are still listed but flagged ``is_configured=false``. Each
          *     row carries ``lag_seconds`` (null until a poll has succeeded) and ``quiet``
-         *     from :func:`core.federation.lag.source_collection_lag`.
+         *     from :func:`core.federation.lag.source_collection_lag`, and
+         *     ``cursor_lag_seconds``: now minus the cursor, null while the source is not
+         *     polling or has not completed a fetch.
          */
         get: operations["get_api_federation_sources"];
         put?: never;

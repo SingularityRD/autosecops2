@@ -19,7 +19,7 @@ def _orchestrator() -> Orchestrator:
     orch._queued_intake_triggers = MagicMock(
         return_value=[{"id": n, "kind": "detection"} for n in range(10)]
     )
-    orch._resolve_intake_row = lambda row, _now: row
+    orch._resolve_queue = lambda _now: orch._queued_intake_triggers()
     orch._process_intake_row = AsyncMock()
     orch._queued_intake_depth = MagicMock(return_value=None)
     orch._schedule_runs_in_flight = MagicMock(return_value=0)
@@ -82,7 +82,9 @@ async def test_readable_count_still_admits_up_to_the_cap(monkeypatch):
     orch = _orchestrator()
 
     async def launch(row, _shutdown):
+        # A launch that committed returns its investigation id and takes a slot.
         launched["n"] += 1
+        return f"inv-{row['id']}"
 
     orch._process_intake_row = AsyncMock(side_effect=launch)
     await orch._drain_intake(None)
@@ -103,7 +105,9 @@ async def test_assigned_rows_filling_the_cap_do_not_block_drain(monkeypatch):
     orch = _orchestrator()
 
     async def launch(row, _shutdown):
+        # A launch that committed returns its investigation id and takes a slot.
         launched["n"] += 1
+        return f"inv-{row['id']}"
 
     orch._process_intake_row = AsyncMock(side_effect=launch)
     await orch._drain_intake(None)

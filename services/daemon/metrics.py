@@ -198,11 +198,23 @@ class MetricsServer:
                 ("orchestrator", self.orchestrator),
             )
         }
+        fed = (getattr(self.poller, "stats", None) or {}).get("federation")
+        if fed is not None:
+            # Degraded, not unhealthy: setup retrying (the DB down at boot)
+            # must not fail the probes and restart the pod.
+            components["federation"] = (
+                "running" if fed.get("setup_ok") and fed.get("adapters") else "degraded"
+            )
         health["components"] = components
 
         # A dead task makes the daemon unhealthy so the probes restart it.
-        ok = all(v in ("running", "disabled") for v in components.values())
-        health["status"] = "healthy" if ok else "unhealthy"
+        ok = all(v in ("running", "disabled", "degraded") for v in components.values())
+        if not ok:
+            health["status"] = "unhealthy"
+        elif "degraded" in components.values():
+            health["status"] = "degraded"
+        else:
+            health["status"] = "healthy"
         status_code = 200 if ok else 503
         return web.json_response(health, status=status_code)
 
@@ -237,7 +249,15 @@ class MetricsServer:
             metrics["kafka"] = dict(self.kafka_ingestor.stats)
 
         if self.processor:
-            metrics["processor"] = self.processor.stats.copy()
+            from core.ingestion import handoff
+
+            queue = self.processor.input_queue
+            metrics["processor"] = {
+                **self.processor.stats,
+                "queue_depth": queue.qsize(),
+                "queue_maxsize": queue.maxsize,
+                "handoff_full_waits": dict(handoff.full_waits),
+            }
 
         if self.responder:
             metrics["responder"] = self.responder.stats.copy()

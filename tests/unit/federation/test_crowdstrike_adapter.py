@@ -137,6 +137,13 @@ def test_same_host_detections_stay_distinct_findings():
     assert [f["external_id"] for f in findings] == list(_SAME_HOST)
 
 
+def test_a_short_detection_id_is_left_intact():
+    finding = _detection_to_finding(
+        {"detection_id": "det-1", "max_severity_displayname": "High"}
+    )
+    assert finding["finding_id"] == "cs-det-1"
+
+
 def test_not_configured_returns_empty():
     adapter = CrowdStrikeAdapter()
     with patch.object(adapter, "is_configured", return_value=False):

@@ -8,12 +8,14 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import DateTime, and_, any_, exists, func, literal, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
-from sqlalchemy.orm import lazyload, noload, selectinload
+from sqlalchemy.orm import joinedload, lazyload, noload, selectinload
 
 from core.exceptions import default_on_error
+from core.storage.arrays import text_array
 from core.storage.case_repository import CaseRepository
 from core.storage.connection import get_db_manager
 from core.storage.ip_exclusion_repository import exclusion_view_filter
@@ -22,7 +24,9 @@ from core.storage.models import (
     Case,
     Finding,
     FindingMitrePrediction,
+    case_findings,
 )
+from core.storage.rating import in_sweep_index, unrated
 from core.storage.schemas import FindingSchema
 from core.time import utcnow
 
@@ -301,6 +305,9 @@ class DatabaseService:
                     cluster_id=r.get("cluster_id"),
                     severity=r.get("severity"),
                     status=r.get("status", "new"),
+                    # Never triaged at ingest: the sweep rates it after live
+                    # Findings and never responds to it.
+                    bulk_imported=True,
                 )
                 _set_mitre_prediction_rows(finding, r.get("mitre_predictions") or {})
                 session.add(finding)
@@ -354,6 +361,25 @@ class DatabaseService:
             if finding:
                 session.expunge(finding)
             return finding
+
+    def get_findings_by_ids(self, finding_ids: List[str]) -> List[Dict[str, Any]]:
+        """Findings for these ids in one round trip, dumped inside the session."""
+        if not finding_ids:
+            return []
+        with self.db_manager.session_scope() as session:
+            findings = (
+                session.execute(
+                    select(Finding)
+                    # cases is selectin on the model, batched per 500 ids; the dump never reads it.
+                    .options(
+                        joinedload(Finding.mitre_prediction_rows), noload(Finding.cases)
+                    ).where(Finding.finding_id == any_(text_array(finding_ids)))
+                )
+                .unique()
+                .scalars()
+                .all()
+            )
+            return FindingSchema.dump_many(findings)
 
     @default_on_error(list)
     def get_findings(
@@ -462,28 +488,28 @@ class DatabaseService:
     ) -> List[Dict[str, Any]]:
         """Findings stored but never enriched (ai_enrichment IS NULL) or whose
         triage failed without a later success (ai_triage_error recorded, no
-        ai_triage — #965), oldest first. Returns dicts (FindingSchema.dump inside
-        the session) so callers get detached-safe data. ``max_age_hours`` bounds
-        the working set so ancient, un-enrichable findings aren't retried forever."""
+        ai_triage — #965): live Findings before bulk imports, oldest stored first.
+        Returns dicts (FindingSchema.dump inside the session) so callers get
+        detached-safe data. ``max_age_hours`` bounds the working set so ancient,
+        un-enrichable findings aren't retried forever."""
         with self.db_manager.session_scope() as session:
             query = (
                 select(Finding)
                 .options(*_FINDING_READ_OPTIONS)
-                .where(
-                    or_(
-                        Finding.ai_enrichment.is_(None),
-                        and_(
-                            Finding.ai_enrichment.has_key("ai_triage_error"),
-                            ~Finding.ai_enrichment.has_key("ai_triage"),
-                        ),
-                    )
-                )
+                .where(unrated(), in_sweep_index())
             )
             if max_age_hours:
                 cutoff = utcnow() - timedelta(hours=max_age_hours)
-                query = query.where(Finding.timestamp >= cutoff)
-            query = query.order_by(Finding.timestamp.asc()).limit(limit)
-            return FindingSchema.dump_many(session.execute(query).scalars().all())
+                query = query.where(Finding.created_at >= cutoff)
+            query = query.order_by(
+                Finding.bulk_imported.asc(), Finding.created_at.asc()
+            ).limit(limit)
+            findings = session.execute(query).scalars().all()
+            rows = FindingSchema.dump_many(findings)
+            # For the sweep's response gate only; not part of the Finding contract.
+            for row, finding in zip(rows, findings):
+                row["bulk_imported"] = finding.bulk_imported
+            return rows
 
     @default_on_error(0)
     def count_findings(
@@ -888,31 +914,43 @@ class DatabaseService:
 
     @default_on_error(False)
     def add_finding_to_case(self, case_id: str, finding_id: str) -> bool:
-        """
-        Add a finding to a case.
+        """Link a finding to a case: True once linked (now or before), False if either is missing.
 
-        Args:
-            case_id: Case ID
-            finding_id: Finding ID
-
-        Returns:
-            True if successful, False otherwise
+        Writes the link row directly. Loading ``case.findings`` reads every finding
+        already on the case, so each merge into a busy case would cost its size.
         """
+        now = utcnow()
         with self.db_manager.session_scope() as session:
-            case = session.get(Case, case_id)
-            finding = session.get(Finding, finding_id)
-
-            if not case or not finding:
-                logger.warning(f"Case or finding not found: {case_id}, {finding_id}")
-                return False
-
-            if finding not in case.findings:
-                case.findings.append(finding)
-                case.updated_at = utcnow()
-                session.flush()
+            added = session.execute(
+                pg_insert(case_findings)
+                .from_select(
+                    ["case_id", "finding_id", "added_at"],
+                    select(
+                        literal(case_id), literal(finding_id), literal(now, DateTime)
+                    ).where(
+                        exists().where(Case.case_id == case_id),
+                        exists().where(Finding.finding_id == finding_id),
+                    ),
+                )
+                .on_conflict_do_nothing()
+                .returning(case_findings.c.case_id)
+            ).first()
+            if added:
+                session.execute(
+                    update(Case).where(Case.case_id == case_id).values(updated_at=now)
+                )
                 logger.info(f"Added finding {finding_id} to case {case_id}")
+                return True
 
-            return True
+            linked = session.execute(
+                select(case_findings.c.case_id).where(
+                    case_findings.c.case_id == case_id,
+                    case_findings.c.finding_id == finding_id,
+                )
+            ).first()
+            if linked is None:
+                logger.warning(f"Case or finding not found: {case_id}, {finding_id}")
+            return linked is not None
 
     @default_on_error(False)
     def remove_finding_from_case(self, case_id: str, finding_id: str) -> bool:

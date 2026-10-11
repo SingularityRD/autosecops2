@@ -12,13 +12,15 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from core.config import is_integration_enabled
 from core.federation.adapters._base import (
+    CURSOR_STEP,
     cursor_at,
+    drained_cursor,
     fresh_cursor,
-    full_batch_cursor,
+    next_cursor,
     parse_alert_time,
     parse_cursor_since,
 )
@@ -46,6 +48,7 @@ class SIEMIngestionAdapter:
         service_factory: Callable[[], Any],
         external_id_prefix: str,
         alert_time: Optional[Callable[[Dict[str, Any]], Optional[datetime]]] = None,
+        alert_id: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None,
         settle_delay: Optional[timedelta] = None,
     ) -> None:
         self.name = name
@@ -59,11 +62,16 @@ class SIEMIngestionAdapter:
         # cursor goes to now, as it did before, and a full batch skips the rest
         # of its window.
         self._alert_time = alert_time
+        # For a service whose fetch_alerts takes after_id: resumes strictly
+        # after the last alert of a full batch rather than stepping past its
+        # instant.
+        self._alert_id = alert_id
         # For sources that index an alert some time after its creation stamp
         # (Filebeat into Elasticsearch/OpenSearch): each tick reads only up to
         # now - settle_delay and persists that instant, so an alert still in
-        # flight at poll time is read on a later tick instead of skipped. The
-        # service must honour ``end_time``.
+        # flight at poll time is read on a later tick instead of skipped. It
+        # replaces the settling margin for that source. The service must
+        # honour ``end_time``.
         self._settle_delay = settle_delay
 
     def is_configured(self) -> bool:
@@ -114,7 +122,10 @@ class SIEMIngestionAdapter:
         # fit must be the newest ones so the next tick, starting from the newest
         # returned time, picks them up. Newest-first would drop the oldest of
         # the window for good.
-        extra = {"end_time": window_end} if window_end else {}
+        after = cursor.get("after_id") if self._alert_id else None
+        extra: Dict[str, Any] = {"end_time": window_end} if window_end else {}
+        if self._alert_id:
+            extra["after_id"] = after
         alerts = list(
             await svc.fetch_alerts(
                 start_time=start_time, limit=max_items, oldest_first=True, **extra
@@ -159,49 +170,39 @@ class SIEMIngestionAdapter:
                 f" (first error: {first_error})" if first_error else "",
             )
 
+        drained = self._drained_cursor(start_time, horizon)
+        if self._alert_time is None:
+            return FetchResult(findings=findings, cursor=drained, dropped=dropped)
+        cursor, more = next_cursor(
+            self._alert_times(alerts),
+            truncated=truncated,
+            start=start_time,
+            now=horizon,
+            step=CURSOR_STEP,
+            source=self.name,
+            ids=[self._alert_id(a) for a in alerts] if self._alert_id else None,
+            after=after,
+            drained=drained,
+        )
         return FetchResult(
-            findings=findings,
-            cursor=self._next_cursor(
-                alerts, truncated=truncated, start=start_time, now=horizon
-            ),
-            dropped=dropped,
+            findings=findings, cursor=cursor, truncated=more, dropped=dropped
         )
 
     def _drained_cursor(self, start: datetime, now: datetime) -> Dict[str, Any]:
         if not self._settle_delay:
-            return fresh_cursor()
+            return drained_cursor(now)
         # The window read ended at ``now`` (now - settle_delay); never step
         # back behind a cursor that was already later than that.
         return cursor_at(max(start, now))
 
-    def _next_cursor(
-        self, alerts: list, *, truncated: bool, start: datetime, now: datetime
-    ) -> Dict[str, Any]:
-        """Where the next tick starts.
-
-        ``now`` is the end of the window read: the clock, or with a settle
-        delay the clock minus that delay.
-
-        A short batch drained its window, so the cursor moves to now. A full
-        batch may have left alerts behind, so the cursor stops at the newest
-        alert actually returned; the next tick re-reads that boundary alert
-        (the start filters are inclusive) and the runner's dedup and the
-        ``(data_source, external_id)`` unique index absorb it. The cursor is
-        capped at ``now`` (taken before the fetch): only Elastic's query has an
-        upper bound of its own, so an alert stamped ahead of our clock must
-        not carry the cursor into the future, where later alerts with earlier
-        times would be skipped.
-        """
-        if not truncated or self._alert_time is None:
-            return self._drained_cursor(start, now)
-
-        times = []
+    def _alert_times(self, alerts: list) -> List[Optional[datetime]]:
+        """Each alert's time as naive UTC, None where unreadable."""
+        times: List[Optional[datetime]] = []
         for alert in alerts:
             try:
-                times.append(parse_alert_time(self._alert_time(alert)))
+                when = parse_alert_time(self._alert_time(alert))
             except Exception as e:  # a malformed record must not fail the poll
                 logger.debug("%s: alert time unreadable: %s", self.name, e)
-        cursor = full_batch_cursor(
-            times, start=start, now=now, source=self.name, count=len(alerts)
-        )
-        return cursor or self._drained_cursor(start, now)
+                when = None
+            times.append(when)
+        return times
