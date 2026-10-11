@@ -57,6 +57,7 @@ from core.storage.models.episodic import (
 from core.storage.models.exclusion import IpExclusion
 from core.storage.models.finding import Finding, FindingMitrePrediction
 from core.storage.models.medic import MedicLastSeen
+from core.storage.models.skill import SkillRead
 from core.storage.models.workflow import (
     IN_FLIGHT_INVESTIGATION_STATUSES,
     LIVE_CASE_STATES,
@@ -125,6 +126,7 @@ __all__ = [
     "SLAPolicy",
     "SharedIOC",
     "SketchMapping",
+    "SkillRead",
     "SystemConfig",
     "ThreatIndicator",
     "User",

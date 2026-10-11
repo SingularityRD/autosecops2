@@ -436,6 +436,7 @@ dbInit:
     - 42_medic_last_seen.sql
     - 43_medic_permissions.sql
     - 44_findings_bulk_imported.sql
+    - 45_skill_reads.sql
   resources:
     requests:
       cpu: 50m
