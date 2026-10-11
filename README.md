@@ -239,7 +239,7 @@ bash clients/desktop/scripts/bundle-image.sh linux/arm64   # tarball is arch-spe
 cd clients/desktop && npm run dist                          # macOS DMG / Linux AppImage
 ```
 
-Local builds are ad-hoc signed, not notarized, so macOS may report the app as "damaged". Clear the quarantine with `xattr -dr com.apple.quarantine /Applications/Vigil.app`, or use **System Settings → Privacy & Security → Open Anyway**.
+Local builds are ad-hoc signed, not notarized, so macOS may report the app as "damaged". Clear the quarantine with `xattr -dr com.apple.quarantine /Applications/AutoSecOps.app`, or use **System Settings → Privacy & Security → Open Anyway**.
 
 ### Tests
 

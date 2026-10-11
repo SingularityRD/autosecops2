@@ -253,8 +253,8 @@ async function promptForRepoRoot(): Promise<string | null> {
   if (!hasRepoMarker(dir)) {
     await dialog.showMessageBox({
       type: "error",
-      title: "Not a AutoSecOps folder",
-      message: "That folder doesn't look like a AutoSecOps checkout.",
+      title: "Not an AutoSecOps folder",
+      message: "That folder doesn't look like an AutoSecOps checkout.",
       detail: "Expected to find VERSION and scripts/app_up.sh inside it.",
     });
     return promptForRepoRoot();

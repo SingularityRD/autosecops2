@@ -578,9 +578,12 @@ if [ "$HELM_REQ" = 1 ]; then
 elif [ -n "$STATE_ARG" ]; then
     STATE_DIR=$STATE_ARG
 elif [ "$MODE" = desktop ]; then
+    # The desktop app is AutoSecOps; installs made before the rename used Vigil.
     case $OS_KIND in
-    Darwin) STATE_DIR=$EFF_HOME/Library/Application\ Support/Vigil ;;
-    *) STATE_DIR=$EFF_HOME/.config/Vigil ;;
+    Darwin) STATE_DIR=$EFF_HOME/Library/Application\ Support/AutoSecOps
+        [ -d "$STATE_DIR" ] || STATE_DIR=$EFF_HOME/Library/Application\ Support/Vigil ;;
+    *) STATE_DIR=$EFF_HOME/.config/AutoSecOps
+        [ -d "$STATE_DIR" ] || STATE_DIR=$EFF_HOME/.config/Vigil ;;
     esac
 else
     STATE_DIR=${VIGIL_DIR:-$EFF_HOME/.vigil}
@@ -900,7 +903,10 @@ collect_logs() {
         collect_tree logs/checkout "$CHECKOUT/logs"
         ;;
     desktop)
-        if [ "$OS_KIND" = Darwin ] && [ -z "$STATE_ARG" ]; then _dl=$EFF_HOME/Library/Logs/Vigil; else _dl=$STATE_DIR/logs; fi
+        if [ "$OS_KIND" = Darwin ] && [ -z "$STATE_ARG" ]; then
+            _dl=$EFF_HOME/Library/Logs/AutoSecOps
+            [ -d "$_dl" ] || _dl=$EFF_HOME/Library/Logs/Vigil
+        else _dl=$STATE_DIR/logs; fi
         collect_tree logs/desktop "$_dl" \( -name 'vigil-desktop.log*' -o \( -path '*/containers/*' -name 'vigil-*.log' \) \)
         ;;
     esac
@@ -1172,9 +1178,9 @@ if [ "$HELM_REQ" = 1 ]; then
 elif [ "$OS_KIND" = Darwin ]; then
     _last=24h
     [ "$SINCE_SET" = 1 ] && _last=${SINCE}d
-    collect_cmd system/macos-log.txt "$LOG_SECS" "log show --last $_last, Docker and Vigil entries" 1 \
+    collect_cmd system/macos-log.txt "$LOG_SECS" "log show --last $_last, Docker, AutoSecOps and Vigil entries" 1 \
         log show --style compact --last "$_last" --predicate \
-        'process CONTAINS[c] "docker" OR process CONTAINS[c] "vigil" OR eventMessage CONTAINS[c] "docker" OR eventMessage CONTAINS[c] "vigil"'
+        'process CONTAINS[c] "docker" OR process CONTAINS[c] "vigil" OR process CONTAINS[c] "autosecops" OR eventMessage CONTAINS[c] "docker" OR eventMessage CONTAINS[c] "vigil" OR eventMessage CONTAINS[c] "autosecops"'
     for _f in journal syslog kernel; do skip "system/$_f.txt" "Linux only"; done
 else
     collect_cmd system/journal.txt "$LOG_SECS" "journalctl --since '$SINCE days ago'" 1 \
