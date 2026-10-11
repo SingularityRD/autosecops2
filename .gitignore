@@ -6,6 +6,9 @@ __pycache__/
 # C extensions
 *.so
 node_modules/
+# No trailing slash: worktrees symlink node_modules from the main checkout
+# (scripts/wp/new.sh, gates.sh), and git does not treat a symlink as a directory.
+node_modules
 # Distribution / packaging
 .Python
 build/
