@@ -95,7 +95,9 @@ class Run:
         return [c for c in self.calls() if c[:1] == ["compose"] and "version" not in c]
 
     def stdins(self) -> list[str]:
-        return [p.read_text() for p in sorted(self.fake.glob("stdin.*"))]
+        # By call number, not by name: "stdin.18" sorts before "stdin.7".
+        paths = self.fake.glob("stdin.*")
+        return [p.read_text() for p in sorted(paths, key=lambda p: int(p.suffix[1:]))]
 
     def secret(self, name: str) -> str:
         return (self.secrets / name).read_text().strip()
