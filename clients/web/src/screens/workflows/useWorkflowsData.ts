@@ -11,21 +11,27 @@ import {
 import { prettyHandle } from '../../data/appData'
 import type { Workflow, AgentTemplate, Skill } from '../../data/appData'
 
-export interface AgentGrant {
+interface AgentGrant {
   id: string
   recommended_tools: string[]
 }
 
-/** Workflows whose phase agents are granted read_skill. An id the agent list
- *  does not have is skipped. Phase tool arrays are not the grant. */
+/** Surfaces offered the whole skill library: Ask AutoSecOps first, then workflows
+ *  whose phase agents are granted read_skill. Ask AutoSecOps is unconditional: a chat
+ *  with no agent_id declares every built-in tool (_declare(None) in
+ *  core/llm/chat_layers.py), so chat_stream adds <available_skills>. An agent id
+ *  the agent list does not have is skipped. Phase tool arrays are not the grant. */
 export function workflowsOffered(
   workflows: Pick<Workflow, 'name' | 'agents'>[],
   agents: AgentGrant[],
 ): string[] {
   const tools = new Map(agents.map((a) => [a.id, a.recommended_tools]))
-  return workflows
-    .filter((w) => w.agents.some((id) => (tools.get(id) ?? []).includes('read_skill')))
-    .map((w) => w.name)
+  return [
+    'Ask AutoSecOps',
+    ...workflows
+      .filter((w) => w.agents.some((id) => (tools.get(id) ?? []).includes('read_skill')))
+      .map((w) => w.name),
+  ]
 }
 
 export type Phase = 'loading' | 'ready' | 'error'
@@ -101,7 +107,7 @@ export function useAgents() {
    sequence chips share a single request; unknown/custom ids fall back to a
    prettified handle + the accent color. Covers customs too, which the old
    built-ins-only map didn't. */
-export interface AgentMeta {
+interface AgentMeta {
   label: string
   color: string
 }

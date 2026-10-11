@@ -14,7 +14,7 @@
 import api from './api'
 import type { Schema } from './apiTypes'
 
-export interface BifrostSecret {
+interface BifrostSecret {
   value: string
   env_var: string
   from_env: boolean
@@ -69,7 +69,7 @@ export interface BifrostKey {
     All three fields are omitted on an edit that isn't changing them — Bifrost
     masks each on read, and echoing a mask back stores the mask, so the
     passthrough substitutes its own copy instead. */
-export interface VertexKeyConfig {
+interface VertexKeyConfig {
   project_id?: string
   region?: string
   /** Service-account JSON. Omit on edit to keep the stored one. */
@@ -109,7 +109,7 @@ export interface BifrostKeyWrite {
   ollama_key_config?: { url: string }
 }
 
-export interface BifrostModelRates {
+interface BifrostModelRates {
   input_cost_per_token?: number
   output_cost_per_token?: number
   cache_read_input_token_cost?: number
@@ -227,8 +227,6 @@ export const bifrostApi = {
   // `provider` in, `name` back out — Bifrost's create payload does not use the
   // field its response does, and sending `name` fails with "Missing provider".
   createProvider: (provider: string) => api.post<BifrostProvider>(`${bf}/providers`, { provider }),
-  updateProvider: (name: string, data: Partial<BifrostProvider>) =>
-    api.put<BifrostProvider>(`${bf}/providers/${encodeURIComponent(name)}`, data),
   removeProvider: (name: string) => api.delete(`${bf}/providers/${encodeURIComponent(name)}`),
 
   listKeys: (provider: string) =>
