@@ -1215,6 +1215,10 @@ export interface FederationSourceView {
   lag_seconds?: number | null
   /** The server's read of "has not kept up with interval_seconds". Absent on a PATCH response. */
   quiet?: boolean
+  /** Seconds the data is behind: now minus the cursor. Null while the source is not polling or before its first fetch. */
+  cursor_lag_seconds?: number | null
+  /** A caught-up source's cursor lag is about one interval plus this. */
+  settling_margin_seconds?: number
   is_configured: boolean
   default_interval_seconds: number
 }

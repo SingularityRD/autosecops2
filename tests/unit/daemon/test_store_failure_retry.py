@@ -3,10 +3,9 @@
 The processor retries ``_store_finding`` in place. On give-up it forgets the
 dedup key that was marked at enqueue, on the same ``RedisDedupSet`` instance.
 
-Splunk, CrowdStrike, and Elastic re-read a lookback of
-``max(interval // 60 + 1, 5)`` minutes, so an unmarked id is queued again.
-The webhook does not: the HTTP response has already moved. Federation and
-Kafka hold their cursor/offset until the store is acked (test_ack_before_advance).
+Federation and Kafka hold their cursor/offset until the store is acked
+(test_ack_before_advance), so an unmarked id is queued again on the re-read.
+The webhook does not: the HTTP response has already moved.
 """
 
 from __future__ import annotations
@@ -14,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
-from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from unittest.mock import patch
 
@@ -23,13 +21,12 @@ from aiohttp import ClientConnectorError, ClientSession
 
 from core.config import get_settings
 from core.ingestion.dedup import RedisDedupSet
+from core.ingestion.handoff import envelope
 from services.daemon.config import PollingConfig, ProcessingConfig
 from services.daemon.poller import DataPoller
 from services.daemon.processor import FindingProcessor, _STORE_ATTEMPTS
 
 pytestmark = pytest.mark.unit
-
-_FIXED = datetime(2026, 10, 1, 12, 0, 0)
 
 
 class _Ingest:
@@ -55,7 +52,6 @@ def _dead_redis(monkeypatch) -> None:
 def _poller(monkeypatch) -> DataPoller:
     _dead_redis(monkeypatch)
     poller = DataPoller(PollingConfig(webhook_token="test-token", webhook_port=18781))
-    poller._federation.is_active_for = lambda source_id: False
     poller.set_output_queue(asyncio.Queue())
     return poller
 
@@ -86,43 +82,6 @@ async def _drain(processor: FindingProcessor, queue: asyncio.Queue) -> Dict[str,
     return item
 
 
-class _Splunk:
-    def __init__(self, events: List[Dict[str, Any]]):
-        self.events = events
-        self.queries: List[Dict[str, Any]] = []
-
-    def search(self, **kwargs: Any) -> List[Dict[str, Any]]:
-        self.queries.append(kwargs)
-        return list(self.events)
-
-
-class _CrowdStrike:
-    def __init__(self, detections: List[Dict[str, Any]]):
-        self.detections = detections
-        self.queries: List[str] = []
-
-    def get_detections(self, filter_query: str, limit: int) -> List[Dict[str, Any]]:
-        self.queries.append(filter_query)
-        return list(self.detections)
-
-
-class _Elastic:
-    def __init__(self, alerts: List[Dict[str, Any]]):
-        self.alerts = alerts
-        self.start_times: List[Any] = []
-
-    async def fetch_alerts(self, start_time: Any, limit: int) -> List[Dict[str, Any]]:
-        self.start_times.append(start_time)
-        return list(self.alerts)
-
-    def transform_alert_to_finding(self, alert: Dict[str, Any]) -> Dict[str, Any]:
-        return {
-            "finding_id": f"elastic-{alert['id']}",
-            "severity": "high",
-            "data_source": "elastic",
-        }
-
-
 def _down() -> List[Exception]:
     return [ConnectionError("could not connect to server: Connection refused")] * (
         _STORE_ATTEMPTS
@@ -131,99 +90,73 @@ def _down() -> List[Exception]:
 
 @pytest.mark.asyncio
 async def test_one_store_failure_then_success_keeps_the_key(monkeypatch):
-    poller = _poller(monkeypatch)
+    _dead_redis(monkeypatch)
     processor = _processor(monkeypatch)
-    poller._splunk_service = _Splunk(
-        [{"_cd": "42:1001", "search_name": "rule", "urgency": "high"}]
+    dedup = RedisDedupSet("unit-retry-once")
+    finding_id = "splunk-42:1001"
+    await dedup.mark_processed(finding_id)
+    queue: asyncio.Queue = asyncio.Queue()
+    queue.put_nowait(
+        envelope(
+            {"finding_id": finding_id, "severity": "high"},
+            "splunk",
+            dedup=dedup,
+            dedup_key=finding_id,
+        )
     )
     ingest = _Ingest(
         [ConnectionError("could not connect to server: Connection refused"), True]
     )
     _patch_ingest(monkeypatch, ingest)
 
-    await poller._poll_splunk()
-    item = await _drain(processor, poller._output_queue)
+    item = await _drain(processor, queue)
 
-    finding_id = "splunk-42:1001"
-    assert item["dedup"] is poller._splunk_dedup
+    assert item["dedup"] is dedup
     assert item["dedup_key"] == finding_id
     assert ingest.calls == 2
     assert ingest.finding_ids == [finding_id, finding_id]
     assert processor.stats["processed"] == 1
     assert processor.stats["store_dropped"] == 0
-    assert await poller._splunk_dedup.is_processed(finding_id) is True
-    assert poller._output_queue.empty()
+    assert await dedup.is_processed(finding_id) is True
+    assert queue.empty()
 
 
 @pytest.mark.asyncio
-async def test_a_store_that_keeps_failing_is_dropped_and_splunk_requeues(
+async def test_a_store_that_keeps_failing_is_dropped_and_its_key_forgotten(
     monkeypatch, caplog
 ):
-    poller = _poller(monkeypatch)
+    """Give-up forgets the key on the producer's instance, so a re-read retries.
+
+    Federation and Kafka re-read by holding their cursor/offset
+    (test_ack_before_advance); the forgotten key is what lets that re-read
+    enqueue the finding again.
+    """
+    _dead_redis(monkeypatch)
     processor = _processor(monkeypatch)
-    event = {"_cd": "42:1001", "search_name": "rule", "urgency": "high"}
-    poller._splunk_service = _Splunk([event])
+    dedup = RedisDedupSet("unit-retry-drop")
+    finding_id = "splunk-42:1001"
+    await dedup.mark_processed(finding_id)
+    queue: asyncio.Queue = asyncio.Queue()
+    queue.put_nowait(
+        envelope(
+            {"finding_id": finding_id, "severity": "high"},
+            "splunk",
+            dedup=dedup,
+            dedup_key=finding_id,
+        )
+    )
     ingest = _Ingest(_down())
     _patch_ingest(monkeypatch, ingest)
 
-    await poller._poll_splunk()
-    # Default Splunk interval is 300s, so the window is max(300 // 60 + 1, 5) minutes.
-    assert poller._splunk_service.queries[0]["earliest_time"] == "-6m"
-    assert await poller._splunk_dedup.is_processed("splunk-42:1001") is True
-
     caplog.set_level(logging.ERROR)
-    await _drain(processor, poller._output_queue)
+    await _drain(processor, queue)
 
     assert ingest.calls == _STORE_ATTEMPTS
     assert processor.stats["processed"] == 0
     assert processor.stats["store_dropped"] == 1
     assert processor.stats["errors"] == 0
-    assert "Dropped finding splunk-42:1001" in caplog.text
-    assert await poller._splunk_dedup.is_processed("splunk-42:1001") is False
-
-    await poller._poll_splunk()
-    again = poller._output_queue.get_nowait()
-    assert again["data"]["finding_id"] == "splunk-42:1001"
-    assert again["dedup"] is poller._splunk_dedup
-    assert await poller._splunk_dedup.is_processed("splunk-42:1001") is True
-
-
-@pytest.mark.asyncio
-async def test_crowdstrike_and_elastic_requeue_inside_their_lookback(monkeypatch):
-    """Both re-read max(interval // 60 + 1, 5) minutes, so an unmarked id returns."""
-    poller = _poller(monkeypatch)
-    processor = _processor(monkeypatch)
-    ingest = _Ingest(_down() + _down())
-    _patch_ingest(monkeypatch, ingest)
-
-    crowdstrike = _CrowdStrike(
-        [{"detection_id": "det-1", "max_severity_displayname": "High"}]
-    )
-    elastic = _Elastic([{"id": "a1"}])
-    poller._crowdstrike_service = crowdstrike
-    poller._elastic_service = elastic
-
-    with patch("services.daemon.poller.utcnow", return_value=_FIXED):
-        await poller._poll_crowdstrike()
-        await _drain(processor, poller._output_queue)
-        await poller._poll_crowdstrike()
-        requeued_cs = poller._output_queue.get_nowait()
-
-        await poller._poll_elastic()
-        await _drain(processor, poller._output_queue)
-        await poller._poll_elastic()
-        requeued_elastic = poller._output_queue.get_nowait()
-
-    # Default intervals: CrowdStrike 60s -> 5 minutes; Elastic shares Splunk's
-    # 300s -> 6 minutes.
-    assert crowdstrike.queries[0] == "created_timestamp:>='2026-10-01T11:55:00Z'"
-    assert elastic.start_times[0] == _FIXED - timedelta(minutes=6)
-    assert requeued_cs["data"]["finding_id"] == "cs-det-1"
-    assert requeued_elastic["data"]["finding_id"] == "elastic-a1"
-    assert poller._output_queue.empty()
-    assert processor.stats["store_dropped"] == 2
-    assert await poller._crowdstrike_dedup.is_processed("cs-det-1") is True
-    assert await poller._elastic_dedup.is_processed("elastic-a1") is True
+    assert f"Dropped finding {finding_id}" in caplog.text
+    assert await dedup.is_processed(finding_id) is False
 
 
 @pytest.mark.asyncio

@@ -11,13 +11,15 @@ earlier query ran empty.
 from __future__ import annotations
 
 import asyncio
+import math
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 from unittest.mock import patch
 
 import pytest
 
-from core.federation.adapters._base import parse_cursor_since
+from core.federation.adapters._base import SETTLING_MARGIN, parse_cursor_since
 from core.federation.runner import FederationRunner
 from core.integrations.splunk.adapter import _QUERIES, SplunkAdapter
 from core.time import utcnow
@@ -152,43 +154,48 @@ def test_not_configured_returns_empty():
 
 
 # ---------------------------------------------------------------------------
-# Full batch (#1571)
+# Full batch (#1571), read by index time (#1262)
 # ---------------------------------------------------------------------------
 
 T0 = datetime(2026, 9, 29, 2, 0, 30)  # mid-minute on purpose
 
 
 def _timed(n: int, when: datetime) -> Dict[str, Any]:
+    """An event Splunk indexed at ``when`` (the cursor follows index time)."""
     return {
         "_cd": f"e{n}",
         "_time": when.replace(tzinfo=timezone.utc).isoformat(timespec="milliseconds"),
+        "vigil_indextime": str(when.replace(tzinfo=timezone.utc).timestamp()),
         "urgency": "high",
     }
 
 
 class _WindowSplunk:
-    """Honours an absolute epoch ``earliest_time``, ``sort 0 _time`` and
-    ``head N`` the way Splunk does, over a fixed set of events."""
+    """Honours the index-time search the adapter sends, the way Splunk does:
+    ``_index_earliest`` (inclusive), ``sort 0 vigil_indextime``, ``head N``,
+    and the appended row carrying Splunk's clock."""
 
-    def __init__(self, events: List[Dict[str, Any]]):
+    def __init__(self, events: List[Dict[str, Any]], now: datetime):
         self.events = events
-        self.earliest: List[str] = []
+        self.now = now
+        self.earliest: List[float] = []
 
     def search(self, *, query: str, earliest_time: str, max_count: int, **kw):
-        self.earliest.append(earliest_time)
-        assert "sort 0 _time" in query
-        floor = float(earliest_time)
-        hits = [
-            e
-            for e in self.events
-            if datetime.fromisoformat(e["_time"]).timestamp() >= floor
-        ]
-        return sorted(hits, key=lambda e: e["_time"])[:max_count]
+        assert "| sort 0 vigil_indextime |" in query
+        floor = float(re.search(r"_index_earliest=(\d+)", query).group(1))
+        self.earliest.append(floor)
+        hits = [e for e in self.events if float(e["vigil_indextime"]) >= floor]
+        hits = sorted(hits, key=lambda e: float(e["vigil_indextime"]))
+        return hits[: max_count - 1] + [{"vigil_now": str(_epoch(self.now))}]
 
 
-def _window_adapter(events: List[Dict[str, Any]]):
+def _epoch(when: datetime) -> float:
+    return when.replace(tzinfo=timezone.utc).timestamp()
+
+
+def _window_adapter(events: List[Dict[str, Any]], now: datetime = T0 + timedelta(hours=1)):
     adapter = SplunkAdapter()
-    svc = _WindowSplunk(events)
+    svc = _WindowSplunk(events, now)
     adapter._service = svc
     return adapter, svc
 
@@ -204,8 +211,9 @@ def test_full_batch_keeps_the_oldest_and_stops_the_cursor_at_the_newest_kept():
 
     assert [f["external_id"] for f in res.findings] == ["e1", "e2", "e3"]
     assert parse_cursor_since(res.cursor) == T0 + timedelta(minutes=3)
+    assert res.truncated is True
     # Absolute epoch of the cursor, not a minute-rounded "-Nm".
-    assert float(svc.earliest[0]) == T0.replace(tzinfo=timezone.utc).timestamp()
+    assert svc.earliest[0] == math.floor(_epoch(T0))
 
 
 def test_events_in_one_minute_still_progress_the_cursor():
@@ -221,7 +229,7 @@ def test_events_in_one_minute_still_progress_the_cursor():
         cursor = res.cursor
 
     assert set(seen) == {f"e{i}" for i in range(1, 8)}
-    # Ticks 1-3 filled the batch; the cursor advanced each time (e3, e6, e7...).
+    # Ticks 1-3 filled the batch; the cursor advanced each time (e3, e5, e7...).
     assert parse_cursor_since(cursor) > T0 + timedelta(seconds=7)
 
 
@@ -235,12 +243,13 @@ def test_events_at_one_instant_step_the_cursor_forward(caplog):
             )
         )
 
-    assert parse_cursor_since(res.cursor) == T0 + timedelta(milliseconds=1)
+    # _indextime is whole seconds, so the step is one second.
+    assert parse_cursor_since(res.cursor) == T0 + timedelta(seconds=1)
     assert "not past the tick start" in caplog.text
 
 
 def test_full_batch_with_unreadable_times_warns_and_moves_to_now(caplog):
-    events = [{"_cd": f"e{i}", "_time": "garbage"} for i in range(3)]
+    events = [{"_cd": f"e{i}", "vigil_indextime": "garbage"} for i in range(3)]
     adapter = SplunkAdapter()
     adapter._service = _FakeSplunk([events])
 
@@ -248,5 +257,6 @@ def test_full_batch_with_unreadable_times_warns_and_moves_to_now(caplog):
     with caplog.at_level("WARNING"):
         res = asyncio.run(adapter.fetch(since=None, cursor=CURSOR, max_items=3))
 
-    assert parse_cursor_since(res.cursor) >= before
+    # Drained: now less the settling margin, so a late-indexed alert is re-read.
+    assert parse_cursor_since(res.cursor) >= before - SETTLING_MARGIN
     assert "no alert carried a readable time" in caplog.text

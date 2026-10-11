@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 from core.config import is_integration_enabled
 from core.federation.adapters._base import (
     fresh_cursor,
-    full_batch_cursor,
+    next_cursor,
     parse_alert_time,
     parse_cursor_since,
 )
@@ -118,14 +118,16 @@ class CrowdStrikeAdapter:
             if f is not None:
                 findings.append(f)
 
-        cursor_out = truncated and full_batch_cursor(
+        # A short batch drains to now less the settling margin; a full one
+        # stops at the newest detection kept and reports more available.
+        cursor_out, more = next_cursor(
             [t for t, _ in by_time],
+            truncated=truncated,
             start=cutoff,
             now=now,
             source=self.name,
-            count=len(by_time),
         )
-        return FetchResult(findings=findings, cursor=cursor_out or fresh_cursor())
+        return FetchResult(findings=findings, cursor=cursor_out, truncated=more)
 
 
 def _detection_to_finding(detection: Dict[str, Any]) -> Optional[Dict[str, Any]]:

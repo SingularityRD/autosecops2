@@ -28,11 +28,15 @@ class FetchResult:
     writes it to ``federation_sources.cursor`` after a successful fetch.
     ``dropped`` counts records the adapter received but could not turn into a
     finding (deliberate filters such as severity or dedup are not drops).
+    ``truncated`` is True when the fetch filled ``max_items`` and the source
+    may hold more past the cursor, so the runner fetches again without
+    waiting a full interval.
     """
 
     findings: List[Dict[str, Any]] = field(default_factory=list)
     cursor: Dict[str, Any] = field(default_factory=dict)
     dropped: int = 0
+    truncated: bool = False
 
 
 class FederationAdapter(Protocol):

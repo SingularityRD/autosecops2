@@ -25,6 +25,7 @@ from typing import Any, Dict, Optional
 
 from core.ingestion.ack import Pending, new_ack, stored_keys, wait_all
 from core.ingestion.dedup import RedisDedupSet
+from core.ingestion.handoff import envelope, put_or_shutdown
 from core.ingestion.kafka_config import KafkaConfig
 from core.time import utcnow
 
@@ -47,6 +48,7 @@ class KafkaConsumerService:
         self._dedup = dedup or RedisDedupSet("kafka")
         self._consumer = None
         self._running = False
+        self._shutdown = asyncio.Event()
 
         self.stats: Dict[str, Any] = {
             "connected": False,
@@ -92,6 +94,7 @@ class KafkaConsumerService:
 
     async def run(self, shutdown_event: asyncio.Event) -> None:
         """Main consumer loop. Exits when ``shutdown_event`` is set."""
+        self._shutdown = shutdown_event
         if not self.config.topics:
             logger.warning("Kafka consumer: no topics configured, refusing to start")
             return
@@ -124,6 +127,8 @@ class KafkaConsumerService:
                         await self._process_partition(tp, msgs)
                         for tp, msgs in batches.items()
                     ]
+                    if shutdown_event.is_set():
+                        break
                     if not all(results):
                         await asyncio.sleep(_RETRY_BACKOFF_SECONDS)
                 except asyncio.CancelledError:
@@ -156,6 +161,12 @@ class KafkaConsumerService:
                 if msgs:
                     await self._consumer.commit({tp: msgs[-1].offset + 1})
                 return True
+            if self._shutdown.is_set():
+                # Stopped while the hand-off was full: nothing more is
+                # committed for this partition, so the rest is re-read (and
+                # deduped) next start.
+                logger.info("Kafka: shutdown during hand-off; %s left uncommitted", tp)
+                return False
             reason = "findings not stored"
         except asyncio.CancelledError:
             raise
@@ -181,6 +192,7 @@ class KafkaConsumerService:
         findings = [f for f in (self._decode(topic, m) for m in msgs) if f]
         seen = await self._dedup.are_processed(f["finding_id"] for f in findings)
         pending: Pending = []
+        stopped = False
         try:
             for finding in findings:
                 finding_id = finding["finding_id"]
@@ -191,22 +203,21 @@ class KafkaConsumerService:
 
                 finding.setdefault("data_source", f"kafka:{topic}")
                 ack = new_ack()
-                await self._output_queue.put(
-                    {
-                        "type": "finding",
-                        "source": f"kafka:{topic}",
-                        "data": finding,
-                        "timestamp": utcnow().isoformat(),
-                        "dedup": self._dedup,
-                        "dedup_key": finding_id,
-                        "ack": ack,
-                    }
+                item = envelope(
+                    finding, f"kafka:{topic}", dedup=self._dedup, dedup_key=finding_id
                 )
+                item["ack"] = ack
+                # Waits while the hand-off is full, but not past shutdown: the
+                # rest of the partition is left uncommitted and re-read next start.
+                if not await put_or_shutdown(self._output_queue, item, self._shutdown):
+                    ack.cancel()
+                    stopped = True
+                    break
                 # A repeat of this id later in the batch is a duplicate.
                 seen.add(finding_id)
                 pending.append((finding_id, ack))
                 self.stats["messages_enqueued"] += 1
-            all_stored = await wait_all(pending)
+            all_stored = await wait_all(pending) and not stopped
         finally:
             # Also on cancellation: mark what was stored before the stop.
             stored = stored_keys(pending)

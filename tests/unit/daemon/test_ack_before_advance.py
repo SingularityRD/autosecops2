@@ -50,7 +50,6 @@ def env(monkeypatch):
     monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:1/0")  # in-memory dedup
     get_settings.cache_clear()
     monkeypatch.setattr("services.daemon.processor._STORE_RETRY_BACKOFF", 0)
-    monkeypatch.setattr("services.daemon.processor.INPUT_QUEUE_MAXSIZE", 2)
     cursors: List[Dict[str, Any]] = []
     failures: List[str] = []
     monkeypatch.setattr(
@@ -74,6 +73,7 @@ def _processor(monkeypatch, store: _Store) -> FindingProcessor:
             auto_triage_enabled=False,
             auto_enrich_enabled=False,
             max_concurrent_tasks=1,
+            handoff_queue_maxsize=2,
         )
     )
     processor._data_service = object()

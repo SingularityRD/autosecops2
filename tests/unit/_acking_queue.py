@@ -17,6 +17,7 @@ class AckingQueue(asyncio.Queue):
         super().__init__(*args, **kwargs)
         self._stored = stored
 
-    async def put(self, item: Any) -> None:
-        await super().put(item)
+    def put_nowait(self, item: Any) -> None:
+        # Queue.put ends in put_nowait, and the hand-off tries put_nowait first.
+        super().put_nowait(item)
         settle_ack(item.get("ack"), self._stored)

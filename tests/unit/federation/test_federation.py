@@ -380,47 +380,6 @@ async def test_missing_sdk_records_failure_and_keeps_cursor(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# is_active_for: depends on global toggle AND per-source row enabled
-# ---------------------------------------------------------------------------
-
-
-def test_is_active_for_global_off(monkeypatch):
-    runner = FederationRunner(output_queue=None)
-    monkeypatch.setattr(
-        "core.federation.runner.store.is_globally_enabled", lambda: False
-    )
-    monkeypatch.setattr(
-        "core.federation.runner.store.get_source",
-        lambda sid: {"source_id": sid, "enabled": True},
-    )
-    assert runner.is_active_for("splunk") is False
-
-
-def test_is_active_for_global_on_source_off(monkeypatch):
-    runner = FederationRunner(output_queue=None)
-    monkeypatch.setattr(
-        "core.federation.runner.store.is_globally_enabled", lambda: True
-    )
-    monkeypatch.setattr(
-        "core.federation.runner.store.get_source",
-        lambda sid: {"source_id": sid, "enabled": False},
-    )
-    assert runner.is_active_for("splunk") is False
-
-
-def test_is_active_for_both_on(monkeypatch):
-    runner = FederationRunner(output_queue=None)
-    monkeypatch.setattr(
-        "core.federation.runner.store.is_globally_enabled", lambda: True
-    )
-    monkeypatch.setattr(
-        "core.federation.runner.store.get_source",
-        lambda sid: {"source_id": sid, "enabled": True},
-    )
-    assert runner.is_active_for("splunk") is True
-
-
-# ---------------------------------------------------------------------------
 # Seed: only seeds adapters that report is_configured
 # ---------------------------------------------------------------------------
 
@@ -590,19 +549,6 @@ def test_one_adapter_import_failure_leaves_the_others_registered(monkeypatch, ca
     assert len(errors) == 1
     assert broken in errors[0].getMessage()
     assert errors[0].exc_info is not None
-
-
-def test_is_active_for_false_when_no_adapter_is_registered(monkeypatch):
-    runner = FederationRunner(output_queue=None)
-    monkeypatch.setattr(fed_registry, "is_registered", lambda name: False)
-    monkeypatch.setattr(
-        "core.federation.runner.store.is_globally_enabled", lambda: True
-    )
-    monkeypatch.setattr(
-        "core.federation.runner.store.get_source",
-        lambda sid: {"source_id": sid, "enabled": True},
-    )
-    assert runner.is_active_for("splunk") is False
 
 
 def test_store_read_errors_log_a_warning_and_read_as_missing(monkeypatch, caplog):

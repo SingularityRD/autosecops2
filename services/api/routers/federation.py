@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from core.federation import registry as fed_registry
 from core.federation import store as fed_store
+from core.federation.adapters._base import SETTLING_MARGIN
 from core.federation.lag import source_collection_lag
 from core.federation.runner import request_poll_now
 from core.routing import Auth, RouterMeta
@@ -63,8 +64,17 @@ class FederationSourcePatch(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _enrich_with_adapter(row: Dict[str, Any]) -> Dict[str, Any]:
-    """Merge live adapter state (is_configured, default_interval) into a row dict."""
+def _enrich_with_adapter(
+    row: Dict[str, Any], *, global_enabled: bool
+) -> Dict[str, Any]:
+    """Merge live adapter state (is_configured, default_interval) and cursor lag into a row dict."""
+    # How far behind the source the data is (now minus the cursor), beside
+    # ``lag_seconds``, which is how long since the last successful poll.
+    row["cursor_lag_seconds"] = fed_store.source_lag_seconds(
+        row, global_enabled=global_enabled
+    )
+    # A caught-up source's cursor lag is about one interval plus this.
+    row["settling_margin_seconds"] = SETTLING_MARGIN.total_seconds()
     adapter = fed_registry.get_adapter(row["source_id"])
     if adapter is None:
         row["is_configured"] = False
@@ -113,10 +123,14 @@ async def list_sources() -> Dict[str, Any]:
     me" entries without the daemon being up). Adapters whose integration is
     not configured are still listed but flagged ``is_configured=false``. Each
     row carries ``lag_seconds`` (null until a poll has succeeded) and ``quiet``
-    from :func:`core.federation.lag.source_collection_lag`.
+    from :func:`core.federation.lag.source_collection_lag`, and
+    ``cursor_lag_seconds``: now minus the cursor, null while the source is not
+    polling or has not completed a fetch.
     """
     rows_by_id = {row["source_id"]: row for row in fed_store.list_sources()}
     lag_by_id = {r["source_id"]: r for r in source_collection_lag()}
+    global_settings = fed_store.get_global_settings()
+    global_enabled = bool(global_settings.get("enabled", False))
 
     out: List[Dict[str, Any]] = []
     for adapter in fed_registry.list_adapters():
@@ -143,9 +157,9 @@ async def list_sources() -> Dict[str, Any]:
         row = dict(
             row, lag_seconds=lag.get("lag_seconds"), quiet=lag.get("quiet", True)
         )
-        out.append(_enrich_with_adapter(row))
+        out.append(_enrich_with_adapter(row, global_enabled=global_enabled))
 
-    return {"sources": out, "global": fed_store.get_global_settings()}
+    return {"sources": out, "global": global_settings}
 
 
 @router.patch("/sources/{source_id}")
@@ -193,7 +207,7 @@ async def patch_source(
 
     if row is None:
         raise HTTPException(status_code=500, detail="Failed to persist source")
-    return _enrich_with_adapter(row)
+    return _enrich_with_adapter(row, global_enabled=fed_store.is_globally_enabled())
 
 
 @router.post("/sources/{source_id}/poll-now")

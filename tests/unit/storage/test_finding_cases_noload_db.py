@@ -120,9 +120,13 @@ def test_get_finding_and_technique_reads_skip_cases():
     assert FindingSchema.dump(one) == baseline[ids[1]]
     ours = {f.finding_id: FindingSchema.dump(f) for f in by_technique}
     assert {k: ours[k] for k in ids} == baseline
-    assert {d["finding_id"]: d for d in missing if d["finding_id"] in baseline} == (
-        baseline
-    )
+    ours_missing = {d["finding_id"]: d for d in missing if d["finding_id"] in baseline}
+    # The sweep adds bulk_imported for its response gate (#1334); the rest is
+    # the Finding dump.
+    assert {fid: d.pop("bulk_imported") for fid, d in ours_missing.items()} == {
+        fid: False for fid in baseline
+    }
+    assert ours_missing == baseline
 
 
 def test_update_finding_skips_cases_and_links_survive():

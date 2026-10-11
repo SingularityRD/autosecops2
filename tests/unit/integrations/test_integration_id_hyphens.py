@@ -7,10 +7,8 @@ config lookups are exact-match, so underscore forms silently never match.
 from __future__ import annotations
 
 import ast
-import sys
-import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -32,7 +30,6 @@ LEGACY_UNDERSCORE_IDS = (
 # Call sites that must use Integration IDs (settings keys), not federation
 # source names / Redis namespaces / finding source labels.
 TARGET_FILES = (
-    "services/daemon/poller.py",
     "core/integrations/azure_sentinel/ingestion.py",
     "core/integrations/aws_security_hub/ingestion.py",
     "core/integrations/microsoft_defender/ingestion.py",
@@ -90,24 +87,6 @@ def _integration_id_literals(path: Path) -> list[tuple[int, str, str]]:
                         if value is not None:
                             found.append((node.lineno, "integration_id=", value))
     return found
-
-
-def _make_poller():
-    from services.daemon.config import PollingConfig
-    from services.daemon.poller import DataPoller
-
-    with (
-        patch("services.daemon.poller.FederationRunner"),
-        patch("services.daemon.poller.RedisDedupSet"),
-    ):
-        return DataPoller(PollingConfig())
-
-
-def _stub_database_data_service():
-    """Avoid importing the real DB stack (SQLAlchemy, psycopg2) during unit tests."""
-    module = types.ModuleType("core.storage.database_data_service")
-    module.DatabaseDataService = MagicMock(name="DatabaseDataService")
-    return patch.dict(sys.modules, {"core.storage.database_data_service": module})
 
 
 @pytest.mark.parametrize("rel_path", TARGET_FILES)
@@ -170,68 +149,38 @@ def test_finding_data_source_values_remain_underscore(
     assert f'"data_source": "{expected_source}"' in source
 
 
-def test_poller_inits_cloud_siem_services_when_hyphenated_ids_enabled():
-    """Settings-style hyphenated enablement must start the three cloud pollers."""
+def _cloud_adapters():
+    """The three cloud SIEM adapters, as the Federation registry builds them."""
+    from core.integrations.aws_security_hub.adapter import (
+        _factory as aws_factory,
+    )
+    from core.integrations.azure_sentinel.adapter import _factory as azure_factory
+    from core.integrations.microsoft_defender.adapter import (
+        _factory as defender_factory,
+    )
+
+    return [azure_factory(), aws_factory(), defender_factory()]
+
+
+def test_federation_polls_cloud_siems_when_hyphenated_ids_enabled():
+    """Settings-style hyphenated enablement must switch the three cloud sources on.
+
+    Federation is the only polling path, so ``is_configured`` is what decides
+    whether a source is seeded and polled.
+    """
     enabled = set(CANONICAL_IDS)
-    azure = MagicMock(name="AzureSentinelIngestion")
-    aws = MagicMock(name="AWSSecurityHubIngestion")
-    defender = MagicMock(name="MicrosoftDefenderIngestion")
-
-    with (
-        _stub_database_data_service(),
-        patch(
-            "core.config.is_integration_enabled",
-            side_effect=lambda integration_id: integration_id in enabled,
-        ),
-        patch("core.config.get_integration_config", return_value={}),
-        patch(
-            "core.integrations.azure_sentinel.ingestion.AzureSentinelIngestion",
-            return_value=azure,
-        ),
-        patch(
-            "core.integrations.aws_security_hub.ingestion.AWSSecurityHubIngestion",
-            return_value=aws,
-        ),
-        patch(
-            "core.integrations.microsoft_defender.ingestion.MicrosoftDefenderIngestion",
-            return_value=defender,
-        ),
+    with patch(
+        "core.federation.adapters._siem_base.is_integration_enabled",
+        side_effect=lambda integration_id: integration_id in enabled,
     ):
-        poller = _make_poller()
-        poller._init_services()
-
-    assert poller._azure_sentinel_service is azure
-    assert poller._aws_security_hub_service is aws
-    assert poller._microsoft_defender_service is defender
+        assert [a.is_configured() for a in _cloud_adapters()] == [True, True, True]
 
 
-def test_poller_skips_cloud_siems_when_only_underscore_ids_enabled():
+def test_federation_skips_cloud_siems_when_only_underscore_ids_enabled():
     """Underscore keys must not satisfy the hyphenated enablement checks."""
     enabled = set(LEGACY_UNDERSCORE_IDS)
-
-    with (
-        _stub_database_data_service(),
-        patch(
-            "core.config.is_integration_enabled",
-            side_effect=lambda integration_id: integration_id in enabled,
-        ),
-        patch("core.config.get_integration_config", return_value={}),
-        patch(
-            "core.integrations.azure_sentinel.ingestion.AzureSentinelIngestion"
-        ) as azure,
-        patch(
-            "core.integrations.aws_security_hub.ingestion.AWSSecurityHubIngestion"
-        ) as aws,
-        patch(
-            "core.integrations.microsoft_defender.ingestion.MicrosoftDefenderIngestion"
-        ) as defender,
+    with patch(
+        "core.federation.adapters._siem_base.is_integration_enabled",
+        side_effect=lambda integration_id: integration_id in enabled,
     ):
-        poller = _make_poller()
-        poller._init_services()
-
-    azure.assert_not_called()
-    aws.assert_not_called()
-    defender.assert_not_called()
-    assert poller._azure_sentinel_service is None
-    assert poller._aws_security_hub_service is None
-    assert poller._microsoft_defender_service is None
+        assert [a.is_configured() for a in _cloud_adapters()] == [False, False, False]
