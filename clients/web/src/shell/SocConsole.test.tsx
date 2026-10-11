@@ -9,9 +9,10 @@ import { NAV } from '../data/data'
 // these resolve to the mocked implementations (vi.mock below is hoisted)
 import api, { streamFetch, aiDecisionsApi, approvalsApi, workflowApi, configApi, consoleApi, timelineApi } from '../services/api'
 
-const authState = vi.hoisted(() => ({
-  allow: (_permission: string): boolean => true,
-}))
+const authState = vi.hoisted(() => {
+  const allow: (permission: string) => boolean = () => true
+  return { allow }
+})
 
 vi.mock('../contexts/AuthContext', () => ({
   useAuth: () => ({

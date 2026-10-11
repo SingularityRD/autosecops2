@@ -18,6 +18,10 @@ jobs:
     # Only run on the canonical repo. Forks lack the release-please GitHub
     # App vars/secrets below, so this job would fail on every push to their
     # main and email the fork owner. Skipping (not failing) keeps forks quiet.
+    # AutoSecOps: intentionally still guarded on the upstream repo, so it never
+    # runs in SingularityRD/autosecops2 (needs a GitHub App + private key we do
+    # not have, and opens release PRs/tags that trigger release.yml). Retarget
+    # only together with release.yml.
     if: github.repository == 'Vigil-SOC/vigil'
     runs-on: ubuntu-latest
     timeout-minutes: 5
