@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
-    <title>Starting Vigil</title>
+    <title>Starting AutoSecOps</title>
     <style>
       /* Colors mirror the app theme tokens in clients/web/src/styles.css:
          --bg #0c0f14, --tx #e8ebf0, --tx-3 #7c8593, --line #232a35. The spinner
@@ -37,7 +37,7 @@
     </style>
   </head>
   <body>
-    <h1>Vigil</h1>
+    <h1>AutoSecOps</h1>
     <div class="sub" id="sub">Starting the security operations stack…</div>
     <ul id="steps"></ul>
     <div class="log" id="log"></div>
@@ -51,7 +51,7 @@
         venv: "Creating virtual environment", deps: "Installing Python dependencies",
         "frontend-deps": "Installing UI dependencies", "frontend-build": "Building the UI",
         docker: "Starting Docker", services: "Starting services (postgres, redis, bifrost, ollama)",
-        images: "Preparing Vigil (first run only)",
+        images: "Preparing AutoSecOps (first run only)",
         frontend: "Checking the UI build", schema: "Preparing the database",
         backend: "Starting the backend", setup: "Setup complete", up: "Ready",
       };

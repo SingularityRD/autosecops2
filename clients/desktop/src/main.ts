@@ -209,17 +209,17 @@ async function promptForRepoRoot(): Promise<string | null> {
 
   const { response } = await dialog.showMessageBox({
     type: denied ? "warning" : "info",
-    title: denied ? "Vigil needs permission" : "Locate Vigil",
+    title: denied ? "AutoSecOps needs permission" : "Locate AutoSecOps",
     message: denied
-      ? "macOS is blocking access to your Vigil folder"
-      : "Select your Vigil source folder",
+      ? "macOS is blocking access to your AutoSecOps folder"
+      : "Select your AutoSecOps source folder",
     detail: denied
       ? `Your checkout is at ${deniedPath}, but macOS protects Documents, ` +
-        `Desktop and Downloads and won't let Vigil read it.\n\n` +
-        `Recommended: give Vigil Full Disk Access, then reopen it — this is a ` +
+        `Desktop and Downloads and won't let AutoSecOps read it.\n\n` +
+        `Recommended: give AutoSecOps Full Disk Access, then reopen it — this is a ` +
         `one-time setup that sticks.\n\n` +
         `Or choose the folder to continue right now (macOS may ask again next launch).`
-      : "Vigil runs its services from a local clone of the repository. " +
+      : "AutoSecOps runs its services from a local clone of the repository. " +
         "Choose the folder you cloned it into (it contains VERSION and scripts/).",
     buttons,
     defaultId: 0,
@@ -231,12 +231,12 @@ async function promptForRepoRoot(): Promise<string | null> {
     await dialog.showMessageBox({
       type: "info",
       title: "After granting access",
-      message: "Add Vigil to Full Disk Access, then reopen it.",
+      message: "Add AutoSecOps to Full Disk Access, then reopen it.",
       detail:
-        "In the window that just opened, enable Vigil (use + to add it from " +
+        "In the window that just opened, enable AutoSecOps (use + to add it from " +
         "/Applications if it isn't listed). macOS requires a relaunch for the " +
         "new permission to take effect.",
-      buttons: ["Quit Vigil"],
+      buttons: ["Quit AutoSecOps"],
     });
     return null;
   }
@@ -253,8 +253,8 @@ async function promptForRepoRoot(): Promise<string | null> {
   if (!hasRepoMarker(dir)) {
     await dialog.showMessageBox({
       type: "error",
-      title: "Not a Vigil folder",
-      message: "That folder doesn't look like a Vigil checkout.",
+      title: "Not a AutoSecOps folder",
+      message: "That folder doesn't look like a AutoSecOps checkout.",
       detail: "Expected to find VERSION and scripts/app_up.sh inside it.",
     });
     return promptForRepoRoot();
@@ -285,8 +285,8 @@ async function checkDependencies(): Promise<boolean> {
       title: "Docker is required",
       message: "Docker Desktop isn't installed.",
       detail:
-        "Vigil runs PostgreSQL, Redis and the Bifrost LLM gateway as Docker " +
-        "containers. Install Docker Desktop, then reopen Vigil.",
+        "AutoSecOps runs PostgreSQL, Redis and the Bifrost LLM gateway as Docker " +
+        "containers. Install Docker Desktop, then reopen AutoSecOps.",
       buttons: ["Get Docker Desktop", "Quit"],
       defaultId: 0,
       cancelId: 1,
@@ -552,7 +552,7 @@ async function bringUpStandalone(): Promise<boolean> {
   try {
     stageStandalone();
   } catch (e) {
-    sendSplash("error", `Could not stage the Vigil stack: ${(e as Error).message}`);
+    sendSplash("error", `Could not stage the AutoSecOps stack: ${(e as Error).message}`);
     return false;
   }
 
@@ -574,8 +574,8 @@ async function bringUpStandalone(): Promise<boolean> {
       sendSplash(
         "error",
         bundled
-          ? "Could not load the bundled Vigil image."
-          : "Could not download the Vigil image. Check your connection.",
+          ? "Could not load the bundled AutoSecOps image."
+          : "Could not download the AutoSecOps image. Check your connection.",
       );
       return false;
     }
@@ -587,7 +587,7 @@ async function bringUpStandalone(): Promise<boolean> {
   // backend logs in as that role, or `up --wait` deadlocks on /api/health.
   if ((await runCompose(composeArgs("up", "-d", "--wait", "postgres"))) !== 0) {
     phase("services", "fail");
-    sendSplash("error", "The Vigil containers did not start. See the log above.");
+    sendSplash("error", "The AutoSecOps containers did not start. See the log above.");
     return false;
   }
   if (
@@ -601,7 +601,7 @@ async function bringUpStandalone(): Promise<boolean> {
   }
   if ((await runCompose(composeArgs("up", "-d", "--wait"))) !== 0) {
     phase("services", "fail");
-    sendSplash("error", "The Vigil containers did not start. See the log above.");
+    sendSplash("error", "The AutoSecOps containers did not start. See the log above.");
     return false;
   }
   phase("services", "ok");
@@ -654,7 +654,7 @@ function createMainWindow(): void {
     height: 900,
     show: false,
     backgroundColor: "#0c0f14",
-    title: "Vigil",
+    title: "AutoSecOps",
     // macOS only: hide the title bar so content runs edge-to-edge, with the
     // traffic lights floating over the nav rail. Every other platform keeps its
     // native frame — without an equivalent overlay, a frameless window would
@@ -716,7 +716,7 @@ async function bringUpSource(): Promise<boolean> {
     }
   }
   if ((await runScript("app_up.sh", [], "up")) !== 0) {
-    sendSplash("error", "Could not start the Vigil stack. See the log above.");
+    sendSplash("error", "Could not start the AutoSecOps stack. See the log above.");
     return false;
   }
   return true;
@@ -728,7 +728,7 @@ async function bringUpStack(): Promise<void> {
   // Something already serving :6987 (a dev stack, or a previous run) would make
   // our own bind fail; adopt it instead of fighting over the port.
   if (await pingHealth()) {
-    sendSplash("log", "Vigil is already running — connecting.");
+    sendSplash("log", "AutoSecOps is already running — connecting.");
     stackReady = true;
     updateTray();
     createMainWindow();
@@ -751,7 +751,7 @@ async function bringUpStack(): Promise<void> {
 
 function trayTemplate(): Electron.MenuItemConstructorOptions[] {
   return [
-    { label: stackReady ? "Vigil — running" : "Vigil — starting…", enabled: false },
+    { label: stackReady ? "AutoSecOps — running" : "AutoSecOps — starting…", enabled: false },
     { type: "separator" },
     {
       label: "Show Window",
@@ -783,7 +783,7 @@ function trayTemplate(): Electron.MenuItemConstructorOptions[] {
     { label: "Open Logs", click: () => openLogs() },
     { label: "Support Bundle Command…", click: () => void showSupportCommand() },
     { type: "separator" },
-    { label: "Quit Vigil", click: () => app.quit() },
+    { label: "Quit AutoSecOps", click: () => app.quit() },
   ];
 }
 
@@ -803,7 +803,7 @@ function createTray(): void {
     if (img.isEmpty()) return;
     if (process.platform === "darwin") img.setTemplateImage(true);
     tray = new Tray(img);
-    tray.setToolTip("Vigil");
+    tray.setToolTip("AutoSecOps");
     updateTray();
   } catch (e) {
     tray = null;

@@ -149,9 +149,9 @@ async def lifespan(app: FastAPI):
 # `/api/v1/**`, so this says 1 and stays at 1 until there is a v2. The build
 # version is still reported, by the health and root endpoints below.
 app = FastAPI(
-    title="Vigil SOC API",
+    title="AutoSecOps API",
     description=(
-        "REST API for Vigil SOC Application. The frozen contract is "
+        "REST API for AutoSecOps. The frozen contract is "
         "`/api/v1/**` (excluding operations marked `x-vigil-beta`); paths "
         "under a bare `/api` are console wiring and carry no stability "
         "promise."

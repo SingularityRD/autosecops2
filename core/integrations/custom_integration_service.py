@@ -229,7 +229,7 @@ Please analyze this documentation and generate:
 
 3. **MCP Server Code** (Python):
    - Complete, production-ready MCP server implementation
-   - Follow the Vigil SOC patterns
+   - Follow the AutoSecOps patterns
    - Include proper error handling
    - Load configuration with
      `from core.integrations._base.config import missing, resolve_fields`, then

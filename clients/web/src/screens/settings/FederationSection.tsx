@@ -288,7 +288,7 @@ export default function FederationSection({ notify }: SectionProps) {
 
       {/* mb-36: room under the last row for its ⓘ popover, so it opens without scrolling the pane */}
       <p className="text-xs text-tx-3 m-0 mb-36">
-        Called “federation” in current AutoSecOps. It pulls alerts from other tools on a schedule; it is
+        Called “federation” in the AutoSecOps API. It pulls alerts from other tools on a schedule; it is
         not AutoSecOps-to-AutoSecOps sharing. Each source starts from now, with no historical backfill, and an
         alert pulled twice is counted once.
       </p>

@@ -516,7 +516,7 @@ class AuthService:
             except MFASecretDecryptionError:
                 return None  # already logged at ERROR with the cause
             totp = pyotp.TOTP(decrypted_secret)
-            uri = totp.provisioning_uri(name=user.email, issuer_name="Vigil SOC")
+            uri = totp.provisioning_uri(name=user.email, issuer_name="AutoSecOps")
             return uri
 
     @staticmethod
