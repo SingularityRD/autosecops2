@@ -77,6 +77,17 @@ def test_every_field_names_a_real_setting():
     assert {f.setting for f in INTENT_FIELDS} <= set(Settings.model_fields)
 
 
+def test_every_response_knob_has_a_manifest_key():
+    # A ResponseConfig field added without an IntentField is invisible to observe mode.
+    paths = {f.path for f in INTENT_FIELDS}
+    missing = (
+        {f"response.{f.name}" for f in dataclasses.fields(ResponseConfig)}
+        - {"response.dry_run"}
+        - paths
+    )
+    assert not missing
+
+
 def test_fresh_checkout_reports_no_differences(offline_config, caplog, monkeypatch):
     for name in list(os.environ):
         if name.upper().startswith(("DAEMON_", "ORCHESTRATOR_")):
