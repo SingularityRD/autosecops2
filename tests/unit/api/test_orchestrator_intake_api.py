@@ -1,6 +1,8 @@
-"""GET /api/orchestrator/intake lists trigger rows (#919).
+"""Orchestrator routes that read intake: GET /status reports intake depth (#919),
+POST /investigations carries an attached document onto the intake payload.
 
-DB access is mocked so the route test does not need Postgres. The daemon
+The GET /intake list route was removed upstream (#2161) as unused; these tests
+cover the routes that remain. DB access is mocked so they do not need Postgres. The daemon
 crossing behaviour lives in ``test_orchestrator_intake.py``.
 """
 
@@ -92,46 +94,6 @@ def client(monkeypatch):
     app = FastAPI()
     app.include_router(orchestrator_router, prefix="/api/orchestrator")
     return TestClient(app)
-
-
-def test_intake_list_returns_newest_first_in_the_investigations_envelope(client):
-    resp = client.get("/api/orchestrator/intake")
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert set(body) == {"triggers", "count"}
-    assert body["count"] == 3
-    assert [row["id"] for row in body["triggers"]] == [2, 3, 1]
-
-
-def test_intake_list_filters_by_state(client):
-    resp = client.get("/api/orchestrator/intake", params={"state": "queued"})
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["count"] == 2
-    assert {row["state"] for row in body["triggers"]} == {"queued"}
-
-
-def test_intake_list_honours_limit(client):
-    resp = client.get("/api/orchestrator/intake", params={"limit": 1})
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["count"] == 1
-    assert body["triggers"][0]["id"] == 2
-
-
-def test_intake_list_does_not_construct_an_orchestrator(client, monkeypatch):
-    monkeypatch.setattr(
-        "services.api.routers.orchestrator._get_orchestrator",
-        lambda: (_ for _ in ()).throw(AssertionError("must not build an orchestrator")),
-    )
-
-    resp = client.get("/api/orchestrator/intake")
-
-    assert resp.status_code == 200
-    assert resp.json()["count"] == 3
 
 
 def _patch_status_orchestrator(monkeypatch):

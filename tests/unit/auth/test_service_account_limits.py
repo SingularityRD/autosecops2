@@ -126,18 +126,6 @@ def _target(service_account: bool):
 
 
 @pytest.mark.parametrize("role_id", ["role-analyst", "role-manager", "role-admin"])
-def test_role_change_above_viewer_is_refused_for_a_service_account(admin, role_id):
-    user = _target(service_account=True)
-    session = _session_with(user, role_id)
-
-    with pytest.raises(HTTPException) as exc:
-        users_router._apply_role_change(session, admin, "user-1", role_id)
-
-    assert exc.value.status_code == 403
-    assert user.role_id == "role-viewer"
-
-
-@pytest.mark.parametrize("role_id", ["role-analyst", "role-admin"])
 def test_update_to_a_role_above_viewer_is_refused_for_a_service_account(admin, role_id):
     user = _target(service_account=True)
     session = _session_with(user, role_id)
@@ -154,7 +142,9 @@ def test_a_normal_user_can_still_be_promoted(admin):
     user = _target(service_account=False)
     session = _session_with(user, "role-analyst")
 
-    users_router._apply_role_change(session, admin, "user-1", "role-analyst")
+    request = users_router.UpdateUserRequest(role_id="role-analyst")
+
+    users_router._apply_user_update(session, admin, "user-1", request)
 
     assert user.role_id == "role-analyst"
 

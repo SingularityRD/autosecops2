@@ -106,7 +106,7 @@ export default function WorkflowsScreen({ goSettings }: ConsoleScreenProps) {
       </div>
       {tab === 'workflows' && draft && <WorkflowReaderPane draft={draft} onBack={() => setDraft(null)} onSave={saveDraft} />}
       {tab === 'workflows' && !draft && (runId ? <RunView key={runId} runId={runId} onBack={backToCatalog} /> : <WorkflowCatalog feed={workflows} onCreate={() => setDescribing(true)} goSettings={goSettings} />)}
-      {tab === 'agents' && <AgentsTab feed={agents} skillCount={skills.phase === 'ready' ? skills.rows.length : null} />}
+      {tab === 'agents' && <AgentsTab feed={agents} skillCount={skills.phase === 'ready' ? skills.rows.length : null} onToggled={workflows.reload} />}
       {tab === 'skills' && <SkillsTab feed={skills} workflows={workflows} agents={agents} />}
       {tab === 'commands' && <CommandsTab />}
       {describing && <DescribeDialog onClose={() => setDescribing(false)} onDrafted={(d) => { setDescribing(false); setTab('workflows'); setDraft(d) }} />}
@@ -201,6 +201,10 @@ function WorkflowCard({ wf: w, selected, onSelect }: { wf: Workflow; selected: b
   const commands = LIVE_COMMANDS.filter((c) => c.workflowId === w.id)
   // an absent triggers list (older backend) draws no chip at all, not "started by hand"
   const triggers = triggerLabels(w.triggers)
+  const agentMeta = useAgentMeta()
+  // a switched-off workflow reads "Off"; a blocked one is on but refused at Run
+  const blocked = w.enabled ? (w.blockedBy ?? []).map((id) => agentMeta(id).label) : []
+  const blockedText = `Can't run · ${blocked.join(', ')} ${blocked.length === 1 ? 'is' : 'are'} off`
   return (
     <div className={`wfk${w.enabled ? '' : ' off'}${selected ? ' sel' : ''}`}>
       <div
@@ -213,9 +217,12 @@ function WorkflowCard({ wf: w, selected, onSelect }: { wf: Workflow; selected: b
       >
         <span className="wfk-head">
           <span className="wfk-name" title={w.name}>{w.name}</span>
-          <LevelBadge variant="pill" level={w.successLevel} />
+          {blocked.length === 0 && <LevelBadge variant="pill" level={w.successLevel} />}
         </span>
         <span className="wfk-chips">
+          {blocked.length > 0 && (
+            <span className="wfk-chip warn" title={blockedText}>{blockedText}</span>
+          )}
           <span className="wfk-chip">{KIND_LABEL[w.runKind] ?? prettyHandle(w.runKind)}</span>
           {triggers.map((t) => <span key={t} className="wfk-chip acc">{t}</span>)}
           {commands.map((c) => <span key={c.id} className="wfk-chip acc">{c.name}</span>)}
@@ -1692,7 +1699,7 @@ function HuntFrontier({ runId, frontier, inFlight }: { runId: string; frontier: 
  *  validator's complaint and then the whole payload it complained about — hundreds of
  *  characters of the model's own prose, cut off mid-word, in a table cell. The
  *  complaint names the field; the payload is the digest the lead already reads. */
-export function refusalReason(rejection: string): string {
+function refusalReason(rejection: string): string {
   const payloadAt = rejection.indexOf('{')
   const complaint = (payloadAt === -1 ? rejection : rejection.slice(0, payloadAt)).replace(/[:\s]+$/, '')
   if (complaint === '') return 'the emission did not match the schema'
@@ -2640,7 +2647,7 @@ function HuntGaps({ gaps }: { gaps: HuntGap[] }) {
 
 /** One row per question, not per worker: a fan-out sends the same query_intent to
  *  every worker, so a failure would otherwise repeat it and bury the reasons. */
-export function groupedGaps(gaps: HuntGap[]) {
+function groupedGaps(gaps: HuntGap[]) {
   const byQuestion = new Map<string, { key: string; iteration: number; hypothesis_id: string | null; query_intent: string; reasons: string[]; workers: number }>()
   for (const gap of gaps) {
     const intent = gap.query_intent ?? ''
@@ -2788,7 +2795,8 @@ const SUCCESS_TIP = {
 }
 const ASSIGNMENT_NOTE = 'Workflow runs use the investigation assignment in Settings › AI models.'
 
-function AgentsTab({ feed, skillCount }: { feed: Feed<AgentTemplate>; skillCount: number | null }) {
+/** `onToggled` runs after an agent is switched, so the workflow cards (which say when an agent they need is off) read the new state. */
+function AgentsTab({ feed, skillCount, onToggled }: { feed: Feed<AgentTemplate>; skillCount: number | null; onToggled: () => void }) {
   const { rows, phase, error, reload } = feed
   const [busy, setBusy] = useState<string | null>(null)
   const [editId, setEditId] = useState<string | null>(null)
@@ -2819,7 +2827,7 @@ function AgentsTab({ feed, skillCount }: { feed: Feed<AgentTemplate>; skillCount
   const setEnabled = (a: AgentTemplate, on: boolean) => {
     setToggleErr(null)
     setEnabledNow((m) => ({ ...m, [a.handle]: on }))
-    agentsApi.setEnabled(a.handle, on).catch((e) => {
+    agentsApi.setEnabled(a.handle, on).then(onToggled).catch((e) => {
       setEnabledNow((m) => ({ ...m, [a.handle]: !on }))
       setToggleErr(`Couldn’t turn ${a.name} ${on ? 'on' : 'off'}: ${(e as { message?: string })?.message || 'request failed'}`)
     })
@@ -2975,7 +2983,7 @@ function AgentDeleteModal({ agent, onClose, onDeleted }: { agent: AgentTemplate;
   )
 }
 
-const SKILL_GRANT_INFO = 'The grant offers the whole library.'
+const SKILL_GRANT_INFO = 'Each of these is offered the whole library, not a chosen set. How much each skill is used is on its card.'
 const SKILL_USAGE_INFO = 'Reads of the skill body by an agent, counted over the last 7 days. Reads of a supporting file do not count again.'
 
 // The card's usage line (#1560): skill reads are recorded now, so this
@@ -3000,7 +3008,7 @@ function SkillsTab({ feed, workflows, agents }: { feed: Feed<Skill>; workflows: 
   const offered = workflows.phase === 'ready' && agents.phase === 'ready'
     ? workflowsOffered(workflows.rows, agents.grants)
     : null
-  const offeredText = offered === null ? '…' : (offered.length > 0 ? offered.join(', ') : '—')
+  const offeredText = offered === null ? '…' : offered.join(', ')
 
   const importFile = (file: File | undefined) => {
     if (!file) return
@@ -3018,8 +3026,8 @@ function SkillsTab({ feed, workflows, agents }: { feed: Feed<Skill>; workflows: 
       <div className="flex items-center gap-3 px-[22px] pt-[14px]">
         <div className="flex-1 min-w-0">
           <span className="block text-[12px] leading-[1.45] text-tx-3">A skill is a folder with a SKILL.md file: when to use it, the steps, and any scripts. Agents read the skills they are given. Editing one saves a new version.</span>
-          <span className="sk-offered" title={`Offered to ${offeredText}`}>
-            Offered to
+          <span className="sk-offered" title={`Every skill is offered to: ${offeredText}`}>
+            Every skill is offered to:
             <InfoTip label={SKILL_GRANT_INFO} text={SKILL_GRANT_INFO} align="start" />
             <span className="sk-offered-list">{offeredText}</span>
           </span>
