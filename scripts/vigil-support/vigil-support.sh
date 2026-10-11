@@ -581,9 +581,10 @@ elif [ "$MODE" = desktop ]; then
     # The desktop app is AutoSecOps; installs made before the rename used Vigil.
     case $OS_KIND in
     Darwin) STATE_DIR=$EFF_HOME/Library/Application\ Support/AutoSecOps
-        [ -d "$STATE_DIR" ] || STATE_DIR=$EFF_HOME/Library/Application\ Support/Vigil ;;
+        [ -d "$STATE_DIR" ] || [ ! -d "$EFF_HOME/Library/Application Support/Vigil" ] ||
+            STATE_DIR=$EFF_HOME/Library/Application\ Support/Vigil ;;
     *) STATE_DIR=$EFF_HOME/.config/AutoSecOps
-        [ -d "$STATE_DIR" ] || STATE_DIR=$EFF_HOME/.config/Vigil ;;
+        [ -d "$STATE_DIR" ] || [ ! -d "$EFF_HOME/.config/Vigil" ] || STATE_DIR=$EFF_HOME/.config/Vigil ;;
     esac
 else
     STATE_DIR=${VIGIL_DIR:-$EFF_HOME/.vigil}
@@ -905,7 +906,7 @@ collect_logs() {
     desktop)
         if [ "$OS_KIND" = Darwin ] && [ -z "$STATE_ARG" ]; then
             _dl=$EFF_HOME/Library/Logs/AutoSecOps
-            [ -d "$_dl" ] || _dl=$EFF_HOME/Library/Logs/Vigil
+            [ -d "$_dl" ] || [ ! -d "$EFF_HOME/Library/Logs/Vigil" ] || _dl=$EFF_HOME/Library/Logs/Vigil
         else _dl=$STATE_DIR/logs; fi
         collect_tree logs/desktop "$_dl" \( -name 'vigil-desktop.log*' -o \( -path '*/containers/*' -name 'vigil-*.log' \) \)
         ;;
