@@ -300,11 +300,19 @@ class TestTriageProviderResolution:
 
     def test_success_clears_previous_error(self):
         processor = FindingProcessor(ProcessingConfig())
-        finding = {"finding_id": "f1", "ai_triage_error": "old"}
+        finding = {
+            "finding_id": "f1",
+            "ai_triage_error": "old",
+            "entity_context": {"src_ips": ["10.0.0.5"]},
+        }
+        reply = (
+            '{"verdict": "benign", "confidence": 0.8, "category": "network",'
+            ' "cited_fields": ["entity_context.src_ips"], "gaps": []}'
+        )
         with patch.object(
             FindingProcessor,
             "_get_ai_triage",
-            AsyncMock(return_value=("SEVERITY: low\nREASONING: fine", None)),
+            AsyncMock(return_value=(reply, None)),
         ):
             finding = asyncio.run(processor._triage_finding(finding))
         assert "ai_triage_error" not in finding
@@ -321,7 +329,10 @@ class TestTriageTimeout:
         async def slow_submit(prompt, *, provider_id, model, timeout):
             # Mirrors arq's job.result(timeout=...): the gateway's own clock.
             await asyncio.wait_for(asyncio.sleep(cls.ROUND_TRIP), timeout)
-            return {"content": "SEVERITY: high\nREASONING: slow but fine"}
+            return {
+                "content": '{"verdict": "malicious", "confidence": 0.8,'
+                ' "category": "other", "cited_fields": [], "gaps": []}'
+            }
 
         processor = FindingProcessor(ProcessingConfig(triage_timeout=triage_timeout))
         processor._llm_gateway = Mock(submit=slow_submit)
