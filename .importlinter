@@ -38,6 +38,7 @@ forbidden_modules =
     core.integrations
     core.llm
     core.memory
+    core.quality
     core.reporting
     core.response
     core.skills
@@ -59,6 +60,7 @@ source_modules =
     core.integrations
     core.llm
     core.memory
+    core.quality
     core.reporting
     core.response
     core.skills

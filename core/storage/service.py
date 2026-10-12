@@ -16,6 +16,7 @@ from sqlalchemy.orm import joinedload, lazyload, noload, selectinload
 
 from core.exceptions import default_on_error
 from core.storage.arrays import text_array
+from core.storage.canary_exclusion import not_canary_finding
 from core.storage.case_repository import CaseRepository
 from core.storage.connection import get_db_manager
 from core.storage.ip_exclusion_repository import exclusion_view_filter
@@ -1184,7 +1185,11 @@ class DatabaseService:
 
                 # One filter set shared by every query below, so the totals,
                 # averages and outcome breakdown all describe the same rows.
-                base_filters = [AIDecisionLog.timestamp >= since]
+                base_filters = [
+                    AIDecisionLog.timestamp >= since,
+                    # Decisions on hidden canaries (W1.5) grade the test, not the estate.
+                    not_canary_finding(session, AIDecisionLog.finding_id),
+                ]
                 if agent_id:
                     base_filters.append(AIDecisionLog.agent_id == agent_id)
 

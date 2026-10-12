@@ -445,6 +445,12 @@ class FindingProcessor:
             logger.debug(f"Not responding to {finding_id}: bulk import")
             return
 
+        # A hidden canary (W1.5) tests triage and the analysts, never containment.
+        from core.quality.canary import withhold_response
+
+        if await withhold_response(finding_id):
+            return
+
         # Response evaluation always runs — even when enrichment is off or paused.
         try:
             await self._evaluate_for_response(finding)

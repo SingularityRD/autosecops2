@@ -40,6 +40,10 @@ GATED_ROUTES = [
     ("POST", "/api/orchestrator/investigations/purge", None, "settings.write"),
     ("DELETE", "/api/findings/all", None, "findings.delete"),
     ("PUT", "/api/analytics/budget", {}, "settings.write"),
+    # Which alerts are canaries is not for analysts to look up (W1.5).
+    ("GET", "/api/quality/canaries", None, "settings.write"),
+    ("GET", "/api/quality/canaries/settings", None, "settings.write"),
+    ("PUT", "/api/quality/canaries/settings", {"enabled": True}, "settings.write"),
     ("POST", "/api/v1/cases", {"title": "t"}, "cases.write"),
     ("PATCH", "/api/v1/cases/c-1", {"status": "closed"}, "cases.write"),
     ("POST", "/api/v1/cases/c-1/close", {}, "cases.write"),

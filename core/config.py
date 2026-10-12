@@ -297,6 +297,11 @@ class Settings(BaseSettings):
     # Known-answer probes (#923): an hourly sweep, injected once a day by id.
     daemon_probes_enabled: bool = True
     daemon_probe_interval: int = 3600
+    # Hidden canary alerts (W1.5). A kill switch, not the on switch: canaries
+    # are injected only while an admin has enabled them (system_config
+    # quality.canary); this turns the daemon's sweep off whatever that says.
+    daemon_canaries_enabled: bool = True
+    daemon_canary_interval: int = 3600
     daemon_cleanup_retention_days: int = 90
     # Separate from cleanup_retention_days on purpose: that only ages out the
     # episodic read log, while an unanswered containment proposal goes stale
