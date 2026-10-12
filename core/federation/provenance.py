@@ -38,9 +38,13 @@ Decisions that hold for every source:
 * ``enrichment.*`` (VirusTotal, Shodan, threat-indicator feed hits) is
   ``third_party``.
 * Network addresses, file hashes, ports, process ids and the ids a product
-  assigns (device id, cloud resource ARN, alert and rule ids) are what the
-  product observed or assigned: ``sensor``.
-* Host names and user names are ``adversary``. The product reports them
+  assigns (device id, AWS-generated resource id, alert and rule ids) are what
+  the product observed or assigned: ``sensor``. Sensor maps are allowlists of
+  such typed fields, never a whole subtree (``host.*``, ``Resources.*``), and
+  a sensor field whose value fails its type check (an IP field that does not
+  parse as an address, an AWS id that embeds a chosen name) is shown and
+  resolved as ``adversary`` (:func:`author_of`).
+* Host names, user names, tags and other free text are ``adversary``. The product reports them
   faithfully, but their *value* is a name someone chose: whoever controls a
   machine names it, a failed logon records whatever name was typed, an
   attacker creates the account it uses. A verdict cannot clear a finding
@@ -52,13 +56,18 @@ Decisions that hold for every source:
 
 A ``data_source`` that is not one of the seven Federation adapters or the
 known-answer probe (webhook pushes, ``kafka:<topic>``, imports, anything a
-sender names) gets :data:`WEBHOOK_PROVENANCE`. A webhook sender chooses its
-own ``data_source``; it is authenticated by the webhook token, which is the
-existing trust boundary.
+sender names) gets :data:`WEBHOOK_PROVENANCE`. A webhook, Kafka or import
+sender chooses its own ``data_source``; it is authenticated by the webhook
+token / topic ACL / API auth, which is the existing trust boundary. The
+daemon does not trust ``data_source = "probe"`` by itself: it gives
+:data:`PROBE_PROVENANCE` only to a finding whose content is one of its own
+probes (services/daemon/probes.py ``is_genuine_probe``) and the webhook map
+to anything else claiming to be one.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
@@ -119,9 +128,28 @@ _ENTITIES: Dict[str, Authored] = {
 # paths, URLs, user agents, DNS questions, e-mail content, the original log
 # line.
 _ECS_SENSOR = (
-    "host.*",
-    "agent.*",
-    "observer.*",
+    # host.* / agent.* / observer.* are allowlisted per field: host.name,
+    # host.hostname, host.domain, host.os.name and the like are names or
+    # strings the machine's owner sets.
+    "host.id",
+    "host.ip",
+    "host.mac",
+    "host.architecture",
+    "host.os.family",
+    "host.os.platform",
+    "host.os.type",
+    "host.os.kernel",
+    "agent.id",
+    "agent.ip",
+    "agent.type",
+    "agent.version",
+    "agent.ephemeral_id",
+    "observer.ip",
+    "observer.mac",
+    "observer.vendor",
+    "observer.product",
+    "observer.type",
+    "observer.version",
     "source.ip",
     "source.port",
     "destination.ip",
@@ -146,6 +174,9 @@ _ECS_SENSOR = (
     "event.ingested",
 )
 _ECS_ADVERSARY = (
+    "host.*",
+    "agent.*",
+    "observer.*",
     "host.name",
     "host.hostname",
     "agent.name",
@@ -178,14 +209,39 @@ def _under(prefix: str, keys: Iterable[str], author: Authored) -> Dict[str, Auth
     return {f"{prefix}.{k}": author for k in keys}
 
 
+# Lists of objects are flattened with an index segment, so per-item keys are
+# listed for every index prompt_fields can show.
+_LIST_INDEXES = range(5)  # == MAX_LIST_OBJECTS, asserted in the tests
+
+
+def _per_item(
+    prefix: str, keys: Iterable[str], author: Authored
+) -> Dict[str, Authored]:
+    return {f"{prefix}.{i}.{k}": author for i in _LIST_INDEXES for k in keys}
+
+
 AWS_SECURITY_HUB: Dict[str, Authored] = {
     **_COMMON,
     **_ENTITIES,
-    # Security Hub's "hostnames" are the affected resources' ARNs/ids, which
-    # AWS assigns.
+    # Security Hub's "hostnames" are the affected resources' ids. Sensor only
+    # while they are AWS-generated ids (instance, volume, security group...);
+    # an id that embeds a chosen name (an IAM user ARN, a bucket) fails the
+    # value check (_aws_generated_id) and is adversary.
     "entities.hostnames": SENSOR,
-    # Account, region, product and resource identifiers are AWS's own.
-    "metadata.*": SENSOR,
+    "metadata.aws_account_id": SENSOR,
+    "metadata.product_arn": SENSOR,
+    "metadata.product_name": SENSOR,
+    "metadata.company_name": SENSOR,
+    "metadata.region": SENSOR,
+    "metadata.resources": SENSOR,
+    "metadata.workflow_state": SENSOR,
+    "metadata.record_state": SENSOR,
+    "metadata.compliance.Status": SENSOR,
+    "metadata.compliance.SecurityControlId": SENSOR,
+    "metadata.compliance.RelatedRequirements": SENSOR,
+    # The finding producer names its generator: free text for custom and
+    # third-party integrations.
+    "metadata.generator_id": ADVERSARY,
     "mitre_attack.*": SENSOR,
     **_under(
         "raw_data",
@@ -196,16 +252,18 @@ AWS_SECURITY_HUB: Dict[str, Authored] = {
             "ProductArn",
             "ProductName",
             "CompanyName",
-            "GeneratorId",
             "CreatedAt",
             "UpdatedAt",
             "FirstObservedAt",
             "LastObservedAt",
             "Types",
-            "Severity.*",
-            "Resources.*",
-            "Compliance.*",
-            "Workflow.*",
+            "Severity.Label",
+            "Severity.Normalized",
+            "Severity.Product",
+            "Compliance.Status",
+            "Compliance.SecurityControlId",
+            "Compliance.RelatedRequirements",
+            "Workflow.Status",
             "WorkflowState",
             "RecordState",
             "Network.SourceIpV4",
@@ -219,9 +277,19 @@ AWS_SECURITY_HUB: Dict[str, Authored] = {
         ),
         SENSOR,
     ),
+    # Resources: only the typed identity of each resource. Tags, Details
+    # (user names, policy documents, instance metadata) are adversary.
+    "raw_data.Resources.*": ADVERSARY,
+    **_per_item("raw_data.Resources", ("Id", "Type", "Partition", "Region"), SENSOR),
     **_under(
         "raw_data",
-        ("Title", "Description", "Network.SourceDomain", "Network.DestinationDomain"),
+        (
+            "Title",
+            "Description",
+            "GeneratorId",
+            "Network.SourceDomain",
+            "Network.DestinationDomain",
+        ),
         ADVERSARY,
     ),
     "raw_data.ThreatIntelIndicators.*": THIRD_PARTY,
@@ -275,8 +343,23 @@ CROWDSTRIKE: Dict[str, Authored] = {
             "max_confidence",
             "status",
             "scenario",
-            "device.*",
-            "hostinfo.*",
+            # Agent-assigned ids, addresses and platform; not the host's own
+            # strings (hostname, domain, OU, site, os_version) and not hostinfo.
+            "device.device_id",
+            "device.cid",
+            "device.agent_version",
+            "device.external_ip",
+            "device.local_ip",
+            "device.mac_address",
+            "device.platform_id",
+            "device.platform_name",
+            "device.product_type",
+            "device.first_seen",
+            "device.last_seen",
+            "device.modified_timestamp",
+            "device.instance_id",
+            "device.service_provider",
+            "device.service_provider_account_id",
         ),
         SENSOR,
     ),
@@ -291,8 +374,11 @@ CROWDSTRIKE: Dict[str, Authored] = {
             "filename",
             "filepath",
             "user_name",
+            "device.*",
+            "hostinfo.*",
             "device.hostname",
             "device.machine_domain",
+            "device.os_version",
             "hostinfo.domain",
         ),
         ADVERSARY,
@@ -321,8 +407,7 @@ ELASTIC: Dict[str, Authored] = {
     "raw_event._source.kibana.alert.rule.threat.*": SENSOR,
     "raw_event._source.kibana.alert.rule.name": ADVERSARY,
     "raw_event._source.kibana.alert.rule.description": ADVERSARY,
-    # Wazuh documents in the same index.
-    "raw_event._source.manager.*": SENSOR,
+    # Wazuh documents in the same index (manager.name is a host name).
     "raw_event._source.rule.id": SENSOR,
     "raw_event._source.rule.level": SENSOR,
     "raw_event._source.rule.groups": SENSOR,
@@ -390,7 +475,8 @@ SPLUNK: Dict[str, Authored] = {
             "event_id",
             "urgency",
             "severity",
-            "search_name",
+            # src / dest are sensor only when the value is an IP address
+            # (_value_fits); CIM fills them with host names as often.
             "src_ip",
             "src",
             "source_ip",
@@ -415,6 +501,7 @@ SPLUNK: Dict[str, Authored] = {
             "_raw",
             "description",
             "rule_name",
+            "search_name",
             "host",
             "hostname",
             "src_host",
@@ -481,11 +568,15 @@ WEBHOOK_PROVENANCE: Dict[str, Authored] = {
 
 
 def provenance_for(data_source: Optional[str]) -> ProvenanceMap:
-    """The provenance map for a finding's ``data_source``."""
+    """The provenance map for a finding's ``data_source``.
+
+    ``"probe"`` gets :data:`WEBHOOK_PROVENANCE` here: the label is the
+    sender's claim. :data:`PROBE_PROVENANCE` is passed explicitly by a caller
+    that has checked the content is one of its own probes (the daemon's
+    ``FindingProcessor._provenance``).
+    """
     if data_source in ADAPTER_PROVENANCE:
         return ADAPTER_PROVENANCE[data_source]
-    if data_source == PROBE_DATA_SOURCE:
-        return PROBE_PROVENANCE
     return WEBHOOK_PROVENANCE
 
 
@@ -629,19 +720,125 @@ def prompt_fields(finding: Mapping[str, Any]) -> Tuple[List[Tuple[str, str]], in
     return out.fields, out.omitted
 
 
+# --------------------------------------------------------------------------
+# Value checks for sensor fields
+# --------------------------------------------------------------------------
+#
+# A map says a field is sensor-authored; the value must also look like what
+# that sensor writes. A field whose name promises an IP address, port, hash,
+# pid, MAC or AWS-generated id but whose value is anything else (a host name
+# in Splunk's ``src``, a sentence in a tag) is shown and resolved as
+# ``adversary``. Checked per item for list fields ("a, b, ... (+N more)").
+
+_MORE = re.compile(r", \.\.\. \(\+\d+ more\)\Z")
+_HEX_HASH = re.compile(
+    r"[0-9A-Fa-f]{32}|[0-9A-Fa-f]{40}|[0-9A-Fa-f]{64}|[0-9A-Fa-f]{128}"
+)
+_MAC = re.compile(r"[0-9A-Fa-f]{2}([:-]?)[0-9A-Fa-f]{2}(\1[0-9A-Fa-f]{2}){4}")
+_DIGITS = re.compile(r"[0-9]{1,10}")
+_AWS_ACCOUNT = re.compile(r"[0-9]{12}")
+# An AWS-generated resource id, bare (i-0abc...) or inside an ARN whose
+# resource part is only a type and that id. Ids that embed a chosen name
+# (IAM users and roles, buckets, functions) do not match.
+_AWS_GENERATED_ID = re.compile(
+    r"(?:arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:[0-9]{12}:[a-z-]+/)?"
+    r"[a-z]{1,8}-[0-9a-f]{8,17}"
+)
+
+_IP_NAMES = frozenset(
+    {
+        "ip",
+        "src_ips",
+        "dest_ips",
+        "ip_addresses",
+        "srcip",
+        "dstip",
+        "src_ip",
+        "dest_ip",
+        "source_ip",
+        "destination_ip",
+        "src",
+        "dest",
+        "external_ip",
+        "local_ip",
+        "sourceipv4",
+        "sourceipv6",
+        "destinationipv4",
+        "destinationipv6",
+    }
+)
+_HASH_NAMES = frozenset({"md5", "sha1", "sha256", "sha512", "file_hash", "file_hashes"})
+_AWS_ID_FIELDS = frozenset({"entities.hostnames", "metadata.resources"})
+_AWS_RESOURCE_ID = re.compile(r"raw_data\.Resources\.[0-9]+\.Id")
+
+
+def _is_ip(item: str) -> bool:
+    try:
+        ipaddress.ip_address(item)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_port(item: str) -> bool:
+    return bool(_DIGITS.fullmatch(item)) and int(item) <= 65535
+
+
+def _item_check(name: str):
+    """The per-item check a sensor field's value must pass, or None."""
+    last = name.rsplit(".", 1)[-1].lower()
+    if name in _AWS_ID_FIELDS or _AWS_RESOURCE_ID.fullmatch(name):
+        return _AWS_GENERATED_ID.fullmatch
+    if last in ("awsaccountid", "aws_account_id"):
+        return _AWS_ACCOUNT.fullmatch
+    if last in _IP_NAMES or last.endswith("ipv4") or last.endswith("ipv6"):
+        return _is_ip
+    if last in ("port", "sourceport", "destinationport") or last.endswith("_port"):
+        return _is_port
+    if last in _HASH_NAMES or ".hash." in f".{name}.":
+        return _HEX_HASH.fullmatch
+    if last in ("pid", "ppid"):
+        return _DIGITS.fullmatch
+    if last in ("mac", "mac_address"):
+        return _MAC.fullmatch
+    return None
+
+
+def _value_fits(name: str, value: str) -> bool:
+    check = _item_check(name)
+    if check is None:
+        return True
+    items = _MORE.sub("", value).split(", ")
+    return all(item and check(item) for item in items)
+
+
+def author_of(name: str, value: str, provenance: ProvenanceMap) -> Authored:
+    """Who wrote a shown field: the map's author, downgraded to adversary
+    when a sensor field's value fails its type check."""
+    author = resolve_authored(name, provenance)
+    if author == SENSOR and not _value_fits(name, value):
+        return ADVERSARY
+    return author
+
+
 def group_fields(
     finding: Mapping[str, Any],
+    provenance: Optional[ProvenanceMap] = None,
 ) -> Tuple[Dict[Authored, List[Tuple[str, str]]], int]:
-    """:func:`prompt_fields` grouped by author under the finding's map."""
-    provenance = provenance_for(finding.get("data_source"))
+    """:func:`prompt_fields` grouped by author under the finding's map (or
+    ``provenance`` when the caller decided the map)."""
+    if provenance is None:
+        provenance = provenance_for(finding.get("data_source"))
     fields, omitted = prompt_fields(finding)
     groups: Dict[Authored, List[Tuple[str, str]]] = {a: [] for a in AUTHORED}
     for name, value in fields:
-        groups[resolve_authored(name, provenance)].append((name, value))
+        groups[author_of(name, value, provenance)].append((name, value))
     return groups, omitted
 
 
-def presented_provenance(finding: Mapping[str, Any]) -> Dict[str, Authored]:
+def presented_provenance(
+    finding: Mapping[str, Any], provenance: Optional[ProvenanceMap] = None
+) -> Dict[str, Authored]:
     """An exact-key map of only the fields :func:`prompt_fields` shows.
 
     Resolving a verdict's citations against this map instead of the full one
@@ -650,9 +847,10 @@ def presented_provenance(finding: Mapping[str, Any]) -> Dict[str, Authored]:
     resolve to ``adversary``: a verdict can only stand on evidence that was
     in front of the model.
     """
-    provenance = provenance_for(finding.get("data_source"))
+    if provenance is None:
+        provenance = provenance_for(finding.get("data_source"))
     fields, _ = prompt_fields(finding)
-    return {name: resolve_authored(name, provenance) for name, _ in fields}
+    return {name: author_of(name, value, provenance) for name, value in fields}
 
 
 def check_map(provenance: Mapping[str, Any]) -> None:
@@ -674,6 +872,7 @@ __all__ = [
     "SENSOR",
     "THIRD_PARTY",
     "WEBHOOK_PROVENANCE",
+    "author_of",
     "check_map",
     "group_fields",
     "presented_provenance",

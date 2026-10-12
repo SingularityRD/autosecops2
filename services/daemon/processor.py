@@ -6,6 +6,7 @@ import logging
 import math
 import re
 import time
+import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import ValidationError
@@ -16,14 +17,19 @@ from core.contracts.verdict import (
     validate_verdict,
     verdict_from_model_output,
 )
-from core.federation.provenance import group_fields, presented_provenance
+from core.federation.provenance import (
+    PROBE_PROVENANCE,
+    group_fields,
+    presented_provenance,
+    provenance_for,
+)
 from core.ingestion.ack import settle_ack
 from core.ingestion.dedup import RedisDedupSet
 from core.llm.outage import report_outage, report_recovered
 from core.time import utcnow
 from services.daemon.config import ProcessingConfig, ResponseConfig
 from services.daemon.probes import ACTIONS as TRIAGE_ACTIONS
-from services.daemon.probes import PROBE_DATA_SOURCE
+from services.daemon.probes import PROBE_DATA_SOURCE, is_genuine_probe
 from services.daemon.vendor_errors import (
     note_response,
     record_vendor_error,
@@ -56,6 +62,10 @@ TRIAGE_PROMPT_VERSION = "daemon-triage-v2"
 _UNKNOWN_MODEL = "unknown"
 # A reply longer than this is not a verdict object.
 _MAX_REPLY_CHARS = 20_000
+# Nor is one nested deeper than this, or with a number literal longer than
+# this: both are refused before the parser recurses or converts.
+_MAX_REPLY_DEPTH = 32
+_MAX_NUMBER_CHARS = 40
 
 # Downstream recommended_action values a verdict may carry (the responder,
 # plan generator and intent replay read them). Anything else stays in the
@@ -147,6 +157,42 @@ _JSON_FENCE = re.compile(
 )
 
 
+def _check_nesting(text: str) -> None:
+    """Refuse JSON nested deeper than _MAX_REPLY_DEPTH (the stdlib parser
+    recurses per level and would raise RecursionError)."""
+    depth = 0
+    in_string = escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+            if depth > _MAX_REPLY_DEPTH:
+                raise _ReplyError("nested too deeply")
+        elif ch in "]}":
+            depth -= 1
+
+
+def _bounded_number(convert):
+    def parse(literal: str) -> Any:
+        if len(literal) > _MAX_NUMBER_CHARS:
+            raise _ReplyError("number literal too long")
+        return convert(literal)
+
+    return parse
+
+
+_parse_int = _bounded_number(int)
+_parse_float = _bounded_number(float)
+
+
 def _strict_json(reply: str) -> Any:
     """The reply as JSON: the whole reply, optionally inside one ```json fence.
 
@@ -159,12 +205,21 @@ def _strict_json(reply: str) -> Any:
     fenced = _JSON_FENCE.match(text)
     if fenced:
         text = fenced.group(1).strip()
+    _check_nesting(text)
     try:
         return json.loads(
-            text, object_pairs_hook=_no_duplicate_keys, parse_constant=_no_constants
+            text,
+            object_pairs_hook=_no_duplicate_keys,
+            parse_constant=_no_constants,
+            parse_int=_parse_int,
+            parse_float=_parse_float,
         )
     except json.JSONDecodeError as e:
         raise _ReplyError(f"invalid JSON at character {e.pos}") from None
+    except _ReplyError:
+        raise
+    except (RecursionError, ValueError, OverflowError, TypeError) as e:
+        raise _ReplyError(f"unparseable ({type(e).__name__})") from None
 
 
 def _inconclusive(gap: str, *, model: str, prompt_version: str) -> Verdict:
@@ -192,6 +247,17 @@ def parse_triage_reply(
     without echoing the reply.
     """
     stamp = {"model": model or _UNKNOWN_MODEL, "prompt_version": prompt_version}
+    try:
+        return _parse_triage_reply(reply, provenance, stamp)
+    except Exception as e:  # noqa: BLE001 — a reply must never crash triage
+        return _inconclusive(
+            f"triage reply could not be read ({type(e).__name__})", **stamp
+        )
+
+
+def _parse_triage_reply(
+    reply: Any, provenance: ProvenanceMap, stamp: Dict[str, str]
+) -> Verdict:
     if not isinstance(reply, str):
         return _inconclusive("triage reply was not text", **stamp)
     try:
@@ -210,6 +276,57 @@ def parse_triage_reply(
             + ")",
             **stamp,
         )
+
+
+def _storable(value: Any) -> Any:
+    """``value`` with every string made storable in Postgres JSONB/TEXT: NUL
+    removed, lone surrogates replaced. Dict keys included."""
+    if isinstance(value, str):
+        if "\x00" in value:
+            value = value.replace("\x00", "")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            value = value.encode("utf-8", "replace").decode("utf-8")
+        return value
+    if isinstance(value, dict):
+        return {_storable(k): _storable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_storable(v) for v in value]
+    return value
+
+
+# Characters that end a line for some reader (str.splitlines, JavaScript,
+# Unicode line breaking) or are invisible (format controls: zero-width
+# spaces and joiners, bidi overrides, tag characters). json.dumps escapes
+# only U+0000..U+001F, '"' and '\\'.
+_ESCAPE_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs", "Co", "Cn"})
+
+
+def _json_escape(ch: str) -> str:
+    code = ord(ch)
+    if code <= 0xFFFF:
+        return f"\\u{code:04x}"
+    code -= 0x10000
+    return f"\\u{0xD800 + (code >> 10):04x}\\u{0xDC00 + (code & 0x3FF):04x}"
+
+
+def _escape_invisible(text: str) -> str:
+    """JSON text with every line separator and invisible character escaped."""
+    return "".join(
+        (
+            _json_escape(ch)
+            if ord(ch) > 0x7E and unicodedata.category(ch) in _ESCAPE_CATEGORIES
+            else ch
+        )
+        for ch in text
+    )
+
+
+def _strip_format_chars(text: str) -> str:
+    """``text`` without format controls (zero-width and bidi characters), so a
+    fence spelled with them in between is still recognised as a fence."""
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
 
 
 def _downstream_severity(verdict: Verdict, action: Optional[str]) -> Optional[str]:
@@ -617,7 +734,15 @@ class FindingProcessor:
         # triage path and must never reach the responder or the orchestrator,
         # whatever triage did or failed to do above.
         if finding.get("data_source") == PROBE_DATA_SOURCE:
-            return
+            if is_genuine_probe(finding):
+                return
+            # A sender labelled its finding "probe": it is not one of ours,
+            # so it is not exempt from response.
+            logger.warning(
+                "Finding %s claims data_source=probe but is not a daemon probe; "
+                "evaluating it for response",
+                finding_id,
+            )
 
         # Only the sweep's rows: they come from the database, not a payload.
         if source == BACKFILL_SOURCE and finding.get("bulk_imported"):
@@ -763,6 +888,7 @@ class FindingProcessor:
 
         if not updates:
             return
+        updates = _storable(updates)
         # update_finding reports failure by returning False rather than raising.
         if not self._data_service.update_finding(finding_id, **updates):
             logger.error(
@@ -807,21 +933,38 @@ class FindingProcessor:
 
         return finding
 
+    @staticmethod
+    def _provenance(finding: Dict[str, Any]):
+        """The finding's provenance map. ``data_source`` is chosen by whoever
+        sent the finding (webhook, Kafka, import), so ``"probe"`` earns the
+        all-sensor probe map only when the content is one of our own probes."""
+        if is_genuine_probe(finding):
+            return PROBE_PROVENANCE
+        return provenance_for(finding.get("data_source"))
+
     def _build_triage_prompt(self, finding: Dict[str, Any]) -> str:
         """The triage prompt: the finding's fields grouped by who wrote them.
 
         The grouping comes from the finding's provenance map
         (core/federation/provenance.py), decided by code. Every value is one
         JSON string on its own line, so alert text cannot open a new line,
-        fake a group heading or close the fence.
+        fake a group heading or close the fence: json.dumps escapes C0
+        controls, and line/paragraph separators (U+0085, U+2028, U+2029),
+        other controls and invisible format characters are escaped too
+        (``_escape_invisible``); a fence spelled with zero-width characters is
+        removed like a plain one.
         """
-        groups, omitted = group_fields(finding)
+        groups, omitted = group_fields(finding, self._provenance(finding))
 
         def data(value: Any) -> str:
             text = str(value)
+            if _FENCE.search(_strip_format_chars(text)):
+                # A fence hidden behind zero-width characters: drop the
+                # format characters so the fence below is removed.
+                text = _strip_format_chars(text)
             while (stripped := _FENCE.sub("", text)) != text:
                 text = stripped
-            return json.dumps(text, ensure_ascii=False)
+            return _escape_invisible(json.dumps(text, ensure_ascii=False))
 
         lines = [
             f"finding_id = {data(finding.get('finding_id') or 'N/A')}",
@@ -973,11 +1116,11 @@ Rules:
         # else the model cites is attributed to the adversary.
         verdict = parse_triage_reply(
             response,
-            presented_provenance(finding),
+            presented_provenance(finding, self._provenance(finding)),
             model=model or _UNKNOWN_MODEL,
             prompt_version=TRIAGE_PROMPT_VERSION,
         )
-        result = legacy_triage_fields(verdict)
+        result = _storable(legacy_triage_fields(verdict))
 
         if result.get("severity"):
             finding["severity"] = result["severity"]
@@ -996,12 +1139,14 @@ Rules:
 
         # A success supersedes any earlier recorded failure.
         finding.pop("ai_triage_error", None)
-        finding["ai_triage"] = {
-            "timestamp": utcnow().isoformat(),
-            "prompt_version": TRIAGE_PROMPT_VERSION,
-            "result": result,
-            "verdict": verdict.to_json_dict(),
-        }
+        finding["ai_triage"] = _storable(
+            {
+                "timestamp": utcnow().isoformat(),
+                "prompt_version": TRIAGE_PROMPT_VERSION,
+                "result": result,
+                "verdict": verdict.to_json_dict(),
+            }
+        )
 
         return finding
 

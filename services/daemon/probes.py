@@ -130,6 +130,51 @@ def build_probe_finding(probe: Dict[str, Any], day: date) -> Dict[str, Any]:
     }
 
 
+_PROBES_BY_NAME = {p["name"]: p for p in PROBES}
+# Keys build_probe_finding writes that a sender could fill with its own text.
+_PROBE_TEXT_KEYS = ("title", "raw_event", "raw_data", "entities", "metadata")
+
+
+def is_genuine_probe(finding: Dict[str, Any]) -> bool:
+    """Whether ``finding`` is one of our probes, judged by its content.
+
+    ``data_source`` alone proves nothing: a webhook, Kafka or import sender
+    names its own. A genuine probe carries exactly the text one of PROBES
+    defines (description and entity_context, the known answer aside) under
+    the id :func:`probe_finding_id` gives it, and none of the free-text
+    sections a probe never has. Anything that passes is text we wrote, so
+    treating it as ours is safe whoever sent it.
+    """
+    if not isinstance(finding, dict):
+        return False
+    if finding.get("data_source") != PROBE_DATA_SOURCE:
+        return False
+    entity_context = finding.get("entity_context")
+    if not isinstance(entity_context, dict):
+        return False
+    marker = entity_context.get("probe")
+    if not isinstance(marker, dict):
+        return False
+    probe = _PROBES_BY_NAME.get(marker.get("name"))
+    if probe is None:
+        return False
+    finding_id = str(finding.get("finding_id") or "")
+    prefix = f"{PROBE_DATA_SOURCE}:{probe['name']}:"
+    if not finding_id.startswith(prefix):
+        return False
+    try:
+        date.fromisoformat(finding_id[len(prefix) :])
+    except ValueError:
+        return False
+    if finding.get("description") != probe["description"]:
+        return False
+    if {k: v for k, v in entity_context.items() if k != "probe"} != probe[
+        "entity_context"
+    ]:
+        return False
+    return not any(finding.get(k) for k in _PROBE_TEXT_KEYS)
+
+
 async def inject_probes(queue: asyncio.Queue, data_service: Any) -> int:
     """Queue today's probes that do not exist yet; return how many were queued.
 
