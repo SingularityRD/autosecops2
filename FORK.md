@@ -65,10 +65,10 @@ SHA reviewed up to in that month's radar issue, so the next radar starts there.
 
 ## Where this repository differs from upstream
 
-### 1. Database init file numbers 41–45
+### 1. Database init file numbers 41–49
 
 Upstream `main` ended at `40_drop_custom_workflow_graph_layout.sql` when this
-repository was imported. Five files were added here, in this order:
+repository was imported. Nine files were added here, in this order:
 
 | File | Came from |
 |---|---|
@@ -77,6 +77,10 @@ repository was imported. Five files were added here, in this order:
 | `43_medic_permissions.sql` | Medic series |
 | `44_findings_bulk_imported.sql` | Federation epic (upstream PR #1372, closed upstream) |
 | `45_skill_reads.sql` | Skill usage (upstream PRs #1843/#1997) |
+| `46_eval_qa_canary.sql` | AutoSecOps W0.5 contracts (not upstream) |
+| `47_webhooks_alert_routes.sql` | AutoSecOps W0.5 contracts |
+| `48_autonomy_lessons_suppression_retention.sql` | AutoSecOps W0.5 contracts |
+| `49_approval_action_lifecycle.sql` | AutoSecOps W0.5 contracts |
 
 Upstream later merged #1997 with the same table as `40_skill_reads.sql`. That
 file was dropped in the final sync: `45_skill_reads.sql` is the only copy here.

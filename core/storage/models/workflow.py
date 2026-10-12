@@ -370,6 +370,21 @@ class ApprovalAction(Base):
         String(16), nullable=False, default="reversible", server_default="reversible"
     )
     idempotency_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Execution lifecycle (W0.5). Meanings, and why the CHECKs live only in the
+    # SQL, are in infra/database/init/49_approval_action_lifecycle.sql; the
+    # executor contract that writes them is core/response/executors/base.py.
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    verify_status: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    reversed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    reverse_of: Mapped[Optional[str]] = mapped_column(
+        String(80),
+        ForeignKey("approval_actions.action_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    before_state: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    after_state: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    second_approver: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
     __table_args__ = (
         Index("idx_approval_actions_status_created", "status", "created_at"),
@@ -380,6 +395,18 @@ class ApprovalAction(Base):
             "idempotency_key",
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL AND status <> 'failed'"),
+        ),
+        Index(
+            "idx_approval_actions_expiry",
+            "expires_at",
+            postgresql_where=text(
+                "status = 'executed' AND reversed_at IS NULL AND expires_at IS NOT NULL"
+            ),
+        ),
+        Index(
+            "idx_approval_actions_reverse_of",
+            "reverse_of",
+            postgresql_where=text("reverse_of IS NOT NULL"),
         ),
     )
 

@@ -205,6 +205,60 @@
       "nullable": true
     }
   },
+  "alert_routes": {
+    "created_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "created_by": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "destination": {
+      "data_type": "jsonb",
+      "nullable": false
+    },
+    "destination_kind": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "enabled": {
+      "data_type": "boolean",
+      "nullable": false
+    },
+    "id": {
+      "data_type": "uuid",
+      "nullable": false
+    },
+    "match": {
+      "data_type": "jsonb",
+      "nullable": false
+    },
+    "name": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "priority": {
+      "data_type": "integer",
+      "nullable": false
+    },
+    "stop_processing": {
+      "data_type": "boolean",
+      "nullable": false
+    },
+    "tenant_id": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "updated_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "webhook_endpoint_id": {
+      "data_type": "uuid",
+      "nullable": true
+    }
+  },
   "approval_actions": {
     "action_id": {
       "data_type": "character varying(80)",
@@ -214,12 +268,20 @@
       "data_type": "character varying(40)",
       "nullable": false
     },
+    "after_state": {
+      "data_type": "jsonb",
+      "nullable": true
+    },
     "approved_at": {
       "data_type": "timestamp without time zone",
       "nullable": true
     },
     "approved_by": {
       "data_type": "character varying(100)",
+      "nullable": true
+    },
+    "before_state": {
+      "data_type": "jsonb",
       "nullable": true
     },
     "confidence": {
@@ -250,6 +312,10 @@
       "data_type": "jsonb",
       "nullable": true
     },
+    "expires_at": {
+      "data_type": "timestamp without time zone",
+      "nullable": true
+    },
     "idempotency_key": {
       "data_type": "text",
       "nullable": true
@@ -270,9 +336,21 @@
       "data_type": "boolean",
       "nullable": false
     },
+    "reverse_of": {
+      "data_type": "character varying(80)",
+      "nullable": true
+    },
+    "reversed_at": {
+      "data_type": "timestamp without time zone",
+      "nullable": true
+    },
     "reversibility": {
       "data_type": "character varying(16)",
       "nullable": false
+    },
+    "second_approver": {
+      "data_type": "character varying(100)",
+      "nullable": true
     },
     "status": {
       "data_type": "character varying(16)",
@@ -286,6 +364,14 @@
       "data_type": "text",
       "nullable": false
     },
+    "verified_at": {
+      "data_type": "timestamp without time zone",
+      "nullable": true
+    },
+    "verify_status": {
+      "data_type": "character varying(16)",
+      "nullable": true
+    },
     "workflow_phase_id": {
       "data_type": "text",
       "nullable": true
@@ -293,6 +379,94 @@
     "workflow_run_id": {
       "data_type": "character varying(80)",
       "nullable": true
+    }
+  },
+  "autonomy_tiers": {
+    "action_type": {
+      "data_type": "character varying(40)",
+      "nullable": false
+    },
+    "category": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "max_ttl_seconds": {
+      "data_type": "integer",
+      "nullable": true
+    },
+    "min_confidence": {
+      "data_type": "numeric(4,3)",
+      "nullable": true
+    },
+    "tenant_id": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "tier": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "updated_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "updated_by": {
+      "data_type": "text",
+      "nullable": true
+    }
+  },
+  "canary_injections": {
+    "canary_kind": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "error": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "expected_category": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "expected_verdict": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "finding_id": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "id": {
+      "data_type": "uuid",
+      "nullable": false
+    },
+    "injected_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "marker": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "observed_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": true
+    },
+    "observed_verdict": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "outcome": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "payload": {
+      "data_type": "jsonb",
+      "nullable": false
+    },
+    "tenant_id": {
+      "data_type": "text",
+      "nullable": false
     }
   },
   "case_attachments": {
@@ -1691,6 +1865,118 @@
       "nullable": false
     }
   },
+  "eval_results": {
+    "actual_category": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "actual_verdict": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "case_id": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "confidence": {
+      "data_type": "numeric(4,3)",
+      "nullable": true
+    },
+    "cost_usd": {
+      "data_type": "numeric(12,6)",
+      "nullable": true
+    },
+    "created_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "error": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "expected_category": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "expected_verdict": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "id": {
+      "data_type": "bigint",
+      "nullable": false
+    },
+    "latency_ms": {
+      "data_type": "integer",
+      "nullable": true
+    },
+    "passed": {
+      "data_type": "boolean",
+      "nullable": true
+    },
+    "run_id": {
+      "data_type": "uuid",
+      "nullable": false
+    },
+    "tenant_id": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "verdict": {
+      "data_type": "jsonb",
+      "nullable": true
+    }
+  },
+  "eval_runs": {
+    "config": {
+      "data_type": "jsonb",
+      "nullable": false
+    },
+    "finished_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": true
+    },
+    "git_sha": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "id": {
+      "data_type": "uuid",
+      "nullable": false
+    },
+    "metrics": {
+      "data_type": "jsonb",
+      "nullable": false
+    },
+    "model": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "prompt_version": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "started_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "status": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "suite": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "tenant_id": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "triggered_by": {
+      "data_type": "text",
+      "nullable": true
+    }
+  },
   "federation_sources": {
     "consecutive_errors": {
       "data_type": "integer",
@@ -2111,6 +2397,60 @@
       "nullable": true
     }
   },
+  "lessons": {
+    "applies_to": {
+      "data_type": "jsonb",
+      "nullable": false
+    },
+    "approved_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": true
+    },
+    "approved_by": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "category": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "created_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "created_by": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "id": {
+      "data_type": "uuid",
+      "nullable": false
+    },
+    "lesson": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "retired_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": true
+    },
+    "source_id": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "source_kind": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "status": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "tenant_id": {
+      "data_type": "text",
+      "nullable": false
+    }
+  },
   "llm_interaction_logs": {
     "agent_id": {
       "data_type": "character varying(60)",
@@ -2347,6 +2687,86 @@
       "nullable": false
     }
   },
+  "qa_samples": {
+    "agrees": {
+      "data_type": "boolean",
+      "nullable": true
+    },
+    "id": {
+      "data_type": "bigint",
+      "nullable": false
+    },
+    "inclusion_probability": {
+      "data_type": "double precision",
+      "nullable": false
+    },
+    "notes": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "review_verdict": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "reviewed_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": true
+    },
+    "reviewer": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "sampled_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "sampling_kind": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "subject_id": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "subject_kind": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "tenant_id": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "verdict": {
+      "data_type": "jsonb",
+      "nullable": false
+    }
+  },
+  "retention_policies": {
+    "data_class": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "legal_hold": {
+      "data_type": "boolean",
+      "nullable": false
+    },
+    "retain_days": {
+      "data_type": "integer",
+      "nullable": false
+    },
+    "tenant_id": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "updated_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "updated_by": {
+      "data_type": "text",
+      "nullable": true
+    }
+  },
   "roles": {
     "created_at": {
       "data_type": "timestamp without time zone",
@@ -2498,6 +2918,52 @@
     },
     "updated_at": {
       "data_type": "timestamp without time zone",
+      "nullable": false
+    }
+  },
+  "suppression_rules": {
+    "created_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "created_by": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "enabled": {
+      "data_type": "boolean",
+      "nullable": false
+    },
+    "expires_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": true
+    },
+    "hit_count": {
+      "data_type": "bigint",
+      "nullable": false
+    },
+    "id": {
+      "data_type": "uuid",
+      "nullable": false
+    },
+    "last_hit_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": true
+    },
+    "match": {
+      "data_type": "jsonb",
+      "nullable": false
+    },
+    "name": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "reason": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "tenant_id": {
+      "data_type": "text",
       "nullable": false
     }
   },
@@ -2694,6 +3160,106 @@
     },
     "username": {
       "data_type": "character varying(100)",
+      "nullable": false
+    }
+  },
+  "webhook_deliveries": {
+    "attempts": {
+      "data_type": "integer",
+      "nullable": false
+    },
+    "created_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "delivered_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": true
+    },
+    "endpoint_id": {
+      "data_type": "uuid",
+      "nullable": false
+    },
+    "event_id": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "event_type": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "id": {
+      "data_type": "bigint",
+      "nullable": false
+    },
+    "last_attempt_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": true
+    },
+    "last_error": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "next_attempt_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "payload": {
+      "data_type": "jsonb",
+      "nullable": false
+    },
+    "response_status": {
+      "data_type": "integer",
+      "nullable": true
+    },
+    "status": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "tenant_id": {
+      "data_type": "text",
+      "nullable": false
+    }
+  },
+  "webhook_endpoints": {
+    "created_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "created_by": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "enabled": {
+      "data_type": "boolean",
+      "nullable": false
+    },
+    "event_types": {
+      "data_type": "text[]",
+      "nullable": false
+    },
+    "id": {
+      "data_type": "uuid",
+      "nullable": false
+    },
+    "name": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "secret_ref": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "tenant_id": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "updated_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "url": {
+      "data_type": "text",
       "nullable": false
     }
   },
