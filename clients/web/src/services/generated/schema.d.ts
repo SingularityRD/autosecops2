@@ -6648,95 +6648,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/webhooks/": {
+    "/api/webhook-endpoints": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /**
-         * List Webhooks
-         * @description List all configured webhooks.
-         *
-         *     Returns:
-         *         List of webhooks
-         */
-        get: operations["get_api_webhooks"];
+        /** List Endpoints */
+        get: operations["get_api_webhook-endpoints"];
         put?: never;
-        /**
-         * Create Webhook
-         * @description Create a new webhook.
-         *
-         *     Args:
-         *         data: Webhook configuration
-         *
-         *     Returns:
-         *         Created webhook
-         */
-        post: operations["post_api_webhooks"];
+        /** Create Endpoint */
+        post: operations["post_api_webhook-endpoints"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/webhooks/{webhook_id}": {
+    "/api/webhook-endpoints/{endpoint_id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        /**
-         * Update Webhook
-         * @description Update a webhook.
-         *
-         *     Args:
-         *         webhook_id: Webhook ID
-         *         data: Update data
-         *
-         *     Returns:
-         *         Updated webhook
-         */
-        put: operations["put_api_webhooks_webhook_id"];
+        /** Get Endpoint */
+        get: operations["get_api_webhook-endpoints_endpoint_id"];
+        put?: never;
         post?: never;
-        /**
-         * Delete Webhook
-         * @description Delete a webhook.
-         *
-         *     Args:
-         *         webhook_id: Webhook ID
-         *
-         *     Returns:
-         *         Success status
-         */
-        delete: operations["delete_api_webhooks_webhook_id"];
+        /** Delete Endpoint */
+        delete: operations["delete_api_webhook-endpoints_endpoint_id"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** Update Endpoint */
+        patch: operations["patch_api_webhook-endpoints_endpoint_id"];
         trace?: never;
     };
-    "/api/webhooks/{webhook_id}/deliveries": {
+    "/api/webhook-endpoints/{endpoint_id}/deliveries": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Webhook Deliveries
-         * @description Get webhook delivery history.
-         *
-         *     Args:
-         *         webhook_id: Webhook ID
-         *         limit: Maximum deliveries to return
-         *
-         *     Returns:
-         *         Delivery history
-         */
-        get: operations["get_api_webhooks_webhook_id_deliveries"];
+        /** List Deliveries */
+        get: operations["get_api_webhook-endpoints_endpoint_id_deliveries"];
         put?: never;
         post?: never;
         delete?: never;
@@ -6745,7 +6702,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/webhooks/{webhook_id}/test": {
+    "/api/webhook-endpoints/{endpoint_id}/deliveries/{delivery_id}/retry": {
         parameters: {
             query?: never;
             header?: never;
@@ -6755,16 +6712,30 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Test Webhook
-         * @description Test a webhook by sending a test payload.
-         *
-         *     Args:
-         *         webhook_id: Webhook ID
-         *
-         *     Returns:
-         *         Test result
+         * Retry Delivery
+         * @description Requeue a failed or dead delivery; the daemon sends it on its next pass.
          */
-        post: operations["post_api_webhooks_webhook_id_test"];
+        post: operations["post_api_webhook-endpoints_endpoint_id_deliveries_delivery_id_retry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/webhook-endpoints/{endpoint_id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Endpoint
+         * @description Send a signed ``webhook.test`` event now and report what happened.
+         */
+        post: operations["post_api_webhook-endpoints_endpoint_id_test"];
         delete?: never;
         options?: never;
         head?: never;
@@ -7571,6 +7542,13 @@ export interface components {
         AgentEnabledRequest: {
             /** Enabled */
             enabled: boolean;
+        };
+        /** Approval */
+        Approval: {
+            /** Checkpoint Id */
+            checkpoint_id: string;
+            /** Run Id */
+            run_id: string;
         };
         /** ApprovalActionResult */
         ApprovalActionResult: {
@@ -9277,6 +9255,43 @@ export interface components {
              */
             decisions: components["schemas"]["Decision"][];
         };
+        /** DeleteResult */
+        DeleteResult: {
+            /** Deleted */
+            deleted: boolean;
+        };
+        /** DeliveryList */
+        DeliveryList: {
+            /** Deliveries */
+            deliveries: components["schemas"]["DeliveryOut"][];
+        };
+        /** DeliveryOut */
+        DeliveryOut: {
+            /** Attempts */
+            attempts: number;
+            /** Created At */
+            created_at?: string | null;
+            /** Delivered At */
+            delivered_at?: string | null;
+            /** Endpoint Id */
+            endpoint_id: string;
+            /** Event Id */
+            event_id: string;
+            /** Event Type */
+            event_type: string;
+            /** Id */
+            id: number;
+            /** Last Attempt At */
+            last_attempt_at?: string | null;
+            /** Last Error */
+            last_error?: string | null;
+            /** Next Attempt At */
+            next_attempt_at?: string | null;
+            /** Response Status */
+            response_status?: number | null;
+            /** Status */
+            status: string;
+        };
         /**
          * DemoModeConfig
          * @description Demo mode configuration.
@@ -9390,6 +9405,99 @@ export interface components {
              * @default 0
              */
             months: number;
+        };
+        /** EndpointCreate */
+        EndpointCreate: {
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /**
+             * Event Types
+             * @description Subscribed event types; empty means every type.
+             */
+            event_types?: string[];
+            /** Name */
+            name: string;
+            /**
+             * Secret
+             * @description HMAC signing secret. Omit to have one generated.
+             */
+            secret?: string | null;
+            /** Url */
+            url: string;
+        };
+        /** EndpointCreated */
+        EndpointCreated: {
+            /** Created At */
+            created_at?: string | null;
+            /** Created By */
+            created_by?: string | null;
+            /** Enabled */
+            enabled: boolean;
+            /** Event Types */
+            event_types: string[];
+            /** Has Secret */
+            has_secret: boolean;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Secret
+             * @description The generated signing secret. Shown once; store it now.
+             */
+            secret?: string | null;
+            /** Tenant Id */
+            tenant_id: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Url */
+            url: string;
+        };
+        /** EndpointList */
+        EndpointList: {
+            /** Endpoints */
+            endpoints: components["schemas"]["EndpointOut"][];
+            /** Event Types */
+            event_types: string[];
+        };
+        /** EndpointOut */
+        EndpointOut: {
+            /** Created At */
+            created_at?: string | null;
+            /** Created By */
+            created_by?: string | null;
+            /** Enabled */
+            enabled: boolean;
+            /** Event Types */
+            event_types: string[];
+            /** Has Secret */
+            has_secret: boolean;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Tenant Id */
+            tenant_id: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Url */
+            url: string;
+        };
+        /** EndpointUpdate */
+        EndpointUpdate: {
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Event Types */
+            event_types?: string[] | null;
+            /** Name */
+            name?: string | null;
+            /** Secret */
+            secret?: string | null;
+            /** Url */
+            url?: string | null;
         };
         /**
          * EntityContext
@@ -10049,6 +10157,7 @@ export interface components {
         InvokeRequest: {
             /** Agent Id */
             agent_id?: string | null;
+            approval?: components["schemas"]["Approval"] | null;
             /** Args */
             args?: {
                 [key: string]: unknown;
@@ -11719,6 +11828,17 @@ export interface components {
              */
             summary: string;
         };
+        /** TestSendResult */
+        TestSendResult: {
+            /** Delivered */
+            delivered: boolean;
+            /** Error */
+            error?: string | null;
+            /** Outcome */
+            outcome: string;
+            /** Status Code */
+            status_code?: number | null;
+        };
         /**
          * ThemeConfig
          * @description Theme configuration.
@@ -11997,41 +12117,6 @@ export interface components {
             } | null;
             /** User Id */
             user_id: string;
-        };
-        /**
-         * WebhookCreate
-         * @description Create webhook.
-         */
-        WebhookCreate: {
-            /**
-             * Active
-             * @default true
-             */
-            active: boolean;
-            /** Events */
-            events: string[];
-            /** Name */
-            name: string;
-            /** Secret */
-            secret?: string | null;
-            /** Url */
-            url: string;
-        };
-        /**
-         * WebhookUpdate
-         * @description Update webhook.
-         */
-        WebhookUpdate: {
-            /** Active */
-            active?: boolean | null;
-            /** Events */
-            events?: string[] | null;
-            /** Name */
-            name?: string | null;
-            /** Secret */
-            secret?: string | null;
-            /** Url */
-            url?: string | null;
         };
         /** WorkflowDetailResponse */
         WorkflowDetailResponse: {
@@ -23808,7 +23893,7 @@ export interface operations {
             };
         };
     };
-    get_api_webhooks: {
+    "get_api_webhook-endpoints": {
         parameters: {
             query?: never;
             header?: {
@@ -23825,7 +23910,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["EndpointList"];
                 };
             };
             /** @description Validation Error */
@@ -23839,7 +23924,7 @@ export interface operations {
             };
         };
     };
-    post_api_webhooks: {
+    "post_api_webhook-endpoints": {
         parameters: {
             query?: never;
             header?: {
@@ -23850,17 +23935,17 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["WebhookCreate"];
+                "application/json": components["schemas"]["EndpointCreate"];
             };
         };
         responses: {
             /** @description Successful Response */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["EndpointCreated"];
                 };
             };
             /** @description Validation Error */
@@ -23874,51 +23959,14 @@ export interface operations {
             };
         };
     };
-    put_api_webhooks_webhook_id: {
+    "get_api_webhook-endpoints_endpoint_id": {
         parameters: {
             query?: never;
             header?: {
                 authorization?: string | null;
             };
             path: {
-                webhook_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["WebhookUpdate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_api_webhooks_webhook_id: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                webhook_id: string;
+                endpoint_id: string;
             };
             cookie?: never;
         };
@@ -23930,7 +23978,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["EndpointOut"];
                 };
             };
             /** @description Validation Error */
@@ -23944,16 +23992,87 @@ export interface operations {
             };
         };
     };
-    get_api_webhooks_webhook_id_deliveries: {
+    "delete_api_webhook-endpoints_endpoint_id": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                endpoint_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "patch_api_webhook-endpoints_endpoint_id": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                endpoint_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EndpointUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EndpointOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_webhook-endpoints_endpoint_id_deliveries": {
         parameters: {
             query?: {
                 limit?: number;
+                status?: string | null;
             };
             header?: {
                 authorization?: string | null;
             };
             path: {
-                webhook_id: string;
+                endpoint_id: string;
             };
             cookie?: never;
         };
@@ -23965,7 +24084,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["DeliveryList"];
                 };
             };
             /** @description Validation Error */
@@ -23979,14 +24098,15 @@ export interface operations {
             };
         };
     };
-    post_api_webhooks_webhook_id_test: {
+    "post_api_webhook-endpoints_endpoint_id_deliveries_delivery_id_retry": {
         parameters: {
             query?: never;
             header?: {
                 authorization?: string | null;
             };
             path: {
-                webhook_id: string;
+                endpoint_id: string;
+                delivery_id: number;
             };
             cookie?: never;
         };
@@ -23998,7 +24118,40 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["DeliveryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "post_api_webhook-endpoints_endpoint_id_test": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                endpoint_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestSendResult"];
                 };
             };
             /** @description Validation Error */
