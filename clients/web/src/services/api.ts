@@ -151,6 +151,15 @@ export interface NeedsYouItem {
   case_id: string | null
 }
 
+export type CaseActionTimeline = Schema<'CaseActionTimelineResponse'>
+export type CaseActionItem = Schema<'CaseActionTimelineItem'>
+
+/** Acts on an executed response action. The server side may not exist yet: callers handle 404/501. */
+export const responseActionsApi = {
+  revert: (actionId: string, reason: string) =>
+    api.post(`/response/actions/${encodeURIComponent(actionId)}/revert`, { reason }),
+}
+
 export const approvalsApi = {
   list: (params?: {
     status?: string
@@ -347,6 +356,10 @@ export const casesApi = {
   // The merged record. There is no audit-log route; this read replaced it.
   getRecord: (id: string) =>
     api.get<CaseRecordResponse>(`/cases/${id}/record`),
+
+  // Response actions on the case, newest first, each with its lifecycle (W2.8).
+  getActionTimeline: (id: string) =>
+    api.get<CaseActionTimeline>(`/cases/${id}/actions/timeline`),
 
   merge: (targetCaseId: string, sourceCaseId: string) =>
     api.post<Schema<'CaseMergeResponse'>>(`/cases/${targetCaseId}/merge`, {

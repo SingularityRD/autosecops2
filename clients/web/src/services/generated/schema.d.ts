@@ -1753,6 +1753,31 @@ export interface paths {
         patch: operations["patch_api_cases_case_id"];
         trace?: never;
     };
+    "/api/cases/{case_id}/actions/timeline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Case Action Timeline
+         * @description Response actions on this case, newest first, each with its lifecycle.
+         *
+         *     Read-only: proposed (by whom, the approval gate's rule), approved (and the
+         *     second approver), executed, verified, expiry, reversal, and a summary of
+         *     the before/after state. ``can_revert`` reports the row's state; reverting
+         *     is ``POST /api/response/actions/{id}/revert`` and its own permission.
+         */
+        get: operations["get_api_cases_case_id_actions_timeline"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cases/{case_id}/activities": {
         parameters: {
             query?: never;
@@ -7567,6 +7592,143 @@ export interface components {
         ByStatusResponse: {
             /** Status Breakdown */
             status_breakdown?: components["schemas"]["StatusBreakdownRow"][];
+        };
+        /**
+         * CaseActionEvent
+         * @description One dated step of an action's lifecycle.
+         *
+         *     ``kind``: proposed, approved, rejected, executed, failed, verified,
+         *     reversed. ``detail`` is the rejection reason, execution message or error,
+         *     or the verify status.
+         */
+        CaseActionEvent: {
+            /** Actor */
+            actor?: string | null;
+            /** At */
+            at?: string | null;
+            /** Detail */
+            detail?: string | null;
+            /** Kind */
+            kind: string;
+        };
+        /** CaseActionExecution */
+        CaseActionExecution: {
+            /** Error */
+            error?: string | null;
+            /** Message */
+            message?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Success */
+            success?: boolean | null;
+        };
+        /**
+         * CaseActionPolicy
+         * @description What the approval gate recorded: whether a person had to approve, and
+         *     the decision rule stored on the reason (``field=value [met|not met (x)]``).
+         */
+        CaseActionPolicy: {
+            /** Decision Rule */
+            decision_rule?: string | null;
+            /** Requires Approval */
+            requires_approval: boolean;
+        };
+        /**
+         * CaseActionStateRow
+         * @description One key of an action's observed before/after state, value as text.
+         */
+        CaseActionStateRow: {
+            /** Key */
+            key: string;
+            /** Value */
+            value: string;
+        };
+        /**
+         * CaseActionTimelineItem
+         * @description A response action on the case and its lifecycle (W0.5 columns).
+         *
+         *     ``can_revert`` is the row's state only (executed, reversible, not yet
+         *     reversed, not itself a revert); whether the caller may revert is RBAC's.
+         */
+        CaseActionTimelineItem: {
+            /** Action Id */
+            action_id: string;
+            /** Action Type */
+            action_type: string;
+            /** After State */
+            after_state?: components["schemas"]["CaseActionStateRow"][] | null;
+            /** Approved At */
+            approved_at?: string | null;
+            /** Approved By */
+            approved_by?: string | null;
+            /** Before State */
+            before_state?: components["schemas"]["CaseActionStateRow"][] | null;
+            /** Can Revert */
+            can_revert: boolean;
+            /** Confidence */
+            confidence?: number | null;
+            /**
+             * Events
+             * @default []
+             */
+            events: components["schemas"]["CaseActionEvent"][];
+            /** Executed At */
+            executed_at?: string | null;
+            execution?: components["schemas"]["CaseActionExecution"] | null;
+            /** Expires At */
+            expires_at?: string | null;
+            policy: components["schemas"]["CaseActionPolicy"];
+            /** Proposed At */
+            proposed_at?: string | null;
+            /** Proposed By */
+            proposed_by?: string | null;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /** Rejection Reason */
+            rejection_reason?: string | null;
+            /** Reverse Of */
+            reverse_of?: string | null;
+            /** Reversed At */
+            reversed_at?: string | null;
+            /** Reversibility */
+            reversibility: string;
+            /** Reverted By */
+            reverted_by?: string | null;
+            /** Second Approver */
+            second_approver?: string | null;
+            /** Status */
+            status: string;
+            /** Target */
+            target: string;
+            /** Title */
+            title: string;
+            /** Verified At */
+            verified_at?: string | null;
+            /** Verify Status */
+            verify_status?: string | null;
+        };
+        /**
+         * CaseActionTimelineResponse
+         * @description Newest first. ``truncated`` when the case had more than the cap.
+         */
+        CaseActionTimelineResponse: {
+            /**
+             * Actions
+             * @default []
+             */
+            actions: components["schemas"]["CaseActionTimelineItem"][];
+            /** Case Id */
+            case_id: string;
+            /** Count */
+            count: number;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
         };
         /** CaseCloseResponse */
         CaseCloseResponse: {
@@ -14365,6 +14527,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CaseSuccessResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_cases_case_id_actions_timeline: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseActionTimelineResponse"];
                 };
             };
             /** @description Validation Error */
