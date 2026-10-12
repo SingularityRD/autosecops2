@@ -9,6 +9,7 @@ import { timeLeft, when } from './caseFormat'
 import { IN_FLIGHT } from '../workflows/runRead'
 import type { RunFold } from './caseFold'
 import type { CaseInvestigationRef, CaseLinkedFinding } from './useCases'
+import { RegulatoryClocks } from './RegulatoryClocks'
 
 type Sla = { due: string; health: string } | null
 
@@ -232,7 +233,7 @@ function People({ caseId, owner }: { caseId: string; owner: string }) {
   )
 }
 
-/** The Details, Alerts, Cost, Known and People blocks of the case side panel. */
+/** The Details, Alerts, Regulatory clocks, Cost, Known and People blocks of the case side panel. */
 export function CaseSide({ caseId, linked, owner, latest, workflowNames, sla, closed, fold, latestFold }: {
   caseId: string
   linked: CaseLinkedFinding[]
@@ -250,6 +251,7 @@ export function CaseSide({ caseId, linked, owner, latest, workflowNames, sla, cl
     <>
       <Details latest={latest} workflowNames={workflowNames} sla={sla} closed={closed} fold={fold} spend={spend} />
       <Alerts items={linked} />
+      <RegulatoryClocks caseId={caseId} />
       <Cost spend={spend} />
       <Known fold={fold} />
       <People caseId={caseId} owner={owner} />
