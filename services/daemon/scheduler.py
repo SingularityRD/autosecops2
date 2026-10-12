@@ -26,6 +26,12 @@ def _sandbox_poll_interval() -> int:
     return max(30, get_settings().sandbox_poll_interval)
 
 
+def _audit_checkpoint_interval() -> int:
+    """Seconds between signed audit checkpoints; 0 (or less) turns them off."""
+    interval = get_settings().audit_checkpoint_interval_seconds
+    return 0 if interval <= 0 else max(60, interval)
+
+
 @dataclass
 class ScheduledTask:
     """Represents a scheduled task."""
@@ -122,6 +128,18 @@ class TaskScheduler:
                 run_on_start=True,
             )
         )
+
+        # Signed audit checkpoints (W1.10); AUDIT_CHECKPOINT_INTERVAL_SECONDS=0 is off.
+        if _audit_checkpoint_interval() > 0:
+            self._tasks.append(
+                ScheduledTask(
+                    name="audit_checkpoint",
+                    func=self._run_audit_checkpoint,
+                    interval=_audit_checkpoint_interval(),
+                    enabled=True,
+                    run_on_start=True,
+                )
+            )
 
         # Sandbox poller — only runs when auto-submit is enabled
         if _sandbox_poll_enabled():
@@ -418,6 +436,20 @@ class TaskScheduler:
         injected = await inject_probes(self._processor_queue, self._data_service)
         self.stats["probes_injected"] += injected
         return injected
+
+    async def _run_audit_checkpoint(self):
+        """Sign the audit_chain and agent_events heads (core/audit/checkpoint.py).
+
+        Off the event loop: it is a few queries, an fsync and, when a timestamp
+        authority is configured, an HTTP round trip.
+        """
+        from core.audit.checkpoint import run_checkpoint
+
+        manager = get_db_manager()
+        if manager.engine is None:
+            manager.initialize()
+        checkpoint = await asyncio.to_thread(run_checkpoint, manager.engine)
+        return checkpoint.id if checkpoint is not None else None
 
     async def _run_sandbox_poll(self):
         """Advance pending sandbox submissions to completed reports."""

@@ -178,6 +178,20 @@ class Settings(BaseSettings):
     # offline. See #562.
     db_strict_schema: bool = False
 
+    # Tamper-evident audit (core/audit). Signed checkpoints of the agent_events
+    # and audit_chain heads, every this many seconds from the daemon; 0 turns
+    # the job off. The signing key is the AUDIT_CHECKPOINT_SIGNING_KEY secret.
+    audit_checkpoint_interval_seconds: int = 3600
+    # Also append each checkpoint as a JSON line here (off when empty). A copy
+    # outside the database is what catches the newest checkpoint being deleted.
+    audit_checkpoint_file: str = ""
+    # The verifier's trusted public key (hex, base64 or PEM). Empty: derived
+    # from the signing key when this process holds it, else read from the
+    # checkpoints themselves and reported as untrusted.
+    audit_checkpoint_public_key: str = ""
+    # RFC 3161 timestamp authority for each checkpoint; empty means none.
+    audit_tsa_url: str = ""
+
     # Redis / queue. None means "no Redis configured" — the rate limiter falls back
     # to in-memory on None, so a default here would silently change its behavior.
     redis_url: Optional[str] = None

@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 from core.config import get_settings
 from core.secrets import get_secret
+from core.storage.audit_chain import ensure_audit_chain_triggers
 
 # Import all models to register them with Base.metadata before create_all().
 # Unused by name, which is the point -- the import is the registration.
@@ -1044,6 +1045,7 @@ def reset_reference_seed_check() -> None:
         _reference_seed_done.clear()
         _reference_seed_failed_at.clear()
     _schema_stamped.clear()
+    _audit_chain_checked.clear()
 
 
 def seed_reference_tables(db_manager: Optional["DatabaseManager"] = None) -> None:
@@ -1145,6 +1147,25 @@ def _stamp_schema_version(engine: Engine) -> None:
     _schema_stamped.add(key)
 
 
+_audit_chain_checked: set[str] = set()
+
+
+def _ensure_audit_chain(engine: Optional[Engine]) -> None:
+    """Attach the audit-chain triggers to tables create_all just built.
+
+    Here, after create_all, because case_audit_logs is ORM-owned: the init SQL
+    (50_audit_chain.sql) runs before it exists on Compose and Helm. Once per
+    database per process; never raises (see core/storage/audit_chain.py).
+    """
+    if engine is None:
+        return
+    key = engine.url.render_as_string(hide_password=True)
+    if key in _audit_chain_checked:
+        return
+    ensure_audit_chain_triggers(engine)
+    _audit_chain_checked.add(key)
+
+
 def init_database(echo: bool = False, create_tables: bool = True):
     """
     Initialize the database.
@@ -1171,6 +1192,7 @@ def init_database(echo: bool = False, create_tables: bool = True):
     # the backend can create these tables, and marks it applied for good.
     if create_tables:
         seed_reference_tables(db_manager)
+        _ensure_audit_chain(db_manager.engine)
         # Only once create_all and the drift check have returned: a stamp
         # the schema never reached would hide the version it is really at.
         try:

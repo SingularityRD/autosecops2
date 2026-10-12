@@ -381,6 +381,82 @@
       "nullable": true
     }
   },
+  "audit_chain": {
+    "created_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "event": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "event_hash": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "payload": {
+      "data_type": "jsonb",
+      "nullable": false
+    },
+    "prev_hash": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "seq": {
+      "data_type": "bigint",
+      "nullable": false
+    },
+    "source_id": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "source_table": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "tenant_id": {
+      "data_type": "text",
+      "nullable": false
+    }
+  },
+  "audit_checkpoints": {
+    "body": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "body_hash": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "created_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "id": {
+      "data_type": "bigint",
+      "nullable": false
+    },
+    "key_id": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "prev_body_hash": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "public_key": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "signature": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "tsa_token": {
+      "data_type": "text",
+      "nullable": true
+    }
+  },
   "autonomy_tiers": {
     "action_type": {
       "data_type": "character varying(40)",
