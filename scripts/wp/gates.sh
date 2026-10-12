@@ -12,8 +12,14 @@
 #                         py:import-linter, py:pytest (test dirs related to the change
 #                         + tests/unit/_ratchets; --full: tests/unit tests/security)
 #   infra/, env.example   py:pytest tests/unit/_ratchets
-#   services/medic*/**    <svc>:ruff (check + format), <svc>:pytest (uv, as medic.yml)
+#   services/medic*/**    <svc>:ruff (check + format), <svc>:pytest (uv, as medic.yml;
+#                         venv in <git-dir>/wp-venvs/<svc>, never services/<svc>/.venv)
 #   *.sh / bash scripts   sh:syntax (bash -n), sh:shellcheck (if installed)
+#   node_modules          git:node_modules FAILS if any tracked node_modules path
+#                         is in the diff (always runs)
+#
+# Backend pytest runs with DEMO_MODE=false MCP_AUTO_CONNECT_ON_STARTUP=false,
+# whatever .env says: demo seeding and MCP dials are not under test.
 #
 # Exit 0 only if every check that ran passed. Logs: <git-dir>/wp-gates/<check>.log
 #
@@ -53,17 +59,29 @@ venv="${GATES_VENV:-/root/vigil/venv}"
 agent_dsn="${AGENT_TEST_DATABASE_URL:-postgres://test:test@localhost:5432/agent_test}"
 tmo="${GATES_TIMEOUT:-1200}"
 sc_sev="${SHELLCHECK_SEVERITY:-warning}"
-logdir="$(git rev-parse --absolute-git-dir)/wp-gates"
+gitdir="$(git rev-parse --absolute-git-dir)"
+logdir="$gitdir/wp-gates"
 mkdir -p "$logdir"
 rm -f "$logdir"/*.log
+
+# Bootstrap safety: node_modules is symlinked into worktrees, and .gitignore's
+# "node_modules/" does not match a symlink. info/exclude is shared by every
+# worktree of the repo; the line is idempotent.
+exclude="$(git rev-parse --path-format=absolute --git-path info/exclude)"
+if ! grep -qxF node_modules "$exclude" 2>/dev/null; then
+  mkdir -p "$(dirname "$exclude")" && printf 'node_modules\n' >>"$exclude"
+fi
 
 mb="$(git merge-base HEAD "$base" 2>/dev/null)" || { echo "no merge-base between HEAD and '$base'" >&2; exit 2; }
 
 # --- changed files ---------------------------------------------------------
+nm_re='(^|/)node_modules(/|$)'
 mapfile -t changed < <(
   { git diff --name-only "$mb"; git ls-files --others --exclude-standard; } \
-    | grep -v -e '(^|/)node_modules(/|$)' -E | sort -u
+    | grep -Ev "$nm_re" | sort -u
 )
+# Tracked (committed or staged) node_modules paths in the diff: never wanted.
+mapfile -t tracked_nm < <(git diff --name-only "$mb" | grep -E "$nm_re" | sort -u)
 exists() { [ -e "$1" ] || [ -L "$1" ]; }
 # changed files that still exist, matching an extended regex
 pick() { local f; for f in "${changed[@]}"; do [[ "$f" =~ $1 ]] && exists "$f" && printf '%s\n' "$f"; done; }
@@ -74,7 +92,7 @@ echo "head:       $(git rev-parse --short HEAD) $(git rev-parse --abbrev-ref HEA
 base_label="$base"; [[ "$base" =~ ^[0-9a-f]{40}$ ]] && base_label="${base:0:8}"
 echo "merge-base: $(git rev-parse --short "$mb") ($base_label)"
 echo "changed:    ${#changed[@]} file(s)"
-if [ ${#changed[@]} -eq 0 ]; then echo "RESULT: PASS (nothing changed)"; exit 0; fi
+if [ ${#changed[@]} -eq 0 ] && [ ${#tracked_nm[@]} -eq 0 ]; then echo "RESULT: PASS (nothing changed)"; exit 0; fi
 
 # --- runner ----------------------------------------------------------------
 results=()
@@ -98,6 +116,14 @@ run() { # run <name> <command...>
 }
 skip() { results+=("SKIP  $1: $2"); }
 note() { results+=("NOTE  $1"); }
+
+# --- node_modules ----------------------------------------------------------
+if [ ${#tracked_nm[@]} -gt 0 ]; then
+  run git:node_modules bash -c 'echo "tracked node_modules path(s) in the diff (git rm --cached them):"; printf "  %s\n" "$@" | head -n 50; echo "  ($# path(s))"; exit 1' _ "${tracked_nm[@]}"
+else
+  [ "$dry" = 1 ] && results+=("PLAN  git:node_modules: no tracked node_modules paths in the diff")
+  [ "$dry" = 1 ] || results+=("PASS  git:node_modules (no tracked paths in the diff)")
+fi
 
 # Borrow node_modules from the main checkout when the worktree has none.
 main_wt="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
@@ -226,7 +252,8 @@ if [ ${#targets[@]} -gt 0 ]; then
   done
   if [ "$full" = 1 ] || [ ${#pruned[@]} -gt 40 ]; then pruned=(tests/unit tests/security); fi
   note "pytest targets: ${pruned[*]}"
-  run py:pytest py python -m pytest -c tests/pytest.ini --rootdir=. -o addopts= -p no:cacheprovider \
+  run py:pytest py env DEMO_MODE=false MCP_AUTO_CONNECT_ON_STARTUP=false \
+    python -m pytest -c tests/pytest.ini --rootdir=. -o addopts= -p no:cacheprovider \
     --asyncio-mode=auto --strict-markers -m "not external_service" -q -ra "${pruned[@]}"
 fi
 
@@ -239,7 +266,10 @@ for svc in medic medic_gateway medic_dockerproxy; do
     skip "$svc:ruff" "ruff not installed"
   fi
   if command -v uv >/dev/null; then
-    run "$svc:pytest" bash -c 'uv sync --quiet --project "services/$1" --frozen && uv run --no-sync --project "services/$1" pytest -q "services/$1"' _ "$svc"
+    # Outside the source tree, as medic.yml's UV_PROJECT_ENVIRONMENT: a
+    # services/<svc>/.venv would be scanned by the ratchets (and untracked).
+    run "$svc:pytest" env UV_PROJECT_ENVIRONMENT="$gitdir/wp-venvs/$svc" \
+      bash -c 'uv sync --quiet --project "services/$1" --frozen && uv run --no-sync --project "services/$1" pytest -q "services/$1"' _ "$svc"
   else
     run "$svc:pytest" bash -c 'echo "uv not installed"; exit 1'
   fi
