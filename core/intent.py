@@ -156,6 +156,11 @@ INTENT_FIELDS: Tuple[IntentField, ...] = (
 
 FIELDS_BY_KEY: Dict[str, IntentField] = {f.key: f for f in INTENT_FIELDS}
 
+# Top-level INTENT.md sections with their own reader; observe mode skips them.
+#   alert_lanes  core.lanes.alert_lanes.load_thresholds (enforced behind
+#                ALERT_LANES_ENABLED)
+OTHER_READER_SECTIONS = frozenset({"alert_lanes"})
+
 
 @dataclass(frozen=True)
 class IntentDiff:
@@ -202,6 +207,8 @@ def read_intent(path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     if front is None:
         logger.warning("INTENT.md has no YAML frontmatter (%s)", path)
         return None
+    # Sections another module reads and enforces, not DaemonConfig knobs.
+    front = {k: v for k, v in front.items() if k not in OTHER_READER_SECTIONS}
     declared = _flatten(front)
     for key in sorted(set(declared) - set(FIELDS_BY_KEY)):
         logger.warning("INTENT.md key %r has no reader in the daemon; ignored", key)

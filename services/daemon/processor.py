@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from core.ingestion.ack import settle_ack
 from core.ingestion.dedup import RedisDedupSet
+from core.lanes.alert_lanes import LaneHook, lane_triage_target, wants_llm_triage
 from core.llm.outage import report_outage, report_recovered
 from core.time import utcnow
 from services.daemon.config import ProcessingConfig, ResponseConfig
@@ -57,6 +58,7 @@ _AI_ANALYSIS_KEYS = (
     "category",
     "recommended_action",
     "triage_reasoning",
+    "alert_lane",
 )
 
 
@@ -116,6 +118,8 @@ class FindingProcessor:
         # Built on the first store and reused: its constructor health-checks
         # the database and logs, which should not happen once per finding.
         self._ingestion_service = None
+        # W2.2 alert lanes; a no-op unless ALERT_LANES_ENABLED.
+        self.alert_lanes = LaneHook()
 
         # Caps concurrent background AI enrichment (not the ingest/store path).
         self._semaphore = asyncio.Semaphore(config.max_concurrent_tasks)
@@ -396,13 +400,14 @@ class FindingProcessor:
         is capped by the semaphore and short-circuited by the breaker; response
         evaluation always runs on whatever severity we have."""
         finding_id = finding.get("finding_id", "unknown")
+        await self.alert_lanes(finding)  # W2.2 lane: rules / small model / verdict
 
         want_llm = self.config.auto_triage_enabled or self.config.auto_enrich_enabled
         if want_llm and time.monotonic() >= self._enrich_paused_until:
             async with self._semaphore:
                 try:
                     triaged_ok = True
-                    if self.config.auto_triage_enabled:
+                    if self.config.auto_triage_enabled and wants_llm_triage(finding):
                         finding = await self._triage_finding(finding)
                         # _triage_finding sets ai_triage only when the gateway answered.
                         triaged_ok = bool(finding.get("ai_triage"))
@@ -705,6 +710,8 @@ REASONING: [Brief explanation]
         from core.llm.providers.registry import get_registry
         from core.llm.target import component_fallback, model_for, provider_for
 
+        if (small := lane_triage_target()) is not None:  # W2.2 small-model lane
+            return small
         provider_id, model = None, None
         try:
             resolved = get_registry().resolve_model_for_component("triage")

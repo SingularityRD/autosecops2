@@ -1,0 +1,154 @@
+"""The processor's alert-lane hook (W2.2): a no-op when off, a lane when on."""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timezone
+from typing import Any, Dict, List
+
+import pytest
+
+from core.lanes.alert_lanes import (
+    LANE_RULES,
+    LANE_SMALL,
+    AlertLanes,
+    LaneHook,
+    SuppressionRule,
+    lane_triage_target,
+)
+from services.daemon.config import ProcessingConfig
+from services.daemon.processor import FindingProcessor
+
+pytestmark = pytest.mark.unit
+
+NOW = datetime(2026, 10, 12, tzinfo=timezone.utc)
+SCANNER = SuppressionRule("r1", "default", "scanner", {"data_source": "nessus"}, "noise")
+
+
+class _Data:
+    def __init__(self):
+        self.updates: List[Dict[str, Any]] = []
+
+    def update_finding(self, finding_id, **updates):
+        self.updates.append({"finding_id": finding_id, **updates})
+        return True
+
+
+def _processor(monkeypatch, *, enabled: bool, lanes: AlertLanes = None):
+    processor = FindingProcessor(
+        ProcessingConfig(auto_triage_enabled=True, auto_enrich_enabled=False)
+    )
+    processor._data_service = _Data()
+    processor.alert_lanes = LaneHook(
+        lanes or AlertLanes(clock=lambda: NOW, rules_source=lambda t: [SCANNER]),
+        enabled=lambda: enabled,
+    )
+    triaged: List[Dict[str, Any]] = []
+
+    async def triage(finding):
+        triaged.append({"id": finding["finding_id"], "target": lane_triage_target()})
+        finding["ai_triage"] = {"result": {}}
+        return finding
+
+    async def no_response(_finding):
+        return None
+
+    monkeypatch.setattr(processor, "_triage_finding", triage)
+    monkeypatch.setattr(processor, "_evaluate_for_response", no_response)
+    return processor, triaged
+
+
+async def _run(processor, finding):
+    # Its own task, as _spawn_enrich runs it.
+    await asyncio.create_task(processor._enrich_in_background(finding, "webhook"))
+
+
+@pytest.mark.asyncio
+async def test_flag_off_is_a_no_op(monkeypatch):
+    processor, triaged = _processor(monkeypatch, enabled=False)
+    finding = {"finding_id": "f1", "data_source": "nessus", "severity": "low"}
+    await _run(processor, finding)
+    assert [t["id"] for t in triaged] == ["f1"]
+    assert "alert_lane" not in finding
+    assert "alert_lane" not in processor._data_service.updates[0]["ai_enrichment"]
+
+
+def test_default_hook_reads_the_setting_and_is_off(monkeypatch):
+    from core.config import get_settings
+
+    monkeypatch.delenv("ALERT_LANES_ENABLED", raising=False)
+    get_settings.cache_clear()
+    try:
+        processor = FindingProcessor(ProcessingConfig())
+        assert asyncio.run(processor.alert_lanes({"finding_id": "x"})) is None
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_rules_lane_skips_triage_and_persists_the_decision(monkeypatch):
+    processor, triaged = _processor(monkeypatch, enabled=True)
+    finding = {"finding_id": "f1", "data_source": "nessus", "severity": "low"}
+    await _run(processor, finding)
+    assert triaged == []
+    stored = processor._data_service.updates[0]["ai_enrichment"]["alert_lane"]
+    assert stored["lane"] == LANE_RULES
+    assert stored["rule"]["name"] == "scanner"
+    assert stored["tenant_id"] == "default"
+    assert finding["recommended_action"] == "dismiss"
+
+
+@pytest.mark.asyncio
+async def test_small_lane_triages_on_the_small_model(monkeypatch):
+    lanes = AlertLanes(clock=lambda: NOW, small_target=("ollama", "llama3.1:8b"))
+    processor, triaged = _processor(monkeypatch, enabled=True, lanes=lanes)
+    finding = {"finding_id": "f2", "data_source": "siem", "severity": "low"}
+    await _run(processor, finding)
+    assert triaged == [{"id": "f2", "target": ("ollama", "llama3.1:8b")}]
+    stored = processor._data_service.updates[0]["ai_enrichment"]["alert_lane"]
+    assert (stored["lane"], stored["model"]) == (LANE_SMALL, "ollama/llama3.1:8b")
+    # The override is task-local: it does not leak out of the finding's task.
+    assert lane_triage_target() is None
+
+
+def test_resolve_triage_target_prefers_the_lane_override():
+    from core.lanes import alert_lanes
+
+    token = alert_lanes._TRIAGE_TARGET.set(("ollama", "tiny"))
+    try:
+        assert FindingProcessor._resolve_triage_target() == ("ollama", "tiny")
+    finally:
+        alert_lanes._TRIAGE_TARGET.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_enqueued_verdict_skips_in_process_triage(monkeypatch):
+    lanes = AlertLanes(clock=lambda: NOW, verdict_enabled=True)
+    processor, triaged = _processor(monkeypatch, enabled=True, lanes=lanes)
+    processor.alert_lanes.verdict_enqueuer = lambda finding, d: "run-9"
+    finding = {"finding_id": "f3", "severity": "critical"}
+    await _run(processor, finding)
+    assert triaged == []
+    stored = processor._data_service.updates[0]["ai_enrichment"]["alert_lane"]
+    assert stored["verdict_run_id"] == "run-9"
+
+
+@pytest.mark.asyncio
+async def test_degraded_verdict_still_triages(monkeypatch):
+    processor, triaged = _processor(monkeypatch, enabled=True)
+    finding = {"finding_id": "f4", "severity": "critical"}
+    await _run(processor, finding)
+    assert [t["id"] for t in triaged] == ["f4"]
+    assert finding["alert_lane"]["deferred_verdict"] is True
+
+
+@pytest.mark.asyncio
+async def test_hook_failure_falls_through_to_default_path(monkeypatch):
+    class Broken(AlertLanes):
+        async def route(self, finding):
+            raise RuntimeError("bug")
+
+    processor, triaged = _processor(monkeypatch, enabled=True, lanes=Broken())
+    finding = {"finding_id": "f5", "severity": "low"}
+    await _run(processor, finding)
+    assert [t["id"] for t in triaged] == ["f5"]
