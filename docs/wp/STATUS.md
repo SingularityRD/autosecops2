@@ -58,3 +58,10 @@ Birleştirme sonrası: `schema.d.ts` yeniden üretildi; `test_route_permissions.
 1. FAIL alan 13 dal için düzeltme ajanları (bulgular yukarıda), ardından yeniden bağımsız doğrulama.
 2. W2.4'ü önce düzelt/birleştir (W2.5/W2.7 ve W2.8 Revert ona bağlı), sonra W2.5, W2.7.
 3. Birleştirme sırası çakışmaları: `core/compliance/__init__.py` (W3.5/W3.6), `core/quality/__init__.py` (W1.5), `schema.d.ts` her birleştirmeden sonra yeniden üretilmeli.
+
+## Güncelleme — 12 Ekim 2026, 12:45
+
+- W3.4 (sıfır egress) tek engel olan yorum satırı düzeltilerek integration'a birleşti. Birleşen W1.8 ve W2.6'nın yeni dış çağrıları `tests/airgap/egress_inventory.json`'da sınıflandırıldı.
+- `integration` → `main` birleştirildi (fast-forward). Birleşik ağaçta: tam gates `RESULT: PASS` (web, agent, py, medic, shell); `tests/unit tests/security tests/airgap` 4999 geçti; veritabanı testleri 557 geçti, 1 zamanlama flake'i (`test_medic_last_seen`, dokunulmamış dosya, tek başına geçiyor).
+- Plan sayımı (45 iş paketi): **14 bitti ve main'de** (W0.1, W0.2, W0.3, W0.4, W0.5, W0.7, W1.1, W1.6, W1.7, W1.8, W2.6, W2.8, W3.4, W3.8; artı ek W0.4b, W0.9) · **12 kodu yazıldı, doğrulamada kaldı** (W1.2, W1.5, W1.9, W1.10, W2.1, W2.2, W2.4, W2.5, W2.7, W3.3, W3.5, W3.6 — bkz. FIXES.md) · **19 başlanmadı** (W0.6, W0.8 [insan işi], W1.3, W1.4, W2.3, W2.9 [isteğe bağlı], W3.1, W3.2, W3.7, W3.9, W3.10, W3.11, W4.1–W4.7).
+- Ortam notu: makine yeniden başlarsa Postgres ve Redis kapalı gelir: `pg_ctlcluster 16 main start; redis-server --daemonize yes`.
