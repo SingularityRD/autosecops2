@@ -2186,6 +2186,73 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cases/{case_id}/regulatory/clocks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Regulatory Clocks
+         * @description Every DORA and NIS2 clock: due_at, remaining seconds, overdue, and what binds it.
+         */
+        get: operations["get_api_cases_case_id_regulatory_clocks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/regulatory/drafts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Regulatory Drafts */
+        get: operations["get_api_cases_case_id_regulatory_drafts"];
+        put?: never;
+        /**
+         * Generate Regulatory Draft
+         * @description Draft a report from the case's evidence pack; every line cites a pack item.
+         *
+         *     Deterministic template only: no model is called from this route.
+         */
+        post: operations["post_api_cases_case_id_regulatory_drafts"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/regulatory/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Regulatory Events
+         * @description The append-only history of start instants, oldest first, with its chain check.
+         */
+        get: operations["get_api_cases_case_id_regulatory_events"];
+        put?: never;
+        /**
+         * Record Regulatory Instant
+         * @description Set, change or clear one start instant. A change or clear needs a reason.
+         */
+        post: operations["post_api_cases_case_id_regulatory_events"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cases/{case_id}/relationships": {
         parameters: {
             query?: never;
@@ -2431,6 +2498,24 @@ export interface paths {
          */
         get: operations["get_api_claude_models"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/compliance/regulatory-clocks/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Regulatory Config */
+        get: operations["get_api_compliance_regulatory-clocks_config"];
+        /** Put Regulatory Config */
+        put: operations["put_api_compliance_regulatory-clocks_config"];
         post?: never;
         delete?: never;
         options?: never;
@@ -8669,6 +8754,17 @@ export interface components {
             /** User */
             user: string;
         };
+        /** ChainResponse */
+        ChainResponse: {
+            /** Broken At */
+            broken_at?: number | null;
+            /** Ok */
+            ok: boolean;
+            /** Rows */
+            rows?: number | null;
+            /** Why */
+            why?: string | null;
+        };
         /**
          * ChangePasswordRequest
          * @description Change password request.
@@ -8751,6 +8847,65 @@ export interface components {
         ClaudeConfig: {
             /** Api Key */
             api_key: string;
+        };
+        /** ClockEventResponse */
+        ClockEventResponse: {
+            /** Actor */
+            actor: string;
+            /** Instant */
+            instant: string;
+            /** Prev Hash */
+            prev_hash: string;
+            /** Previous Value */
+            previous_value?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /** Recorded At */
+            recorded_at: string;
+            /** Regime */
+            regime: string;
+            /** Row Hash */
+            row_hash: string;
+            /** Seq */
+            seq: number;
+            /** Value */
+            value?: string | null;
+        };
+        /** ClockEventsResponse */
+        ClockEventsResponse: {
+            chain: components["schemas"]["ChainResponse"];
+            /** Events */
+            events: components["schemas"]["ClockEventResponse"][];
+        };
+        /** ClockStatusResponse */
+        ClockStatusResponse: {
+            /** Bound To */
+            bound_to?: string | null;
+            /** Due At */
+            due_at?: string | null;
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Met At */
+            met_at?: string | null;
+            /** Met By */
+            met_by: string;
+            /** Overdue */
+            overdue: boolean;
+            /** Regime */
+            regime: string;
+            /** Remaining Seconds */
+            remaining_seconds?: number | null;
+            /** Started At */
+            started_at?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "not_started" | "running" | "overdue" | "met" | "met_late";
+            /** Waiting For */
+            waiting_for?: string | null;
         };
         /**
          * ClosureCategory
@@ -9168,6 +9323,74 @@ export interface components {
             /** Kind */
             kind: string;
         };
+        /** DraftLine */
+        DraftLine: {
+            /** Cites */
+            cites: string[];
+            /** Text */
+            text: string;
+        };
+        /** DraftResponse */
+        DraftResponse: {
+            /** Case Id */
+            case_id: string;
+            /** Cited Ids */
+            cited_ids: string[];
+            /** Created At */
+            created_at: string;
+            /** Created By */
+            created_by: string;
+            /** Draft Id */
+            draft_id: string;
+            /** Fallback Reason */
+            fallback_reason?: string | null;
+            /**
+             * Generator
+             * @enum {string}
+             */
+            generator: "template" | "llm";
+            /** Kind */
+            kind: string;
+            /** Markdown */
+            markdown: string;
+            /** Pack Digest */
+            pack_digest: string;
+            /** Pack Size */
+            pack_size: number;
+            /** Regime */
+            regime: string;
+            /** Sections */
+            sections: components["schemas"]["DraftSection"][];
+            /** Title */
+            title: string;
+            /** To Complete */
+            to_complete: string[];
+        };
+        /** DraftSection */
+        DraftSection: {
+            /** Heading */
+            heading: string;
+            /** Lines */
+            lines: components["schemas"]["DraftLine"][];
+        };
+        /** DraftsResponse */
+        DraftsResponse: {
+            /** Drafts */
+            drafts: components["schemas"]["DraftResponse"][];
+        };
+        /** DurationModel */
+        DurationModel: {
+            /**
+             * Hours
+             * @default 0
+             */
+            hours: number;
+            /**
+             * Months
+             * @default 0
+             */
+            months: number;
+        };
         /**
          * EntityContext
          * @description Free-form entity context; ``source_evidence`` is the one named key.
@@ -9549,6 +9772,19 @@ export interface components {
             /** Feedback */
             feedback?: string | null;
         };
+        /** GenerateDraftRequest */
+        GenerateDraftRequest: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "initial" | "intermediate" | "final" | "early_warning" | "notification";
+            /**
+             * Regime
+             * @enum {string}
+             */
+            regime: "dora" | "nis2";
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -9671,6 +9907,19 @@ export interface components {
             message: string;
             /** Success */
             success: boolean;
+        };
+        /** InstantSourceResponse */
+        InstantSourceResponse: {
+            /** Actor */
+            actor: string;
+            /** Reason */
+            reason?: string | null;
+            /** Recorded At */
+            recorded_at?: string | null;
+            /** Seq */
+            seq: number;
+            /** Value */
+            value?: string | null;
         };
         /** IntakeLaunchResponse */
         IntakeLaunchResponse: {
@@ -10673,6 +10922,27 @@ export interface components {
             /** Start Time */
             start_time?: string | null;
         };
+        /** RecordInstantRequest */
+        RecordInstantRequest: {
+            /** Instant */
+            instant: string;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Regime
+             * @enum {string}
+             */
+            regime: "dora" | "nis2";
+            /** Value */
+            value?: string | null;
+        };
+        /** RecordInstantResponse */
+        RecordInstantResponse: {
+            /** Changed */
+            changed: boolean;
+            event?: components["schemas"]["ClockEventResponse"] | null;
+            status: components["schemas"]["RegulatoryStatusResponse"];
+        };
         /**
          * RecoveryCodesResponse
          * @description One-time MFA recovery codes (shown once, cannot be retrieved again).
@@ -10694,6 +10964,54 @@ export interface components {
         RefreshTokenRequest: {
             /** Refresh Token */
             refresh_token?: string | null;
+        };
+        /** RegulatoryConfigResponse */
+        RegulatoryConfigResponse: {
+            /** Defaults */
+            defaults: {
+                [key: string]: components["schemas"]["DurationModel"];
+            };
+            /** Durations */
+            durations: {
+                [key: string]: components["schemas"]["DurationModel"];
+            };
+            /** Timezone */
+            timezone: string;
+        };
+        /** RegulatoryConfigUpdate */
+        RegulatoryConfigUpdate: {
+            /** Durations */
+            durations?: {
+                [key: string]: components["schemas"]["DurationModel"];
+            };
+            /** Timezone */
+            timezone: string;
+        };
+        /** RegulatoryStatusResponse */
+        RegulatoryStatusResponse: {
+            /** Case Id */
+            case_id: string;
+            chain: components["schemas"]["ChainResponse"];
+            /** Clocks */
+            clocks: components["schemas"]["ClockStatusResponse"][];
+            /** Durations */
+            durations: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            /** Events */
+            events: number;
+            /** Instants */
+            instants: {
+                [key: string]: {
+                    [key: string]: components["schemas"]["InstantSourceResponse"];
+                };
+            };
+            /** Now */
+            now: string;
+            /** Timezone */
+            timezone: string;
         };
         /** RejectRequest */
         RejectRequest: {
@@ -15624,6 +15942,179 @@ export interface operations {
             };
         };
     };
+    get_api_cases_case_id_regulatory_clocks: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegulatoryStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_cases_case_id_regulatory_drafts: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_cases_case_id_regulatory_drafts: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerateDraftRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_cases_case_id_regulatory_events: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClockEventsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_cases_case_id_regulatory_events: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordInstantRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordInstantResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_api_cases_case_id_relationships: {
         parameters: {
             query?: never;
@@ -16132,6 +16623,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_compliance_regulatory-clocks_config": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegulatoryConfigResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "put_api_compliance_regulatory-clocks_config": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegulatoryConfigUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegulatoryConfigResponse"];
                 };
             };
             /** @description Validation Error */
