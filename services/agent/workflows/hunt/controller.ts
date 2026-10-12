@@ -1358,6 +1358,10 @@ export class HuntController {
   parkOnRefusal(reason: string): string {
     const hunt = this.ledger.projection.hunt;
     if (hunt.status !== "active") return this.suspendedBecause();
+    if (this.terminatesOnBudget()) {
+      this.terminate("budget_terminated", reason);
+      return `ended: ${reason} (on_budget: terminate)`;
+    }
     this.ledger.patch("hunt", hunt.hunt_id, {
       status: "parked",
       parked_at: new Date().toISOString(),
@@ -1371,6 +1375,10 @@ export class HuntController {
   private park(): string {
     const hunt = this.ledger.projection.hunt;
     const reason = boundReason(hunt);
+    if (this.terminatesOnBudget()) {
+      this.terminate("budget_terminated", reason);
+      return `ended: ${reason} (on_budget: terminate)`;
+    }
 
     // Not a checkpoint, though it is a question: Run.settled() reads an unresolved one
     // as "no call may proceed", which no extension could then lift. parked_reason holds it.
@@ -2246,6 +2254,11 @@ export class HuntController {
   // beside one would be a second copy that can disagree with it.
   private finalize(): void {
     this.ledger.append({ kind: "finalize", payload: buildReport(this.ledger.projection) });
+  }
+
+  // Read off the journaled spec, so a resumed run ends the way it started.
+  private terminatesOnBudget(): boolean {
+    return this.ledger.projection.hunt.spec.on_budget === "terminate";
   }
 
   private budgetExhausted(): boolean {

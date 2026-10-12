@@ -8,6 +8,7 @@ import { huntDistil } from "../workflows/hunt/distil.js";
 import type { HuntKinds } from "../workflows/hunt/ledger.js";
 import { huntProjection } from "../workflows/hunt/projection.js";
 import { huntNotes } from "../workflows/hunt/recall.js";
+import { verdictProjection } from "../workflows/hunt/verdict.js";
 import { leadProjection } from "../workflows/lead/projection.js";
 import type { LeadKinds } from "../workflows/lead/workflow.js";
 import { rootCauseProjection } from "../workflows/rootcause/projection.js";
@@ -37,7 +38,7 @@ export interface ArchEntry {
   distil?: (runId: string, events: readonly AgentEvent<Record<never, never>>[]) => unknown;
 }
 
-// The hunt lead-loop, minus its arch prompt. `hunt` and `adjudicate` run this exact
+// The hunt lead-loop, minus its arch prompt. `hunt`, `adjudicate` and `verdict` run this exact
 // loop — same actions, halts, ownership, projection and notes — and differ only in
 // the arch that frames the lead's job, so the shared mechanics live here and drift
 // between the kinds is impossible rather than a two-place edit. `root_cause` does
@@ -48,7 +49,8 @@ const HUNT_LOOP: Omit<ArchEntry, "arch"> = {
   workflow: "hunt",
   actions: ["INVESTIGATE", "EXPAND", "PIVOT", "DEEPEN", "ABANDON", "VALIDATE", "CHECKPOINT", "CONCLUDE", "HANDOFF_IR"],
   halts: ["CONCLUDE"],
-  owned: { playbook: ["hypotheses", "attack_techniques", "data_domains"], config: ["enrichment", "checkpoints", "hypothesis_loop"] },
+  // on_budget: whether the run parks or ends when its ceiling binds (config.ts).
+  owned: { playbook: ["hypotheses", "attack_techniques", "data_domains"], config: ["enrichment", "checkpoints", "hypothesis_loop", "on_budget"] },
   notes: (state, runId) => huntNotes(state as unknown as State<HuntKinds>, runId),
   projection: (runId, events) => huntProjection(runId, events as readonly AgentEvent<HuntKinds>[]),
 };
@@ -77,6 +79,16 @@ const REGISTERED: Partial<Record<RunKind, ArchEntry>> = {
   // the seeded benign account, and proposes a workflow without starting one. Same
   // HUNT_LOOP, no distil for the reason given above.
   adjudicate: { arch: packaged("adjudicate.yaml"), ...HUNT_LOOP },
+  // verdict is the hunt loop at triage scale: one uncertain alert, a lead and at most
+  // two workers, the critic mandatory before a malicious or benign answer, and a
+  // contract verdict (contracts/verdict.ts) journaled before the terminal. Its
+  // projection is the hunt's plus that verdict, so every hunt reader still reads it.
+  // No distil, for the reason given above.
+  verdict: {
+    arch: packaged("verdict.yaml"),
+    ...HUNT_LOOP,
+    projection: (runId, events) => verdictProjection(runId, events as readonly AgentEvent<HuntKinds>[]),
+  },
   investigate: {
     arch: packaged("investigate.yaml"),
     workflow: "lead",

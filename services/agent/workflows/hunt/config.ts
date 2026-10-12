@@ -162,6 +162,21 @@ export const DEFAULT_ENRICHMENT: EnrichmentPolicy = { max_depth: 1, max_entities
 // discrimination, termination on dominance. Per run, so a ledger replays as ranked.
 export const DEFAULT_HYPOTHESIS_LOOP = false;
 
+// What a run does when its own ceiling binds. "park" (the default, and every hunt's)
+// stops spending and waits for an operator to extend, conclude or abort. "terminate"
+// ends the run there as budget_terminated: for a run nobody is watching -- an alert
+// verdict -- waiting is a verdict that never arrives, and an honest inconclusive now
+// is the answer. A config section rather than a kind check, so the loop stays one loop.
+export const ON_BUDGET = ["park", "terminate"] as const;
+export type OnBudget = (typeof ON_BUDGET)[number];
+export const DEFAULT_ON_BUDGET: OnBudget = "park";
+
+function onBudgetOf(held: unknown): OnBudget {
+  if (held === undefined || held === null) return DEFAULT_ON_BUDGET;
+  if (typeof held === "string" && (ON_BUDGET as readonly string[]).includes(held)) return held as OnBudget;
+  throw new SpecError(`on_budget must be one of ${ON_BUDGET.join(", ")}, not ${JSON.stringify(held)}`);
+}
+
 // Typed rather than a bag: a hypothesis is shaped by results and reshaped again,
 // so it has to be a first-class record everywhere the workflow touches it.
 export interface HuntSpec extends RunSpec {
@@ -182,6 +197,8 @@ export interface HuntSpec extends RunSpec {
   enrichment: EnrichmentPolicy;
   checkpoints: Checkpoints;
   termination: Termination;
+  // Optional: a ledger journaled before the section existed parks, as it always did.
+  on_budget?: OnBudget;
 }
 
 // A ceiling under the budget it caps would clamp every extension to less than
@@ -239,6 +256,7 @@ export function huntSpec(spec: RunSpec): HuntSpec {
     enrichment: { ...DEFAULT_ENRICHMENT, ...(held["enrichment"] as object | undefined) },
     checkpoints: { ...DEFAULT_CHECKPOINTS, ...checkpointsFrom(held["checkpoints"]) },
     termination: terminationOf(spec),
+    on_budget: onBudgetOf(held["on_budget"]),
   };
 }
 

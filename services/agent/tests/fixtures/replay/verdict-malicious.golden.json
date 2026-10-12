@@ -1,0 +1,30 @@
+{
+  "verdict": {
+    "verdict": "malicious",
+    "confidence": 0.85,
+    "category": "network",
+    "cited_fields": [
+      {
+        "field": "ev-cc04f37640ec.conn_count",
+        "authored": "sensor"
+      },
+      {
+        "field": "ev-cc04f37640ec.user_agent",
+        "authored": "adversary"
+      },
+      {
+        "field": "ev-c38a297a6201.first_seen_days",
+        "authored": "sensor"
+      }
+    ],
+    "gaps": [
+      "no endpoint telemetry for 10.128.0.5"
+    ],
+    "recommended_action": {
+      "type": "isolate_host",
+      "target": "10.128.0.5"
+    },
+    "model": "scripted",
+    "prompt_version": "verdict-run.v1"
+  }
+}
