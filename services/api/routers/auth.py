@@ -733,6 +733,8 @@ async def change_password(
         )
         return {"message": "Password changed successfully. Please log in again."}
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Password change error: {e}")
         raise HTTPException(
