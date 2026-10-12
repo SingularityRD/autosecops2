@@ -1,6 +1,6 @@
 """Attach the audit-chain capture triggers at schema setup time.
 
-``infra/database/init/50_audit_chain.sql`` creates ``audit_chain`` and the
+``infra/database/init/51_audit_chain.sql`` creates ``audit_chain`` and the
 functions, and attaches ``approval_actions``. ``case_audit_logs`` belongs to the
 ORM: on a first Compose boot and on Helm's db-init Job it does not exist yet
 when the SQL runs, and on Helm it is then built by ``create_all`` as vigil_app,

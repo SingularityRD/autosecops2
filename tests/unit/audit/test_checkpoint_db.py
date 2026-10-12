@@ -65,7 +65,7 @@ def test_checkpoint_records_both_heads_and_verifies(conn):
     second = write_checkpoint(conn, key)
 
     body = json.loads(first.body)
-    head = body["audit_chain"]["heads"]["default"]
+    head = body["audit_chain"]["head"]
     assert (
         head["seq"]
         == conn.execute(
@@ -103,7 +103,7 @@ def test_rewritten_body_is_refused(conn):
     key = _key()
     cp = write_checkpoint(conn, key)
     forged = json.loads(cp.body)
-    forged["audit_chain"]["heads"]["default"]["seq"] = 1
+    forged["audit_chain"]["head"]["seq"] = 1
     body = json.dumps(forged, sort_keys=True, separators=(",", ":"))
     _tamper(conn)
     # Body alone: the hash no longer matches.
@@ -147,8 +147,7 @@ def test_truncated_chain_tail_is_caught_by_the_checkpoint(conn):
     _tamper(conn)
     conn.execute(
         text(
-            "DELETE FROM audit_chain WHERE tenant_id = 'default' AND seq = "
-            "(SELECT max(seq) FROM audit_chain WHERE tenant_id = 'default')"
+            "DELETE FROM audit_chain WHERE seq = (SELECT max(seq) FROM audit_chain)"
         )
     )
     assert walk_audit_chain(conn).ok

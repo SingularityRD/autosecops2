@@ -1,6 +1,6 @@
 """Verify the AutoSecOps audit trail: ``python -m core.audit.verify``.
 
-Walks ``audit_chain`` (every hash and link, per tenant), checks every signed
+Walks ``audit_chain`` (every hash and link of the one chain), checks every signed
 checkpoint (signature, link to the previous one, recorded heads still present)
 and the file copy of the checkpoints when there is one, and checks the audited
 source tables row for row against the chain. ``--agent-events`` also walks the
@@ -48,7 +48,6 @@ def trusted_public_key(explicit: Optional[str]) -> Optional[Ed25519PublicKey]:
 def verify(
     conn: Connection,
     *,
-    tenant: Optional[str] = None,
     public_key: Optional[Ed25519PublicKey] = None,
     checkpoint_file: Optional[str] = None,
     agent_events: bool = False,
@@ -58,8 +57,8 @@ def verify(
     result: Dict[str, Any] = {}
     breaks: List[Break] = []
 
-    chain = walk_audit_chain(conn, tenant)
-    result["audit_chain"] = {"rows": chain.rows, "tenants": chain.scopes}
+    chain = walk_audit_chain(conn)
+    result["audit_chain"] = {"rows": chain.rows}
     breaks += chain.breaks
 
     checkpoints = verify_checkpoints(conn, public_key, checkpoint_file)
@@ -99,7 +98,7 @@ def verify(
 def format_result(result: Dict[str, Any]) -> List[str]:
     lines = []
     chain = result["audit_chain"]
-    lines.append(f"audit_chain  {chain['rows']} rows  {chain['tenants']} tenant(s)")
+    lines.append(f"audit_chain  {chain['rows']} rows")
     cp = result["checkpoints"]
     if cp["count"]:
         trust = (
@@ -135,7 +134,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         prog="python -m core.audit.verify",
         description="Verify the AutoSecOps tamper-evident audit trail.",
     )
-    parser.add_argument("--tenant", help="walk only this tenant's chain")
     parser.add_argument(
         "--public-key",
         help="trusted Ed25519 public key (hex, base64 or PEM); "
@@ -174,13 +172,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             if not audit_chain_present(conn):
                 print(
                     "audit_chain table not found: apply "
-                    "infra/database/init/50_audit_chain.sql",
+                    "infra/database/init/51_audit_chain.sql",
                     file=sys.stderr,
                 )
                 return 2
             result = verify(
                 conn,
-                tenant=args.tenant,
                 public_key=public_key,
                 checkpoint_file=checkpoint_file,
                 agent_events=args.agent_events,

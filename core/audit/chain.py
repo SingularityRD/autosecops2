@@ -4,7 +4,7 @@ The hash is recomputed here, in Python, over the canonical text Postgres
 renders for each row, rather than by calling ``audit_chain_hash()``: a verifier
 that asked the database to grade itself would trust a redefined function.
 The canonical text is the same ``jsonb_build_object(...)`` the BEFORE INSERT
-trigger hashed (``infra/database/init/50_audit_chain.sql``).
+trigger hashed (``infra/database/init/51_audit_chain.sql``).
 
 Break reasons:
 
@@ -51,7 +51,7 @@ class Break:
     """The first thing found wrong in one chain (or one source table)."""
 
     chain: str  # audit_chain | agent_events | source:<table> | checkpoints
-    scope: str  # tenant, run_id, table or checkpoint id
+    scope: str  # chain, run_id, table or checkpoint id
     seq: Optional[int]
     reason: str
     detail: str = ""
@@ -83,35 +83,32 @@ def audit_chain_present(conn: Connection) -> bool:
     return conn.execute(text("SELECT to_regclass('audit_chain')")).scalar() is not None
 
 
-def walk_audit_chain(conn: Connection, tenant: Optional[str] = None) -> ChainReport:
-    """Recompute every row's hash and link; the first break per tenant."""
+def walk_audit_chain(conn: Connection) -> ChainReport:
+    """Recompute every row's hash and link; the first break.
+
+    There is one chain for the whole database, so it is always walked whole:
+    a tenant's rows link to other tenants' rows.
+    """
     report = ChainReport()
     rows = conn.execute(
         text(
-            "SELECT tenant_id, seq, prev_hash, event_hash, "
-            f"{CANONICAL_SQL} AS canonical FROM audit_chain "
-            "WHERE (CAST(:tenant AS text) IS NULL OR tenant_id = :tenant) "
-            "ORDER BY tenant_id, seq"
+            "SELECT seq, prev_hash, event_hash, "
+            f"{CANONICAL_SQL} AS canonical FROM audit_chain ORDER BY seq"
         ),
-        {"tenant": tenant},
         execution_options=_STREAM,
     )
-    current: Optional[str] = None
     expected_seq = 1
     expected_prev = ""
-    broken = False
-    for tenant_id, seq, prev_hash, stored_hash, canonical in rows:
+    for seq, prev_hash, stored_hash, canonical in rows:
         report.rows += 1
-        if tenant_id != current:
-            current, expected_seq, expected_prev, broken = tenant_id, 1, "", False
-            report.scopes += 1
-        if broken:
+        report.scopes = 1
+        if report.breaks:
             continue
         found: Optional[Break] = None
         if seq != expected_seq:
             found = Break(
                 "audit_chain",
-                f"tenant={tenant_id}",
+                "chain",
                 seq,
                 "gap",
                 f"expected seq {expected_seq}, a row is missing",
@@ -119,7 +116,7 @@ def walk_audit_chain(conn: Connection, tenant: Optional[str] = None) -> ChainRep
         elif prev_hash != expected_prev:
             found = Break(
                 "audit_chain",
-                f"tenant={tenant_id}",
+                "chain",
                 seq,
                 "prev_hash",
                 "prev_hash does not follow the previous row",
@@ -127,14 +124,13 @@ def walk_audit_chain(conn: Connection, tenant: Optional[str] = None) -> ChainRep
         elif event_hash(prev_hash, canonical) != stored_hash:
             found = Break(
                 "audit_chain",
-                f"tenant={tenant_id}",
+                "chain",
                 seq,
                 "hash",
                 "row content does not match event_hash",
             )
         if found is not None:
             report.breaks.append(found)
-            broken = True
             continue
         expected_seq = seq + 1
         expected_prev = stored_hash
@@ -198,17 +194,16 @@ def walk_agent_events(conn: Connection, run_id: Optional[str] = None) -> ChainRe
 # is unchained.
 _SOURCE_CHECK = """
 WITH truncated AS (
-    SELECT tenant_id, max(seq) AS seq
+    SELECT coalesce(max(seq), 0) AS seq
       FROM audit_chain
      WHERE source_table = :table AND event = 'truncate'
-     GROUP BY tenant_id
 ), latest AS (
     SELECT DISTINCT ON (c.source_id) c.source_id, c.payload -> 'row' AS row,
-           CASE WHEN c.seq < coalesce(tr.seq, 0) THEN 'delete' ELSE c.event END AS event
+           CASE WHEN c.seq < tr.seq THEN 'delete' ELSE c.event END AS event
       FROM audit_chain AS c
-      LEFT JOIN truncated AS tr ON tr.tenant_id = c.tenant_id
+     CROSS JOIN truncated AS tr
      WHERE c.source_table = :table AND c.event IN :events
-     ORDER BY c.source_id, c.tenant_id, c.seq DESC
+     ORDER BY c.source_id, c.seq DESC
 ), cur AS (
     SELECT CAST(t.{key} AS text) AS source_id, to_jsonb(t) AS row
       FROM {table} AS t
@@ -305,12 +300,9 @@ def check_sources(conn: Connection) -> ChainReport:
     return report
 
 
-def heads(conn: Connection) -> Dict[str, Dict[str, object]]:
-    """Each tenant's last seq and event_hash."""
-    rows = conn.execute(
-        text(
-            "SELECT DISTINCT ON (tenant_id) tenant_id, seq, event_hash "
-            "FROM audit_chain ORDER BY tenant_id, seq DESC"
-        )
-    )
-    return {t: {"seq": int(s), "hash": h} for t, s, h in rows}
+def head(conn: Connection) -> Optional[Dict[str, object]]:
+    """The chain's last seq and event_hash, or None while it is empty."""
+    row = conn.execute(
+        text("SELECT seq, event_hash FROM audit_chain ORDER BY seq DESC LIMIT 1")
+    ).first()
+    return {"seq": int(row[0]), "hash": row[1]} if row is not None else None

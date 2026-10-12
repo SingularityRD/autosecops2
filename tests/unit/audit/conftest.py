@@ -2,7 +2,7 @@
 
 The unit conftest builds the bare ORM schema. The audit tests add, once per
 session and committed: the agent ledger (19, 31), the vigil_app grants (30) and
-50_audit_chain.sql. One approval_actions row and one case_audit_logs row are
+51_audit_chain.sql. One approval_actions row and one case_audit_logs row are
 written first, with no triggers yet, so the attach has rows to snapshot.
 """
 
@@ -19,7 +19,7 @@ FILES = (
     "19_agent_ledger.sql",
     "31_agent_ledger_hash_chain.sql",
     "30_vigil_app_role.sql",
-    "50_audit_chain.sql",
+    "51_audit_chain.sql",
 )
 
 PRE_ACTION = "action-audit-pre-attach"

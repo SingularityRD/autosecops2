@@ -1154,7 +1154,7 @@ def _ensure_audit_chain(engine: Optional[Engine]) -> None:
     """Attach the audit-chain triggers to tables create_all just built.
 
     Here, after create_all, because case_audit_logs is ORM-owned: the init SQL
-    (50_audit_chain.sql) runs before it exists on Compose and Helm. Once per
+    (51_audit_chain.sql) runs before it exists on Compose and Helm. Once per
     database per process; never raises (see core/storage/audit_chain.py).
     """
     if engine is None:

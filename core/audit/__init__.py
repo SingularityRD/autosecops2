@@ -6,5 +6,5 @@
   of the chain heads (``python -m core.audit.checkpoint``).
 - :mod:`core.audit.verify` is the operator CLI (``python -m core.audit.verify``).
 
-The schema is ``infra/database/init/50_audit_chain.sql``.
+The schema is ``infra/database/init/51_audit_chain.sql``.
 """

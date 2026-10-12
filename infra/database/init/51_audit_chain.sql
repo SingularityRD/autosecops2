@@ -3,7 +3,8 @@
 -- agent_events already carries its own hash chain (31_agent_ledger_hash_chain.sql).
 -- approval_actions and case_audit_logs are ordinary, mutable tables, so their
 -- history is copied here: one append-only row per insert / update / delete,
--- written by an AFTER trigger on the source table, chained per tenant:
+-- written by an AFTER trigger on the source table, into one chain for the
+-- whole database (every tenant, both tables), ordered by seq:
 --
 --   event_hash = sha256(prev_hash || CAST(jsonb_build_object(
 --       'created_at', <created_at in UTC, ISO 8601, microseconds, 'Z'>,
@@ -12,10 +13,11 @@
 --       'tenant_id', tenant_id) AS text))
 --
 -- prev_hash is '' at seq 1. seq, prev_hash, event_hash and created_at are
--- assigned by the BEFORE INSERT trigger whatever the writer supplied. Writers
--- of one tenant are serialized by a transaction-scoped advisory lock, so two
--- concurrent writers never fork the chain (under REPEATABLE READ the loser
--- fails on the primary key instead of forking).
+-- assigned by the BEFORE INSERT trigger whatever the writer supplied. All
+-- writers are serialized by one transaction-scoped advisory lock (as the agent
+-- ledger serializes its writers), so two concurrent writers never fork the
+-- chain (under REPEATABLE READ the loser fails on the primary key instead of
+-- forking). tenant_id is a hashed attribute of each row, not a chain of its own.
 --
 -- Append-only: vigil_app may only SELECT audit_chain (the capture trigger
 -- inserts as the function owner), and a trigger refuses UPDATE, DELETE and
@@ -42,16 +44,16 @@ CREATE TABLE IF NOT EXISTS audit_chain (
     prev_hash     text        NOT NULL,
     event_hash    text        NOT NULL,
     created_at    timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (tenant_id, seq),
+    PRIMARY KEY (seq),
     CONSTRAINT audit_chain_seq_positive CHECK (seq > 0)
 );
 
 -- Coverage check in the verifier: latest chain row per source row.
 CREATE INDEX IF NOT EXISTS idx_audit_chain_source
-    ON audit_chain (source_table, source_id, tenant_id, seq);
+    ON audit_chain (source_table, source_id, seq);
 
 COMMENT ON TABLE audit_chain IS
-    'Append-only, per-tenant hash chain of approval_actions and case_audit_logs changes. Written only by triggers; verified by python -m core.audit.verify.';
+    'Append-only, single hash chain of approval_actions and case_audit_logs changes. Written only by triggers; verified by python -m core.audit.verify.';
 COMMENT ON COLUMN audit_chain.event IS
     'insert / update / delete for a source row change; truncate for a TRUNCATE of the table; snapshot for a row that existed when the table was attached; install / reinstall when the capture triggers were (re)created.';
 COMMENT ON COLUMN audit_chain.payload IS
@@ -120,13 +122,11 @@ DECLARE
   head_hash text;
 BEGIN
   NEW.tenant_id := coalesce(NEW.tenant_id, 'default');
-  -- One writer per tenant at a time, until commit. The SELECT below is a new
-  -- statement, so under READ COMMITTED it sees the head the previous holder
-  -- committed.
-  PERFORM pg_advisory_xact_lock(hashtextextended('audit_chain:' || NEW.tenant_id, 0));
+  -- One writer at a time, until commit. The SELECT below is a new statement,
+  -- so under READ COMMITTED it sees the head the previous holder committed.
+  PERFORM pg_advisory_xact_lock(hashtextextended('audit_chain', 0));
   SELECT seq, event_hash INTO head_seq, head_hash
     FROM audit_chain
-   WHERE tenant_id = NEW.tenant_id
    ORDER BY seq DESC
    LIMIT 1;
   NEW.seq := coalesce(head_seq, 0) + 1;
@@ -226,9 +226,8 @@ END;
 $$;
 
 -- TRUNCATE fires no row triggers, so it is chained as one 'truncate' marker:
--- every row of the table chained before it counts as deleted. The marker goes
--- to the default tenant, which is every row's tenant while the audited tables
--- carry no tenant_id column.
+-- every row of the table chained before it counts as deleted, whatever its
+-- tenant. The marker carries the default tenant.
 CREATE OR REPLACE FUNCTION audit_chain_capture_truncate()
 RETURNS trigger
 LANGUAGE plpgsql

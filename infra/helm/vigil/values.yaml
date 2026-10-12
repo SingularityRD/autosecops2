@@ -441,7 +441,7 @@ dbInit:
     - 47_webhooks_alert_routes.sql
     - 48_autonomy_lessons_suppression_retention.sql
     - 49_approval_action_lifecycle.sql
-    - 50_audit_chain.sql
+    - 51_audit_chain.sql
   resources:
     requests:
       cpu: 50m

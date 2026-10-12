@@ -1,8 +1,8 @@
 """Ed25519-signed checkpoints of the audit chain heads.
 
 A chain alone cannot show that its newest rows were removed, or that the whole
-chain was rebuilt with fresh hashes. A checkpoint can: it records, signed, each
-tenant's ``audit_chain`` head and the heads of the ``agent_events`` runs that
+chain was rebuilt with fresh hashes. A checkpoint can: it records, signed, the
+``audit_chain`` head and the heads of the ``agent_events`` runs that
 moved since the previous checkpoint, and it links to that previous checkpoint
 by the SHA-256 of its body. The verifier then checks that every recorded head is
 still in the database with the same hash.
@@ -41,7 +41,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 from core.audit import tsa
-from core.audit.chain import Break, audit_chain_present, heads
+from core.audit.chain import Break, audit_chain_present, head
 from core.config import get_settings
 from core.secrets import get_secret
 from core.storage.connection import get_db_manager
@@ -239,7 +239,7 @@ def write_checkpoint(
         "issued_at": _iso(issued),
         "key_id": kid,
         "prev": prev_hash,
-        "audit_chain": {"heads": heads(conn)},
+        "audit_chain": {"head": head(conn)},
         "agent_events": _agent_events_state(conn, since),
     }
     body = canonical_json(body_obj)
@@ -314,7 +314,7 @@ def run_checkpoint(
         if not audit_chain_present(conn):
             logger.warning(
                 "Audit checkpoint skipped: audit_chain table missing "
-                "(apply infra/database/init/50_audit_chain.sql)"
+                "(apply infra/database/init/51_audit_chain.sql)"
             )
             return None
         checkpoint = write_checkpoint(
@@ -364,21 +364,20 @@ def _verify_signature(public: Ed25519PublicKey, body: str, signature: str) -> bo
 
 
 def _head_break(conn: Connection, scope: str, body: Dict[str, Any]) -> Optional[Break]:
-    for tenant, head in sorted(body.get("audit_chain", {}).get("heads", {}).items()):
+    chain_head = body.get("audit_chain", {}).get("head")
+    if chain_head is not None:
         stored = conn.execute(
-            text(
-                "SELECT event_hash FROM audit_chain WHERE tenant_id = :t AND seq = :s"
-            ),
-            {"t": tenant, "s": head["seq"]},
+            text("SELECT event_hash FROM audit_chain WHERE seq = :s"),
+            {"s": chain_head["seq"]},
         ).scalar()
-        if stored != head["hash"]:
+        if stored != chain_head["hash"]:
             what = "is missing" if stored is None else "has a different hash"
             return Break(
                 "checkpoints",
                 scope,
-                head["seq"],
+                chain_head["seq"],
                 "checkpoint_head",
-                f"audit_chain tenant={tenant} head {what}",
+                f"audit_chain head {what}",
             )
     agent = body.get("agent_events", {})
     if agent.get("present"):
@@ -394,20 +393,20 @@ def _head_break(conn: Connection, scope: str, body: Dict[str, Any]) -> Optional[
                 f"agent_events has {events} events / {runs} runs, "
                 f"fewer than the {agent.get('events')} / {agent.get('runs')} recorded",
             )
-        for run, head in sorted(agent.get("heads", {}).items()):
+        for run, run_head in sorted(agent.get("heads", {}).items()):
             stored = conn.execute(
                 text(
                     "SELECT event_hash FROM agent_events "
                     "WHERE CAST(run_id AS text) = :r AND seq = :s"
                 ),
-                {"r": run, "s": head["seq"]},
+                {"r": run, "s": run_head["seq"]},
             ).scalar()
-            if stored != head["hash"]:
+            if stored != run_head["hash"]:
                 what = "is missing" if stored is None else "has a different hash"
                 return Break(
                     "checkpoints",
                     scope,
-                    head["seq"],
+                    run_head["seq"],
                     "checkpoint_head",
                     f"agent_events run={run} head {what}",
                 )

@@ -41,7 +41,7 @@ def _chain_rows(conn, source_id):
     return conn.execute(
         text(
             "SELECT seq, event, payload FROM audit_chain WHERE source_id = :s "
-            "ORDER BY tenant_id, seq"
+            "ORDER BY seq"
         ),
         {"s": source_id},
     ).all()
@@ -249,7 +249,7 @@ def test_modified_payload_is_detected(audit_db):
         conn.execute(
             text(
                 "UPDATE audit_chain SET payload = jsonb_set(payload, '{row,target}', "
-                "'\"198.51.100.1\"') WHERE seq = :s AND tenant_id = 'default'"
+                "'\"198.51.100.1\"') WHERE seq = :s"
             ),
             {"s": seq},
         )
@@ -306,7 +306,7 @@ def test_reordered_rows_are_detected(audit_db):
             conn.execute(
                 text(
                     "UPDATE audit_chain SET seq = :to "
-                    "WHERE tenant_id = 'default' AND seq = :frm"
+                    "WHERE seq = :frm"
                 ),
                 {"frm": frm, "to": to},
             )
@@ -457,7 +457,7 @@ def test_migration_step_creates_and_attaches_and_is_rerunnable(audit_db):
         assert triggers_attached(conn, "case_audit_logs")
         assert walk_audit_chain(conn).ok
         # And the init SQL itself runs again cleanly.
-        run_sql_file(conn, "50_audit_chain.sql")
+        run_sql_file(conn, "51_audit_chain.sql")
     finally:
         tx.rollback()
         conn.close()
@@ -557,7 +557,7 @@ def test_concurrent_writers_keep_one_chain(audit_db):
         seqs = (
             conn.execute(
                 text(
-                    "SELECT seq FROM audit_chain WHERE tenant_id = 'default' ORDER BY seq"
+                    "SELECT seq FROM audit_chain ORDER BY seq"
                 )
             )
             .scalars()
@@ -567,6 +567,37 @@ def test_concurrent_writers_keep_one_chain(audit_db):
         report = walk_audit_chain(conn)
         assert report.ok, report.breaks
         assert check_sources(conn).ok
+
+
+def test_tenants_share_the_one_chain(audit_db):
+    # tenant_id is hashed into each row but does not start a chain of its own:
+    # rows of different tenants take consecutive seqs and link to each other.
+    conn, tx = _rolled_back(audit_db.engine)
+    try:
+        for tenant in ("tenant-a", "tenant-b", "tenant-a"):
+            conn.execute(
+                text(
+                    "INSERT INTO audit_chain (tenant_id, source_table, source_id, "
+                    "event, payload, seq, prev_hash, event_hash) VALUES "
+                    "(:t, 'approval_actions', 'x', 'note', '{}', 0, '', '')"
+                ),
+                {"t": tenant},
+            )
+        rows = conn.execute(
+            text(
+                "SELECT tenant_id, seq, prev_hash, event_hash FROM audit_chain "
+                "ORDER BY seq DESC LIMIT 3"
+            )
+        ).all()[::-1]
+        assert [r.tenant_id for r in rows] == ["tenant-a", "tenant-b", "tenant-a"]
+        first = rows[0].seq
+        assert [r.seq for r in rows] == [first, first + 1, first + 2]
+        assert rows[1].prev_hash == rows[0].event_hash
+        assert rows[2].prev_hash == rows[1].event_hash
+        assert walk_audit_chain(conn).ok
+    finally:
+        tx.rollback()
+        conn.close()
 
 
 # --- agent ledger ----------------------------------------------------------------

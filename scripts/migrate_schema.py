@@ -705,12 +705,12 @@ def add_approval_action_lifecycle(conn):
         """))
 
 
-# Audit chain (W1.10): infra/database/init/50_audit_chain.sql creates the
+# Audit chain (W1.10): infra/database/init/51_audit_chain.sql creates the
 # append-only audit_chain / audit_checkpoints tables and the capture functions.
 # A bare-metal database that never had the file applied gets it here, run
 # verbatim (it is idempotent); then every audited table is attached, as the
 # role running this script, which must own the table.
-_AUDIT_CHAIN_SQL = project_root / 'infra' / 'database' / 'init' / '50_audit_chain.sql'
+_AUDIT_CHAIN_SQL = project_root / 'infra' / 'database' / 'init' / '51_audit_chain.sql'
 
 
 @migration("Create audit_chain and attach its capture triggers")
