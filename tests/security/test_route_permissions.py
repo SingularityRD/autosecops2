@@ -71,6 +71,20 @@ GATED_ROUTES = [
     ),
     ("POST", "/api/workflows/w-1/execute", {}, "ai_chat.use"),
     ("POST", "/api/claude/chat/stream", {"messages": []}, "ai_chat.use"),
+    ("POST", "/api/compliance/retention/purge", {}, "settings.write"),
+    (
+        "PUT",
+        "/api/compliance/retention/policies/findings",
+        {"retain_days": 30},
+        "settings.write",
+    ),
+    (
+        "PUT",
+        "/api/compliance/retention/legal-holds/cases/c-1",
+        {"reason": "x"},
+        "settings.write",
+    ),
+    ("GET", "/api/compliance/retention/policies", None, "settings.read"),
 ]
 
 
