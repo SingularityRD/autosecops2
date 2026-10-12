@@ -1503,3 +1503,48 @@
 
 .cases-pager-nav button:hover:not(:disabled) { background: var(--bg3); color: var(--tx0); }
 .cases-pager-nav button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Actions tab (W2.8): one row per response action, chips, then its lifecycle. */
+.case-page .case-expl-pill.fair { color: var(--fair); background: var(--fair-bg); }
+.case-page .act-rows { display: flex; flex-direction: column; gap: var(--stack-gap); margin: 0; padding: 0; list-style: none; }
+.case-page .act-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--card-ln);
+  border-radius: var(--card-radius);
+  min-width: 0;
+}
+.case-page .act-head { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+.case-page .act-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.case-page .act-title { display: flex; flex-direction: column; gap: 2px; flex: 1 1 220px; min-width: 0; }
+.case-page .act-title b { font-size: 13px; color: var(--tx0); }
+.case-page .act-target { font-size: 12px; color: var(--tx2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.case-page .act-revert { margin-left: auto; }
+.case-page .act-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--tx2); }
+.case-page .act-rule { color: var(--tx1); overflow-wrap: anywhere; }
+.case-page .act-reason { margin: 0; font-size: 12.5px; color: var(--tx1); }
+.case-page .act-events { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.case-page .act-event { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: 12px; color: var(--tx2); }
+.case-page .act-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--tx3, var(--tx2)); flex-shrink: 0; align-self: center; }
+.case-page .act-event.executed .act-dot,
+.case-page .act-event.verified .act-dot { background: var(--good); }
+.case-page .act-event.approved .act-dot,
+.case-page .act-event.proposed .act-dot { background: var(--ac); }
+.case-page .act-event.failed .act-dot,
+.case-page .act-event.rejected .act-dot { background: var(--poor); }
+.case-page .act-when { min-width: 9ch; }
+.case-page .act-kind { font-weight: 650; color: var(--tx1); }
+.case-page .act-detail { flex-basis: 100%; padding-left: 15px; overflow-wrap: anywhere; }
+.case-page .act-states summary { cursor: pointer; font-size: 12px; color: var(--tx2); }
+.case-page .act-state-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 6px; }
+.case-page .act-state-label { font-size: 11.5px; font-weight: 700; color: var(--tx2); }
+.case-page .act-state dl { margin: 4px 0 0; display: flex; flex-direction: column; gap: 2px; }
+.case-page .act-state dl > div { display: flex; gap: 8px; font-size: 12px; min-width: 0; }
+.case-page .act-state dt { color: var(--tx2); flex-shrink: 0; }
+.case-page .act-state dd { margin: 0; color: var(--tx1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.case-page .act-revert-form { display: flex; flex-direction: column; gap: 6px; }
+.case-page .act-revert-form label { font-size: 12px; color: var(--tx2); }
+.case-page .act-revert-form textarea { box-sizing: border-box; width: 100%; }
+.case-page .act-revert-actions { display: flex; gap: 8px; flex-wrap: wrap; }

@@ -948,6 +948,7 @@ export function CasesDetail({
     useCaseDetail(id)
   const { hasPermission } = useAuth()
   const canDelete = hasPermission('cases.delete')
+  const canRevert = hasPermission('ai_decisions.approve')
   const [action, setAction] = useState<'edit' | 'merge' | 'delete' | null>(null)
   // a list left mounted behind the drawer reloads on this
   const onChanged = () => { reloadDetail(); notifyCasesChanged() }
@@ -973,6 +974,7 @@ export function CasesDetail({
         onMerge={() => setAction('merge')}
         onDelete={() => setAction('delete')}
         canDelete={canDelete}
+        canRevert={canRevert}
         onChanged={onChanged}
         onRefresh={refresh}
       />
