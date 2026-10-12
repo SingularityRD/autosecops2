@@ -11,7 +11,7 @@ name: Air-gap egress
 #              model on localhost) and case creation must make no non-local
 #              connection attempt.
 #
-# Canonical repo only, like ci-cd.yml; no secrets are used.
+# Canonical repo only, like ci-cd.yml; uses no repository credentials.
 
 on:
   push:
