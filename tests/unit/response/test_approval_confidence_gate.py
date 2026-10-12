@@ -46,11 +46,43 @@ class _Service:
     def list_actions(self, status=None, **_):
         return self._rows
 
-    def mark_executed(self, action_id, result):
+    def mark_executed(self, action_id, result, **_):
         self.executed.append(action_id)
 
     def mark_failed(self, action_id, error):
         self.executed.append(action_id)
+
+    def record_verification(self, action_id, verify_status):
+        pass
+
+    def count_executed_since(self, action_type, since):
+        return 0
+
+
+class _Waf:
+    action_types = frozenset({"waf_block"})
+    reversible_types = frozenset({"waf_block"})
+    default_ttl = None
+
+    def validate(self, action):
+        from core.response.executors.base import PolicyResult
+
+        return PolicyResult.allow()
+
+    def execute(self, action):
+        from core.response.executors.base import ExecResult
+
+        return ExecResult(status="executed")
+
+    def verify(self, action, result):
+        from core.response.executors.base import VerifyResult
+
+        return VerifyResult(status="verified")
+
+    def reverse(self, action, result):
+        from core.response.executors.base import ExecResult
+
+        return ExecResult(status="executed")
 
 
 def _row(action_id, *, requires_approval, approved_by):
@@ -74,14 +106,22 @@ def _row(action_id, *, requires_approval, approved_by):
 
 
 def test_the_executor_skips_a_row_no_person_decided():
-    service = AutonomousResponseService.__new__(AutonomousResponseService)
-    service.approval_service = _Service(
-        [
-            _row("auto", requires_approval=False, approved_by=None),
-            _row("human", requires_approval=True, approved_by="alice"),
-        ]
+    from core.response.executors.base import ExecutorRegistry
+    from core.response.policy import ActionPolicy, PolicyConfig
+
+    registry = ExecutorRegistry()
+    registry.register(_Waf())
+    service = AutonomousResponseService(
+        approvals=_Service(
+            [
+                _row("auto", requires_approval=False, approved_by=None),
+                _row("human", requires_approval=True, approved_by="alice"),
+            ]
+        ),
+        config=ResponseConfig(),
+        executors=registry,
+        policy=ActionPolicy(PolicyConfig()),
     )
-    service._execute_cloudflare_action = lambda **_: {"success": True}
 
     results = service.execute_approved_actions()
 

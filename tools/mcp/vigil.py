@@ -2,7 +2,7 @@ import json
 import logging
 from contextlib import contextmanager
 from datetime import datetime
-from typing import TYPE_CHECKING, Iterator, Optional
+from typing import TYPE_CHECKING, Any, Iterator, Optional
 
 from mcp.server.mcpserver import MCPServer
 
@@ -1251,6 +1251,36 @@ def get_approval_svc():
     return ApprovalService(), ActionType, ActionStatus
 
 
+def _policy_refusal(svc: Any, action_type: str, target: str) -> Optional[str]:
+    """Why the response policy refuses this proposal, or None.
+
+    A model's proposal is screened before it becomes a row (protected assets,
+    hourly limits). This process holds no executors, so the executor's own
+    checks run later, in the dispatcher, which applies the whole policy again.
+    """
+    from pydantic import ValidationError
+
+    from core.response.executors.base import TypedAction
+    from core.response.policy import ActionPolicy
+
+    try:
+        typed = TypedAction(
+            action_type=action_type,
+            target=target,
+            reversibility="irreversible",
+            requested_by=caller()[:100] or "agent",
+        )
+    except ValidationError:
+        return "the action is not well formed"
+    try:
+        verdict = ActionPolicy(config_loader=svc.policy_config).evaluate(
+            typed, registry=None, recent_count=svc.count_executed_since
+        )
+    except Exception:  # noqa: BLE001
+        return "policy could not be evaluated"
+    return None if verdict.allowed else "; ".join(verdict.reasons)
+
+
 @mcp.tool()
 def create_approval_action(
     action_type: str,
@@ -1281,6 +1311,9 @@ def create_approval_action(
         return jdump({"error": f"Service error: {e}"})
 
     try:
+        refusal = _policy_refusal(svc, action_type, target)
+        if refusal:
+            return jdump({"error": f"Refused by response policy: {refusal}"})
         action = svc.create_action(
             action_type=ActionType(action_type),
             title=title,
