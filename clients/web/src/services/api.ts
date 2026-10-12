@@ -174,6 +174,25 @@ export const approvalsApi = {
     api.post(`/approvals/${actionId}/reject`, { reason, rejected_by }),
 }
 
+/** QA sampling of verdicts handled without a person, and the Scorecard (/api/qa). */
+export const qaApi = {
+  scorecard: (params?: { target?: number; confidence?: number }) =>
+    api.get<Schema<'QAScorecardResponse'>>('/qa/scorecard', { params }),
+
+  samples: (params?: {
+    status?: 'pending' | 'reviewed' | 'all'
+    category?: string
+    sampling_kind?: 'simple_random' | 'risk_weighted'
+    limit?: number
+  }) => api.get<Schema<'QASampleList'>>('/qa/samples', { params }),
+
+  review: (sampleId: number, data: Schema<'QAReviewRequest'>) =>
+    api.post<Schema<'QASample'>>(`/qa/samples/${sampleId}/review`, data),
+
+  draw: (data: Schema<'QADrawRequest'>) =>
+    api.post<Schema<'QADrawResponse'>>('/qa/samples/draw', data),
+}
+
 /** how a findings read treats findings naming an analyst-excluded IP */
 export type ExclusionView = 'include' | 'hide' | 'only'
 

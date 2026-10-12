@@ -71,6 +71,8 @@ GATED_ROUTES = [
     ),
     ("POST", "/api/workflows/w-1/execute", {}, "ai_chat.use"),
     ("POST", "/api/claude/chat/stream", {"messages": []}, "ai_chat.use"),
+    ("POST", "/api/qa/samples/draw", {}, "ai_decisions.approve"),
+    ("POST", "/api/qa/samples/1/review", {"agrees": True}, "findings.write"),
 ]
 
 
