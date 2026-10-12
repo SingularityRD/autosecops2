@@ -13,6 +13,18 @@
       "note": "Backend -> agent service (Node) read/write projections."
     },
     {
+      "site": "core/cases/notification_dispatcher.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 1,
+        "host:slack.com": 1
+      },
+      "gates": [
+        "integration:slack"
+      ],
+      "note": "Case notifications to Slack; sent only when the 'slack' integration is enabled with credentials. The air-gap profile enables none."
+    },
+    {
       "site": "core/detections/detection_rules_service.py",
       "category": "operator-action",
       "kinds": {
@@ -105,6 +117,18 @@
         "integration:aws_security_hub"
       ],
       "note": "Vendor connector; runs only when the 'aws_security_hub' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/azure_ad/client.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 1,
+        "host:graph.microsoft.com": 2
+      },
+      "gates": [
+        "integration:azure_ad"
+      ],
+      "note": "Shared Microsoft Graph client used by the Entra ID tool and executor; runs only when the 'azure_ad' integration is enabled with credentials. The air-gap profile enables none."
     },
     {
       "site": "core/integrations/azure_ad/tool.py",
@@ -307,6 +331,17 @@
       "note": "Vendor connector; runs only when the 'opensearch' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
     },
     {
+      "site": "core/integrations/outbound_webhooks.py",
+      "category": "operator-action",
+      "kinds": {
+        "aiohttp": 1
+      },
+      "gates": [
+        "operator-action:webhook endpoint configured"
+      ],
+      "note": "Outbound webhook delivery; only to endpoints an admin registers via /api/webhook-endpoints, SSRF-checked by url_safety. Air-gap: register only in-network receivers or none."
+    },
+    {
       "site": "core/integrations/palo_alto/tool.py",
       "category": "gated",
       "kinds": {
@@ -503,9 +538,9 @@
       "site": "core/platform/url_safety.py",
       "category": "local-only",
       "kinds": {
-        "dns": 1
+        "dns": 2
       },
-      "note": "DNS resolution of an operator-entered URL to refuse private targets (SSRF guard); uses the host resolver only."
+      "note": "DNS resolution of an operator-entered URL to refuse private targets (SSRF guard); uses the host resolver only. Also resolves webhook endpoint hosts once and pins the connection to the checked address."
     },
     {
       "site": "core/storage/db_proxy.py",
