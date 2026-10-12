@@ -6,7 +6,7 @@ import { SpecError, type Owned } from "../core/spec.js";
 import { composeProjection } from "../workflows/compose/projection.js";
 import { huntDistil } from "../workflows/hunt/distil.js";
 import type { HuntKinds } from "../workflows/hunt/ledger.js";
-import { huntProjection } from "../workflows/hunt/projection.js";
+import { huntProjection, type ProjectionOptions } from "../workflows/hunt/projection.js";
 import { huntNotes } from "../workflows/hunt/recall.js";
 import { verdictProjection } from "../workflows/hunt/verdict.js";
 import { leadProjection } from "../workflows/lead/projection.js";
@@ -31,7 +31,7 @@ export interface ArchEntry {
   notes?: (state: State, runId: string) => Notes;
   // What a reader outside this process is told about a run of this kind. Absent
   // means there is nothing to report but the terminal the ledger already carries.
-  projection?: (runId: string, events: readonly AgentEvent<Record<never, never>>[]) => unknown;
+  projection?: (runId: string, events: readonly AgentEvent<Record<never, never>>[], options?: ProjectionOptions) => unknown;
   // What episodic memory is told about a finished run of this kind; the fold
   // itself says why it is not the projection. Absent means a run of this kind is
   // not distilled, which is the honest default rather than empty rows.
@@ -52,7 +52,7 @@ const HUNT_LOOP: Omit<ArchEntry, "arch"> = {
   // on_budget: whether the run parks or ends when its ceiling binds (config.ts).
   owned: { playbook: ["hypotheses", "attack_techniques", "data_domains"], config: ["enrichment", "checkpoints", "hypothesis_loop", "on_budget"] },
   notes: (state, runId) => huntNotes(state as unknown as State<HuntKinds>, runId),
-  projection: (runId, events) => huntProjection(runId, events as readonly AgentEvent<HuntKinds>[]),
+  projection: (runId, events, options) => huntProjection(runId, events as readonly AgentEvent<HuntKinds>[], options),
 };
 
 const REGISTERED: Partial<Record<RunKind, ArchEntry>> = {
