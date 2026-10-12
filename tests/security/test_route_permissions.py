@@ -40,6 +40,13 @@ GATED_ROUTES = [
     ("POST", "/api/orchestrator/investigations/purge", None, "settings.write"),
     ("DELETE", "/api/findings/all", None, "findings.delete"),
     ("PUT", "/api/analytics/budget", {}, "settings.write"),
+    ("PUT", "/api/compliance/audit-export/config", {"config": {}}, "settings.write"),
+    (
+        "POST",
+        "/api/compliance/audit-export/test",
+        {"destination": "x"},
+        "settings.write",
+    ),
     ("POST", "/api/v1/cases", {"title": "t"}, "cases.write"),
     ("PATCH", "/api/v1/cases/c-1", {"status": "closed"}, "cases.write"),
     ("POST", "/api/v1/cases/c-1/close", {}, "cases.write"),

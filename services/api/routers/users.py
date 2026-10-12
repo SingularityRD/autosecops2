@@ -8,13 +8,14 @@ import asyncio
 import logging
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
 from core.auth.auth_service import AuthService
 from core.auth.password_validator import PasswordPolicyError, validate_password_strength
 from core.auth.token_blacklist import revoke_all_for_user
+from core.compliance.audit_export import record_auth_event
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
 from core.storage.models import Role, User
 from core.storage.schemas import RoleSchema, UserSchema
@@ -62,6 +63,20 @@ def _refuse_service_account_role(user: User, role_id: str) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="A service account can only hold the Viewer role",
         )
+
+
+def _audit_on(http_request: Optional[Request]) -> bool:
+    """Whether auth events are being spooled for export (WP w3.6)."""
+    service = getattr(getattr(http_request, "app", None), "state", None)
+    service = getattr(service, "audit_export", None)
+    return bool(service is not None and service.spool_enabled)
+
+
+def _account_state(
+    session: Session, user_id: str
+) -> tuple[Optional[str], Optional[bool]]:
+    user = session.query(User).filter(User.user_id == user_id).first()
+    return (user.role_id, user.is_active) if user else (None, None)
 
 
 def _can_assign_role(current_user: User, target_role: Role, session: Session) -> bool:
@@ -198,6 +213,7 @@ def create_user(
     request: CreateUserRequest,
     current_user: Annotated[User, Depends(get_current_user)],
     session: UnitOfWorkSession,
+    http_request: Request = None,  # type: ignore[assignment]
 ):
     """
     Create a new user (requires users.write permission).
@@ -260,6 +276,14 @@ def create_user(
         )
 
     logger.info(f"User created by {current_user.username}: {user.username}")
+    record_auth_event(
+        http_request,
+        "user_create",
+        actor=current_user.username,
+        actor_id=current_user.user_id,
+        target_id=user.user_id,
+        details={"username": user.username, "role_id": request.role_id},
+    )
     return UserSchema.dump(user)
 
 
@@ -337,6 +361,7 @@ async def update_user(
     request: UpdateUserRequest,
     current_user: Annotated[User, Depends(get_current_user)],
     session: UnitOfWorkSession,
+    http_request: Request = None,  # type: ignore[assignment]
 ):
     """
     Update user information (requires users.write permission).
@@ -351,6 +376,9 @@ async def update_user(
         Updated user information
     """
     try:
+        before: tuple[Optional[str], Optional[bool]] = (None, None)
+        if _audit_on(http_request):
+            before = await asyncio.to_thread(_account_state, session, user_id)
         user, stale_reason, payload = await asyncio.to_thread(
             _apply_user_update, session, current_user, user_id, request
         )
@@ -369,6 +397,7 @@ async def update_user(
                 )
 
         logger.info(f"User updated by {current_user.username}: {user.username}")
+        _record_update(http_request, current_user, user, request, before)
         return payload
 
     except HTTPException:
@@ -381,11 +410,49 @@ async def update_user(
         )
 
 
+def _record_update(
+    http_request: Optional[Request],
+    current_user: User,
+    user: User,
+    request: UpdateUserRequest,
+    before: tuple[Optional[str], Optional[bool]],
+) -> None:
+    """Spool the update, plus a role change or (de)activation of its own."""
+    if not _audit_on(http_request):
+        return
+    actor = {"actor": current_user.username, "actor_id": current_user.user_id}
+    changed = sorted(request.model_dump(exclude_none=True))
+    record_auth_event(
+        http_request,
+        "user_update",
+        target_id=user.user_id,
+        details={"fields": changed},
+        **actor,
+    )
+    old_role, was_active = before
+    if request.role_id is not None and old_role != user.role_id:
+        record_auth_event(
+            http_request,
+            "role_change",
+            target_id=user.user_id,
+            details={"old_role_id": old_role, "new_role_id": user.role_id},
+            **actor,
+        )
+    if request.is_active is not None and was_active != user.is_active:
+        record_auth_event(
+            http_request,
+            "user_activate" if user.is_active else "user_deactivate",
+            target_id=user.user_id,
+            **actor,
+        )
+
+
 @router.delete("/{user_id}")
 def delete_user(
     user_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
     session: UnitOfWorkSession,
+    http_request: Request = None,  # type: ignore[assignment]
 ):
     """
     Delete a user (requires users.delete permission).
@@ -424,6 +491,14 @@ def delete_user(
         session.delete(user)
 
         logger.info(f"User deleted by {current_user.username}: {username}")
+        record_auth_event(
+            http_request,
+            "user_delete",
+            actor=current_user.username,
+            actor_id=current_user.user_id,
+            target_id=user_id,
+            details={"username": username},
+        )
         return {"message": "User deleted successfully"}
 
     except Exception as e:

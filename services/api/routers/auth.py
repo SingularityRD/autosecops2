@@ -40,6 +40,7 @@ from core.auth.token_blacklist import (
     is_token_revoked,
     revoke_all_for_user,
 )
+from core.compliance.audit_export import record_auth_event
 from core.config import get_settings
 from core.platform.email_service import send_email
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
@@ -269,6 +270,14 @@ def bootstrap_admin(
         )
 
     logger.info("First admin account created: %s", user.username)
+    record_auth_event(
+        request,
+        "user_create",
+        actor=user.username,
+        actor_id=user.user_id,
+        target_id=user.user_id,
+        details={"role_id": ADMIN_ROLE_ID, "bootstrap": True},
+    )
     return UserSchema.dump(user)
 
 
@@ -304,6 +313,9 @@ def login(
             payload.username_or_email, payload.password, session
         )
     except AccountLockedError as exc:
+        record_auth_event(
+            request, "login", outcome="locked", actor=payload.username_or_email
+        )
         retry_after = max(1, int((exc.locked_until - utcnow()).total_seconds()))
         raise HTTPException(
             status_code=status.HTTP_423_LOCKED,
@@ -312,6 +324,9 @@ def login(
         )
 
     if not user:
+        record_auth_event(
+            request, "login", outcome="failure", actor=payload.username_or_email
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username/email or password",
@@ -328,6 +343,13 @@ def login(
             )
 
         if not AuthService.verify_mfa_code(user.user_id, payload.mfa_code, session):
+            record_auth_event(
+                request,
+                "login",
+                outcome="mfa_failure",
+                actor=user.username,
+                actor_id=user.user_id,
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid MFA code",
@@ -350,6 +372,13 @@ def login(
     )
 
     logger.info(f"User logged in: {user.username}")
+    record_auth_event(
+        request,
+        "login",
+        actor=user.username,
+        actor_id=user.user_id,
+        details={"mfa": bool(user.mfa_enabled)},
+    )
 
     return LoginResponse(
         access_token=access_token,
@@ -425,6 +454,9 @@ async def logout(
     clear_auth_cookies(response)
 
     logger.info(f"User logged out: {current_user.username}")
+    record_auth_event(
+        request, "logout", actor=current_user.username, actor_id=current_user.user_id
+    )
     return {"message": "Logged out successfully"}
 
 
@@ -674,6 +706,12 @@ async def change_password(
 
         clear_auth_cookies(response)
         logger.info(f"Password changed for user: {current_user.username}")
+        record_auth_event(
+            request,
+            "password_change",
+            actor=current_user.username,
+            actor_id=current_user.user_id,
+        )
         return {"message": "Password changed successfully. Please log in again."}
 
     except Exception as e:
@@ -686,6 +724,7 @@ async def change_password(
 
 @router.post("/mfa/setup", response_model=MFASetupResponse)
 def setup_mfa(
+    request: Request,
     current_user: Annotated[User, Depends(get_current_active_user)],
     session: UnitOfWorkSession,
 ):
@@ -715,6 +754,9 @@ def setup_mfa(
             detail="Failed to generate QR code",
         )
 
+    record_auth_event(
+        request, "mfa_setup", actor=current_user.username, actor_id=current_user.user_id
+    )
     return MFASetupResponse(secret=secret, qr_uri=qr_uri)
 
 
@@ -741,10 +783,23 @@ def verify_mfa(
     codes = AuthService.enable_mfa(current_user.user_id, body.code, session)
 
     if codes is None:
+        record_auth_event(
+            request,
+            "mfa_enable",
+            outcome="failure",
+            actor=current_user.username,
+            actor_id=current_user.user_id,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid MFA code"
         )
 
+    record_auth_event(
+        request,
+        "mfa_enable",
+        actor=current_user.username,
+        actor_id=current_user.user_id,
+    )
     return RecoveryCodesResponse(
         recovery_codes=codes, message="MFA enabled successfully"
     )
@@ -771,11 +826,18 @@ def regenerate_recovery_codes(
             detail="MFA is not set up for this user",
         )
 
+    record_auth_event(
+        request,
+        "mfa_recovery_codes",
+        actor=current_user.username,
+        actor_id=current_user.user_id,
+    )
     return RecoveryCodesResponse(recovery_codes=codes)
 
 
 @router.delete("/mfa")
 def disable_mfa(
+    request: Request,
     current_user: Annotated[User, Depends(get_current_active_user)],
     session: UnitOfWorkSession,
 ):
@@ -794,6 +856,12 @@ def disable_mfa(
         current_user.mfa_secret = None
 
         logger.info(f"MFA disabled for user: {current_user.username}")
+        record_auth_event(
+            request,
+            "mfa_disable",
+            actor=current_user.username,
+            actor_id=current_user.user_id,
+        )
         return {"message": "MFA disabled successfully"}
 
     except Exception as e:
@@ -846,6 +914,12 @@ def password_reset_request(
         )
         send_email(to=user.email, subject=subject, body=body_text)
         logger.info("Password reset requested for %s", user.user_id)
+        record_auth_event(
+            request,
+            "password_reset_request",
+            actor=user.username,
+            actor_id=user.user_id,
+        )
     else:
         # Unknown address or inactive user — log for ops visibility but
         # return the same response. Constant-time comparison isn't needed
@@ -913,6 +987,9 @@ async def password_reset_confirm(
             )
 
         logger.info("Password reset completed for user: %s", user.username)
+        record_auth_event(
+            request, "password_reset", actor=user.username, actor_id=user.user_id
+        )
         return {"message": "Password reset successfully"}
     except HTTPException:
         raise
