@@ -26,5 +26,8 @@ export function bumpTool(): RegisteredTool {
       },
     },
     { maxRows: 1, timeoutMs: 1_000 },
+    false,
+    // An in-memory counter, per run.
+    "read_only",
   );
 }
