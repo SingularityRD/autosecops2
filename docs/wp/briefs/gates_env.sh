@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+# shellcheck disable=SC1091
 # Test/gates environment for AutoSecOps work packages.
 # Usage: GATES_ENV_SH=docs/wp/briefs/gates_env.sh scripts/wp/gates.sh --base integration
 # Loads the main checkout's venv and .env (set AUTOSECOPS_MAIN to override), then
