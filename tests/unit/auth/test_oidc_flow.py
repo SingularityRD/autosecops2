@@ -8,9 +8,10 @@ identity provider is ``oidc_mock.MockIdP`` behind respx, with real keys.
 
 from __future__ import annotations
 
+import base64
 import os
 from contextlib import contextmanager
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote_plus, urlparse
 
 import pytest
 import respx
@@ -384,10 +385,15 @@ def test_the_second_login_finds_the_same_account(world):
 
 def test_the_client_secret_goes_to_the_token_endpoint(world):
     world.set_provider()
-    world.secrets["OIDC_CLIENT_SECRET_KC"] = "s3cret"
+    world.secrets["OIDC_CLIENT_SECRET_KC"] = "s3:cr%t+"
     world.login()
     authorization = world.idp.token_requests[-1]["authorization"]
     assert authorization and authorization.startswith("Basic ")
+    # RFC 6749 §2.3.1: id and secret are form-urlencoded inside Basic.
+    decoded = base64.b64decode(authorization.split(" ", 1)[1]).decode()
+    _client_id, secret = decoded.split(":", 1)
+    assert unquote_plus(secret) == "s3:cr%t+"
+    assert ":" not in secret
 
 
 def test_an_offsite_next_is_ignored(world):

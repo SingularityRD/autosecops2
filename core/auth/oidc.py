@@ -31,7 +31,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote_plus, urlencode, urlparse
 
 import httpx
 import jwt
@@ -453,7 +453,11 @@ async def exchange_code(
         ):
             form["client_secret"] = client_secret
         else:
-            auth = httpx.BasicAuth(provider.client_id, client_secret)
+            # RFC 6749 §2.3.1: both halves are form-urlencoded before the
+            # Basic encoding, or a secret holding ':' / '%' / '+' breaks.
+            auth = httpx.BasicAuth(
+                quote_plus(provider.client_id), quote_plus(client_secret)
+            )
     try:
         async with httpx.AsyncClient(
             timeout=HTTP_TIMEOUT_SECONDS, follow_redirects=False
