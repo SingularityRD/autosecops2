@@ -4689,6 +4689,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/qa/samples": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Samples
+         * @description The review queue (``status=pending``) or past reviews, oldest first.
+         */
+        get: operations["get_api_qa_samples"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/qa/samples/draw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Draw Samples
+         * @description Draw per-category simple random samples (and optional risk-weighted extras).
+         */
+        post: operations["post_api_qa_samples_draw"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/qa/samples/{sample_id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Review Sample
+         * @description Record whether the AI's benign closure was right, and if not what was.
+         */
+        post: operations["post_api_qa_samples_sample_id_review"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/qa/scorecard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Scorecard
+         * @description Per category: reviews, misses and the FN upper bound against the target.
+         */
+        get: operations["get_api_qa_scorecard"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/reasoning/investigation/{investigation_id}/interactions": {
         parameters: {
             query?: never;
@@ -10214,6 +10294,192 @@ export interface components {
             count: number;
             /** Priority */
             priority: string;
+        };
+        /** QACategoryDraw */
+        QACategoryDraw: {
+            /** Drawn */
+            drawn: number;
+            /** Inclusion Probability */
+            inclusion_probability: number;
+            /**
+             * Population
+             * @description Unsampled auto-closed decisions in the window.
+             */
+            population: number;
+        };
+        /** QACategoryScore */
+        QACategoryScore: {
+            /**
+             * Category
+             * @enum {string}
+             */
+            category: "phishing" | "malware" | "identity" | "network" | "cloud" | "other";
+            /** Disagreements */
+            disagreements: number;
+            /**
+             * Fn Upper Bound
+             * @description One-sided Clopper-Pearson upper bound on the FN rate.
+             */
+            fn_upper_bound: number;
+            /**
+             * Misses
+             * @description Reviewed benign closures that were malicious.
+             */
+            misses: number;
+            /** Pending */
+            pending: number;
+            /**
+             * Reviewed
+             * @description Simple-random samples reviewed.
+             */
+            reviewed: number;
+            /**
+             * Reviews Needed
+             * @description Further agreeing reviews before the bound meets the target.
+             */
+            reviews_needed?: number | null;
+            risk_weighted: components["schemas"]["QARiskWeightedCounts"];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "meets" | "not_met" | "no_data";
+        };
+        /** QADrawRequest */
+        QADrawRequest: {
+            /**
+             * Days
+             * @description Window of decisions to draw from.
+             * @default 7
+             */
+            days: number;
+            /**
+             * Per Category
+             * @description Simple random sample size per category.
+             * @default 30
+             */
+            per_category: number;
+            /**
+             * Risk Weighted Extra
+             * @description Expected number of risk-weighted extras. Never enter the bound.
+             * @default 0
+             */
+            risk_weighted_extra: number;
+            /**
+             * Seed
+             * @description Seed, for a reproducible draw.
+             */
+            seed?: number | null;
+        };
+        /** QADrawResponse */
+        QADrawResponse: {
+            /** Categories */
+            categories: {
+                [key: string]: components["schemas"]["QACategoryDraw"];
+            };
+            risk_weighted: components["schemas"]["QARiskWeightedDraw"];
+        };
+        /** QAReviewRequest */
+        QAReviewRequest: {
+            /**
+             * Agrees
+             * @description Whether the AI's verdict was right.
+             */
+            agrees: boolean;
+            /** Notes */
+            notes?: string | null;
+            /**
+             * Review Verdict
+             * @description The correct verdict. Required when agrees is false.
+             */
+            review_verdict?: ("malicious" | "benign" | "inconclusive") | null;
+        };
+        /** QARiskWeightedCounts */
+        QARiskWeightedCounts: {
+            /** Misses */
+            misses: number;
+            /** Pending */
+            pending: number;
+            /** Reviewed */
+            reviewed: number;
+        };
+        /** QARiskWeightedDraw */
+        QARiskWeightedDraw: {
+            /** Drawn */
+            drawn: number;
+            /** Population */
+            population: number;
+        };
+        /** QASample */
+        QASample: {
+            /** Agent Id */
+            agent_id?: string | null;
+            /** Agrees */
+            agrees?: boolean | null;
+            /** Ai Confidence */
+            ai_confidence?: number | null;
+            /** Ai Verdict */
+            ai_verdict: string;
+            /** Case Id */
+            case_id?: string | null;
+            /** Category */
+            category: string;
+            /** Decided At */
+            decided_at?: string | null;
+            /** Decision Type */
+            decision_type?: string | null;
+            /** Finding Id */
+            finding_id?: string | null;
+            /** Id */
+            id: number;
+            /** Inclusion Probability */
+            inclusion_probability: number;
+            /** Notes */
+            notes?: string | null;
+            /** Reasoning */
+            reasoning?: string | null;
+            /** Recommended Action */
+            recommended_action?: string | null;
+            /** Review Verdict */
+            review_verdict?: ("malicious" | "benign" | "inconclusive") | null;
+            /** Reviewed At */
+            reviewed_at?: string | null;
+            /** Reviewer */
+            reviewer?: string | null;
+            /**
+             * Sampled At
+             * Format: date-time
+             */
+            sampled_at: string;
+            /**
+             * Sampling Kind
+             * @enum {string}
+             */
+            sampling_kind: "simple_random" | "risk_weighted";
+            /** Subject Id */
+            subject_id: string;
+            /** Subject Kind */
+            subject_kind: string;
+            /** Verdict */
+            verdict: {
+                [key: string]: unknown;
+            };
+        };
+        /** QASampleList */
+        QASampleList: {
+            /** Count */
+            count: number;
+            /** Samples */
+            samples: components["schemas"]["QASample"][];
+        };
+        /** QAScorecardResponse */
+        QAScorecardResponse: {
+            /** Categories */
+            categories: components["schemas"]["QACategoryScore"][];
+            /** Confidence */
+            confidence: number;
+            /** Target */
+            target: number;
         };
         /**
          * RecalculateCostRequest
@@ -19652,6 +19918,148 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_qa_samples: {
+        parameters: {
+            query?: {
+                status?: "pending" | "reviewed" | "all";
+                category?: ("phishing" | "malware" | "identity" | "network" | "cloud" | "other") | null;
+                sampling_kind?: ("simple_random" | "risk_weighted") | null;
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QASampleList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_qa_samples_draw: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QADrawRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QADrawResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_qa_samples_sample_id_review: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                sample_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QAReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QASample"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_qa_scorecard: {
+        parameters: {
+            query?: {
+                target?: number;
+                confidence?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QAScorecardResponse"];
                 };
             };
             /** @description Validation Error */
