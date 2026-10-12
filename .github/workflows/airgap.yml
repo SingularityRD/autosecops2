@@ -1,0 +1,111 @@
+name: Air-gap egress
+
+# Proves the air-gap profile (infra/airgap/airgap.env) keeps AutoSecOps from
+# dialling anything outside the deployment. See tests/airgap/README.md.
+#
+#   static  -- every outbound call site in the code is listed in
+#              tests/airgap/egress_inventory.json and switched off by the profile
+#              (a new, unlisted one fails: ratchet).
+#   runtime -- API, daemon and LLM worker run under a socket guard with the
+#              profile applied; start-up, health, login, ingest, triage (stub
+#              model on localhost) and case creation must make no non-local
+#              connection attempt.
+#
+# Canonical repo only, like ci-cd.yml; no secrets are used.
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  airgap-static:
+    name: Air-gap - egress inventory
+    if: github.repository == 'SingularityRD/autosecops2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+          cache: 'pip'
+
+      # The inventory test parses source and config only, but tests/conftest.py
+      # imports the app's settings, so the app's dependencies are needed.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.lock
+
+      - name: Egress inventory
+        run: pytest tests/airgap/test_egress_inventory.py -v --no-cov
+
+  airgap-runtime:
+    name: Air-gap - runtime socket guard
+    if: github.repository == 'SingularityRD/autosecops2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: deeptempo_test
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    env:
+      # The test creates and drops its own scratch database on this server.
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      REDIS_URL: redis://localhost:6379/0
+      # A missing service is a failure here, not a skip.
+      AIRGAP_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.lock
+
+      - name: Runtime egress check
+        run: pytest tests/airgap/test_runtime_egress.py -v --no-cov
+
+      - name: Upload process and guard logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: airgap-runtime-logs
+          path: /tmp/pytest-of-*/pytest-*/airgap*/*
+          if-no-files-found: ignore
