@@ -1,0 +1,837 @@
+"""Single sign-on end to end: browser -> AutoSecOps -> provider -> AutoSecOps.
+
+The FastAPI routers are the real ones (``core.auth.oidc_router`` and the
+password login in ``services.api.routers.auth``); the database is SQLite (no
+rule here is dialect-specific), Redis is an in-memory single-use store, and the
+identity provider is ``oidc_mock.MockIdP`` behind respx, with real keys.
+"""
+
+from __future__ import annotations
+
+import os
+from contextlib import contextmanager
+from urllib.parse import parse_qs, urlparse
+
+import pytest
+import respx
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+os.environ.setdefault("JWT_SECRET_KEY", "test-only-secret-not-for-prod")
+
+import core.storage.unit_of_work as uow_module  # noqa: E402
+from core.auth import oidc, oidc_router  # noqa: E402
+from core.auth.auth_service import AuthService  # noqa: E402
+from core.auth.current_user import get_current_user  # noqa: E402
+from core.auth.oidc_accounts import (  # noqa: E402
+    IDENTITY_CONFIG_TYPE,
+    SSO_ONLY_PASSWORD_HASH,
+)
+from core.routing import request_unit_of_work  # noqa: E402
+from core.storage.models import ConfigAuditLog, Role, SystemConfig, User  # noqa: E402
+from core.storage.models.base import Base  # noqa: E402
+from services.api.middleware.rate_limit import limiter  # noqa: E402
+from services.api.routers import auth as auth_router  # noqa: E402
+from tests.unit.auth.oidc_mock import CLIENT_ID, ISSUER, MockIdP  # noqa: E402
+
+pytestmark = pytest.mark.unit
+
+
+@compiles(JSONB, "sqlite")
+def _jsonb_is_json_on_sqlite(type_, compiler, **kw):
+    return "JSON"
+
+
+_PERMS = {
+    "role-viewer": {"findings.read": True, "cases.read": True},
+    "role-analyst": {
+        "findings.read": True,
+        "findings.write": True,
+        "cases.read": True,
+        "cases.write": True,
+        "settings.read": True,
+        "ai_chat.use": True,
+    },
+    "role-senior-analyst": {
+        "findings.read": True,
+        "findings.write": True,
+        "cases.read": True,
+        "cases.write": True,
+        "ai_decisions.approve": True,
+    },
+    "role-manager": {
+        "findings.read": True,
+        "cases.read": True,
+        "users.read": True,
+        "users.write": True,
+        "users.delete": False,
+        "settings.read": True,
+        "settings.write": True,
+    },
+    "role-admin": {
+        "findings.read": True,
+        "cases.read": True,
+        "users.read": True,
+        "users.write": True,
+        "users.delete": True,
+        "settings.read": True,
+        "settings.write": True,
+    },
+}
+
+
+class MemoryFlowStore:
+    def __init__(self):
+        self.data: dict[str, str] = {}
+
+    async def put(self, key, value, ttl_seconds):
+        self.data[key] = value
+
+    async def take(self, key):
+        return self.data.pop(key, None)
+
+
+class World:
+    """Everything one test needs, wired together."""
+
+    def __init__(self, maker, client, idp, store, secrets_box, app):
+        self.maker = maker
+        self.client = client
+        self.idp = idp
+        self.store = store
+        self.secrets = secrets_box
+        self.app = app
+
+    @contextmanager
+    def db(self):
+        session = self.maker()
+        try:
+            yield session
+            session.commit()
+        finally:
+            session.close()
+
+    def add_user(self, user_id, username, role_id, **extra):
+        with self.db() as s:
+            s.add(
+                User(
+                    user_id=user_id,
+                    username=username,
+                    email=extra.pop("email", f"{username}@example.com"),
+                    password_hash=extra.pop(
+                        "password_hash", AuthService.hash_password("Correct-Horse-9!")
+                    ),
+                    full_name=username,
+                    role_id=role_id,
+                    is_active=extra.pop("is_active", True),
+                    mfa_enabled=False,
+                    login_count=0,
+                    **extra,
+                )
+            )
+
+    def set_provider(self, **overrides):
+        value = {
+            "id": "kc",
+            "display_name": "Keycloak",
+            "kind": "keycloak",
+            "issuer": ISSUER,
+            "client_id": CLIENT_ID,
+        }
+        value.update(overrides)
+        with self.db() as s:
+            row = s.get(SystemConfig, "auth.oidc.providers")
+            if row is None:
+                s.add(
+                    SystemConfig(
+                        key="auth.oidc.providers",
+                        value={"providers": [value]},
+                        config_type="auth",
+                    )
+                )
+            else:
+                row.value = {"providers": [value]}
+
+    def as_user(self, user_id):
+        with self.db() as s:
+            user = s.get(User, user_id)
+            s.expunge(user)
+        self.app.dependency_overrides[get_current_user] = lambda: user
+
+    # -- the browser --------------------------------------------------------
+
+    def start(self, provider_id="kc", next_path=None):
+        params = {"next": next_path} if next_path else None
+        return self.client.get(f"/api/auth/sso/{provider_id}/login", params=params)
+
+    def login(self, provider_id="kc", next_path=None):
+        """Full round trip; returns (callback response, code, state)."""
+        started = self.start(provider_id, next_path)
+        assert started.status_code == 302, started.text
+        code, state = self.idp.authorize(started.headers["location"])
+        done = self.client.get(
+            f"/api/auth/sso/{provider_id}/callback",
+            params={"code": code, "state": state},
+        )
+        return done, code, state
+
+    def sso_error(self, response):
+        assert response.status_code == 302, response.text
+        location = urlparse(response.headers["location"])
+        return parse_qs(location.query).get("sso_error", [None])[0]
+
+    def audit(self, action):
+        with self.db() as s:
+            return [
+                r.new_value
+                for r in s.query(ConfigAuditLog)
+                .filter(ConfigAuditLog.config_type == "auth_event")
+                .filter(ConfigAuditLog.action == action)
+                .all()
+            ]
+
+    def user_by_email(self, email):
+        with self.db() as s:
+            user = s.query(User).filter(User.email == email).first()
+            if user is not None:
+                s.expunge(user)
+            return user
+
+
+@pytest.fixture
+def world(monkeypatch):
+    monkeypatch.setenv("VIGIL_COOKIE_SECURE", "false")
+    monkeypatch.setenv("VIGIL_FRONTEND_URL", "")
+    monkeypatch.setenv("VIGIL_CONTEXT_PATH", "")
+    from core.config import get_settings
+
+    get_settings.cache_clear()
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            Role.__table__,
+            User.__table__,
+            SystemConfig.__table__,
+            ConfigAuditLog.__table__,
+        ],
+    )
+    maker = sessionmaker(bind=engine, expire_on_commit=False)
+    with maker() as s:
+        for role_id, perms in _PERMS.items():
+            s.add(
+                Role(
+                    role_id=role_id,
+                    name=role_id.removeprefix("role-").title(),
+                    description="",
+                    permissions=perms,
+                    is_system_role=True,
+                )
+            )
+        s.commit()
+
+    # Sessions opened by unit_of_work() (permission checks, the failure audit).
+    monkeypatch.setattr(uow_module, "get_db_session", maker)
+
+    def _request_session():
+        session = maker()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    secrets_box: dict[str, str] = {}
+    monkeypatch.setattr(
+        oidc_router, "get_secret", lambda k, d=None: secrets_box.get(k, d)
+    )
+    monkeypatch.setattr(
+        oidc_router, "set_secret", lambda k, v: secrets_box.__setitem__(k, v) or True
+    )
+    monkeypatch.setattr(
+        oidc_router, "delete_secret", lambda k: secrets_box.pop(k, None) is not None
+    )
+
+    async def _not_revoked(payload):
+        return False
+
+    monkeypatch.setattr("core.auth.current_user.is_token_revoked", _not_revoked)
+
+    store = MemoryFlowStore()
+    previous_store = oidc_router.set_flow_store(store)
+    oidc.clear_caches()
+    was_enabled = limiter.enabled
+    limiter.enabled = False
+
+    app = FastAPI()
+    app.state.limiter = limiter
+    app.include_router(oidc_router.router, prefix="/api/auth/sso")
+    app.include_router(auth_router.router, prefix="/api/auth")
+    app.dependency_overrides[request_unit_of_work] = _request_session
+
+    idp = MockIdP()
+    with respx.mock(assert_all_called=False) as mock:
+        idp.install(mock)
+        client = TestClient(app, follow_redirects=False)
+        yield World(maker, client, idp, store, secrets_box, app)
+
+    limiter.enabled = was_enabled
+    oidc_router.set_flow_store(previous_store)
+    oidc.clear_caches()
+    get_settings.cache_clear()
+
+
+# --- the happy path ---------------------------------------------------------
+
+
+def test_the_sign_in_screen_lists_enabled_providers_only(world):
+    world.set_provider()
+    body = world.client.get("/api/auth/sso/providers").json()
+    assert body == {
+        "providers": [{"id": "kc", "display_name": "Keycloak"}],
+        "local_login_enabled": True,
+    }
+    world.set_provider(enabled=False)
+    assert world.client.get("/api/auth/sso/providers").json()["providers"] == []
+
+
+def test_login_redirects_to_the_provider_with_pkce_state_and_nonce(world):
+    world.set_provider()
+    response = world.start()
+
+    assert response.status_code == 302
+    location = urlparse(response.headers["location"])
+    assert f"{location.scheme}://{location.netloc}{location.path}" == (
+        world.idp.discovery()["authorization_endpoint"]
+    )
+    query = {k: v[0] for k, v in parse_qs(location.query).items()}
+    assert query["code_challenge_method"] == "S256"
+    assert len(query["state"]) >= 32 and len(query["nonce"]) >= 32
+    assert query["redirect_uri"] == "http://testserver/api/auth/sso/kc/callback"
+    # The verifier never leaves the server; the state is stored only hashed.
+    assert all(query["state"] not in key for key in world.store.data)
+    assert "oidc_flow" in response.cookies
+
+
+def test_a_full_login_issues_the_same_session_as_a_password(world):
+    world.set_provider()
+    response, code, _ = world.login(next_path="/cases?open=1")
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "/cases?open=1"
+    access = response.cookies.get("access_token")
+    refresh = response.cookies.get("refresh_token")
+    assert access and refresh
+    payload = AuthService.verify_jwt_token(access)
+    assert payload["token_type"] == "access"
+    assert AuthService.verify_jwt_token(refresh)["token_type"] == "refresh"
+
+    user = world.user_by_email("alice@example.com")
+    assert payload["user_id"] == user.user_id
+    # JIT: created on first sign-in, least privilege, no usable password.
+    assert user.role_id == "role-viewer"
+    assert user.username == "alice"
+    assert user.full_name == "Alice Analyst"
+    assert user.password_hash == SSO_ONLY_PASSWORD_HASH
+    assert not AuthService.verify_password("anything", user.password_hash)
+
+    # The code was redeemed with the PKCE verifier and the client secret-less form.
+    token_form = world.idp.token_requests[-1]["form"]
+    assert token_form["code"] == code
+    assert token_form["code_verifier"]
+
+    [event] = world.audit("sso_login")
+    assert event["user_id"] == user.user_id and event["created"] is True
+    with world.db() as s:
+        links = (
+            s.query(SystemConfig)
+            .filter(SystemConfig.config_type == IDENTITY_CONFIG_TYPE)
+            .all()
+        )
+        assert len(links) == 1
+        assert links[0].value["user_id"] == user.user_id
+        assert "subject-alice" not in str(links[0].value)
+
+    # The session works on the regular authenticated endpoint.
+    me = world.client.get("/api/auth/me")
+    assert me.status_code == 200
+    assert me.json()["user_id"] == user.user_id
+
+
+def test_the_second_login_finds_the_same_account(world):
+    world.set_provider()
+    world.login()
+    world.client.cookies.clear()
+    response, _, _ = world.login()
+    assert response.headers["location"] == "/"
+    with world.db() as s:
+        assert s.query(User).count() == 1
+        assert s.query(User).one().login_count == 2
+
+
+def test_the_client_secret_goes_to_the_token_endpoint(world):
+    world.set_provider()
+    world.secrets["OIDC_CLIENT_SECRET_KC"] = "s3cret"
+    world.login()
+    authorization = world.idp.token_requests[-1]["authorization"]
+    assert authorization and authorization.startswith("Basic ")
+
+
+def test_an_offsite_next_is_ignored(world):
+    world.set_provider()
+    for evil in ("//evil.test/x", "https://evil.test/", "/\\evil.test"):
+        world.client.cookies.clear()
+        response, _, _ = world.login(next_path=evil)
+        assert response.headers["location"] == "/", evil
+
+
+# --- state, nonce, replay ---------------------------------------------------
+
+
+def test_a_replayed_callback_is_refused(world):
+    world.set_provider()
+    first, code, state = world.login()
+    assert first.cookies.get("access_token")
+
+    replay = world.client.get(
+        "/api/auth/sso/kc/callback", params={"code": code, "state": state}
+    )
+    assert world.sso_error(replay) == "state"
+    assert "access_token" not in replay.cookies
+    assert world.audit("sso_failure")[-1]["reason"] == "state"
+
+
+def test_an_unknown_state_is_refused(world):
+    world.set_provider()
+    started = world.start()
+    code, _ = world.idp.authorize(started.headers["location"])
+    response = world.client.get(
+        "/api/auth/sso/kc/callback", params={"code": code, "state": "forged"}
+    )
+    assert world.sso_error(response) == "state"
+    assert world.user_by_email("alice@example.com") is None
+
+
+def test_a_callback_in_another_browser_is_refused(world):
+    """Login CSRF: the victim's browser lacks the flow cookie."""
+    world.set_provider()
+    started = world.start()
+    code, state = world.idp.authorize(started.headers["location"])
+    world.client.cookies.clear()
+    response = world.client.get(
+        "/api/auth/sso/kc/callback", params={"code": code, "state": state}
+    )
+    assert world.sso_error(response) == "state"
+    # And the state is spent: the attacker cannot retry from the right browser.
+    assert world.store.data == {}
+
+
+def test_a_state_issued_for_another_provider_is_refused(world):
+    world.set_provider()
+    started = world.start()
+    code, state = world.idp.authorize(started.headers["location"])
+    response = world.client.get(
+        "/api/auth/sso/other/callback", params={"code": code, "state": state}
+    )
+    assert world.sso_error(response) == "state"
+
+
+def test_a_nonce_mismatch_is_refused(world):
+    world.set_provider()
+    world.idp.id_token_override = world.idp.sign(world.idp.claims_for("other-nonce"))
+    response, _, _ = world.login()
+    assert world.sso_error(response) == "nonce"
+    assert world.user_by_email("alice@example.com") is None
+
+
+def test_an_error_from_the_provider_is_refused(world):
+    world.set_provider()
+    started = world.start()
+    _, state = world.idp.authorize(started.headers["location"])
+    response = world.client.get(
+        "/api/auth/sso/kc/callback",
+        params={"error": "access_denied", "state": state},
+    )
+    assert world.sso_error(response) == "idp_error"
+
+
+# --- token validation through the flow --------------------------------------
+
+
+@pytest.mark.parametrize(
+    "mutate,code",
+    [
+        ({"aud": "someone-else"}, "claims"),
+        ({"iss": "https://evil.test/realms/soc"}, "claims"),
+        ({"exp": 1_000_000, "iat": 999_000}, "expired"),
+    ],
+)
+def test_bad_claims_are_refused(world, mutate, code):
+    world.set_provider()
+    started = world.start()
+    auth_code, state = world.idp.authorize(started.headers["location"])
+    nonce = world.idp.codes[auth_code]["nonce"]
+    world.idp.id_token_override = world.idp.sign(world.idp.claims_for(nonce, **mutate))
+    response = world.client.get(
+        "/api/auth/sso/kc/callback", params={"code": auth_code, "state": state}
+    )
+    assert world.sso_error(response) == code
+    assert world.user_by_email("alice@example.com") is None
+
+
+def test_a_bad_signature_is_refused(world):
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    world.set_provider()
+    started = world.start()
+    auth_code, state = world.idp.authorize(started.headers["location"])
+    nonce = world.idp.codes[auth_code]["nonce"]
+    impostor = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    world.idp.id_token_override = world.idp.sign(
+        world.idp.claims_for(nonce), key=impostor
+    )
+    response = world.client.get(
+        "/api/auth/sso/kc/callback", params={"code": auth_code, "state": state}
+    )
+    assert world.sso_error(response) == "signature"
+    assert "access_token" not in response.cookies
+
+
+def test_a_disabled_provider_cannot_start_a_login(world):
+    world.set_provider(enabled=False)
+    assert world.start().status_code == 404
+
+
+# --- accounts and roles -----------------------------------------------------
+
+
+def test_groups_map_to_roles(world):
+    world.set_provider(
+        role_mappings=[{"claim": "groups", "value": "soc", "role_id": "role-analyst"}]
+    )
+    world.idp.claims = {"groups": ["soc", "staff"]}
+    world.login()
+    assert world.user_by_email("alice@example.com").role_id == "role-analyst"
+
+
+def test_admin_requires_an_allowed_explicit_mapping(world):
+    world.set_provider(
+        role_mappings=[{"value": "soc-admins", "role_id": "role-admin"}],
+        allow_admin_mapping=False,
+    )
+    world.idp.claims = {"groups": ["soc-admins"]}
+    world.login()
+    assert world.user_by_email("alice@example.com").role_id == "role-viewer"
+
+    world.set_provider(
+        role_mappings=[{"value": "soc-admins", "role_id": "role-admin"}],
+        allow_admin_mapping=True,
+    )
+    world.client.cookies.clear()
+    world.login()
+    assert world.user_by_email("alice@example.com").role_id == "role-admin"
+
+
+def test_a_provisioned_account_follows_its_groups(world):
+    world.set_provider(role_mappings=[{"value": "soc", "role_id": "role-analyst"}])
+    world.idp.claims = {"groups": ["soc"]}
+    world.login()
+    assert world.user_by_email("alice@example.com").role_id == "role-analyst"
+
+    world.idp.claims = {"groups": []}  # removed from the group at the provider
+    world.client.cookies.clear()
+    world.login()
+    assert world.user_by_email("alice@example.com").role_id == "role-viewer"
+
+
+def test_without_jit_an_unknown_identity_is_refused(world):
+    world.set_provider(jit_provisioning=False)
+    response, _, _ = world.login()
+    assert world.sso_error(response) == "account"
+    with world.db() as s:
+        assert s.query(User).count() == 0
+
+
+def test_an_existing_email_is_not_linked_unless_enabled(world):
+    world.add_user(
+        "u-alice", "alice-local", "role-senior-analyst", email="alice@example.com"
+    )
+    world.set_provider()
+    response, _, _ = world.login()
+    assert world.sso_error(response) == "account"
+    with world.db() as s:
+        assert s.query(User).count() == 1
+
+
+def test_linking_needs_a_verified_email(world):
+    world.add_user(
+        "u-alice", "alice-local", "role-senior-analyst", email="alice@example.com"
+    )
+    world.set_provider(link_by_verified_email=True)
+    world.idp.claims = {"email_verified": False}
+    response, _, _ = world.login()
+    assert world.sso_error(response) == "account"
+
+
+def test_a_verified_email_links_and_keeps_the_local_role(world):
+    world.add_user(
+        "u-alice", "alice-local", "role-senior-analyst", email="Alice@Example.com"
+    )
+    world.set_provider(
+        link_by_verified_email=True,
+        role_mappings=[{"value": "soc", "role_id": "role-analyst"}],
+    )
+    world.idp.claims = {"groups": ["soc"]}
+    response, _, _ = world.login()
+
+    payload = AuthService.verify_jwt_token(response.cookies["access_token"])
+    assert payload["user_id"] == "u-alice"
+    user = world.user_by_email("Alice@Example.com")
+    assert user.role_id == "role-senior-analyst"
+    assert world.audit("sso_login")[-1]["linked"] is True
+
+
+def test_a_service_account_cannot_sign_in_with_sso(world):
+    world.add_user(
+        "u-svc",
+        "medic-gateway",
+        "role-viewer",
+        email="alice@example.com",
+        service_account=True,
+    )
+    world.set_provider(link_by_verified_email=True)
+    response, _, _ = world.login()
+    assert world.sso_error(response) == "machine_account"
+    assert world.audit("sso_failure")[-1]["reason"] == "machine_account"
+
+
+def test_an_inactive_linked_account_is_refused(world):
+    world.set_provider()
+    world.login()
+    with world.db() as s:
+        s.query(User).one().is_active = False
+    world.client.cookies.clear()
+    response, _, _ = world.login()
+    assert world.sso_error(response) == "inactive"
+
+
+# --- administration ---------------------------------------------------------
+
+
+def _provider_body(**overrides):
+    body = {
+        "display_name": "Okta",
+        "kind": "okta",
+        "issuer": ISSUER,
+        "client_id": CLIENT_ID,
+        "client_secret": "top-secret",
+    }
+    body.update(overrides)
+    return body
+
+
+def test_an_admin_saves_a_provider_and_never_reads_the_secret_back(world):
+    world.add_user("u-admin", "root", "role-admin")
+    world.as_user("u-admin")
+
+    response = world.client.put(
+        "/api/auth/sso/admin/providers/okta", json=_provider_body()
+    )
+    assert response.status_code == 200, response.text
+    assert world.secrets == {"OIDC_CLIENT_SECRET_OKTA": "top-secret"}
+    assert "top-secret" not in response.text
+    [saved] = response.json()["providers"]
+    assert saved["has_client_secret"] is True
+    assert saved["default_role_id"] == "role-viewer"
+    assert saved["effective_redirect_uri"] == (
+        "http://testserver/api/auth/sso/okta/callback"
+    )
+
+    config = world.client.get("/api/auth/sso/admin/config")
+    assert "top-secret" not in config.text
+
+    # Saving again without a secret keeps the stored one.
+    body = _provider_body(display_name="Okta SSO")
+    del body["client_secret"]
+    world.client.put("/api/auth/sso/admin/providers/okta", json=body)
+    assert world.secrets == {"OIDC_CLIENT_SECRET_OKTA": "top-secret"}
+
+    assert world.client.delete("/api/auth/sso/admin/providers/okta").status_code == 200
+    assert world.secrets == {}
+    with world.db() as s:
+        actions = [
+            r.action
+            for r in s.query(ConfigAuditLog)
+            .filter(ConfigAuditLog.config_key == "auth.oidc.providers")
+            .all()
+        ]
+    assert actions == ["create", "update", "delete"]
+
+
+def test_a_viewer_cannot_read_or_change_sso_settings(world):
+    world.add_user("u-viewer", "vera", "role-viewer")
+    world.as_user("u-viewer")
+    assert world.client.get("/api/auth/sso/admin/config").status_code == 403
+    response = world.client.put(
+        "/api/auth/sso/admin/providers/okta", json=_provider_body()
+    )
+    assert response.status_code == 403
+    assert world.secrets == {}
+
+
+def test_a_manager_cannot_map_users_to_admin(world):
+    world.add_user("u-mgr", "maria", "role-manager")
+    world.as_user("u-mgr")
+    body = _provider_body(
+        allow_admin_mapping=True,
+        role_mappings=[{"value": "soc-admins", "role_id": "role-admin"}],
+    )
+    response = world.client.put("/api/auth/sso/admin/providers/okta", json=body)
+    assert response.status_code == 403
+    assert "users.delete" in response.json()["detail"]
+    # Mapping to a role within the manager's own permissions is fine.
+    body["role_mappings"] = [{"value": "soc", "role_id": "role-viewer"}]
+    body["allow_admin_mapping"] = False
+    assert (
+        world.client.put("/api/auth/sso/admin/providers/okta", json=body).status_code
+        == 200
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"default_role_id": "role-admin"},
+        {"role_mappings": [{"value": "x", "role_id": "role-admin"}]},
+        {"issuer": "http://idp.test/realms/soc"},
+        {"kind": "entra", "issuer": "https://login.microsoftonline.com/common/v2.0"},
+    ],
+)
+def test_unsafe_provider_settings_are_refused(world, overrides):
+    world.add_user("u-admin", "root", "role-admin")
+    world.as_user("u-admin")
+    response = world.client.put(
+        "/api/auth/sso/admin/providers/okta", json=_provider_body(**overrides)
+    )
+    assert response.status_code == 400, response.text
+    assert world.secrets == {}
+
+
+# --- local sign-in policy ---------------------------------------------------
+
+
+def _password_login(world, username):
+    return world.client.post(
+        "/api/auth/login",
+        json={"username_or_email": username, "password": "Correct-Horse-9!"},
+    )
+
+
+def test_local_sign_in_can_be_limited_to_break_glass_accounts(world):
+    world.add_user("u-admin", "root", "role-admin")
+    world.add_user("u-analyst", "ana", "role-analyst")
+    world.add_user("u-svc", "medic-gateway", "role-viewer", service_account=True)
+    world.set_provider()
+    world.as_user("u-admin")
+
+    # Refused without a break-glass Admin...
+    refused = world.client.put(
+        "/api/auth/sso/admin/login-policy",
+        json={"local_login_enabled": False, "break_glass_user_ids": ["u-analyst"]},
+    )
+    assert refused.status_code == 409
+    # ...accepted with one.
+    accepted = world.client.put(
+        "/api/auth/sso/admin/login-policy",
+        json={"local_login_enabled": False, "break_glass_user_ids": ["u-admin"]},
+    )
+    assert accepted.status_code == 200, accepted.text
+    world.app.dependency_overrides.clear()
+    world.app.dependency_overrides[request_unit_of_work] = _session_dep(world)
+
+    assert (
+        world.client.get("/api/auth/sso/providers").json()["local_login_enabled"]
+        is False
+    )
+
+    blocked = _password_login(world, "ana")
+    assert blocked.status_code == 403
+    assert "single sign-on" in blocked.json()["detail"]
+    assert "access_token" not in blocked.cookies
+
+    assert _password_login(world, "root").status_code == 200  # break-glass
+    assert _password_login(world, "medic-gateway").status_code == 200  # machine
+
+    # A wrong password still reads as a wrong password, not as "use SSO".
+    wrong = world.client.post(
+        "/api/auth/login", json={"username_or_email": "ana", "password": "nope"}
+    )
+    assert wrong.status_code == 401
+
+
+def test_local_sign_in_cannot_be_disabled_without_a_provider(world):
+    world.add_user("u-admin", "root", "role-admin")
+    world.as_user("u-admin")
+    response = world.client.put(
+        "/api/auth/sso/admin/login-policy",
+        json={"local_login_enabled": False, "break_glass_user_ids": ["u-admin"]},
+    )
+    assert response.status_code == 409
+
+
+def test_a_service_account_is_not_a_break_glass_account(world):
+    world.add_user("u-admin", "root", "role-admin")
+    world.add_user("u-svc", "medic-gateway", "role-viewer", service_account=True)
+    world.as_user("u-admin")
+    response = world.client.put(
+        "/api/auth/sso/admin/login-policy",
+        json={"local_login_enabled": True, "break_glass_user_ids": ["u-svc"]},
+    )
+    assert response.status_code == 400
+
+
+def test_an_sso_account_gets_no_password_reset_email(world, monkeypatch):
+    sent = []
+    monkeypatch.setattr(auth_router, "send_email", lambda **kw: sent.append(kw))
+    monkeypatch.setattr(auth_router, "generate_reset_token", lambda user_id: "t")
+    world.set_provider()
+    world.login()
+    response = world.client.post(
+        "/api/auth/password-reset/request", json={"email": "alice@example.com"}
+    )
+    assert response.status_code == 200
+    assert sent == []
+
+    world.add_user("u-bob", "bob", "role-analyst")
+    world.client.post(
+        "/api/auth/password-reset/request", json={"email": "bob@example.com"}
+    )
+    assert len(sent) == 1
+
+
+def _session_dep(world):
+    def _request_session():
+        session = world.maker()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    return _request_session

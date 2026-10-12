@@ -18,7 +18,7 @@ from core.auth.auth_cookies import (
     ACCESS_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
     clear_auth_cookies,
-    set_auth_cookies,
+    issue_session_cookies,
 )
 from core.auth.auth_service import (
     PASSWORD_HISTORY_LIMIT,
@@ -26,6 +26,8 @@ from core.auth.auth_service import (
     AuthService,
     password_matches_any,
 )
+from core.auth.login_policy import local_login_allowed
+from core.auth.oidc_accounts import is_sso_only
 from core.auth.password_reset import (
     generate_reset_token,
     verify_reset_token,
@@ -318,6 +320,17 @@ def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Once an administrator turns local sign-in off, a password works only for
+    # break-glass and service accounts (core/auth/login_policy.py). Checked
+    # after the password so the answer reveals nothing to someone without it;
+    # the 403 rolls back the login bookkeeping authenticate_user just did.
+    if not local_login_allowed(user, session):
+        logger.info("Local sign-in refused by policy for: %s", user.username)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Local sign-in is disabled for this account. Use single sign-on.",
+        )
+
     # Check MFA if enabled
     if user.mfa_enabled:
         if not payload.mfa_code:
@@ -333,20 +346,9 @@ def login(
                 detail="Invalid MFA code",
             )
 
-    # Generate tokens
-    _ua = request.headers.get("user-agent")
-    access_token = AuthService.generate_jwt_token(user, "access", user_agent=_ua)
-    refresh_token = AuthService.generate_jwt_token(user, "refresh", user_agent=_ua)
-
-    # Extract exp claims so the cookie Max-Age matches the JWT lifetime.
-    access_payload = AuthService.verify_jwt_token(access_token) or {}
-    refresh_payload = AuthService.verify_jwt_token(refresh_token) or {}
-    set_auth_cookies(
-        response,
-        access_token,
-        refresh_token,
-        access_exp=access_payload.get("exp"),
-        refresh_exp=refresh_payload.get("exp"),
+    # Generate tokens; the same issuance single sign-on uses.
+    access_token, refresh_token = issue_session_cookies(
+        response, user, request.headers.get("user-agent")
     )
 
     logger.info(f"User logged in: {user.username}")
@@ -495,18 +497,8 @@ async def refresh_token(
         )
 
     # Generate new tokens
-    _ua = request.headers.get("user-agent")
-    access_token = AuthService.generate_jwt_token(user, "access", user_agent=_ua)
-    refresh_token = AuthService.generate_jwt_token(user, "refresh", user_agent=_ua)
-
-    access_payload = AuthService.verify_jwt_token(access_token) or {}
-    refresh_payload = AuthService.verify_jwt_token(refresh_token) or {}
-    set_auth_cookies(
-        response,
-        access_token,
-        refresh_token,
-        access_exp=access_payload.get("exp"),
-        refresh_exp=refresh_payload.get("exp"),
+    access_token, refresh_token = issue_session_cookies(
+        response, user, request.headers.get("user-agent")
     )
 
     return LoginResponse(
@@ -826,7 +818,9 @@ def password_reset_request(
     with DEV_MODE on it logs the link.
     """
     user = session.query(User).filter(User.email == body.email).first()
-    if user and user.is_active:
+    # An account single sign-on created has no password to reset; giving it one
+    # would let it outlive its removal at the identity provider.
+    if user and user.is_active and not is_sso_only(user):
         token = generate_reset_token(user.user_id)
         frontend_base = get_settings().vigil_frontend_url.rstrip("/")
         if frontend_base:

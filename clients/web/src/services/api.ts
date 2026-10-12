@@ -1379,4 +1379,29 @@ export const bootstrapApi = {
   create: (payload: BootstrapPayload) => api.post('/auth/bootstrap', payload),
 }
 
+export type SsoProviders = Schema<'PublicProvidersResponse'>
+export type SsoAdminConfig = Schema<'SsoAdminConfig'>
+export type SsoProvider = Schema<'ProviderOut'>
+export type SsoProviderPayload = Schema<'ProviderUpsert'>
+export type SsoLoginPolicy = Schema<'LoginPolicy'>
+
+export const ssoApi = {
+  /** Enabled single sign-on providers for the sign-in screen (public). */
+  providers: () => api.get<SsoProviders>('/auth/sso/providers'),
+  /** Where the browser goes to start a login: a full navigation, not XHR. */
+  loginUrl: (providerId: string, next?: string) =>
+    `${basePath}/api/auth/sso/${encodeURIComponent(providerId)}/login` +
+    (next ? `?next=${encodeURIComponent(next)}` : ''),
+  adminConfig: () => api.get<SsoAdminConfig>('/auth/sso/admin/config'),
+  saveProvider: (providerId: string, payload: SsoProviderPayload) =>
+    api.put<SsoAdminConfig>(
+      `/auth/sso/admin/providers/${encodeURIComponent(providerId)}`,
+      payload,
+    ),
+  deleteProvider: (providerId: string) =>
+    api.delete<SsoAdminConfig>(`/auth/sso/admin/providers/${encodeURIComponent(providerId)}`),
+  saveLoginPolicy: (policy: SsoLoginPolicy) =>
+    api.put<SsoAdminConfig>('/auth/sso/admin/login-policy', policy),
+}
+
 export default api
