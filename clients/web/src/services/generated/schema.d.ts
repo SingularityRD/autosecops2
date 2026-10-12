@@ -3939,7 +3939,7 @@ export interface paths {
          * @description Receive a batch of VStrike-enriched findings.
          *
          *     For each finding:
-         *       - If it exists in Vigil, merge VStrike enrichment into
+         *       - If it exists in AutoSecOps, merge VStrike enrichment into
          *         `entity_context["vstrike"]` (read-modify-write to avoid clobbering
          *         other keys) and update MITRE fields if supplied.
          *       - Otherwise, create it with `data_source="vstrike"` if enough fields
@@ -4272,7 +4272,7 @@ export interface paths {
         };
         /**
          * Get Surface
-         * @description Whether Vigil's own tools are reachable, and whether anything can reach them.
+         * @description Whether AutoSecOps' own tools are reachable, and whether anything can reach them.
          */
         get: operations["get_api_mcp_surface"];
         /**
@@ -5376,7 +5376,7 @@ export interface paths {
         put?: never;
         /**
          * Init Schema
-         * @description Provision Vigil's tables into an **empty** target database.
+         * @description Provision the AutoSecOps tables into an **empty** target database.
          *
          *     Split out of /reconnect, and deliberately narrow. ``create_all`` is
          *     ``checkfirst=True``: it creates what's missing and silently skips tables
@@ -11388,7 +11388,7 @@ export interface components {
          * VStrikeFinding
          * @description A single finding pushed from VStrike.
          *
-         *     `finding_id` must match a DeepTempo LogLM finding already known to Vigil
+         *     `finding_id` must match a DeepTempo LogLM finding already known to AutoSecOps
          *     (update path). If it does not exist and `timestamp` + `anomaly_score` are
          *     supplied, a new finding is created with `data_source="vstrike"`.
          */

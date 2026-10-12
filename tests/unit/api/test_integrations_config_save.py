@@ -83,7 +83,14 @@ def test_empty_secret_is_not_a_failure():
         },
     )
     set_secret = MagicMock(return_value=False)
-    result = _run(payload, set_secret=set_secret)
+    # No credential is stored yet. Pinned rather than read from the secrets
+    # backend, which falls through to os.environ: a shell that sourced a .env
+    # with SPLUNK_PASSWORD set would otherwise make the destination change
+    # demand the password again and the save answer 400.
+    with patch(
+        "core.integrations.integration_secrets.get_secret", return_value=""
+    ):
+        result = _run(payload, set_secret=set_secret)
 
     assert result["success"] is True
     set_secret.assert_not_called()
