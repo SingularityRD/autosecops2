@@ -340,7 +340,8 @@ def resolve_user(
 
 
 def is_sso_only(user: User) -> bool:
-    return user.password_hash == SSO_ONLY_PASSWORD_HASH
+    # getattr: callers may hold a user-like object without the hash column.
+    return getattr(user, "password_hash", None) == SSO_ONLY_PASSWORD_HASH
 
 
 # ---------------------------------------------------------------------------
