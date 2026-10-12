@@ -46,7 +46,9 @@ def rule_from_row(row: Any) -> Optional[SuppressionRule]:
     m = dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
     match = m.get("match")
     if not isinstance(match, dict):
-        logger.warning("suppression rule %s has a non-object match; ignored", m.get("name"))
+        logger.warning(
+            "suppression rule %s has a non-object match; ignored", m.get("name")
+        )
         return None
     return SuppressionRule(
         id=str(m["id"]),

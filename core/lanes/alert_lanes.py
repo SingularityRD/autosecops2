@@ -67,7 +67,14 @@ ENRICHMENT_KEY = "alert_lane"
 
 DEFAULT_TENANT = "default"
 
-SEVERITY_RANK = {"info": 0, "informational": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+SEVERITY_RANK = {
+    "info": 0,
+    "informational": 0,
+    "low": 1,
+    "medium": 2,
+    "high": 3,
+    "critical": 4,
+}
 _SEVERITY_WEIGHT = {"critical": 0.5, "high": 0.35, "medium": 0.15, "low": 0.05}
 _CRITICALITY_WEIGHT = {"critical": 0.25, "high": 0.15, "medium": 0.05}
 _SOURCE_WEIGHT = 0.15
@@ -78,7 +85,9 @@ _INCONCLUSIVE_WEIGHT = 0.25
 # The responder's vocabulary (services/daemon/probes.ACTIONS); core can't import it.
 PLAYBOOK_ACTIONS = frozenset({"isolate", "block", "investigate", "monitor", "dismiss"})
 
-VerdictEnqueuer = Callable[[Dict[str, Any], "LaneDecision"], Union[Optional[str], Awaitable[Optional[str]]]]
+VerdictEnqueuer = Callable[
+    [Dict[str, Any], "LaneDecision"], Union[Optional[str], Awaitable[Optional[str]]]
+]
 
 
 # --------------------------------------------------------------------------
@@ -131,15 +140,28 @@ INTENT_SECTION = "alert_lanes"
 
 
 def _unit_float(raw: Any, name: str, default: float) -> float:
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not 0.0 <= raw <= 1.0:
-        logger.warning("INTENT.md alert_lanes.%s=%r is not a number in [0, 1]; using %s", name, raw, default)
+    if (
+        isinstance(raw, bool)
+        or not isinstance(raw, (int, float))
+        or not 0.0 <= raw <= 1.0
+    ):
+        logger.warning(
+            "INTENT.md alert_lanes.%s=%r is not a number in [0, 1]; using %s",
+            name,
+            raw,
+            default,
+        )
         return default
     return float(raw)
 
 
 def _str_set(raw: Any, name: str, default: FrozenSet[str]) -> FrozenSet[str]:
     if not isinstance(raw, list) or not all(isinstance(v, str) for v in raw):
-        logger.warning("INTENT.md alert_lanes.%s=%r is not a list of strings; using default", name, raw)
+        logger.warning(
+            "INTENT.md alert_lanes.%s=%r is not a list of strings; using default",
+            name,
+            raw,
+        )
         return default
     return frozenset(v.strip().lower() for v in raw)
 
@@ -151,14 +173,26 @@ def _playbooks(raw: Any) -> Tuple[KnownPlaybook, ...]:
     out: List[KnownPlaybook] = []
     for item in raw:
         if not isinstance(item, dict):
-            logger.warning("INTENT.md known playbook %r is not a mapping; ignored", item)
+            logger.warning(
+                "INTENT.md known playbook %r is not a mapping; ignored", item
+            )
             continue
         name, match = item.get("name"), item.get("match")
         action = str(item.get("recommended_action") or "").lower()
-        if not name or not isinstance(match, dict) or not match or action not in PLAYBOOK_ACTIONS:
-            logger.warning("INTENT.md known playbook %r needs name, match and a known action; ignored", name)
+        if (
+            not name
+            or not isinstance(match, dict)
+            or not match
+            or action not in PLAYBOOK_ACTIONS
+        ):
+            logger.warning(
+                "INTENT.md known playbook %r needs name, match and a known action; ignored",
+                name,
+            )
             continue
-        out.append(KnownPlaybook(str(name), match, action, str(item.get("reason") or "")))
+        out.append(
+            KnownPlaybook(str(name), match, action, str(item.get("reason") or ""))
+        )
     return tuple(out)
 
 
@@ -177,7 +211,11 @@ def thresholds_from_mapping(section: Mapping[str, Any]) -> LaneThresholds:
         if raw in SEVERITY_RANK:
             kwargs["suppress_max_severity"] = raw
         else:
-            logger.warning("INTENT.md alert_lanes.suppress_max_severity=%r unknown; using %s", raw, d.suppress_max_severity)
+            logger.warning(
+                "INTENT.md alert_lanes.suppress_max_severity=%r unknown; using %s",
+                raw,
+                d.suppress_max_severity,
+            )
     if "known_playbooks" in section:
         kwargs["known_playbooks"] = _playbooks(section["known_playbooks"])
     unknown = sorted(set(section) - set(LaneThresholds.__dataclass_fields__))
@@ -195,7 +233,11 @@ def load_thresholds(path: Optional[Path] = None) -> LaneThresholds:
     try:
         front, _ = split_frontmatter(path.read_text(encoding="utf-8"))
     except (OSError, FrontmatterError) as exc:
-        logger.warning("alert lane thresholds: INTENT.md not read (%s): %s; using defaults", path, exc)
+        logger.warning(
+            "alert lane thresholds: INTENT.md not read (%s): %s; using defaults",
+            path,
+            exc,
+        )
         return LaneThresholds()
     section = (front or {}).get(INTENT_SECTION)
     if section is None:
@@ -235,7 +277,7 @@ def _value_matches(have: Any, cond: Any) -> Optional[bool]:
     if isinstance(cond, Mapping):
         if len(cond) != 1:
             return None
-        (op, arg), = cond.items()
+        ((op, arg),) = cond.items()
         if op == "contains" and isinstance(arg, str):
             return isinstance(have, str) and arg.lower() in have.lower()
         if op == "in" and isinstance(arg, list):
@@ -294,19 +336,31 @@ def _prior_verdict(finding: Mapping[str, Any]) -> Tuple[Optional[str], Optional[
             continue
         prior = container.get("verdict") or container.get("prior_verdict")
         if isinstance(prior, Mapping):
-            label = label or (str(prior.get("verdict") or prior.get("label") or "").lower() or None)
+            label = label or (
+                str(prior.get("verdict") or prior.get("label") or "").lower() or None
+            )
             raw = prior.get("confidence")
-            if confidence is None and isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            if (
+                confidence is None
+                and isinstance(raw, (int, float))
+                and not isinstance(raw, bool)
+            ):
                 confidence = float(raw)
         elif isinstance(prior, str) and not label:
             label = prior.lower()
     raw = finding.get("triage_confidence")
-    if confidence is None and isinstance(raw, (int, float)) and not isinstance(raw, bool):
+    if (
+        confidence is None
+        and isinstance(raw, (int, float))
+        and not isinstance(raw, bool)
+    ):
         confidence = float(raw)
     return label, confidence
 
 
-def score_risk(finding: Mapping[str, Any], th: LaneThresholds) -> Tuple[float, List[str]]:
+def score_risk(
+    finding: Mapping[str, Any], th: LaneThresholds
+) -> Tuple[float, List[str]]:
     """Difficulty/risk in [0, 1] and the factors that produced it."""
     score = 0.0
     factors: List[str] = []
@@ -355,7 +409,9 @@ class LaneDecision:
     degraded_from: Optional[str] = None
     verdict_run_id: Optional[str] = None
     model: Optional[str] = None
-    decided_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    decided_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
 
     def to_enrichment(self) -> Dict[str, Any]:
         return {
@@ -399,7 +455,11 @@ def decide_lane(
     sev_rank = SEVERITY_RANK.get(sev, SEVERITY_RANK["medium"])
     suppressible = sev_rank <= SEVERITY_RANK[th.suppress_max_severity]
     for rule in rules:
-        if rule.tenant_id != tenant or not rule.active(now) or not matches(rule.match, finding):
+        if (
+            rule.tenant_id != tenant
+            or not rule.active(now)
+            or not matches(rule.match, finding)
+        ):
             continue
         if not suppressible:
             factors.append(f"suppression_ignored:{rule.name}")
@@ -409,7 +469,11 @@ def decide_lane(
             reason="suppression_rule",
             factors=tuple(factors),
             rule={"kind": "suppression", "id": rule.id, "name": rule.name},
-            outcome={"suppressed": True, "recommended_action": "dismiss", "note": rule.reason},
+            outcome={
+                "suppressed": True,
+                "recommended_action": "dismiss",
+                "note": rule.reason,
+            },
             **base,
         )
 
@@ -421,13 +485,19 @@ def decide_lane(
                 reason="known_playbook",
                 factors=tuple(factors),
                 rule={"kind": "playbook", "id": pb.name, "name": pb.name},
-                outcome={"suppressed": False, "recommended_action": pb.recommended_action, "note": pb.reason},
+                outcome={
+                    "suppressed": False,
+                    "recommended_action": pb.recommended_action,
+                    "note": pb.reason,
+                },
                 **base,
             )
 
     wants_verdict = risk >= th.verdict_risk_threshold or sev in th.verdict_severities
     if not wants_verdict:
-        return LaneDecision(lane=LANE_SMALL, reason="low_difficulty", factors=tuple(factors), **base)
+        return LaneDecision(
+            lane=LANE_SMALL, reason="low_difficulty", factors=tuple(factors), **base
+        )
 
     reason = "high_risk" if risk >= th.verdict_risk_threshold else "verdict_severity"
     if budget_pressure:
@@ -448,7 +518,9 @@ def decide_lane(
             degraded_from=LANE_VERDICT,
             **base,
         )
-    return LaneDecision(lane=LANE_VERDICT, reason=reason, factors=tuple(factors), **base)
+    return LaneDecision(
+        lane=LANE_VERDICT, reason=reason, factors=tuple(factors), **base
+    )
 
 
 # --------------------------------------------------------------------------
@@ -535,7 +607,9 @@ class AlertLanes:
         self.thresholds = thresholds or LaneThresholds()
         self._rules_source = rules_source or (lambda _tenant: ())
         self._on_hit = on_suppression_hit
-        self.budget = budget_pressure if budget_pressure is not None else BudgetPressure()
+        self.budget = (
+            budget_pressure if budget_pressure is not None else BudgetPressure()
+        )
         self.verdict_enqueuer = verdict_enqueuer
         self.verdict_enabled = verdict_enabled
         self._recorder = recorder or log_decision
@@ -566,7 +640,9 @@ class AlertLanes:
         if callable(trip):
             trip()
 
-    async def _enqueue(self, finding: Dict[str, Any], decision: LaneDecision) -> Optional[str]:
+    async def _enqueue(
+        self, finding: Dict[str, Any], decision: LaneDecision
+    ) -> Optional[str]:
         assert self.verdict_enqueuer is not None
         result = self.verdict_enqueuer(finding, decision)
         if inspect.isawaitable(result):
@@ -612,7 +688,11 @@ class AlertLanes:
                     self._deferred.appendleft((finding, decision))
                 if _is_budget_error(exc):
                     self._trip_budget()
-                logger.warning("deferred verdict for %s not enqueued yet: %s", decision.finding_id, exc)
+                logger.warning(
+                    "deferred verdict for %s not enqueued yet: %s",
+                    decision.finding_id,
+                    exc,
+                )
                 break
             sent += 1
             self.stats["verdict_enqueued"] += 1
@@ -625,7 +705,9 @@ class AlertLanes:
             decision = await self._route(finding)
         except Exception as exc:  # noqa: BLE001
             self.stats["errors"] += 1
-            logger.error("alert lane routing failed for %s: %s", finding.get("finding_id"), exc)
+            logger.error(
+                "alert lane routing failed for %s: %s", finding.get("finding_id"), exc
+            )
             decision = LaneDecision(
                 finding_id=str(finding.get("finding_id") or "unknown"),
                 tenant_id=tenant_of(finding),
@@ -641,7 +723,9 @@ class AlertLanes:
             # The default recorder writes a row; keep the database off the loop.
             await asyncio.to_thread(self._recorder, decision)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("alert lane decision not recorded for %s: %s", decision.finding_id, exc)
+            logger.warning(
+                "alert lane decision not recorded for %s: %s", decision.finding_id, exc
+            )
         return decision
 
     async def _route(self, finding: Dict[str, Any]) -> LaneDecision:
@@ -665,7 +749,11 @@ class AlertLanes:
             verdict_available=self.verdict_available,
         )
 
-        if decision.rule and decision.rule.get("kind") == "suppression" and self._on_hit:
+        if (
+            decision.rule
+            and decision.rule.get("kind") == "suppression"
+            and self._on_hit
+        ):
             hit = next((r for r in rules if r.id == decision.rule["id"]), None)
             if hit is not None:
                 await asyncio.to_thread(self._on_hit, hit)
@@ -677,7 +765,9 @@ class AlertLanes:
                 budget = _is_budget_error(exc)
                 if budget:
                     self._trip_budget()
-                logger.warning("verdict run not enqueued for %s: %s", decision.finding_id, exc)
+                logger.warning(
+                    "verdict run not enqueued for %s: %s", decision.finding_id, exc
+                )
                 decision = replace(
                     decision,
                     lane=LANE_SMALL,
@@ -703,7 +793,9 @@ class AlertLanes:
 # for the small-model lane; read by the processor's triage target resolution.
 # Each background enrich runs in its own asyncio task, so the value never leaks
 # from one finding to the next.
-_TRIAGE_TARGET: ContextVar[Optional[Tuple[str, str]]] = ContextVar("alert_lane_triage_target", default=None)
+_TRIAGE_TARGET: ContextVar[Optional[Tuple[str, str]]] = ContextVar(
+    "alert_lane_triage_target", default=None
+)
 
 
 def lane_triage_target() -> Optional[Tuple[str, str]]:
@@ -720,7 +812,9 @@ def resolve_small_model(provider_id: str, model: str) -> Optional[Tuple[str, str
     provider = provider_for(provider_id or None)
     if provider is None:
         return None
-    return provider.provider_id, model_for(provider, model or None, None, "triage_small")
+    return provider.provider_id, model_for(
+        provider, model or None, None, "triage_small"
+    )
 
 
 def wants_llm_triage(finding: Mapping[str, Any]) -> bool:
@@ -803,5 +897,7 @@ class LaneHook:
             return decision
         except Exception as exc:  # noqa: BLE001
             # The lanes are an optimisation; the finding takes the default path.
-            logger.error("alert lane hook failed for %s: %s", finding.get("finding_id"), exc)
+            logger.error(
+                "alert lane hook failed for %s: %s", finding.get("finding_id"), exc
+            )
             return None

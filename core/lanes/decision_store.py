@@ -39,7 +39,11 @@ def decision_row(decision: LaneDecision) -> Dict[str, Any]:
         "factors": json.dumps(list(decision.factors)),
         "rule_kind": rule.get("kind"),
         "rule_id": rule.get("id"),
-        "outcome": None if decision.outcome is None else json.dumps(decision.outcome, default=str),
+        "outcome": (
+            None
+            if decision.outcome is None
+            else json.dumps(decision.outcome, default=str)
+        ),
         "deferred_verdict": bool(decision.deferred_verdict),
         "degraded_from": decision.degraded_from,
         "verdict_run_id": decision.verdict_run_id,
@@ -72,4 +76,6 @@ def record_decision(decision: LaneDecision) -> None:
     try:
         insert_decision(decision)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("alert lane decision for %s not written: %s", decision.finding_id, exc)
+        logger.warning(
+            "alert lane decision for %s not written: %s", decision.finding_id, exc
+        )
