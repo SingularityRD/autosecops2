@@ -1,5 +1,7 @@
 # AutoSecOps 2.0 — İş paketi durumu (12 Ekim 2026)
 
+
+> Yeni oturumda devam etmek için önce `docs/wp/HANDOFF.md`, kalan düzeltmeler için `docs/wp/FIXES.md`.
 Hedef: düzenlenmiş sektör GA, 30 Ekim 2026 (31 Ekim tampon). Plan: Claude Docs "AutoSecOps 2.0 Northstar uygulama planı".
 Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) yapılır → yalnızca spec + diff gören bağımsız doğrulayıcı → PASS olanlar `integration` dalına birleştirilir.
 Tüm WP dalları `target` (SingularityRD/autosecops2) reposuna da gönderildi; hiçbir iş kaybolmadı.
