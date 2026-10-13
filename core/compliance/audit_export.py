@@ -3320,15 +3320,17 @@ class AuditExportService:
             return None
         now = time.monotonic() if now is None else now
         xmin, xmax = int(probe["xmin"]), int(probe["xmax"])
-        if xmin >= xmax:  # nothing running: nothing held
-            self._horizon_xmin, self._horizon_since = xmin, now
-            held = 0.0
-        else:
-            if xmin != self._horizon_xmin:
-                self._horizon_xmin, self._horizon_since = xmin, now
-            held = now - self._horizon_since
         holder = probe.get("holder")
-        if holder is not None and xmin < xmax:
+        if xmin != self._horizon_xmin:
+            self._horizon_xmin, self._horizon_since = xmin, now
+        # ``xmax`` is one past the latest *completed* transaction, so a
+        # running transaction need not show as ``xmin < xmax``; but when it
+        # does, something committed after the horizon and is waiting on it.
+        waiting = xmax > xmin
+        if not waiting and holder is None:
+            self._horizon_since = now  # nothing running and nothing waiting
+        held = now - self._horizon_since if waiting else 0.0
+        if holder is not None:
             held = max(held, float(holder.get("xact_age_s") or 0.0))
         idle = bool(
             holder and str(holder.get("state") or "").startswith("idle in transaction")
@@ -3342,6 +3344,7 @@ class AuditExportService:
                 if idle and idle_s >= alert_s
                 else "long_running_transaction"
             )
+        if stalled and not (self.horizon or {}).get("stalled"):  # on transition
             logger.warning(
                 "audit export: export horizon held for %.0fs by %s (pid %s, %s); "
                 "Postgres events after it are waiting",
