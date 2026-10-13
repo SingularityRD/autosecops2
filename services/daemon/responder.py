@@ -118,6 +118,21 @@ class AutonomousResponder:
             except Exception as e:
                 logger.error(f"Action executor error: {e}")
 
+            # Expired reversible actions are undone whether or not auto
+            # response is on: the TTL was part of what was approved.
+            try:
+                reversals = await asyncio.to_thread(
+                    self._response_service.sweep_expired
+                )
+                for reversal in reversals or []:
+                    logger.info(
+                        "TTL reversal of %s: %s",
+                        reversal.get("action_id"),
+                        reversal.get("outcome"),
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.error("TTL sweep error: %s", e)
+
             # Check every 30 seconds
             try:
                 await asyncio.wait_for(shutdown_event.wait(), timeout=30)

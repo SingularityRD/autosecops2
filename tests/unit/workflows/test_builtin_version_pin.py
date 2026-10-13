@@ -18,6 +18,10 @@ DEFINITIONS = Path(__file__).resolve().parents[3] / "core" / "workflows" / "defi
 
 # id -> (version, sha256 of WORKFLOW.md without its `version:` line)
 PINNED = {
+    "alert-verdict": (
+        1,
+        "11275fbdf2c6af309738fa86688fb1e53b9971202b73e3638834d759fd5be7ef",
+    ),
     "cloud-incident": (
         1,
         "e55d670dad54161adefd0c53b13f848e8f63145f10b620fea02b9cd2ef8080f7",

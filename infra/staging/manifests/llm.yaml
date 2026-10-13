@@ -1,0 +1,212 @@
+# In-cluster local model for AutoSecOps staging: Ollama + Bifrost.
+#
+# The chart does not deploy either, but its config defaults already point at
+# http://ollama:11434 and http://bifrost:8080; these Services provide exactly
+# those names in the release namespace. Applied by nightly.sh with
+# `kubectl apply -n <namespace> -f`.
+#
+# Both are ClusterIP only. Bifrost's config API is unauthenticated (see the
+# compose file), so it must never get a NodePort or Ingress.
+# Bifrost carries only the Ollama provider: staging has no cloud API key.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-models
+  labels:
+    app.kubernetes.io/name: ollama
+    app.kubernetes.io/part-of: autosecops-staging
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  labels:
+    app.kubernetes.io/name: ollama
+    app.kubernetes.io/part-of: autosecops-staging
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ollama
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ollama
+        app.kubernetes.io/part-of: autosecops-staging
+    spec:
+      containers:
+        - name: ollama
+          image: docker.io/ollama/ollama:0.6.8
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0:11434"
+            - name: OLLAMA_KEEP_ALIVE
+              value: "30m"
+            - name: OLLAMA_NUM_PARALLEL
+              value: "1"
+          ports:
+            - name: http
+              containerPort: 11434
+          readinessProbe:
+            httpGet:
+              path: /api/tags
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: "3"
+              memory: 6Gi
+          volumeMounts:
+            - name: models
+              mountPath: /root/.ollama
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: ollama-models
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  labels:
+    app.kubernetes.io/name: ollama
+    app.kubernetes.io/part-of: autosecops-staging
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ollama
+  ports:
+    - name: http
+      port: 11434
+      targetPort: http
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bifrost-config
+  labels:
+    app.kubernetes.io/name: bifrost
+    app.kubernetes.io/part-of: autosecops-staging
+data:
+  # The ollama provider block of infra/docker/bifrost/config.json, alone.
+  config.json: |
+    {
+      "$schema": "https://www.getbifrost.ai/schema",
+      "client": {
+        "enable_logging": true,
+        "disable_content_logging": false
+      },
+      "logs_store": {
+        "enabled": true,
+        "type": "sqlite",
+        "config": {
+          "path": "/app/data/logs.db"
+        }
+      },
+      "providers": {
+        "ollama": {
+          "network_config": {
+            "default_request_timeout_in_seconds": 1800,
+            "allow_private_network": true,
+            "stream_idle_timeout_in_seconds": 300,
+            "max_retries": 0
+          },
+          "keys": [
+            {
+              "name": "default-ollama-url",
+              "weight": 1,
+              "ollama_key_config": {
+                "url": "env.OLLAMA_URL"
+              },
+              "models": ["*"]
+            }
+          ]
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bifrost
+  labels:
+    app.kubernetes.io/name: bifrost
+    app.kubernetes.io/part-of: autosecops-staging
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bifrost
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bifrost
+        app.kubernetes.io/part-of: autosecops-staging
+    spec:
+      containers:
+        - name: bifrost
+          image: docker.io/maximhq/bifrost:v2.2.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OLLAMA_URL
+              value: "http://ollama:11434"
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: config
+              mountPath: /app/data/config.json
+              subPath: config.json
+              readOnly: true
+      volumes:
+        # Runtime config Bifrost writes (catalog sync) is rebuilt on restart by
+        # nightly.sh's register step, so an emptyDir is enough for staging.
+        - name: data
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: bifrost-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bifrost
+  labels:
+    app.kubernetes.io/name: bifrost
+    app.kubernetes.io/part-of: autosecops-staging
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: bifrost
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

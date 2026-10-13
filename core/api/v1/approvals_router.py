@@ -15,7 +15,12 @@ from pydantic import BaseModel, Field
 from core.auth.current_user import get_current_user
 from core.auth.permissions import permission_gate
 from core.deps import provide_approvals
-from core.response.approval_service import ApprovalService, needs_you
+from core.response.approval_service import (
+    ActionStatus,
+    ApprovalService,
+    SecondApproverConflict,
+    needs_you,
+)
 from core.routing import Auth, RouterMeta
 from core.storage.models import User
 
@@ -166,8 +171,6 @@ async def list_approvals(
     service: ApprovalService = Depends(provide_approvals),
 ):
     """List approval actions, newest first."""
-    from core.response.approval_service import ActionStatus
-
     status_enum: Optional[ActionStatus] = None
     if status:
         try:
@@ -247,7 +250,14 @@ async def approve_action(
 
     # The body field is kept for the frozen contract; the record names the session user.
     approved_by = current_user.username
-    updated = service.approve_action(action_id, approved_by=approved_by)
+    try:
+        updated = service.approve_action(action_id, approved_by=approved_by)
+    except SecondApproverConflict:
+        # Two-person rule (W2.4): the first approver cannot also be the second.
+        raise HTTPException(
+            status_code=409,
+            detail="A different person must give the second approval",
+        )
     if updated is None:
         raise HTTPException(status_code=500, detail="Failed to approve action")
 
@@ -256,7 +266,8 @@ async def approve_action(
         "resume_result": None,
     }
 
-    if updated.workflow_run_id:
+    # A four-eyes first approval leaves the row pending: nothing to resume yet.
+    if updated.workflow_run_id and updated.status != ActionStatus.PENDING.value:
         response["resume_result"] = await resume_run(
             updated.workflow_run_id, action_id, approved_by
         )
