@@ -1,14 +1,16 @@
 # Yönetici kılavuzu
 
 > **English summary.** Day-to-day administration of AutoSecOps at `main` @
-> `167f7b77`: the five built-in roles and their permissions, local accounts with
+> `18d0bf09`: the five built-in roles and their permissions, local accounts with
 > TOTP MFA, lockout and session revocation (SSO is planned, not in this
 > release), integrations and where their credentials are stored, the response
-> approval flow (human approval, response policy with protected assets and
-> hourly limits, executor registry for Cloudflare / Defender / Entra ID /
-> PAN-OS, TTL expiry and revert, two approvers for identity actions; approved
-> agent MCP tools bypass that policy, an open risk), the Assist/Act autonomy
-> switch and the recommended regulated-sector setting
+> approval flow (human approval, per-category autonomy tiers with a circuit
+> breaker, response policy with protected assets and hourly limits, executor
+> registry for Cloudflare / Defender / Entra ID / PAN-OS, TTL expiry and revert,
+> four-eyes approval with an optional distinct-role rule, the
+> segregation-of-duties report; approved agent MCP tools bypass that policy and
+> chat can approve under the chatting user's name, both open risks), the
+> Assist/Act switch and the recommended regulated-sector setting
 > `DAEMON_FORCE_APPROVAL=true`, retention policies, KVKK purge and legal hold,
 > which audit records exist and how to read and verify them, encrypted restic
 > backups with tested restore, and the Helm backup CronJob and daemon hot
@@ -64,6 +66,10 @@ bunu değişiklik yönetimi sürecinize alın.
 | Yapılandırma, AI sağlayıcıları, bütçe, orkestratör aç/kapa/öldür, otonomi anahtarı | `settings.write` |
 | Entegrasyon kaydetme (`POST /api/config/integrations`) | `integrations.write` |
 | Müdahale eylemini onaylama/reddetme (`POST /api/v1/approvals/{action_id}/approve`, `.../reject`), duraklatılmış iş akışını sürdürme/iptal | `ai_decisions.approve` |
+| Otonomi katmanlarını ve denetim kaydını görme (`GET /api/autonomy/tiers`, `GET /api/autonomy/audit`) | `settings.read` |
+| Otonomi katmanı yazma, devre kesiciyi çalıştırma (`PUT /api/autonomy/tiers/{category}/{action_type}`, `POST /api/autonomy/check`) | `settings.write`; hizmet hesabı 403 alır |
+| Görevler ayrılığı raporu ve dışa aktarımı (`GET /api/response/segregation`, `.../segregation/export`), dört göz onayı ayarını görme (`GET /api/response/four-eyes`) | `users.read` |
+| Sınıf başına farklı rol koşulunu açma/kapama (`PUT /api/response/four-eyes/{action_type}`, gerekçe zorunlu) | `settings.write` |
 | QA örneklemi çekme (`POST /api/qa/samples/draw`) | `ai_decisions.approve` |
 | QA örneğini inceleme (`POST /api/qa/samples/{sample_id}/review`) | `findings.write` |
 | Ajan koşusu başlatma, sohbet, iş akışı çalıştırma | `ai_chat.use` |
@@ -85,6 +91,12 @@ Kullanıcı yönetimi (`/api/users/`) ve düzenleyici sayaç rotaları bu listed
 gözden geçirilmiş `tests/security/auth_only_write_routes.txt` listesindedir. O
 listedeki rotalar yalnızca oturum ister; bazıları (ör. kural kaynakları) bugün
 Viewer'a açıktır (bkz. [tehdit modeli R26, R28](tehdit-modeli.md#açık-riskler)).
+Ayrıca `tests/security/test_route_role_matrix.py`, API'nin **her** rotası için
+her yerleşik rolün sonucunu (`allow`, `deny`, `conditional`)
+`tests/security/route_role_matrix.json` dosyasına karşı sınar. Kullanıcı yönetimi ve
+düzenleyici sayaç rotaları da bu matristedir. `allow` ve `deny` hücreleri gerçek
+HTTP isteğiyle doğrulanır. Bir rotanın kapısı ya da bir rolün izinleri değişirse
+dosya yeniden üretilip gözden geçirilene kadar CI düşer.
 
 ### Rol atama kuralları
 
@@ -187,22 +199,36 @@ link-local hedefler reddedilir, bulut metadata adresi her durumda reddedilir),
    politikasından geçer: korunan bir varlığa yönelen ya da saatlik sınırı aşan öneri
    hiç oluşmaz. Geçen öneri `approval_actions` tablosuna yazılır (eylem tipi, hedef,
    güven, gerekçe, geri alınabilirlik, tekrar önleme anahtarı).
-2. **Onay kapısı.** Satırın insan beklemesi gerekip gerekmediğine kod karar verir ve
-   kararı veren kuralı satıra yazar (ör. `response.confidence_threshold=0.90 met (0.92)`):
+2. **Onay kapısı ve otonomi katmanı.** Satırın insan beklemesi gerekip
+   gerekmediğine kod karar verir ve kararı veren kuralı satıra yazar
+   (ör. `autonomy.tier=approve`):
    - `DAEMON_FORCE_APPROVAL=true` ya da konsolda Assist → her eylem insan bekler;
    - geri alınamaz eylem → her zaman insan bekler, hiçbir zaman otomatik onaylanmaz;
-   - geri alınabilir eylem → güven `DAEMON_CONFIDENCE_THRESHOLD` (0.90) altındaysa
-     insan bekler.
+   - dört göz onayı isteyen eylem → her zaman insan bekler;
+   - güven `DAEMON_CONFIDENCE_THRESHOLD` (0.90) altındaysa → insan bekler;
+   - ayrıca alarm kategorisi × eylem sınıfı için yapılandırılmış **otonomi
+     katmanı** uygulanır. Watch'ta satır hiç oluşmaz. Suggest ve Approve'da satır
+     insan bekler. Varsayılan Approve'dur: yüksek güven tek başına bir eylemi
+     serbest bırakmaz. Yalnızca Autonomous katmanı, yukarıdaki kuralların hiçbiri
+     eylemi tutmuyorsa, onu kişisiz serbest bırakır (koşullar için bkz.
+     [Otonomi](#otonomi)); süre katmanın üst sınırına kısılır.
+   Uygulanan katman satırda `parameters.autonomy` altında kayıtlıdır. İş akışı
+   onay noktaları (`workflow_phase`) katmanlara tabi değildir.
 3. **Karar.** `ai_decisions.approve` iznine sahip bir kişi onaylar ya da gerekçeyle
    reddeder (konsolda onay kuyruğu / "Needs you"). Onaylayanın adı ve zamanı satıra
-   yazılır. Kimlik eylemleri (`disable_user`, `revoke_sessions`) **iki farklı kişi**
-   ister: ilk onay satırı `pending` bırakır, ikinci onay farklı bir kullanıcıdan
-   gelmelidir (büyük/küçük harf duyarsız karşılaştırma). Aynı kişinin ikinci onayı
-   409 ile reddedilir.
+   yazılır; her karar, karar verenin o anki rolüyle `approval_decisions`'a da eklenir.
+   Kimlik eylemleri (`disable_user`, `revoke_sessions`) **dört göz onayı** ister:
+   ilk onay satırı `pending` bırakır, ikinci onay farklı bir kullanıcıdan gelmelidir
+   (büyük/küçük harf duyarsız karşılaştırma). Aynı kişinin ikinci onayı 409 ile
+   reddedilir. Bir sınıf için farklı rol koşulu açıksa ikinci onaylayan, birincinin
+   onay anındaki rolünden farklı bir rolde olmalıdır; aynı rol ya da bulunamayan
+   rol de 409 alır.
 4. **Uygulama.** Daemon'un yanıtlayıcı döngüsü onaylı satırları uygular. Her satır
    önce yeniden politikadan, sonra yürütücü kayıt defterinden geçer. **Bir kişinin
-   onaylamadığı satır uygulanmaz**: yalnızca güven eşiğiyle "onaylı" sayılan bir
-   eylem loglanır ve atlanır. Politika reddi satırı `failed` yapar
+   onaylamadığı satır uygulanmaz; tek istisna Autonomous katmanının serbest
+   bıraktığı satırdır.** Bu satır için katman, politikadan sonra ve yürütücüden önce
+   yeniden kararlaştırılır. Artık Autonomous değilse (ör. devre kesici katmanı
+   düşürdüyse) satır onay kuyruğuna döner. Politika reddi satırı `failed` yapar
    (`policy_refused: ...`). Kayıtlı yürütücüler: Cloudflare (`waf_block`,
    `gateway_block`, `access_revoke`) her zaman; Defender (`isolate_host`), Entra ID
    (`disable_user`, `revoke_sessions`) ve PAN-OS (`block_ip`) entegrasyon etkinse.
@@ -228,8 +254,9 @@ Kuru çalıştırma için `DAEMON_DRY_RUN=true`: eylemler loglanır, uygulanmaz.
 
 ### Müdahale politikasının ayarları
 
-Politika `system_config` tablosundaki `response.policy` satırından (JSON) okunur;
-konsolda bunun için bir ekran yoktur. Anahtarlar:
+Politika `system_config` tablosundaki `response.policy` satırından (JSON) okunur.
+Konsolda yalnızca farklı rol koşulu için bir ekran vardır; diğer anahtarlar için
+yoktur. Anahtarlar:
 
 | Anahtar | Anlamı | Varsayılan |
 |---|---|---|
@@ -237,7 +264,8 @@ konsolda bunun için bir ekran yoktur. Anahtarlar:
 | `protected_tags` | Bu etiketi taşıyan varlık korunur (varsayılanlara eklenir) | `domain_controller`, `protected`, `break_glass`, `tier0`, `critical_infrastructure` |
 | `asset_tags` | Varlık → etiket listesi eşlemesi | boş |
 | `hourly_limits`, `default_hourly_limit` | Tür başına saatlik en çok eylem | `isolate_host`, `disable_user`, `revoke_sessions` için 10; diğerleri 20 |
-| `four_eyes_types` | İki onaylayıcı isteyen türler (varsayılanlara eklenir) | `disable_user`, `revoke_sessions` |
+| `four_eyes_types` | Dört göz onayı isteyen türler (varsayılanlara eklenir) | `disable_user`, `revoke_sessions` |
+| `distinct_role_types` | İkinci onaylayanın farklı rolde olmasını isteyen türler; her biri dört göz onayı türü de olur. Ayarlar → System → Segregation of duties ekranından (gerekçe zorunlu) ya da `PUT /api/response/four-eyes/{action_type}` ile değiştirilir; değişiklik `config_audit_log`'a yazılır | boş |
 
 Korunan varlık eşleşmesi host adlarında büyük/küçük harfe, sondaki noktaya ve
 `DOMAIN\` önekine duyarsızdır; tam ad da kısa ad da eşleşir. IP adresleri ve
@@ -255,7 +283,7 @@ Ajanların ve sohbetin kullanabildiği her araç `core/llm/tool_effects.py` tabl
 bir sınıf alır: `read_only`, `records`, `approval`, `decision`, `write`,
 `destructive`. `write` ve `destructive` araçlar ("onay gerektiren araçlar") her
 yüzeyde yalnızca bir kişinin yanıtladığı onay noktasından sonra çalışır. Sohbet bu
-araçları hiç sunmaz. İş akışları onay noktasında bekler. `/internal/tools/invoke`
+araçları sunmaz. İş akışları onay noktasında bekler. `/internal/tools/invoke`
 onaylanmış bir onay noktası olmadan çağrıyı reddeder. Tabloda olmayan bir araç,
 adı açıkça okuma fiiliyle başlamıyorsa en kısıtlayıcı sınıfa (`destructive`) düşer.
 Bu kural CI'da `tests/unit/_ratchets/test_no_ungated_write_tools.py` ile sayılır
@@ -265,23 +293,36 @@ Bu kural CI'da `tests/unit/_ratchets/test_no_ungated_write_tools.py` ile sayıl�
 `mde_isolate`, `aad_disable_user`, `pan_block_ip`, `cb_quarantine`,
 `cf_waf_block_ip`) satıcı API'sini doğrudan çağırır. Bu yol yukarıdaki müdahale
 politikasından ve yürütücülerden geçmez. Korunan varlık listesi, saatlik sınır,
-süre dolumu, geri alma ve iki onaylayıcı kuralı burada uygulanmaz; onay tek
+süre dolumu, geri alma ve dört göz onayı burada uygulanmaz; onay tek
 kişiliktir ve araç argümanlarına bağlı değildir. Telafi: bu entegrasyonları iş
 akışlarında kullanmayın ya da bu araçları içeren iş akışı onaylarını yalnızca
 kıdemli kişilere verin (bkz. [tehdit modeli R2](tehdit-modeli.md#açık-riskler)).
 
-### Bu sürümde olmayanlar
+**Dikkat — açık risk: sohbetten onay.** Sohbet `approve_action` aracını sunar.
+Model bu aracı çağırırsa bekleyen eylem, sohbet eden kişinin adıyla ve onun
+`ai_decisions.approve` izniyle onaylanır. Sohbete alınan bir alarm metnindeki
+talimat modeli buna yönlendirebilir. Telafi: `ai_decisions.approve` izni olan
+kişiler, onay bekleyen eylem varken sohbette güvenilmez alarm metni işlemesin;
+kritik türler için dört göz onayı ve farklı rol koşulunu açın (bkz.
+[tehdit modeli R30](tehdit-modeli.md#açık-riskler)).
 
-- İkinci onaylayanın farklı rolde olması ve görevler ayrılığı raporu
-  (Planlı — `wp/w3.2-sod`, bu sürümde yok).
-  Bugün iki onaylayıcı kuralı yalnızca kişileri ayırır, rolleri değil.
-- Kategori × eylem sınıfı başına otonomi katmanları
-  (Planlı — `wp/w3.1-autonomy`, bu sürümde yok).
+### Görevler ayrılığı raporu
+
+**Ayarlar → System → Segregation of duties** ekranı ve
+`GET /api/response/segregation` (izin `users.read`) her eylem için öneren,
+onaylayan, ikinci onaylayan ve yürüteni rolleriyle listeler. Tarih aralığı, eylem
+türü ve yalnız ihlaller süzgeci vardır. İhlal türleri: `self_approval` (öneren
+kendisi onayladı), `same_person`, `missing_second_approver`, `same_role`,
+`unknown_role`, `executed_without_approval`. Rol, `approval_decisions`'taki karar
+anı kaydından okunur. Kayıt yoksa (tablo öncesi eylemler) kişinin bugünkü rolü
+kullanılır ve satır bunu `role_source` ile söyler. Denetçiye vermek için
+`GET /api/response/segregation/export?format=csv` (ya da `json`) kullanın.
 
 ## Otonomi
 
-Bu sürümde otonomi iki anahtarla belirlenir; konsolun üst çubuğundaki çip bunları
-**Assist** (değişiklikten önce sorar) ya da **Act** olarak gösterir
+Otonomi iki düzeyde belirlenir. Genel anahtarlar her eylem için geçerlidir ve
+otonomi katmanlarının üstündedir. Konsolun üst çubuğundaki çip bunları **Assist**
+(değişiklikten önce sorar) ya da **Act** olarak gösterir
 (`GET /api/config/autonomy`):
 
 | Anahtar | Varsayılan | Etki |
@@ -293,9 +334,54 @@ Bu sürümde otonomi iki anahtarla belirlenir; konsolun üst çubuğundaki çip 
 **Düzenlenmiş sektör için önerilen ayar:** `DAEMON_FORCE_APPROVAL=true` (Helm:
 `config.DAEMON_FORCE_APPROVAL`) ve `DAEMON_AUTO_RESPONSE=true` (aksi halde onaylanan
 eylemler de uygulanmaz). Böylece "ortam kazanır" ve konsoldan Act'e geçilemez.
-Kodun varsayılanı Act görünür. Yine de yukarıda anlatıldığı gibi bir kişinin
-onaylamadığı eylem uygulanmaz. Ayar bu davranışı yapılandırma düzeyinde de sabitler
-ve denetçiye gösterilebilir kılar.
+Kodun varsayılanı Act görünür. Yine de otonomi katmanlarının varsayılanı Approve
+olduğu için, bir yönetici bir katmanı Autonomous yapmadıkça bir kişinin onaylamadığı
+eylem uygulanmaz. Assist bunu yapılandırma düzeyinde sabitler: Autonomous katmanlar
+da insan bekler. Böylece kural denetçiye gösterilebilir olur.
+
+### Otonomi katmanları
+
+**Ayarlar → Limits & autonomy** altındaki matris her alarm kategorisi (`phishing`,
+`malware`, `identity`, `network`, `cloud`, `other` ve adı geçmeyenler için `*`) ×
+eylem sınıfı için bir katman tutar (`autonomy_tiers` tablosu):
+
+| Katman | Davranış |
+|---|---|
+| Watch | Eylem yalnızca gözlenir; onay satırı oluşmaz |
+| Suggest | Öneri olarak kaydedilir; yalnızca bir kişi serbest bırakır |
+| Approve (varsayılan) | Onay kuyruğuna girer; bir kişi onaylar |
+| Autonomous | Geri alınabilir, süreli eylem kişisiz çalışır |
+
+Autonomous yalnızca şu koşulların hepsi doğruysa uygulanır, aksi halde eylem
+Approve gibi işlenir:
+
+- Sınıf `isolate_host`, `block_ip`, `block_domain`, `waf_block` ya da
+  `gateway_block`'tur. Eylem hem satırda hem yürütücü kaydında geri alınabilirdir.
+- Sınıf dört göz onayı istemez. Kategori `*` ya da `other` değildir.
+- Katmanda bir süre (`max_ttl_seconds`, en çok 7 gün) ve bir güven tabanı
+  (`min_confidence`) vardır. Eylemin güveni bu tabana ve
+  `DAEMON_CONFIDENCE_THRESHOLD`'a ulaşır. Assist açık değildir.
+- Kategorinin QA sınırı tutar: en az 299 basit rastgele incelemeden tek taraflı %95
+  Clopper–Pearson yanlış negatif üst sınırı ≤ %1 (Karne'deki değer).
+
+Katmanı yükseltmek (ve her Autonomous yazımı) bir kişi ve bir `https://` kanıt
+bağlantısı ister (`PUT /api/autonomy/tiers/{category}/{action_type}`,
+`settings.write`). Hizmet hesabı, ajan ya da MCP aracı katman yükseltemez.
+**Devre kesici:** kategorinin sınırı okunabilir ve tutmuyorsa katman kalıcı olarak
+Approve'a düşürülür, `config_audit_log`'a `system:autonomy-breaker` adıyla yazılır
+ve uyarı loglanır. Bu, karar anında, daemon'un 30 saniyelik döngüsünde ve
+`POST /api/autonomy/check` ile olur. Katmanı yalnızca bir kişi yeniden yükseltir.
+Değişikliklerin kaydı: `GET /api/autonomy/audit` ve ekrandaki denetim listesi.
+
+Kategori koddan gelir. Önce sensörün yazdığı alanlar (MITRE tekniği,
+`data_source`), bunlar bir şey söylemiyorsa triage kararının kategorisi kullanılır.
+Gönderenin yükte yazdığı kategori alanı okunmaz; eşlenemeyen her alarm `other`'a
+düşer ve `other` hiçbir zaman Autonomous olamaz. Autonomous bir eylem de müdahale
+politikasından (korunan varlıklar, saatlik sınır) geçer.
+
+**Düzenlenmiş sektör için öneri:** `DAEMON_FORCE_APPROVAL=true` ile tüm katmanları
+insan onayında tutun. Autonomous'u yalnızca değişiklik yönetimi kaydıyla ve Karne
+sınırı tuttuğu kategorilerde açın.
 
 Diğer otonomi düğmeleri:
 
@@ -310,13 +396,13 @@ Diğer otonomi düğmeleri:
   şemasına uyar): `VERDICT_RUN_ENABLED=false` varsayılan. Bütçe:
   `VERDICT_RUN_MAX_ITERATIONS` (4), `VERDICT_RUN_MAX_COST_USD` (1.0),
   `VERDICT_RUN_MAX_WALL_MS` (300000). Bu sürümde daemon verdict run başlatmaz:
-  alarm şeritlerinin verdict şeridine bir kuyruklayıcı bağlı değildir. Bayrak açık
-  olsa bile koşu yalnızca `alert-verdict` iş akışı elle çalıştırılınca oluşur.
+  alarm şeritlerinin verdict şeridine bir kuyruklayıcı bağlı değildir. Bayrak
+  yalnızca bu kuyruklayıcıyı açar. `alert-verdict` iş akışı ise bayraktan bağımsız
+  olarak her iş akışı gibi elle çalıştırılabilir (`ai_chat.use`). Bunu engellemek
+  için iş akışını kapatın (`PUT /api/workflows/{workflow_id}/enabled`).
 - **Beyan edilen niyet (`INTENT.md`)**: diğer anahtarlar için yalnızca gözlem
   modundadır; daemon açılışta beyan ile etkin değer arasındaki farkı loglar, hiçbir
   şeyi uygulamaz. Elle kontrol: `python -m services.daemon.intent`.
-- Kategori × eylem sınıfı başına otonomi katmanları, devre kesici ve "yalnızca insan
-  yükseltir" kuralı (Planlı — `wp/w3.1-autonomy`, bu sürümde yok).
 
 ### Kalite ölçümü: kanarya ve QA
 
@@ -357,9 +443,12 @@ değildir).
 - **İmha tutanağı:** her gerçek çalıştırma, politika ve yasal saklama değişikliği
   `config_audit_log`'a yazılır. KVKK periyodik imha tutanağı bu kayıtlardan üretilir:
   `GET /api/compliance/retention/reports` (`format=json` ya da `markdown`).
-- **Ajan defteri** (`agent_ledger`, hash zincirli) otomatik imha edilmez. Zincir
-  doğrulamalı arşiv `GET /api/compliance/retention/agent-ledger/archive` ile alınır;
-  arşivden sonra kesme, belgelenmiş elle yapılan bir veritabanı sahibi işlemidir.
+- **Ajan defteri** (`agent_ledger`, hash zincirli) otomatik imha edilmez. Bu sınıfın
+  tek yöntemi `archive`'dır: politikası varsa imha işi silmez, yalnızca süresi
+  geçmiş koşu sayısını (`archive_candidates`) raporlar. Zincir doğrulamalı arşiv
+  `GET /api/compliance/retention/agent-ledger/archive` ile alınır; her arşiv alımı
+  `config_audit_log`'a `ledger_archive_exp` eylemiyle yazılır. Arşivden sonra
+  kesme, belgelenmiş elle yapılan bir veritabanı sahibi işlemidir.
 
 Sınırlar: imha geri alınamaz; bu yüzden önce kuru çalıştırma çıktısını inceleyin ve
 gerçek çalıştırmadan önce yedek alın. Politikalar yalnızca `default` kiracısı için
@@ -386,7 +475,9 @@ imhayı yalnızca imha işiyle yapın.
 |---|---|---|
 | `config_audit_log` | Her ayar değişikliği: anahtar, eski/yeni değer, değiştiren kullanıcı, gerekçe, zaman | veritabanı; ilgili ekranlar |
 | `case_audit_logs` | Vaka alanı değişiklikleri, düzenleyici an kayıtları, taslaklar | Vaka sayfası → Record sekmesi |
-| `approval_actions` | Önerilen her eylem, kararı veren kural, onaylayan/reddeden, uygulama sonucu | onay kuyruğu, vaka Actions sekmesi, `GET /api/v1/approvals` |
+| `approval_actions` | Önerilen her eylem, kararı veren kural, uygulanan otonomi katmanı, onaylayan/reddeden, uygulama sonucu | onay kuyruğu, vaka Actions sekmesi, `GET /api/v1/approvals` |
+| `approval_decisions` | Her onay kararı (onay, ilk onay, ikinci onay, red), karar veren ve o anki rolü; yalnızca eklenir, değiştirilemez | görevler ayrılığı raporu, `GET /api/response/segregation` |
+| Otonomi katmanı değişiklikleri (`config_audit_log`, `config_type='autonomy_tier'`) | Yükseltme, düşürme (devre kesici dahil), kanıt bağlantısı, gerekçe | Ayarlar → Limits & autonomy, `GET /api/autonomy/audit` |
 | `agent_events` (ajan defteri) | Her ajan koşusunun olayları; koşu başına SHA-256 hash zinciri | `GET /api/workflows/runs/{run_id}/verify` ya da toplu doğrulama (aşağıda) |
 | `regulatory_clock_events` | DORA/NIS2 başlangıç anları; vaka başına hash zinciri, güncelleme tetikleyiciyle reddedilir | `GET /api/cases/{case_id}/regulatory/events` (zincir kontrolü dahil) |
 | Soruşturma gözetim zinciri | Bir soruşturmanın dosyaları ve kayıtları | `GET /api/orchestrator/investigations/{investigation_id}/chain-of-custody` |
@@ -449,7 +540,7 @@ uygulanamaz. JWT anahtarının döndürülmesi anahtarın nerede tutulduğuna ba
 | `JWT_SECRET_KEY` nerede | Geri yüklemenin yaptığı | Sizin yapmanız gereken |
 |---|---|---|
 | `secrets.enc`, depo kökündeki `.env` ya da durum dizinindeki `jwt_secret` | Yeni anahtarı oraya yazar; yeniden başlatmadan sonra tüm oturumlar düşer | Servisleri yeniden başlatın |
-| Yalnızca ortam değişkeni (ör. Compose'a verilen ortam) | Yeni anahtarı `secrets.enc`'e yazar ve bunu çıktıda söyler. Ortam değeri `secrets.enc`'ten önce okunduğu için eski anahtar geçerli kalır | Compose'un okuduğu ortamdaki `JWT_SECRET_KEY`'i silin ya da değiştirin, sonra `up`; yapmazsanız **eski oturumlar geçerli kalır** |
+| Yalnızca ortam değişkeni (ör. Compose'a ve `./start.sh restore`'a verilen ortam) | Yeni anahtarı durum dizinindeki `secrets.enc`'e yazar. Backend anahtarı `secrets.enc`'ten ortamdan önce okur; aynı durum dizinini (Compose'da `vigil_home` birimi) okuyan servisler yeniden başlayınca yeni anahtarı kullanır ve eski oturumlar düşer | Servisleri yeniden başlatın. Ortamdaki eski değeri de yenisiyle değiştirin: `secrets.enc` sonradan kaybolursa ortamdaki eski anahtar yeniden geçerli olur. Komutun çıktısındaki "an environment value outranks secrets.enc" ifadesi yanlıştır |
 | Bu kurulumun dışında (ör. Kubernetes Secret) ve sürece verilmemiş | Anahtarı döndürmez; onayları reddeder, denetim satırını yazar ve hata ile çıkar | Anahtarı tanımlandığı yerde (Secret/kasa) döndürün ve pod'ları yeniden başlatın |
 
 Doğrudan kullanım: `python -m core.backup create --repo ... --passphrase-file ...`,

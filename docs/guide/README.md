@@ -1,7 +1,7 @@
 # AutoSecOps 2.0 — Belge seti
 
 > **English summary.** Customer documentation for AutoSecOps 2.0 (regulated-sector
-> release candidate). Every page describes the code at `main` @ `167f7b77`.
+> release candidate). Every page describes the code at `main` @ `18d0bf09`.
 > Features from work packages that are not merged yet are marked **Planlı**
 > ("planned") with the branch that carries them and are *not* part of this
 > release. Start with [kapsam.md](kapsam.md) (release scope), then the install
@@ -9,7 +9,7 @@
 > model and the regulatory mapping (not legal advice).
 
 Bu dizin, düzenlenmiş sektör (banka, kamu, kritik altyapı) müşterisine verilen
-belge setidir. Belgeler yalnızca bu sürümün kodunda (`main` @ `167f7b77`) olanı
+belge setidir. Belgeler yalnızca bu sürümün kodunda (`main` @ `18d0bf09`) olanı
 anlatır. Henüz birleşmemiş bir iş paketinin getireceği özellik, satırında
 **Planlı** işareti ve onu taşıyan dalın adıyla yazılır ve bu sürüme dahil değildir.
 Örnek: OIDC SSO (Planlı — `wp/w1.9-oidc`, bu sürümde yok).
@@ -18,7 +18,7 @@ anlatır. Henüz birleşmemiş bir iş paketinin getireceği özellik, satırın
 |---|---|---|
 | [Sürüm kapsamı](kapsam.md) | herkes, önce bunu okuyun | Bu sürümde olan / olmayan; iş paketi → dal tablosu |
 | [İnternetsiz kurulum kılavuzu](kurulum-internetsiz.md) | kurulum mühendisi | İmzalı paketin üretilmesi, doğrulanması, kurulumu; `airgap.env` profili; sıfır egress kanıtı |
-| [Yönetici kılavuzu](yonetici-kilavuzu.md) | AutoSecOps yöneticisi | Kullanıcılar, roller ve izinler, kimlik doğrulama, entegrasyonlar, müdahale politikası ve onaylar, otonomi, saklama ve imha, denetim kayıtları, yedekleme ve sıcak yedek |
+| [Yönetici kılavuzu](yonetici-kilavuzu.md) | AutoSecOps yöneticisi | Kullanıcılar, roller ve izinler, kimlik doğrulama, entegrasyonlar, müdahale politikası ve onaylar, görevler ayrılığı raporu, otonomi katmanları, saklama ve imha, denetim kayıtları, yedekleme ve sıcak yedek |
 | [Güvenlik teknik belgesi](guvenlik-teknik-belgesi.md) | güvenlik mimarı, denetçi | Mimari, güven sınırları, köken/karar sözleşmesi, onaylar, denetim zinciri, egress denetimi, sırlar, kriptografi |
 | [Tehdit modeli](tehdit-modeli.md) | güvenlik ekibi, pentest | Bileşen başına STRIDE, uygulanmış önlemler, açık riskler |
 | [Mevzuat eşlemesi](mevzuat-eslemesi.md) | uyum ekibi | BDDK, KVKK, DORA, NIS2, SPK, ISO/IEC 27001 kontrolleri → ürün özelliği → kanıt (hukuki görüş değildir) |
@@ -27,6 +27,7 @@ anlatır. Henüz birleşmemiş bir iş paketinin getireceği özellik, satırın
 
 - [infra/airgap/README.md](../../infra/airgap/README.md) — paket betiklerinin ayrıntılı başvurusu
 - [tests/airgap/README.md](../../tests/airgap/README.md) — sıfır egress envanteri ve çalışma zamanı testi
+- [docs/operations/ingest-durability.md](../operations/ingest-durability.md) — kalıcı webhook alım kuyruğu, sınırları ve metrikleri
 - [docs/operations/rpo-rto.md](../operations/rpo-rto.md) — RPO/RTO, daemon sıcak yedeği, Helm yedek CronJob'u, geri yükleme
 - [core/compliance/RETENTION.md](../../core/compliance/RETENTION.md) — veri sınıfları, saklama, yasal saklama, periyodik imha
 - [infra/staging/README.md](../../infra/staging/README.md) — gecelik staging ortamı

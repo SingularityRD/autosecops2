@@ -1,16 +1,20 @@
 # Güvenlik teknik belgesi
 
 > **English summary.** Security architecture of AutoSecOps at `main` @
-> `167f7b77`: components and data flows, eight trust boundaries, the
-> provenance/verdict contract (enforced on the live daemon triage path, with
-> known limits), the human-approval rule and response policy for actions
-> (protected assets, hourly limits, TTL expiry and revert, two approvers for
-> identity actions), the open gap that approved agent MCP tools bypass that
-> policy, the audit records and hash chains (agent ledger, regulatory clock
-> chain with a head anchor; no signed checkpoints yet), three layers of egress
-> control, secret storage, and a cryptography inventory. FIPS mode is planned,
-> not in this release. Everything that is planned is marked **Planlı** with its
-> branch.
+> `18d0bf09`: components and data flows (with the durable webhook ingest
+> spool), eight trust boundaries, the provenance/verdict contract (enforced on
+> the live daemon triage path, with known limits; analysis fields in a payload
+> are dropped), the human-approval rule, per-category autonomy tiers (default
+> Approve; Autonomous only for reversible, TTL-bound actions while the QA
+> false-negative bound holds, with a circuit breaker), and the response policy
+> (protected assets, hourly limits, TTL expiry and revert, four-eyes approval
+> with an optional distinct-role rule, a segregation-of-duties report). Open
+> gaps: approved agent MCP tools bypass that policy, and chat can approve a
+> pending action under the chatting user's identity. Also: audit records and
+> hash chains (no signed checkpoints yet), three layers of egress control,
+> secret storage, a cryptography inventory, and the automated red-team
+> regression suite. FIPS mode is planned, not in this release. Everything that
+> is planned is marked **Planlı** with its branch.
 
 Bu belge, AutoSecOps'un güvenlik mimarisini denetçi ve güvenlik mimarı için
 anlatır. Bileşen başına tehditler [tehdit modelinde](tehdit-modeli.md), işletim
@@ -34,10 +38,23 @@ ayarları [yönetici kılavuzunda](yonetici-kilavuzu.md), kapsam
 | Medic | ayrı servis | Kurulum sağlığı izleyicisi; varsayılan kapalı | isteğe bağlı |
 
 Alarm akışı (bu sürüm): kaynak (federation poller, daemon webhook'u, dosya alımı) →
-`FindingProcessor` → (bayrak açıksa alarm şeridi seçimi) → tek çağrılık AI triage
-(Bifrost üzerinden model; cevap karar şemasına uyan tek JSON nesnesi) → bulgu/vaka →
-yanıtlayıcı eylem önerir → müdahale politikası → `approval_actions` → insan onayı →
-politika + yürütücü → doğrulama → süre dolunca geri alma → vaka zaman çizelgesi.
+(webhook'ta) kalıcı alım kuyruğu → `FindingProcessor` → (bayrak açıksa alarm şeridi
+seçimi) → tek çağrılık AI triage (Bifrost üzerinden model; cevap karar şemasına uyan
+tek JSON nesnesi) → bulgu/vaka → yanıtlayıcı eylem önerir → müdahale politikası →
+otonomi katmanı → `approval_actions` → insan onayı (ya da yalnızca Autonomous
+katmanında kişisiz serbest bırakma) → politika + otonomi katmanının yeniden kararı +
+yürütücü → doğrulama → süre dolunca geri alma → vaka zaman çizelgesi.
+
+**Kalıcı alım kuyruğu (W0.12).** Daemon webhook'u (`/ingest`, `/webhook`) bir
+bulguya 200 dönmeden önce onu diskte, `fsync` edilmiş ve yalnızca eklenen bir
+kuyruğa (spool) yazar. Varsayılan yer durum dizininde `spool/webhook`'tur.
+Veritabanı yazımı başarısız olursa bulgu bırakılmaz, kuyruğa geri döner ve yeniden
+denenir. Daemon yeniden başlayınca kuyruk yeniden oynatılır; zaten yazılmış bulgu
+ikinci satır üretmez. Kuyruk doluysa ya da yazılamıyorsa webhook `503` ve
+`Retry-After` döner; gönderen yeniden denemelidir. Ayarlar:
+`DAEMON_INGEST_SPOOL_ENABLED`, `DAEMON_INGEST_SPOOL_DIR`,
+`DAEMON_INGEST_SPOOL_MAX_FINDINGS` (10000), `DAEMON_INGEST_SPOOL_MAX_MB` (128).
+Ayrıntı: [docs/operations/ingest-durability.md](../operations/ingest-durability.md).
 
 ## 2. Güven sınırları
 
@@ -46,7 +63,7 @@ politika + yürütücü → doğrulama → süre dolunca geri alma → vaka zama
 | G1 | Tarayıcı ↔ API | kimliği doğrulanmış kullanıcı | TLS ingress'te sonlanır; HS256 JWT (çerez, `Secure`, `SameSite=strict`); CSRF çift gönderim çerezi; rol izinleri her yazma rotasında sunucu tarafında; hız sınırları; Redis tabanlı oturum iptali (kapalı başarısız) |
 | G2 | Alarm kaynakları → daemon/API | saldırganın etkileyebildiği veri | Daemon webhook'u (NetworkPolicy açıkken) `networkPolicies.daemon.webhookAllowFrom` CIDR'lerine sınırlı; alarm içeriği **güvenilmez** sayılır (bkz. §3); kanarya ve QA ile ölçüm |
 | G3 | API ↔ ajan katmanı | iç servis | `/internal` uçları yalnızca `AGENT_INTERNAL_TOKEN` paylaşılan sırrıyla (sabit zamanlı karşılaştırma); NetworkPolicy ile hangi pod'ların bağlanabileceği sınırlı; onay gerektiren araçlar onaylanmış bir onay noktası olmadan reddedilir. Onaydan sonra araç müdahale politikasından geçmez (açık risk R2) |
-| G4 | Uygulama ↔ model | yerel ya da müşterinin seçtiği sağlayıcı | Tek çıkış Bifrost; air-gap'te bulut anahtarları boş ve egress kapalı; modelin çıktısı doğrudan hiçbir API çağrısına dönüşmez (araç etki sınıfları, onay kuyruğu) |
+| G4 | Uygulama ↔ model | yerel ya da müşterinin seçtiği sağlayıcı | Tek çıkış Bifrost; air-gap'te bulut anahtarları boş ve egress kapalı; modelin çıktısı doğrudan hiçbir API çağrısına dönüşmez (araç etki sınıfları, onay kuyruğu); istisna: sohbetten onay (açık risk R30) |
 | G5 | Uygulama → dış entegrasyonlar | SIEM, EDR, IdP, güvenlik duvarı | Kimlik bilgileri şifreli sır deposunda; TLS doğrulaması açık (kapatma CI ratchet'iyle yasak); kullanıcı girdisi URL'ler için SSRF koruması; egress NetworkPolicy |
 | G6 | Uygulama ↔ veri depoları | Postgres, Redis | Uygulama sahip olmayan `vigil_app` rolüyle bağlanır; `agent_events` üzerinde bu rolün UPDATE/DELETE/TRUNCATE yetkisi yoktur |
 | G7 | Operatör ↔ küme/sunucu | yönetici | Sırlar Secret/ExternalSecrets'te; hizmet hesabı parolası argv/env değil stdin'den; pod'lar root olmayan kullanıcıyla, ayrıcalık yükseltmesi kapalı |
@@ -81,35 +98,73 @@ Bilinen sınırlar:
   (başlık, açıklama, host adı) dayanan bir `malicious` kararı geçerli kalır. Bu karar
   bir bulguyu yükseltebilir; eylem yine de onay kapısından ve müdahale politikasından
   geçer.
+- Gönderenin yükte verdiği analiz alanları (`triage_confidence`,
+  `recommended_action`, `ai_triage`, `enrichment`, `category`, önceki karar)
+  işlemeden önce atılır (`drop_payload_analysis`). Böylece gönderen, AutoSecOps'un
+  kendi analizi gibi görünen bir güven ya da öneri yazarak müdahaleyi
+  yönlendiremez.
 - `data_source` alanını gönderen seçer (webhook gövdesi, Kafka mesajı, içe aktarma).
   Gönderen bir adaptör adı yazarak o adaptörün daha geniş sensör haritasını
   alabilir. Güven sınırı gönderenin kimlik doğrulamasıdır.
 - Ajan katmanındaki (TypeScript) iş akışları bu triage yolunu kullanmaz.
 - Injection test seti (`eval/suites/injection/v1.jsonl`) `evalkit` ile çevrimdışı
-  ölçülebilir; sürüm kapısı değildir.
+  ölçülebilir. CI'da kayıtlı bir kasetle ölçülen saldırı başarı oranı kayıtlı tabanı
+  (21/240) aşamaz; bu bir gerileme kapısıdır (§9).
   ≤ %5 saldırı başarısının kapı olması (Planlı — `wp/w1.4-injection-set`, bu sürümde yok).
 
 Bu sürümde injection'a karşı **etkin** olan savunmalar:
 
 - **Araç etki sınıfları** (`core/llm/tool_effects.py`): yazan/yıkıcı hiçbir araç,
-  bir insanın yanıtladığı onay noktası olmadan çalışamaz. Sohbet bu araçları hiç
-  sunmaz. Tabloda olmayan araç en kısıtlayıcı sınıfa düşer. Model ne yazarsa
-  yazsın, sonuç en fazla bir kişinin onayını bekleyen bir öneridir.
-- **İnsan onayı olmadan eylem yok** (§4).
+  bir insanın yanıtladığı onay noktası olmadan çalışamaz. Sohbet bu araçları
+  sunmaz. Tabloda olmayan araç en kısıtlayıcı sınıfa düşer.
+- **İstisna, açık risk (R30, Yüksek).** Sohbet `approve_action` aracını sunar
+  (`core/llm/chat_layers.py`). Araç, onayı sohbet eden kişinin kimliğiyle verir;
+  kişide `ai_decisions.approve` izni varsa çalışır. Sohbete giren bir alarm metnine
+  gömülü talimat (prompt injection) modeli bu aracı çağırmaya yönlendirebilir. Bu
+  durumda bekleyen bir eylem, kişi onaylamak istemeden onun adına onaylanır. Dört
+  göz onayı isteyen eylemde bu yolla yalnızca bir onay verilebilir.
+  Düzeltme planlı (Planlı — `wp/w1.7b-chat-approval`, bu sürümde yok).
+- **İnsan onayı olmadan eylem yok** (§4); tek istisna, bir kişinin kanıtla açtığı
+  ve QA sınırına bağlı Autonomous katmanıdır.
 - **Kanaryalar ve QA örneklemesi**: kaçırılan kötücül alarmların oranı ölçülür
   (yönetici açarsa); Karne yanlış negatif üst sınırını gösterir.
 - **Kanarya bulguları** dış zenginleştirmeye, otomatik müdahaleye ve otonom
   soruşturmaya hiç gönderilmez.
 
-## 4. Onaylar, müdahale politikası ve dört göz
+## 4. Onaylar, otonomi katmanları, müdahale politikası ve dört göz onayı
 
-Kural: **bir kişinin onaylamadığı müdahale eylemi uygulanmaz.** Onay kapısı
+Kural: **bir kişinin onaylamadığı müdahale eylemi uygulanmaz; tek istisna, bir
+kişinin kanıtla açtığı Autonomous katmanıdır.** Onay kapısı
 (`core/response/config.py`, `approval_requirement`) bir eylemin insan bekleyip
 beklemeyeceğine karar verir ve kararı veren kuralı satıra yazar. Geri alınamaz
-eylemler her zaman bekler. Ek olarak yanıtlayıcı, `approved_by` alanı boş olan
-"onaylı" bir satırı uygulamaz (güven eşiğiyle serbest kalan eylem loglanır,
-çalıştırılmaz). Onay `ai_decisions.approve` izni ister ve onaylayanın kimliği
-oturumdan alınır.
+eylemler her zaman bekler. Yanıtlayıcı, `approved_by` alanı boş olan "onaylı" bir
+satırı yalnızca otonomi katmanı onu serbest bıraktıysa uygular. Güven eşiğiyle
+serbest kalan diğer satırlar loglanır, çalıştırılmaz. Onay `ai_decisions.approve`
+izni ister ve onaylayanın kimliği oturumdan alınır.
+
+**Otonomi katmanları** (`core/autonomy/`). Her (alarm kategorisi × eylem sınıfı)
+çifti için dört katman vardır: **Watch** (satır oluşmaz), **Suggest** (öneri olarak
+kaydedilir, bir kişi serbest bırakır), **Approve** (kişi onaylar) ve **Autonomous**.
+Yapılandırılmamış her çiftin katmanı Approve'dur. Autonomous ancak şunların hepsi
+doğruysa uygulanır:
+
+- sınıf `isolate_host`, `block_ip`, `block_domain`, `waf_block` ya da
+  `gateway_block`'tur ve eylem hem satırda hem yürütücü kaydında geri alınabilirdir;
+- sınıf dört göz onayı istemez; kategori `*` ya da `other` değildir;
+- katmanda süre (en çok 7 gün) ve güven tabanı vardır, eylemin güveni tabana ve
+  `DAEMON_CONFIDENCE_THRESHOLD`'a ulaşır; Assist kipi açık değildir;
+- kategorinin QA sınırı tutar: en az 299 basit rastgele incelemeden tek taraflı
+  %95 Clopper–Pearson yanlış negatif üst sınırı ≤ %1.
+
+Sınır okunabilir ve tutmuyorsa devre kesici katmanı Approve'a düşürür, bunu
+`config_audit_log`'a yazar ve uyarı loglar. Bu, karar anında, daemon'un 30 saniyelik
+döngüsünde ve `POST /api/autonomy/check` ile olur. Kategori, sensörün yazdığı
+alanlardan (MITRE tekniği, `data_source`) ve gerekirse triage kararından kodla
+belirlenir; gönderenin yükte yazdığı kategori alanı okunmaz. Katmanı yalnızca bir
+kişi, `https://` kanıt bağlantısıyla yükseltebilir; hizmet hesabı, ajan ya da MCP
+yükseltemez. Yanıtlayıcı, kişisiz serbest kalan satırı uygulamadan hemen önce
+katmanı yeniden kararlaştırır; artık Autonomous değilse satır onay kuyruğuna döner.
+Autonomous eylem de müdahale politikasından geçer.
 
 **Müdahale politikası** (`core/response/policy.py`) iki yerde çalışır: öneri satır
 olmadan önce ve yanıtlayıcı satırı uygulamadan hemen önce. İkincisi atlanamaz.
@@ -134,17 +189,27 @@ gerekçeyle geri alabilir. Her geri alma `approval_actions`'a ayrı bir satır o
 yazılır. Host izolasyonu için yürütücü yoksa eylem `failed` yazılır (sahte başarı
 yoktur).
 
-**Dört göz.** Kimlik eylemleri (`disable_user`, `revoke_sessions`) iki farklı
-onaylayıcı ister; liste `response.policy` ile genişletilebilir. Diğer eylemler tek
-onaylayıcılıdır. İkinci onaylayanın farklı rolde olması ve görevler ayrılığı raporu
-(Planlı — `wp/w3.2-sod`, bu sürümde yok).
+**Dört göz onayı.** Kimlik eylemleri (`disable_user`, `revoke_sessions`) iki farklı
+kişinin onayını ister; liste `response.policy` ile genişletilebilir. Diğer eylemler
+tek onaylıdır. **Farklı rol koşulu** eylem sınıfı başına açılır
+(`distinct_role_types`; Ayarlar → Segregation of duties ya da
+`PUT /api/response/four-eyes/{action_type}`, gerekçe zorunlu). Açık olan sınıfta
+ikinci onaylayan, birincinin onay anındaki rolünden farklı bir rolde olmalıdır; aksi
+409 alır. Rolü bulunamayan onaylayan da reddedilir. Varsayılan olarak hiçbir sınıfta
+açık değildir. Her onay kararı karar verenin o anki rolüyle `approval_decisions`
+tablosuna eklenir. **Görevler ayrılığı raporu**
+(`GET /api/response/segregation`, CSV/JSON dışa aktarma
+`GET /api/response/segregation/export`, izin `users.read`) her eylem için öneren,
+onaylayan, ikinci onaylayan ve yürüteni rolleriyle ve ihlalleriyle listeler
+(`self_approval`, `same_person`, `missing_second_approver`, `same_role`,
+`unknown_role`, `executed_without_approval`).
 
 **Açık risk: onaylanmış MCP araçları politikayı atlar.** Ajan iş akışlarında onay
 gerektiren bir MCP aracı (`mde_isolate`, `aad_disable_user`, `pan_block_ip`,
 `cb_quarantine`, Cloudflare `cf_*` araçları) bir kişi onay noktasını onayladıktan
 sonra `/internal/tools/invoke` üzerinden satıcı API'sini doğrudan çağırır. Bu yolda
 müdahale politikası, korunan varlık listesi, saatlik sınır, yürütücü kuralları,
-süre dolumu ve dört göz uygulanmaz. Onay, araç adına bağlıdır ama araç argümanlarına
+süre dolumu ve dört göz onayı uygulanmaz. Onay, araç adına bağlıdır ama araç argümanlarına
 bağlı değildir. Ayrıntı ve telafi edici önlem: [tehdit modeli R2](tehdit-modeli.md#açık-riskler).
 
 ## 5. Denetim kayıtları ve zincir
@@ -155,7 +220,8 @@ bağlı değildir. Ayrıntı ve telafi edici önlem: [tehdit modeli R2](tehdit-m
 | `regulatory_clock_events` | Vaka başına hash zinciri; UPDATE tetikleyiciyle reddedilir; zincirin son satırı tetikleyicinin tuttuğu `regulatory_clock_heads` çapasıyla karşılaştırılır (son olayların silinmesi ve sıra dışı ekleme görünür); her olay `case_audit_logs`'a da yazılır; zincir kontrolü API yanıtında |
 | `config_audit_log` | Ayar değişikliği, değiştiren kullanıcı ve gerekçe; saklama/imha çalıştırmaları ve yasal saklama kararları (`config_type='retention'`); geri yükleme; zincirsiz |
 | `case_audit_logs` | Vaka alanı değişiklikleri; zincirsiz |
-| `approval_actions` | Eylem, karar kuralı, onaylayan, uygulama sonucu; zincirsiz |
+| `approval_actions` | Eylem, karar kuralı, onaylayan, uygulama sonucu, otonomi kaydı (`parameters.autonomy`); zincirsiz |
+| `approval_decisions` | Her onay kararı (onay, ilk onay, ikinci onay, red), karar verenin hesabı ve o anki rolü; UPDATE/DELETE/TRUNCATE her rol için tetikleyiciyle reddedilir; zincirsiz |
 
 Sınırlar (bu sürüm):
 
@@ -165,7 +231,8 @@ Sınırlar (bu sürüm):
 - Düzenleyici an zincirinin çapası aynı veritabanındadır. Tablo sahibi ya da süper
   kullanıcı iki tabloyu birlikte yeniden yazabilir. `TRUNCATE` bu sürümde
   tetikleyiciyle reddedilmez (R27).
-- Onay, vaka ve ayar denetim kayıtları zincirde değildir.
+- Onay, vaka ve ayar denetim kayıtları zincirde değildir. `approval_decisions`
+  yalnızca eklenir, ama zincirli değildir.
 - Genişleme ve Ed25519 imzalı kontrol noktası
   (Planlı — `wp/w1.10-audit-chain`, bu sürümde yok).
 - Denetim olaylarının SIEM'e akışı (Planlı — `wp/w3.6-audit-export`, bu sürümde yok).
@@ -200,7 +267,7 @@ yönlendirme izlenmez ve ortam vekili kullanılmaz. Bilinen açık: 100.64.0.0/1
 | Sır | Nerede |
 |---|---|
 | Entegrasyon ve sağlayıcı kimlik bilgileri | Şifreli sır deposu `secrets.enc` (Fernet); anahtar aynı durum dizininde `master.key` (dizin 0700, dosya 0600). Veritabanına ve yapılandırma JSON'una yazılmaz; API yanıtlarında maskelenir |
-| `JWT_SECRET_KEY` | Ortam / Kubernetes Secret; `DEV_MODE=false` iken zorunlu, yoksa backend açılmaz |
+| `JWT_SECRET_KEY` | Sır deposu (`secrets.enc`), ortam / Kubernetes Secret ya da `.env`; okuma önceliği aşağıda. Anahtar verilmemişse `start.sh` durum dizininde bir `jwt_secret` dosyası üretir ve onu ortama verir. `DEV_MODE=false` iken zorunlu, yoksa backend açılmaz |
 | `AGENT_INTERNAL_TOKEN` | Ortam / Secret; API ile ajan katmanı arasındaki tek kimlik doğrulama |
 | Postgres / Redis parolaları | Secret (`existingSecret` desteklenir) |
 | TOTP sırları | Veritabanında, `JWT_SECRET_KEY`'den türetilen anahtarla Fernet şifreli |
@@ -215,11 +282,15 @@ Secrets Manager vb.) ile verin.
 
 Döndürme: veritabanı yedeğinden geri yükleme bekleyen onayları reddeder.
 `JWT_SECRET_KEY` `secrets.enc`'te, `.env`'de ya da `jwt_secret` dosyasındaysa onu
-döndürür ve TOTP sırlarını yeniden şifreler. Anahtar yalnızca ortam değişkeninden
-geliyorsa yeni anahtar `secrets.enc`'e yazılır. Ortam değeri önce okunduğu için
-operatör ortamdaki değeri silip değiştirmedikçe eski oturumlar geçerli kalır.
-Anahtar kurulum dışında tanımlıysa (ör. Kubernetes Secret) geri yükleme onu
-döndüremez ve hata ile biter. Bu durumda anahtarı tanımlandığı yerde döndürün
+döndürür ve TOTP sırlarını yeniden şifreler. Anahtar yalnızca geri yükleme sürecine
+verilen ortam değişkeninden geliyorsa yeni anahtar `secrets.enc`'e yazılır. Backend
+anahtarı `secrets.enc`'ten ortamdan önce okur (`core/secrets_manager.py`,
+`core/auth/auth_service.py`). Bu yüzden aynı durum dizinini okuyan servisler
+yeniden başlayınca yeni anahtarı kullanır ve eski oturumlar düşer. Geri yüklemenin
+kendi çıktısı bunun tersini söyler ("an environment value outranks secrets.enc");
+o ileti yanlıştır. Anahtar kurulum dışında tanımlıysa ve sürece verilmediyse
+(ör. Kubernetes Secret) geri yükleme onu döndüremez ve hata ile biter. Bu durumda
+anahtarı tanımlandığı yerde döndürün
 (bkz. [yönetici kılavuzu](yonetici-kilavuzu.md#docker-compose--tek-sunucu)).
 `master.key` için yerleşik bir döndürme komutu bu sürümde yoktur. Loglarda URL kullanıcı bilgisi
 (`core/platform/log_redaction.py`) ve telemetri öznitelikleri
@@ -257,9 +328,25 @@ OpenSSL 3 FIPS sağlayıcısı ve FIPS uyumlu karşılıklar
 - CI'da Trivy imaj taraması, Bandit statik analizi, Dependabot bağımlılık güncellemeleri.
 - Güvenlik testleri (`tests/security/`): rota × izin matrisi, kimlik doğrulamanın
   varsayılan açık olması, SSRF, yol geçişi, kimliksiz uçlar.
+- Otomatik kırmızı takım regresyon paketi (W4.3), her PR'da:
+  - **Rol × rota matrisi.** `tests/security/route_role_matrix.json`, API'nin her
+    rotası için her yerleşik rolün sonucunu (`allow`, `deny`, `conditional`) tutar.
+    Matris rotanın kapısından ve tohum SQL'inden üretilir. `allow` ve `deny`
+    hücreleri gerçek HTTP davranışına karşı sınanır. Yeni ya da değişen bir rota,
+    dosya yeniden üretilip gözden geçirilene kadar testi düşürür.
+  - **SSRF matrisi** (`tests/security/test_ssrf_matrix.py`): metadata adresleri,
+    sayısal IPv4 yazımları, IPv4-mapped IPv6, DNS rebinding ve tehlikeli şemalar
+    LLM sağlayıcı keşfine ve giden webhook'lara karşı sürülür.
+  - **Injection eşiği** (`tests/security/test_injection_asr_regression.py`):
+    injection setinin saldırı başarı oranı kayıtlı tabanı (21/240 = 0,0875)
+    aşamaz. Oran, depodaki kayıtlı bir model yanıtları kasetinin
+    (`evalkit/cassettes/stub-v1.jsonl`) yeniden oynatılmasıyla ölçülür: istem ya
+    da set değişince test düşer, ama gerçek bir modelin oranını ölçmez. Bu bir
+    gerileme kapısıdır; ≤ %5 hedefi değildir.
 - Gecelik staging ortamı (`infra/staging/`): bir VM'de kurulduğunda `main` her gece
   k3s üzerine kurulur ve yerel modelle duman testi yapılır.
-- İç kırmızı takım incelemesinin (W4.3) bulguları tehdit modelinde R26 ve R28 olarak
-  kayıtlıdır; düzeltmeleri birleşmedi.
+- İç kırmızı takım incelemesinin bulguları
+  ([docs/security/w4.3-redteam-findings.md](../security/w4.3-redteam-findings.md))
+  tehdit modelinde R26 ve R28 olarak kayıtlıdır; düzeltmeleri birleşmedi.
 - SBOM, imzalı imajlar ve sürüm notları (Planlı — `wp/w4.7-release`, bu sürümde yok).
 - Dış pentest (Planlı — dal yok, W4.4, bu sürümde yok).
