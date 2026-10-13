@@ -293,6 +293,20 @@ class Settings(BaseSettings):
     daemon_slack_enabled: Optional[bool] = None
     daemon_slack_channel: str = "#soc-alerts"
     daemon_pagerduty_enabled: bool = False
+    # Case automation (SLA monitor, stale cases, digest, notification dispatcher
+    # and outbound webhook sender). Runs in the daemon only, never in the API.
+    case_automation_enabled: bool = True
+    # Post broadcast case events (SLA warnings, stale cases) once each to the
+    # Slack integration's default channel.
+    case_notify_slack_enabled: bool = False
+    # Comma-separated notification priorities (e.g. "urgent,high") that are also
+    # emailed to their recipient. Empty: only rows whose channel is "email".
+    case_notify_email_priorities: str = ""
+    # Outbound webhooks. Targets resolving to loopback/private/link-local
+    # addresses are refused unless inside one of these CIDRs (comma-separated).
+    # The cloud-metadata address is refused regardless.
+    webhook_allowed_cidrs: str = ""
+    webhook_max_attempts: int = 8
     daemon_threat_hunt_interval: int = 86400
     # Known-answer probes (#923): an hourly sweep, injected once a day by id.
     daemon_probes_enabled: bool = True

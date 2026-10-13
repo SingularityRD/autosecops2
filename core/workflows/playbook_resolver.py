@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 import yaml
 
 from core.agents.enablement import disabled_agent_ids, disabled_message
-from core.integrations.atomic_red_team.descriptor import EXECUTE_IDS
 from core.llm.defaults import DEFAULT_MODEL
+from core.llm.tool_effects import effect_of, gated_ids, is_gated
 from core.skills.skill_library import READ_SKILL_TOOL
 
 if TYPE_CHECKING:
@@ -161,7 +161,10 @@ def _bound_capabilities(
     for capability in needs:
         for name in _candidate_names(capability):
             entry = catalogue.get(name)
-            if entry is None:
+            # A capability is a read. A candidate that would need a person's
+            # approval is not one, so it never binds -- hunts and traces
+            # have no approval pipeline for a tool call to park on.
+            if entry is None or is_gated(name):
                 continue
             bound.append(
                 {
@@ -170,6 +173,7 @@ def _bound_capabilities(
                     "provides": capability,
                     "description": entry.get("description", ""),
                     "parameters": entry.get("input_schema") or {},
+                    "effect": effect_of(name),
                     **CAPABILITY_BOUNDS.get(capability, {}),
                 }
             )
@@ -311,6 +315,7 @@ def _tools_of(
                 "kind": REMOTE,
                 "description": entry.get("description", ""),
                 "parameters": entry.get("input_schema") or {},
+                "effect": effect_of(name),
                 **CAPABILITY_BOUNDS.get(name, {}),
             }
         )
@@ -337,11 +342,13 @@ def _drop_missing(phases: List[Dict[str, Any]], declared: List[str]) -> None:
             ]
 
 
-# Only ART execute is gated. The id must be one config.tools actually carries:
-# spec.ts refuses an approvals name that is not declared. Native and MCP-flattened
-# spellings both count; whichever resolved is the one that goes on the list.
+# Every tool whose effect class is gated (core.llm.tool_effects: write or
+# destructive) parks until a person approves the call -- ART execute, and any
+# EDR / IdP / firewall action a phase was granted. The id must be one
+# config.tools actually carries: spec.ts refuses an approvals name that is not
+# declared, so whichever spelling resolved is the one that goes on the list.
 def _approvals_of(tools: List[Dict[str, Any]]) -> List[str]:
-    return [tool["id"] for tool in tools if tool["id"] in EXECUTE_IDS]
+    return gated_ids(tool["id"] for tool in tools)
 
 
 def resolve(
@@ -405,9 +412,9 @@ def resolve(
         ),
         "runtime": DEFAULT_RUNTIME,
         "tools": tools,
-        # ART execute parks until a human approves. Other grants, and a compose
-        # that never received execute, stay ungated. A phase checkpoint is
-        # separate (approval_required on the step) and is not a substitute.
+        # Every gated grant parks until a human approves the call. Read and
+        # records grants stay ungated. A phase checkpoint is separate
+        # (approval_required on the step) and is not a substitute.
         "approvals": _approvals_of(tools),
         "thresholds": {},
     }
@@ -566,17 +573,21 @@ def resolve_hunt(
     budgets, thresholds = (
         _verdict_limits() if verdict else (dict(HUNT_BUDGETS), dict(HUNT_THRESHOLDS))
     )
+    hunt_tools = _bound_capabilities(
+        list(HUNT_CAPABILITIES), _tool_catalogue(registry)
+    ) + [_expand_tool()]
     config = {
         "model": model or DEFAULT_MODEL,
         **({"provider": provider} if provider else {}),
         **({"effort": effort} if effort else {}),
         "budgets": budgets,
         "runtime": DEFAULT_RUNTIME,
-        "tools": _bound_capabilities(list(HUNT_CAPABILITIES), _tool_catalogue(registry))
-        + [_expand_tool()],
+        "tools": hunt_tools,
         # The hunt gates on its own checkpoint classes, which are a property of
         # what it is about to conclude rather than of a tool it happens to call.
-        "approvals": [],
+        # Its capabilities bind read tools only, so this is empty; computed
+        # rather than stated so a gated grant could never ride in ungated.
+        "approvals": _approvals_of(hunt_tools),
         "thresholds": thresholds,
         "hypothesis_loop": HUNT_HYPOTHESIS_LOOP,
         # Only a verdict run says anything here: a hunt or an adjudication left
@@ -621,6 +632,9 @@ def resolve_root_cause(
         "narrative": definition.body,
     }
 
+    trace_tools = _bound_capabilities(
+        ["telemetry_search"], _tool_catalogue(registry)
+    ) + [_record_tool(), _finish_tool()]
     config = {
         "model": model or DEFAULT_MODEL,
         **({"provider": provider} if provider else {}),
@@ -631,9 +645,8 @@ def resolve_root_cause(
             "max_wall_ms": HUNT_BUDGETS["max_wall_ms"],
         },
         "runtime": {**DEFAULT_RUNTIME, "max_turns": ROOT_CAUSE_MAX_TURNS},
-        "tools": _bound_capabilities(["telemetry_search"], _tool_catalogue(registry))
-        + [_record_tool(), _finish_tool()],
-        "approvals": [],
+        "tools": trace_tools,
+        "approvals": _approvals_of(trace_tools),
         "thresholds": {},
     }
 
@@ -701,6 +714,7 @@ def _record_tool() -> Dict[str, Any]:
     return {
         "id": "record",
         "kind": "local",
+        "effect": effect_of("record"),
         "description": (
             "Record one causal step of this trace. A link is proved only against "
             "telemetry results already journaled on this run."
@@ -727,6 +741,7 @@ def _finish_tool() -> Dict[str, Any]:
     return {
         "id": "finish",
         "kind": "local",
+        "effect": effect_of("finish"),
         "description": (
             "Finish the trace. Refused while a step has no proven cause and the "
             "cost and wall ceilings have not been hit."
@@ -743,6 +758,7 @@ def _expand_tool() -> Dict[str, Any]:
     return {
         "id": "expand",
         "kind": "local",
+        "effect": effect_of("expand"),
         "description": "Return the raw payloads behind evidence ids from this run's own record.",
         "parameters": {
             "type": "object",

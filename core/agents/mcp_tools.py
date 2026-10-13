@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,22 @@ class MCPFailure(Exception):
         super().__init__(detail)
         self.kind = kind
         self.detail = detail
+
+
+# The gated tool a person approved, for the duration of that one call. Bound by
+# /internal/tools/invoke once it has checked the approval; this executor is the
+# only path to an MCP server, so a gated tool reached any other way is refused
+# here rather than trusted to have been checked upstream.
+_approved: ContextVar[Optional[str]] = ContextVar("approved_gated_tool", default=None)
+
+
+@contextmanager
+def approved_call(tool: str) -> Iterator[None]:
+    token = _approved.set(tool)
+    try:
+        yield
+    finally:
+        _approved.reset(token)
 
 
 # Tool names arrive flattened as {server}_{tool}, which registry.get_all_tools
@@ -113,6 +131,16 @@ async def execute_mcp_tool(
     if split is None:
         return None, False
     server, tool = split
+
+    from core.llm.tool_effects import classify
+
+    effect = classify(tool_name)
+    if effect.gated and _approved.get() != tool_name:
+        raise MCPFailure(
+            "refused",
+            f"{tool_name} is a {effect.effect} tool and runs only once a person "
+            "approves the call",
+        )
 
     # Checked against what the server actually reports, so a name that merely
     # looks right does not open a call the far side will refuse.

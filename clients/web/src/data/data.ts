@@ -9,6 +9,7 @@ export type ConsoleScreenKey =
   | 'metrics'
   | 'analytics'
   | 'decisions'
+  | 'scorecard'
   | 'workflows'
   | 'autoops'
   | 'health'
@@ -32,6 +33,7 @@ export const NAV: [IconName, string, ConsoleScreenKey | null, NavGate?][] = [
   ['bars', 'Case Metrics', 'metrics'],
   ['pie', 'Analytics', 'analytics'],
   ['brain', 'AI Decisions', 'decisions'],
+  ['target', 'Scorecard', 'scorecard'],
   ['flow', 'Agents & workflows', 'workflows'],
   ['bot', 'Auto Ops', 'autoops'],
   ['chart', 'Health', 'health'],
@@ -108,6 +110,7 @@ export const TITLES: Record<ConsoleScreenKey, [string, string]> = {
   metrics: ['Case Metrics', 'Real-time SOC performance analytics'],
   analytics: ['Analytics Dashboard', 'Security operations analytics'],
   decisions: ['AI Decisions', 'Review and provide feedback for AI decisions'],
+  scorecard: ['Scorecard', 'How often verdicts handled without a person were wrong, measured by sampled reviews'],
   workflows: ['Agents & workflows', 'How AutoSecOps works a case. Workflows are the plays, agents do the work, skills are what agents know how to do, and tool permissions decide what they may change on their own.'],
   autoops: ['Auto Ops', 'Autonomous operations — master orchestrator and sub-agent investigations'],
   health: ['Health', 'Operational health — LLM spend, approvals waiting, recent workflow runs, probe scores'],

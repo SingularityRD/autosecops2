@@ -1753,6 +1753,31 @@ export interface paths {
         patch: operations["patch_api_cases_case_id"];
         trace?: never;
     };
+    "/api/cases/{case_id}/actions/timeline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Case Action Timeline
+         * @description Response actions on this case, newest first, each with its lifecycle.
+         *
+         *     Read-only: proposed (by whom, the approval gate's rule), approved (and the
+         *     second approver), executed, verified, expiry, reversal, and a summary of
+         *     the before/after state. ``can_revert`` reports the row's state; reverting
+         *     is ``POST /api/response/actions/{id}/revert`` and its own permission.
+         */
+        get: operations["get_api_cases_case_id_actions_timeline"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cases/{case_id}/activities": {
         parameters: {
             query?: never;
@@ -2161,6 +2186,73 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cases/{case_id}/regulatory/clocks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Regulatory Clocks
+         * @description Every DORA and NIS2 clock: due_at, remaining seconds, overdue, and what binds it.
+         */
+        get: operations["get_api_cases_case_id_regulatory_clocks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/regulatory/drafts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Regulatory Drafts */
+        get: operations["get_api_cases_case_id_regulatory_drafts"];
+        put?: never;
+        /**
+         * Generate Regulatory Draft
+         * @description Draft a report from the case's evidence pack; every line cites a pack item.
+         *
+         *     Deterministic template only: no model is called from this route.
+         */
+        post: operations["post_api_cases_case_id_regulatory_drafts"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/regulatory/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Regulatory Events
+         * @description The append-only history of start instants, oldest first, with its chain check.
+         */
+        get: operations["get_api_cases_case_id_regulatory_events"];
+        put?: never;
+        /**
+         * Record Regulatory Instant
+         * @description Set, change or clear one start instant. A change or clear needs a reason.
+         */
+        post: operations["post_api_cases_case_id_regulatory_events"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cases/{case_id}/relationships": {
         parameters: {
             query?: never;
@@ -2406,6 +2498,24 @@ export interface paths {
          */
         get: operations["get_api_claude_models"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/compliance/regulatory-clocks/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Regulatory Config */
+        get: operations["get_api_compliance_regulatory-clocks_config"];
+        /** Put Regulatory Config */
+        put: operations["put_api_compliance_regulatory-clocks_config"];
         post?: never;
         delete?: never;
         options?: never;
@@ -3939,7 +4049,7 @@ export interface paths {
          * @description Receive a batch of VStrike-enriched findings.
          *
          *     For each finding:
-         *       - If it exists in Vigil, merge VStrike enrichment into
+         *       - If it exists in AutoSecOps, merge VStrike enrichment into
          *         `entity_context["vstrike"]` (read-modify-write to avoid clobbering
          *         other keys) and update MITRE fields if supplied.
          *       - Otherwise, create it with `data_source="vstrike"` if enough fields
@@ -4272,7 +4382,7 @@ export interface paths {
         };
         /**
          * Get Surface
-         * @description Whether Vigil's own tools are reachable, and whether anything can reach them.
+         * @description Whether AutoSecOps' own tools are reachable, and whether anything can reach them.
          */
         get: operations["get_api_mcp_surface"];
         /**
@@ -4681,6 +4791,86 @@ export interface paths {
          * @description One alert in the feed item's shape, including noise-marked and older ones.
          */
         get: operations["get_api_overview_alerts_finding_id"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/qa/samples": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Samples
+         * @description The review queue (``status=pending``) or past reviews, oldest first.
+         */
+        get: operations["get_api_qa_samples"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/qa/samples/draw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Draw Samples
+         * @description Draw per-category simple random samples (and optional risk-weighted extras).
+         */
+        post: operations["post_api_qa_samples_draw"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/qa/samples/{sample_id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Review Sample
+         * @description Record whether the AI's benign closure was right, and if not what was.
+         */
+        post: operations["post_api_qa_samples_sample_id_review"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/qa/scorecard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Scorecard
+         * @description Per category: reviews, misses and the FN upper bound against the target.
+         */
+        get: operations["get_api_qa_scorecard"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5296,7 +5486,7 @@ export interface paths {
         put?: never;
         /**
          * Init Schema
-         * @description Provision Vigil's tables into an **empty** target database.
+         * @description Provision the AutoSecOps tables into an **empty** target database.
          *
          *     Split out of /reconnect, and deliberately narrow. ``create_all`` is
          *     ``checkfirst=True``: it creates what's missing and silently skips tables
@@ -6458,95 +6648,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/webhooks/": {
+    "/api/webhook-endpoints": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /**
-         * List Webhooks
-         * @description List all configured webhooks.
-         *
-         *     Returns:
-         *         List of webhooks
-         */
-        get: operations["get_api_webhooks"];
+        /** List Endpoints */
+        get: operations["get_api_webhook-endpoints"];
         put?: never;
-        /**
-         * Create Webhook
-         * @description Create a new webhook.
-         *
-         *     Args:
-         *         data: Webhook configuration
-         *
-         *     Returns:
-         *         Created webhook
-         */
-        post: operations["post_api_webhooks"];
+        /** Create Endpoint */
+        post: operations["post_api_webhook-endpoints"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/webhooks/{webhook_id}": {
+    "/api/webhook-endpoints/{endpoint_id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        /**
-         * Update Webhook
-         * @description Update a webhook.
-         *
-         *     Args:
-         *         webhook_id: Webhook ID
-         *         data: Update data
-         *
-         *     Returns:
-         *         Updated webhook
-         */
-        put: operations["put_api_webhooks_webhook_id"];
+        /** Get Endpoint */
+        get: operations["get_api_webhook-endpoints_endpoint_id"];
+        put?: never;
         post?: never;
-        /**
-         * Delete Webhook
-         * @description Delete a webhook.
-         *
-         *     Args:
-         *         webhook_id: Webhook ID
-         *
-         *     Returns:
-         *         Success status
-         */
-        delete: operations["delete_api_webhooks_webhook_id"];
+        /** Delete Endpoint */
+        delete: operations["delete_api_webhook-endpoints_endpoint_id"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** Update Endpoint */
+        patch: operations["patch_api_webhook-endpoints_endpoint_id"];
         trace?: never;
     };
-    "/api/webhooks/{webhook_id}/deliveries": {
+    "/api/webhook-endpoints/{endpoint_id}/deliveries": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Webhook Deliveries
-         * @description Get webhook delivery history.
-         *
-         *     Args:
-         *         webhook_id: Webhook ID
-         *         limit: Maximum deliveries to return
-         *
-         *     Returns:
-         *         Delivery history
-         */
-        get: operations["get_api_webhooks_webhook_id_deliveries"];
+        /** List Deliveries */
+        get: operations["get_api_webhook-endpoints_endpoint_id_deliveries"];
         put?: never;
         post?: never;
         delete?: never;
@@ -6555,7 +6702,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/webhooks/{webhook_id}/test": {
+    "/api/webhook-endpoints/{endpoint_id}/deliveries/{delivery_id}/retry": {
         parameters: {
             query?: never;
             header?: never;
@@ -6565,16 +6712,30 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Test Webhook
-         * @description Test a webhook by sending a test payload.
-         *
-         *     Args:
-         *         webhook_id: Webhook ID
-         *
-         *     Returns:
-         *         Test result
+         * Retry Delivery
+         * @description Requeue a failed or dead delivery; the daemon sends it on its next pass.
          */
-        post: operations["post_api_webhooks_webhook_id_test"];
+        post: operations["post_api_webhook-endpoints_endpoint_id_deliveries_delivery_id_retry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/webhook-endpoints/{endpoint_id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Endpoint
+         * @description Send a signed ``webhook.test`` event now and report what happened.
+         */
+        post: operations["post_api_webhook-endpoints_endpoint_id_test"];
         delete?: never;
         options?: never;
         head?: never;
@@ -7382,6 +7543,13 @@ export interface components {
             /** Enabled */
             enabled: boolean;
         };
+        /** Approval */
+        Approval: {
+            /** Checkpoint Id */
+            checkpoint_id: string;
+            /** Run Id */
+            run_id: string;
+        };
         /** ApprovalActionResult */
         ApprovalActionResult: {
             action: components["schemas"]["PendingActionResponse"];
@@ -7567,6 +7735,143 @@ export interface components {
         ByStatusResponse: {
             /** Status Breakdown */
             status_breakdown?: components["schemas"]["StatusBreakdownRow"][];
+        };
+        /**
+         * CaseActionEvent
+         * @description One dated step of an action's lifecycle.
+         *
+         *     ``kind``: proposed, approved, rejected, executed, failed, verified,
+         *     reversed. ``detail`` is the rejection reason, execution message or error,
+         *     or the verify status.
+         */
+        CaseActionEvent: {
+            /** Actor */
+            actor?: string | null;
+            /** At */
+            at?: string | null;
+            /** Detail */
+            detail?: string | null;
+            /** Kind */
+            kind: string;
+        };
+        /** CaseActionExecution */
+        CaseActionExecution: {
+            /** Error */
+            error?: string | null;
+            /** Message */
+            message?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Success */
+            success?: boolean | null;
+        };
+        /**
+         * CaseActionPolicy
+         * @description What the approval gate recorded: whether a person had to approve, and
+         *     the decision rule stored on the reason (``field=value [met|not met (x)]``).
+         */
+        CaseActionPolicy: {
+            /** Decision Rule */
+            decision_rule?: string | null;
+            /** Requires Approval */
+            requires_approval: boolean;
+        };
+        /**
+         * CaseActionStateRow
+         * @description One key of an action's observed before/after state, value as text.
+         */
+        CaseActionStateRow: {
+            /** Key */
+            key: string;
+            /** Value */
+            value: string;
+        };
+        /**
+         * CaseActionTimelineItem
+         * @description A response action on the case and its lifecycle (W0.5 columns).
+         *
+         *     ``can_revert`` is the row's state only (executed, reversible, not yet
+         *     reversed, not itself a revert); whether the caller may revert is RBAC's.
+         */
+        CaseActionTimelineItem: {
+            /** Action Id */
+            action_id: string;
+            /** Action Type */
+            action_type: string;
+            /** After State */
+            after_state?: components["schemas"]["CaseActionStateRow"][] | null;
+            /** Approved At */
+            approved_at?: string | null;
+            /** Approved By */
+            approved_by?: string | null;
+            /** Before State */
+            before_state?: components["schemas"]["CaseActionStateRow"][] | null;
+            /** Can Revert */
+            can_revert: boolean;
+            /** Confidence */
+            confidence?: number | null;
+            /**
+             * Events
+             * @default []
+             */
+            events: components["schemas"]["CaseActionEvent"][];
+            /** Executed At */
+            executed_at?: string | null;
+            execution?: components["schemas"]["CaseActionExecution"] | null;
+            /** Expires At */
+            expires_at?: string | null;
+            policy: components["schemas"]["CaseActionPolicy"];
+            /** Proposed At */
+            proposed_at?: string | null;
+            /** Proposed By */
+            proposed_by?: string | null;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /** Rejection Reason */
+            rejection_reason?: string | null;
+            /** Reverse Of */
+            reverse_of?: string | null;
+            /** Reversed At */
+            reversed_at?: string | null;
+            /** Reversibility */
+            reversibility: string;
+            /** Reverted By */
+            reverted_by?: string | null;
+            /** Second Approver */
+            second_approver?: string | null;
+            /** Status */
+            status: string;
+            /** Target */
+            target: string;
+            /** Title */
+            title: string;
+            /** Verified At */
+            verified_at?: string | null;
+            /** Verify Status */
+            verify_status?: string | null;
+        };
+        /**
+         * CaseActionTimelineResponse
+         * @description Newest first. ``truncated`` when the case had more than the cap.
+         */
+        CaseActionTimelineResponse: {
+            /**
+             * Actions
+             * @default []
+             */
+            actions: components["schemas"]["CaseActionTimelineItem"][];
+            /** Case Id */
+            case_id: string;
+            /** Count */
+            count: number;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
         };
         /** CaseCloseResponse */
         CaseCloseResponse: {
@@ -8427,6 +8732,17 @@ export interface components {
             /** User */
             user: string;
         };
+        /** ChainResponse */
+        ChainResponse: {
+            /** Broken At */
+            broken_at?: number | null;
+            /** Ok */
+            ok: boolean;
+            /** Rows */
+            rows?: number | null;
+            /** Why */
+            why?: string | null;
+        };
         /**
          * ChangePasswordRequest
          * @description Change password request.
@@ -8509,6 +8825,65 @@ export interface components {
         ClaudeConfig: {
             /** Api Key */
             api_key: string;
+        };
+        /** ClockEventResponse */
+        ClockEventResponse: {
+            /** Actor */
+            actor: string;
+            /** Instant */
+            instant: string;
+            /** Prev Hash */
+            prev_hash: string;
+            /** Previous Value */
+            previous_value?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /** Recorded At */
+            recorded_at: string;
+            /** Regime */
+            regime: string;
+            /** Row Hash */
+            row_hash: string;
+            /** Seq */
+            seq: number;
+            /** Value */
+            value?: string | null;
+        };
+        /** ClockEventsResponse */
+        ClockEventsResponse: {
+            chain: components["schemas"]["ChainResponse"];
+            /** Events */
+            events: components["schemas"]["ClockEventResponse"][];
+        };
+        /** ClockStatusResponse */
+        ClockStatusResponse: {
+            /** Bound To */
+            bound_to?: string | null;
+            /** Due At */
+            due_at?: string | null;
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Met At */
+            met_at?: string | null;
+            /** Met By */
+            met_by: string;
+            /** Overdue */
+            overdue: boolean;
+            /** Regime */
+            regime: string;
+            /** Remaining Seconds */
+            remaining_seconds?: number | null;
+            /** Started At */
+            started_at?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "not_started" | "running" | "overdue" | "met" | "met_late";
+            /** Waiting For */
+            waiting_for?: string | null;
         };
         /**
          * ClosureCategory
@@ -8880,6 +9255,43 @@ export interface components {
              */
             decisions: components["schemas"]["Decision"][];
         };
+        /** DeleteResult */
+        DeleteResult: {
+            /** Deleted */
+            deleted: boolean;
+        };
+        /** DeliveryList */
+        DeliveryList: {
+            /** Deliveries */
+            deliveries: components["schemas"]["DeliveryOut"][];
+        };
+        /** DeliveryOut */
+        DeliveryOut: {
+            /** Attempts */
+            attempts: number;
+            /** Created At */
+            created_at?: string | null;
+            /** Delivered At */
+            delivered_at?: string | null;
+            /** Endpoint Id */
+            endpoint_id: string;
+            /** Event Id */
+            event_id: string;
+            /** Event Type */
+            event_type: string;
+            /** Id */
+            id: number;
+            /** Last Attempt At */
+            last_attempt_at?: string | null;
+            /** Last Error */
+            last_error?: string | null;
+            /** Next Attempt At */
+            next_attempt_at?: string | null;
+            /** Response Status */
+            response_status?: number | null;
+            /** Status */
+            status: string;
+        };
         /**
          * DemoModeConfig
          * @description Demo mode configuration.
@@ -8925,6 +9337,167 @@ export interface components {
             directive_id: string;
             /** Kind */
             kind: string;
+        };
+        /** DraftLine */
+        DraftLine: {
+            /** Cites */
+            cites: string[];
+            /** Text */
+            text: string;
+        };
+        /** DraftResponse */
+        DraftResponse: {
+            /** Case Id */
+            case_id: string;
+            /** Cited Ids */
+            cited_ids: string[];
+            /** Created At */
+            created_at: string;
+            /** Created By */
+            created_by: string;
+            /** Draft Id */
+            draft_id: string;
+            /** Fallback Reason */
+            fallback_reason?: string | null;
+            /**
+             * Generator
+             * @enum {string}
+             */
+            generator: "template" | "llm";
+            /** Kind */
+            kind: string;
+            /** Markdown */
+            markdown: string;
+            /** Pack Digest */
+            pack_digest: string;
+            /** Pack Size */
+            pack_size: number;
+            /** Regime */
+            regime: string;
+            /** Sections */
+            sections: components["schemas"]["DraftSection"][];
+            /** Title */
+            title: string;
+            /** To Complete */
+            to_complete: string[];
+        };
+        /** DraftSection */
+        DraftSection: {
+            /** Heading */
+            heading: string;
+            /** Lines */
+            lines: components["schemas"]["DraftLine"][];
+        };
+        /** DraftsResponse */
+        DraftsResponse: {
+            /** Drafts */
+            drafts: components["schemas"]["DraftResponse"][];
+        };
+        /** DurationModel */
+        DurationModel: {
+            /**
+             * Hours
+             * @default 0
+             */
+            hours: number;
+            /**
+             * Months
+             * @default 0
+             */
+            months: number;
+        };
+        /** EndpointCreate */
+        EndpointCreate: {
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /**
+             * Event Types
+             * @description Subscribed event types; empty means every type.
+             */
+            event_types?: string[];
+            /** Name */
+            name: string;
+            /**
+             * Secret
+             * @description HMAC signing secret. Omit to have one generated.
+             */
+            secret?: string | null;
+            /** Url */
+            url: string;
+        };
+        /** EndpointCreated */
+        EndpointCreated: {
+            /** Created At */
+            created_at?: string | null;
+            /** Created By */
+            created_by?: string | null;
+            /** Enabled */
+            enabled: boolean;
+            /** Event Types */
+            event_types: string[];
+            /** Has Secret */
+            has_secret: boolean;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Secret
+             * @description The generated signing secret. Shown once; store it now.
+             */
+            secret?: string | null;
+            /** Tenant Id */
+            tenant_id: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Url */
+            url: string;
+        };
+        /** EndpointList */
+        EndpointList: {
+            /** Endpoints */
+            endpoints: components["schemas"]["EndpointOut"][];
+            /** Event Types */
+            event_types: string[];
+        };
+        /** EndpointOut */
+        EndpointOut: {
+            /** Created At */
+            created_at?: string | null;
+            /** Created By */
+            created_by?: string | null;
+            /** Enabled */
+            enabled: boolean;
+            /** Event Types */
+            event_types: string[];
+            /** Has Secret */
+            has_secret: boolean;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Tenant Id */
+            tenant_id: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Url */
+            url: string;
+        };
+        /** EndpointUpdate */
+        EndpointUpdate: {
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Event Types */
+            event_types?: string[] | null;
+            /** Name */
+            name?: string | null;
+            /** Secret */
+            secret?: string | null;
+            /** Url */
+            url?: string | null;
         };
         /**
          * EntityContext
@@ -9307,6 +9880,19 @@ export interface components {
             /** Feedback */
             feedback?: string | null;
         };
+        /** GenerateDraftRequest */
+        GenerateDraftRequest: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "initial" | "intermediate" | "final" | "early_warning" | "notification";
+            /**
+             * Regime
+             * @enum {string}
+             */
+            regime: "dora" | "nis2";
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -9429,6 +10015,19 @@ export interface components {
             message: string;
             /** Success */
             success: boolean;
+        };
+        /** InstantSourceResponse */
+        InstantSourceResponse: {
+            /** Actor */
+            actor: string;
+            /** Reason */
+            reason?: string | null;
+            /** Recorded At */
+            recorded_at?: string | null;
+            /** Seq */
+            seq: number;
+            /** Value */
+            value?: string | null;
         };
         /** IntakeLaunchResponse */
         IntakeLaunchResponse: {
@@ -9558,6 +10157,7 @@ export interface components {
         InvokeRequest: {
             /** Agent Id */
             agent_id?: string | null;
+            approval?: components["schemas"]["Approval"] | null;
             /** Args */
             args?: {
                 [key: string]: unknown;
@@ -10215,6 +10815,192 @@ export interface components {
             /** Priority */
             priority: string;
         };
+        /** QACategoryDraw */
+        QACategoryDraw: {
+            /** Drawn */
+            drawn: number;
+            /** Inclusion Probability */
+            inclusion_probability: number;
+            /**
+             * Population
+             * @description Unsampled auto-closed decisions in the window.
+             */
+            population: number;
+        };
+        /** QACategoryScore */
+        QACategoryScore: {
+            /**
+             * Category
+             * @enum {string}
+             */
+            category: "phishing" | "malware" | "identity" | "network" | "cloud" | "other";
+            /** Disagreements */
+            disagreements: number;
+            /**
+             * Fn Upper Bound
+             * @description One-sided Clopper-Pearson upper bound on the FN rate.
+             */
+            fn_upper_bound: number;
+            /**
+             * Misses
+             * @description Reviewed benign closures that were malicious.
+             */
+            misses: number;
+            /** Pending */
+            pending: number;
+            /**
+             * Reviewed
+             * @description Simple-random samples reviewed.
+             */
+            reviewed: number;
+            /**
+             * Reviews Needed
+             * @description Further agreeing reviews before the bound meets the target.
+             */
+            reviews_needed?: number | null;
+            risk_weighted: components["schemas"]["QARiskWeightedCounts"];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "meets" | "not_met" | "no_data";
+        };
+        /** QADrawRequest */
+        QADrawRequest: {
+            /**
+             * Days
+             * @description Window of decisions to draw from.
+             * @default 7
+             */
+            days: number;
+            /**
+             * Per Category
+             * @description Simple random sample size per category.
+             * @default 30
+             */
+            per_category: number;
+            /**
+             * Risk Weighted Extra
+             * @description Expected number of risk-weighted extras. Never enter the bound.
+             * @default 0
+             */
+            risk_weighted_extra: number;
+            /**
+             * Seed
+             * @description Seed, for a reproducible draw.
+             */
+            seed?: number | null;
+        };
+        /** QADrawResponse */
+        QADrawResponse: {
+            /** Categories */
+            categories: {
+                [key: string]: components["schemas"]["QACategoryDraw"];
+            };
+            risk_weighted: components["schemas"]["QARiskWeightedDraw"];
+        };
+        /** QAReviewRequest */
+        QAReviewRequest: {
+            /**
+             * Agrees
+             * @description Whether the AI's verdict was right.
+             */
+            agrees: boolean;
+            /** Notes */
+            notes?: string | null;
+            /**
+             * Review Verdict
+             * @description The correct verdict. Required when agrees is false.
+             */
+            review_verdict?: ("malicious" | "benign" | "inconclusive") | null;
+        };
+        /** QARiskWeightedCounts */
+        QARiskWeightedCounts: {
+            /** Misses */
+            misses: number;
+            /** Pending */
+            pending: number;
+            /** Reviewed */
+            reviewed: number;
+        };
+        /** QARiskWeightedDraw */
+        QARiskWeightedDraw: {
+            /** Drawn */
+            drawn: number;
+            /** Population */
+            population: number;
+        };
+        /** QASample */
+        QASample: {
+            /** Agent Id */
+            agent_id?: string | null;
+            /** Agrees */
+            agrees?: boolean | null;
+            /** Ai Confidence */
+            ai_confidence?: number | null;
+            /** Ai Verdict */
+            ai_verdict: string;
+            /** Case Id */
+            case_id?: string | null;
+            /** Category */
+            category: string;
+            /** Decided At */
+            decided_at?: string | null;
+            /** Decision Type */
+            decision_type?: string | null;
+            /** Finding Id */
+            finding_id?: string | null;
+            /** Id */
+            id: number;
+            /** Inclusion Probability */
+            inclusion_probability: number;
+            /** Notes */
+            notes?: string | null;
+            /** Reasoning */
+            reasoning?: string | null;
+            /** Recommended Action */
+            recommended_action?: string | null;
+            /** Review Verdict */
+            review_verdict?: ("malicious" | "benign" | "inconclusive") | null;
+            /** Reviewed At */
+            reviewed_at?: string | null;
+            /** Reviewer */
+            reviewer?: string | null;
+            /**
+             * Sampled At
+             * Format: date-time
+             */
+            sampled_at: string;
+            /**
+             * Sampling Kind
+             * @enum {string}
+             */
+            sampling_kind: "simple_random" | "risk_weighted";
+            /** Subject Id */
+            subject_id: string;
+            /** Subject Kind */
+            subject_kind: string;
+            /** Verdict */
+            verdict: {
+                [key: string]: unknown;
+            };
+        };
+        /** QASampleList */
+        QASampleList: {
+            /** Count */
+            count: number;
+            /** Samples */
+            samples: components["schemas"]["QASample"][];
+        };
+        /** QAScorecardResponse */
+        QAScorecardResponse: {
+            /** Categories */
+            categories: components["schemas"]["QACategoryScore"][];
+            /** Confidence */
+            confidence: number;
+            /** Target */
+            target: number;
+        };
         /**
          * RecalculateCostRequest
          * @description Body for POST /analytics/recalculate-cost.
@@ -10245,6 +11031,27 @@ export interface components {
             /** Start Time */
             start_time?: string | null;
         };
+        /** RecordInstantRequest */
+        RecordInstantRequest: {
+            /** Instant */
+            instant: string;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Regime
+             * @enum {string}
+             */
+            regime: "dora" | "nis2";
+            /** Value */
+            value?: string | null;
+        };
+        /** RecordInstantResponse */
+        RecordInstantResponse: {
+            /** Changed */
+            changed: boolean;
+            event?: components["schemas"]["ClockEventResponse"] | null;
+            status: components["schemas"]["RegulatoryStatusResponse"];
+        };
         /**
          * RecoveryCodesResponse
          * @description One-time MFA recovery codes (shown once, cannot be retrieved again).
@@ -10266,6 +11073,54 @@ export interface components {
         RefreshTokenRequest: {
             /** Refresh Token */
             refresh_token?: string | null;
+        };
+        /** RegulatoryConfigResponse */
+        RegulatoryConfigResponse: {
+            /** Defaults */
+            defaults: {
+                [key: string]: components["schemas"]["DurationModel"];
+            };
+            /** Durations */
+            durations: {
+                [key: string]: components["schemas"]["DurationModel"];
+            };
+            /** Timezone */
+            timezone: string;
+        };
+        /** RegulatoryConfigUpdate */
+        RegulatoryConfigUpdate: {
+            /** Durations */
+            durations?: {
+                [key: string]: components["schemas"]["DurationModel"];
+            };
+            /** Timezone */
+            timezone: string;
+        };
+        /** RegulatoryStatusResponse */
+        RegulatoryStatusResponse: {
+            /** Case Id */
+            case_id: string;
+            chain: components["schemas"]["ChainResponse"];
+            /** Clocks */
+            clocks: components["schemas"]["ClockStatusResponse"][];
+            /** Durations */
+            durations: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            /** Events */
+            events: number;
+            /** Instants */
+            instants: {
+                [key: string]: {
+                    [key: string]: components["schemas"]["InstantSourceResponse"];
+                };
+            };
+            /** Now */
+            now: string;
+            /** Timezone */
+            timezone: string;
         };
         /** RejectRequest */
         RejectRequest: {
@@ -10973,6 +11828,17 @@ export interface components {
              */
             summary: string;
         };
+        /** TestSendResult */
+        TestSendResult: {
+            /** Delivered */
+            delivered: boolean;
+            /** Error */
+            error?: string | null;
+            /** Outcome */
+            outcome: string;
+            /** Status Code */
+            status_code?: number | null;
+        };
         /**
          * ThemeConfig
          * @description Theme configuration.
@@ -11122,7 +11988,7 @@ export interface components {
          * VStrikeFinding
          * @description A single finding pushed from VStrike.
          *
-         *     `finding_id` must match a DeepTempo LogLM finding already known to Vigil
+         *     `finding_id` must match a DeepTempo LogLM finding already known to AutoSecOps
          *     (update path). If it does not exist and `timestamp` + `anomaly_score` are
          *     supplied, a new finding is created with `data_source="vstrike"`.
          */
@@ -11251,41 +12117,6 @@ export interface components {
             } | null;
             /** User Id */
             user_id: string;
-        };
-        /**
-         * WebhookCreate
-         * @description Create webhook.
-         */
-        WebhookCreate: {
-            /**
-             * Active
-             * @default true
-             */
-            active: boolean;
-            /** Events */
-            events: string[];
-            /** Name */
-            name: string;
-            /** Secret */
-            secret?: string | null;
-            /** Url */
-            url: string;
-        };
-        /**
-         * WebhookUpdate
-         * @description Update webhook.
-         */
-        WebhookUpdate: {
-            /** Active */
-            active?: boolean | null;
-            /** Events */
-            events?: string[] | null;
-            /** Name */
-            name?: string | null;
-            /** Secret */
-            secret?: string | null;
-            /** Url */
-            url?: string | null;
         };
         /** WorkflowDetailResponse */
         WorkflowDetailResponse: {
@@ -14378,6 +15209,39 @@ export interface operations {
             };
         };
     };
+    get_api_cases_case_id_actions_timeline: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseActionTimelineResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     post_api_cases_case_id_activities: {
         parameters: {
             query?: never;
@@ -15163,6 +16027,179 @@ export interface operations {
             };
         };
     };
+    get_api_cases_case_id_regulatory_clocks: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegulatoryStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_cases_case_id_regulatory_drafts: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_cases_case_id_regulatory_drafts: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerateDraftRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_cases_case_id_regulatory_events: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClockEventsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_cases_case_id_regulatory_events: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordInstantRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordInstantResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_api_cases_case_id_relationships: {
         parameters: {
             query?: never;
@@ -15671,6 +16708,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_compliance_regulatory-clocks_config": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegulatoryConfigResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "put_api_compliance_regulatory-clocks_config": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegulatoryConfigUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegulatoryConfigResponse"];
                 };
             };
             /** @description Validation Error */
@@ -19665,6 +20768,148 @@ export interface operations {
             };
         };
     };
+    get_api_qa_samples: {
+        parameters: {
+            query?: {
+                status?: "pending" | "reviewed" | "all";
+                category?: ("phishing" | "malware" | "identity" | "network" | "cloud" | "other") | null;
+                sampling_kind?: ("simple_random" | "risk_weighted") | null;
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QASampleList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_qa_samples_draw: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QADrawRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QADrawResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_qa_samples_sample_id_review: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                sample_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QAReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QASample"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_qa_scorecard: {
+        parameters: {
+            query?: {
+                target?: number;
+                confidence?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QAScorecardResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_api_reasoning_investigation_investigation_id_interactions: {
         parameters: {
             query?: {
@@ -22648,7 +23893,7 @@ export interface operations {
             };
         };
     };
-    get_api_webhooks: {
+    "get_api_webhook-endpoints": {
         parameters: {
             query?: never;
             header?: {
@@ -22665,7 +23910,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["EndpointList"];
                 };
             };
             /** @description Validation Error */
@@ -22679,7 +23924,7 @@ export interface operations {
             };
         };
     };
-    post_api_webhooks: {
+    "post_api_webhook-endpoints": {
         parameters: {
             query?: never;
             header?: {
@@ -22690,17 +23935,17 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["WebhookCreate"];
+                "application/json": components["schemas"]["EndpointCreate"];
             };
         };
         responses: {
             /** @description Successful Response */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["EndpointCreated"];
                 };
             };
             /** @description Validation Error */
@@ -22714,51 +23959,14 @@ export interface operations {
             };
         };
     };
-    put_api_webhooks_webhook_id: {
+    "get_api_webhook-endpoints_endpoint_id": {
         parameters: {
             query?: never;
             header?: {
                 authorization?: string | null;
             };
             path: {
-                webhook_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["WebhookUpdate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_api_webhooks_webhook_id: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                webhook_id: string;
+                endpoint_id: string;
             };
             cookie?: never;
         };
@@ -22770,7 +23978,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["EndpointOut"];
                 };
             };
             /** @description Validation Error */
@@ -22784,16 +23992,87 @@ export interface operations {
             };
         };
     };
-    get_api_webhooks_webhook_id_deliveries: {
+    "delete_api_webhook-endpoints_endpoint_id": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                endpoint_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "patch_api_webhook-endpoints_endpoint_id": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                endpoint_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EndpointUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EndpointOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_webhook-endpoints_endpoint_id_deliveries": {
         parameters: {
             query?: {
                 limit?: number;
+                status?: string | null;
             };
             header?: {
                 authorization?: string | null;
             };
             path: {
-                webhook_id: string;
+                endpoint_id: string;
             };
             cookie?: never;
         };
@@ -22805,7 +24084,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["DeliveryList"];
                 };
             };
             /** @description Validation Error */
@@ -22819,14 +24098,15 @@ export interface operations {
             };
         };
     };
-    post_api_webhooks_webhook_id_test: {
+    "post_api_webhook-endpoints_endpoint_id_deliveries_delivery_id_retry": {
         parameters: {
             query?: never;
             header?: {
                 authorization?: string | null;
             };
             path: {
-                webhook_id: string;
+                endpoint_id: string;
+                delivery_id: number;
             };
             cookie?: never;
         };
@@ -22838,7 +24118,40 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["DeliveryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "post_api_webhook-endpoints_endpoint_id_test": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                endpoint_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestSendResult"];
                 };
             };
             /** @description Validation Error */
