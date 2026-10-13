@@ -336,14 +336,21 @@ def test_the_dispatcher_lists_tier_released_rows_and_no_other_unpersoned_row(
                     parameters=params,
                 )
             )
-    listed = {
-        a.action_id
-        for a in ApprovalService().list_actions(
-            status=ActionStatus.APPROVED,
-            action_types={"waf_block"},
-            undispatched=True,
-        )
-    }
+    try:
+        listed = {
+            a.action_id
+            for a in ApprovalService().list_actions(
+                status=ActionStatus.APPROVED,
+                action_types={"waf_block"},
+                undispatched=True,
+            )
+        }
+    finally:
+        # Approved rows left behind would be dispatched by later tests.
+        with unit_of_work() as session:
+            session.query(ApprovalAction).filter(
+                ApprovalAction.action_id.in_(list(cases))
+            ).delete(synchronize_session=False)
     assert f"auto-{tag}" in listed
     assert not ({f"held-{tag}", f"conf-{tag}", f"odd-{tag}"} & listed)
 
