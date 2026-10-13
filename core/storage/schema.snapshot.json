@@ -205,6 +205,68 @@
       "nullable": true
     }
   },
+  "alert_lane_decisions": {
+    "decided_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "deferred_verdict": {
+      "data_type": "boolean",
+      "nullable": false
+    },
+    "degraded_from": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "factors": {
+      "data_type": "jsonb",
+      "nullable": false
+    },
+    "finding_id": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "id": {
+      "data_type": "bigint",
+      "nullable": false
+    },
+    "lane": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "model": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "outcome": {
+      "data_type": "jsonb",
+      "nullable": true
+    },
+    "reason": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "risk": {
+      "data_type": "numeric(4,3)",
+      "nullable": false
+    },
+    "rule_id": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "rule_kind": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "tenant_id": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "verdict_run_id": {
+      "data_type": "text",
+      "nullable": true
+    }
+  },
   "alert_routes": {
     "created_at": {
       "data_type": "timestamp with time zone",
@@ -2814,6 +2876,128 @@
     },
     "verdict": {
       "data_type": "jsonb",
+      "nullable": false
+    }
+  },
+  "regulatory_clock_config": {
+    "durations": {
+      "data_type": "jsonb",
+      "nullable": false
+    },
+    "tenant_id": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "timezone": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "updated_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "updated_by": {
+      "data_type": "text",
+      "nullable": false
+    }
+  },
+  "regulatory_clock_events": {
+    "actor": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "case_id": {
+      "data_type": "character varying(50)",
+      "nullable": false
+    },
+    "id": {
+      "data_type": "bigint",
+      "nullable": false
+    },
+    "instant": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "prev_hash": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "previous_value": {
+      "data_type": "timestamp with time zone",
+      "nullable": true
+    },
+    "reason": {
+      "data_type": "text",
+      "nullable": true
+    },
+    "recorded_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "regime": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "row_hash": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "seq": {
+      "data_type": "integer",
+      "nullable": false
+    },
+    "tenant_id": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "value": {
+      "data_type": "timestamp with time zone",
+      "nullable": true
+    }
+  },
+  "regulatory_report_drafts": {
+    "body": {
+      "data_type": "jsonb",
+      "nullable": false
+    },
+    "case_id": {
+      "data_type": "character varying(50)",
+      "nullable": false
+    },
+    "cited_ids": {
+      "data_type": "jsonb",
+      "nullable": false
+    },
+    "created_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    },
+    "created_by": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "draft_id": {
+      "data_type": "uuid",
+      "nullable": false
+    },
+    "generator": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "kind": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "pack_digest": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "regime": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "tenant_id": {
+      "data_type": "text",
       "nullable": false
     }
   },

@@ -25,6 +25,11 @@ Break reasons:
 ``history_unchained`` an update or delete chain row has no live earlier chain
                     row for its key (no insert/snapshot, or only one before a
                     delete or TRUNCATE): the row was written outside the chain
+``history_deleted`` an insert chain row has a live earlier chain row for its
+                    key: the row was deleted (or the table truncated) outside
+                    the chain and the key inserted again through the trigger
+``schema_column_missing`` a column the latest chain rows carry is gone from the
+                    table (DROP or RENAME COLUMN): its values are unverifiable
 """
 
 from __future__ import annotations
@@ -196,10 +201,12 @@ def walk_agent_events(conn: Connection, run_id: Optional[str] = None) -> ChainRe
 
 
 # A source row against its latest chain row; a row chained before the table's
-# last TRUNCATE counts as deleted. Only columns both sides have are
-# compared, so a column added (or dropped) after the row was chained is not a
-# modification. A key re-inserted after a chained delete, or never chained,
-# is unchained.
+# last TRUNCATE counts as deleted. Only columns both sides have are compared,
+# so a column added after the row was chained is not a modification; a column
+# the latest chain row has and the table no longer has (DROP or RENAME COLUMN)
+# is reported as schema_column_missing, since its value can no longer be
+# checked. A key re-inserted after a chained delete, or never chained, is
+# unchained. schema_column_missing sorts first: it is a table-wide finding.
 _SOURCE_CHECK = """
 WITH truncated AS (
     SELECT coalesce(max(seq), 0) AS seq
@@ -215,41 +222,69 @@ WITH truncated AS (
 ), cur AS (
     SELECT CAST(t.{key} AS text) AS source_id, to_jsonb(t) AS row
       FROM {table} AS t
-), checked AS (
+), joined AS (
     SELECT coalesce(cur.source_id, latest.source_id) AS source_id,
+           cur.source_id AS cur_id, cur.row AS cur_row,
+           latest.source_id AS latest_id, latest.row AS latest_row,
+           latest.event AS latest_event,
+           CASE WHEN cur.source_id IS NOT NULL AND latest.event <> 'delete'
+                     AND cur.row <> latest.row
+                THEN (SELECT min(k) FROM jsonb_object_keys(latest.row) AS k
+                       WHERE NOT cur.row ? k)
+           END AS missing
+      FROM cur FULL JOIN latest ON latest.source_id = cur.source_id
+), checked AS MATERIALIZED (
+    SELECT source_id, missing,
            CASE
-             WHEN latest.source_id IS NULL
-               OR (cur.source_id IS NOT NULL AND latest.event = 'delete')
+             WHEN latest_id IS NULL
+               OR (cur_id IS NOT NULL AND latest_event = 'delete')
                THEN 'unchained'
-             WHEN cur.source_id IS NULL AND latest.event <> 'delete'
+             WHEN cur_id IS NULL AND latest_event <> 'delete'
                THEN 'source_deleted'
-             WHEN cur.source_id IS NOT NULL
+             WHEN missing IS NOT NULL
+               THEN 'schema_column_missing'
+             WHEN cur_row <> latest_row
               AND (SELECT coalesce(jsonb_object_agg(k.key, k.value), '{{}}'::jsonb)
-                     FROM jsonb_each(cur.row) AS k WHERE latest.row ? k.key)
+                     FROM jsonb_each(cur_row) AS k WHERE latest_row ? k.key)
                   IS DISTINCT FROM
                   (SELECT coalesce(jsonb_object_agg(k.key, k.value), '{{}}'::jsonb)
-                     FROM jsonb_each(latest.row) AS k WHERE cur.row ? k.key)
+                     FROM jsonb_each(latest_row) AS k WHERE cur_row ? k.key)
                THEN 'source_modified'
            END AS reason
-      FROM cur FULL JOIN latest ON latest.source_id = cur.source_id
+      FROM joined
 )
-SELECT source_id, reason, count(*) OVER () AS total
+SELECT source_id, reason, count(*) OVER () AS total, missing
   FROM checked
  WHERE reason IS NOT NULL
- ORDER BY source_id
+ ORDER BY reason = 'schema_column_missing' DESC, source_id
  LIMIT 1
 """
 
-# Every chain row's history, for each update or delete: the pre-image the
-# trigger saw (the row with the changed columns' old values laid over it on an
-# update; the row itself on a delete) must equal the previous chain row for the
-# same key. Otherwise the row was changed outside the chain between the two,
-# and the source check alone would miss it once a later, chained UPDATE or
-# DELETE moved the latest chain row past the bypassed change. A previous chain
-# row that is a delete, or that a TRUNCATE came after, is no predecessor. As in
-# _SOURCE_CHECK, only columns both sides have are compared.
+# Every chain row's history, per key in seq order. A previous chain row for the
+# same key is "live" unless it is a delete or a TRUNCATE marker came after it.
+#
+# * update / delete: the pre-image the trigger saw (the row with the changed
+#   columns' old values laid over it on an update; the row itself on a delete)
+#   must equal the live previous chain row. A difference is history_modified:
+#   the row was changed outside the chain in between, and a later, chained
+#   UPDATE or DELETE would otherwise hide it from the source check. No live
+#   previous row is history_unchained: the row was written outside the chain.
+# * insert: there must be no live previous row. One is history_deleted: the
+#   row was deleted outside the chain (a DELETE or TRUNCATE under
+#   session_replication_role = replica, which writes no marker) and the key
+#   was then inserted again through the trigger, which the source check alone
+#   sees as a clean, freshly inserted row.
+#
+# As in _SOURCE_CHECK, only columns both sides have are compared, after a
+# cheap whole-row equality test that settles almost every row. The CTEs are
+# MATERIALIZED so the window runs once and the per-row comparison is computed
+# once rather than again for the WHERE (see the spec for timings).
 _HISTORY_CHECK = """
-WITH ev AS (
+WITH tr AS MATERIALIZED (
+    SELECT t.seq
+      FROM audit_chain AS t
+     WHERE t.source_table = :table AND t.source_id = '' AND t.event = 'truncate'
+), ev AS MATERIALIZED (
     SELECT c.seq, c.source_id, c.event, c.payload,
            lag(c.seq) OVER w AS prev_seq,
            lag(c.event) OVER w AS prev_event,
@@ -257,26 +292,28 @@ WITH ev AS (
       FROM audit_chain AS c
      WHERE c.source_table = :table AND c.event IN :events
     WINDOW w AS (PARTITION BY c.source_id ORDER BY c.seq)
-), pre AS (
-    SELECT ev.*,
+), pre AS MATERIALIZED (
+    SELECT ev.seq, ev.source_id, ev.event, ev.prev_row,
            CASE WHEN ev.event = 'update'
                 THEN (ev.payload -> 'row') || coalesce(ev.payload -> 'old', '{}'::jsonb)
                 ELSE ev.payload -> 'row'
-           END AS pre_row
+           END AS pre_row,
+           (ev.prev_seq IS NULL
+            OR ev.prev_event = 'delete'
+            OR EXISTS (SELECT 1 FROM tr
+                        WHERE tr.seq > ev.prev_seq AND tr.seq < ev.seq)) AS prev_dead
       FROM ev
      WHERE ev.event IN ('update', 'delete')
-), checked AS (
+        OR (ev.event = 'insert' AND ev.prev_seq IS NOT NULL)
+), checked AS MATERIALIZED (
     SELECT pre.source_id, pre.seq,
            CASE
-             WHEN pre.prev_seq IS NULL
-               OR pre.prev_event = 'delete'
-               OR EXISTS (
-                    SELECT 1 FROM audit_chain AS t
-                     WHERE t.source_table = :table AND t.source_id = ''
-                       AND t.event = 'truncate'
-                       AND t.seq > pre.prev_seq AND t.seq < pre.seq)
+             WHEN pre.event = 'insert'
+               THEN CASE WHEN NOT pre.prev_dead THEN 'history_deleted' END
+             WHEN pre.prev_dead
                THEN 'history_unchained'
-             WHEN (SELECT coalesce(jsonb_object_agg(k.key, k.value), '{}'::jsonb)
+             WHEN pre.pre_row <> pre.prev_row
+              AND (SELECT coalesce(jsonb_object_agg(k.key, k.value), '{}'::jsonb)
                      FROM jsonb_each(pre.pre_row) AS k WHERE pre.prev_row ? k.key)
                   IS DISTINCT FROM
                   (SELECT coalesce(jsonb_object_agg(k.key, k.value), '{}'::jsonb)
@@ -296,10 +333,14 @@ _SOURCE_DETAIL = {
     "unchained": "row has no chain entry (written while the capture triggers were off)",
     "source_modified": "row differs from its latest chain entry",
     "source_deleted": "row is gone but the chain has no delete for it",
+    "schema_column_missing": "the table no longer has a column its chain rows "
+    "carry (DROP or RENAME COLUMN), so that column cannot be checked",
     "history_modified": "row was changed outside the chain before this "
     "chained update/delete (its pre-image differs from the previous chain row)",
     "history_unchained": "chained update/delete of a row that has no live "
     "earlier chain row (it was written outside the chain)",
+    "history_deleted": "chained insert of a key whose earlier chain row is "
+    "still live: the row was deleted or truncated outside the chain first",
 }
 
 
@@ -351,14 +392,17 @@ def check_sources(conn: Connection) -> ChainReport:
             text(f"SELECT count(*) FROM {table}")  # nosec B608 - fixed table name
         ).scalar()
         if row is not None:
-            source_id, reason, total = row
+            source_id, reason, total, missing = row
+            detail = _SOURCE_DETAIL[reason]
+            if reason == "schema_column_missing":
+                detail += f": {missing}"
             report.breaks.append(
                 Break(
                     f"source:{table}",
                     f"{scope} {key}={source_id}",
                     None,
                     reason,
-                    f"{_SOURCE_DETAIL[reason]} ({total} row(s) affected)",
+                    f"{detail} ({total} row(s) affected)",
                 )
             )
         history = text(_HISTORY_CHECK).bindparams(bindparam("events", expanding=True))

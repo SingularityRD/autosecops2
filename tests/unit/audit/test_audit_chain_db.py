@@ -304,10 +304,7 @@ def test_reordered_rows_are_detected(audit_db):
         parked = 10**12
         for frm, to in ((a, parked), (b, a), (parked, b)):
             conn.execute(
-                text(
-                    "UPDATE audit_chain SET seq = :to "
-                    "WHERE seq = :frm"
-                ),
+                text("UPDATE audit_chain SET seq = :to " "WHERE seq = :frm"),
                 {"frm": frm, "to": to},
             )
         report = walk_audit_chain(conn)
@@ -473,6 +470,144 @@ def test_chained_history_alone_is_clean(audit_db):
         conn.execute(
             text("DELETE FROM approval_actions WHERE action_id = 'action-audit-clean'")
         )
+        assert check_sources(conn).ok
+    finally:
+        tx.rollback()
+        conn.close()
+
+
+def _reinsert_audit_log(conn, audit_id: int, entity_id: str) -> None:
+    conn.execute(
+        text(
+            "INSERT INTO case_audit_logs "
+            "(audit_id, entity_type, entity_id, action, changed_by) "
+            "VALUES (:a, 'case', :e, 'update', 'analyst')"
+        ),
+        {"a": audit_id, "e": entity_id},
+    )
+
+
+def test_bypassed_delete_then_chained_reinsert_is_detected_approval(audit_db):
+    """Round 5: DELETE under replica, then a normal INSERT of the same key.
+
+    The source row matches its (new) latest chain row, so only the history
+    check can see that the earlier chain row was never closed by a delete.
+    """
+    conn, tx = _rolled_back(audit_db.engine)
+    try:
+        insert_action(conn, "action-audit-redo")
+        _tamper(conn)
+        conn.execute(
+            text("DELETE FROM approval_actions WHERE action_id = 'action-audit-redo'")
+        )
+        _untamper(conn)
+        insert_action(conn, "action-audit-redo", approved_by="mallory")
+        assert walk_audit_chain(conn).ok
+        [found] = check_sources(conn).breaks
+        assert found.reason == "history_deleted"
+        assert "action-audit-redo" in found.scope
+        assert found.seq is not None
+    finally:
+        tx.rollback()
+        conn.close()
+
+
+def test_bypassed_delete_then_chained_reinsert_is_detected_case_log(audit_db):
+    conn, tx = _rolled_back(audit_db.engine)
+    try:
+        audit_id = insert_audit_log(conn, "case-audit-redo")
+        _tamper(conn)
+        conn.execute(
+            text("DELETE FROM case_audit_logs WHERE audit_id = :a"), {"a": audit_id}
+        )
+        _untamper(conn)
+        _reinsert_audit_log(conn, audit_id, "case-audit-redo-forged")
+        [found] = check_sources(conn).breaks
+        assert found.reason == "history_deleted"
+        assert f"audit_id={audit_id}" in found.scope
+    finally:
+        tx.rollback()
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "table, key",
+    [("case_audit_logs", "audit_id"), ("approval_actions", "action_id")],
+)
+def test_bypassed_truncate_then_chained_reinserts_are_detected(audit_db, table, key):
+    """TRUNCATE under replica writes no marker; the rows then reappear."""
+    conn, tx = _rolled_back(audit_db.engine)
+    try:
+        if table == "case_audit_logs":
+            insert_audit_log(conn, "case-audit-retrunc")
+        else:
+            insert_action(conn, "action-audit-retrunc")
+        conn.execute(
+            text(f"CREATE TEMP TABLE saved ON COMMIT DROP AS SELECT * FROM {table}")
+        )
+        _tamper(conn)
+        conn.execute(text(f"TRUNCATE {table}"))
+        _untamper(conn)
+        conn.execute(text(f"INSERT INTO {table} SELECT * FROM saved"))
+        breaks = check_sources(conn).breaks
+        assert [b.reason for b in breaks] == ["history_deleted"]
+        assert f"{key}=" in breaks[0].scope
+    finally:
+        tx.rollback()
+        conn.close()
+
+
+def test_chained_truncate_then_reinsert_is_clean(audit_db):
+    conn, tx = _rolled_back(audit_db.engine)
+    try:
+        conn.execute(
+            text(
+                "CREATE TEMP TABLE saved ON COMMIT DROP AS "
+                "SELECT * FROM case_audit_logs"
+            )
+        )
+        conn.execute(text("TRUNCATE case_audit_logs"))
+        conn.execute(text("INSERT INTO case_audit_logs SELECT * FROM saved"))
+        assert check_sources(conn).ok
+    finally:
+        tx.rollback()
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "table, statement, column",
+    [
+        (
+            "approval_actions",
+            "ALTER TABLE approval_actions DROP COLUMN reason",
+            "reason",
+        ),
+        (
+            "case_audit_logs",
+            "ALTER TABLE case_audit_logs RENAME COLUMN changed_by TO changed_by_x",
+            "changed_by",
+        ),
+    ],
+    ids=["drop", "rename"],
+)
+def test_column_missing_from_the_table_is_reported(audit_db, table, statement, column):
+    conn, tx = _rolled_back(audit_db.engine)
+    try:
+        assert check_sources(conn).ok
+        conn.execute(text(statement))
+        breaks = check_sources(conn).breaks
+        assert [b.reason for b in breaks] == ["schema_column_missing"]
+        assert breaks[0].chain == f"source:{table}"
+        assert column in breaks[0].detail
+    finally:
+        tx.rollback()
+        conn.close()
+
+
+def test_added_column_is_not_a_break(audit_db):
+    conn, tx = _rolled_back(audit_db.engine)
+    try:
+        conn.execute(text("ALTER TABLE approval_actions ADD COLUMN extra text"))
         assert check_sources(conn).ok
     finally:
         tx.rollback()
@@ -647,11 +782,7 @@ def test_concurrent_writers_keep_one_chain(audit_db):
         after = conn.execute(text("SELECT count(*) FROM audit_chain")).scalar()
         assert after - before == writers * per_writer + writers * 5
         seqs = (
-            conn.execute(
-                text(
-                    "SELECT seq FROM audit_chain ORDER BY seq"
-                )
-            )
+            conn.execute(text("SELECT seq FROM audit_chain ORDER BY seq"))
             .scalars()
             .all()
         )

@@ -146,9 +146,7 @@ def test_truncated_chain_tail_is_caught_by_the_checkpoint(conn):
     write_checkpoint(conn, key)
     _tamper(conn)
     conn.execute(
-        text(
-            "DELETE FROM audit_chain WHERE seq = (SELECT max(seq) FROM audit_chain)"
-        )
+        text("DELETE FROM audit_chain WHERE seq = (SELECT max(seq) FROM audit_chain)")
     )
     assert walk_audit_chain(conn).ok
     [found] = verify_checkpoints(conn, key.public_key()).breaks
@@ -237,9 +235,9 @@ def test_require_signature_needs_a_trusted_key(conn, monkeypatch):
     result = verify_cli.verify(conn, public_key=None, require_signature=True)
     assert not result["ok"]
     assert [b["reason"] for b in result["breaks"]] == ["signature_required"]
-    assert verify_cli.verify(
-        conn, public_key=key.public_key(), require_signature=True
-    )["ok"]
+    assert verify_cli.verify(conn, public_key=key.public_key(), require_signature=True)[
+        "ok"
+    ]
 
 
 def test_require_signature_needs_a_checkpoint(conn):
@@ -247,7 +245,9 @@ def test_require_signature_needs_a_checkpoint(conn):
     conn.execute(text("DELETE FROM audit_checkpoints"))
     conn.execute(text("SET LOCAL session_replication_role = origin"))
     key = _key()
-    result = verify_cli.verify(conn, public_key=key.public_key(), require_signature=True)
+    result = verify_cli.verify(
+        conn, public_key=key.public_key(), require_signature=True
+    )
     assert [b["reason"] for b in result["breaks"]] == ["signature_required"]
 
 
