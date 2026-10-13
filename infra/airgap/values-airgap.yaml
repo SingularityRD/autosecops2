@@ -1,0 +1,119 @@
+# AutoSecOps — air-gapped install profile for infra/helm/vigil.
+#
+# Layered on top of the chart's values.yaml:
+#   helm upgrade --install autosecops autosecops-<V>.tgz -f values-airgap.yaml
+# install.sh does this for you after verifying the bundle, and first replaces
+# every "registry.airgap.local:5000" below with its --registry argument.
+#
+# What this profile guarantees:
+#   * every image comes from the local registry (no public registry is named);
+#   * remote MCP servers are not dialled and AutoSecOps' own MCP surface is off;
+#   * telemetry is off (OTEL SDK, OTEL collector subchart, ServiceMonitor);
+#   * outbound notifications and cloud sandboxes are off;
+#   * NetworkPolicies are on and pod egress is limited to in-cluster pods.
+# The application has no "update check" to turn off; anything else that would
+# try to leave the cluster is dropped by the egress policy.
+#
+# The on/off switches under `config` match infra/airgap/airgap.env (W3.4), the
+# same profile for host-native and Compose installs; tests/unit/airgap checks
+# that every switch both files set has the same value. airgap.env's loopback
+# service URLs and empty secrets do not apply here (the chart sets the
+# in-cluster service names and takes secrets from its Secret).
+#
+# Image references here are exactly airgap_images.py `localize` applied to the
+# chart's upstream ones; tests/unit/airgap checks they agree.
+
+global:
+  imageRegistry: registry.airgap.local:5000
+  # App images resolve to <registry>/<namespace>-<component>:<appVersion>, the
+  # same path the bundle pushes them to.
+  imageNamespace: vigil-soc/vigil
+  imagePullPolicy: IfNotPresent
+
+postgresql:
+  enabled: true
+  bitnami:
+    enabled: false
+  image:
+    repository: registry.airgap.local:5000/library/postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+
+redis:
+  enabled: true
+  bitnami:
+    enabled: false
+  image:
+    repository: registry.airgap.local:5000/library/redis
+    tag: "7-alpine"
+    pullPolicy: IfNotPresent
+
+dbInit:
+  image:
+    repository: registry.airgap.local:5000/library/postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+
+tests:
+  image:
+    repository: registry.airgap.local:5000/curlimages/curl
+    tag: "8.10.1"
+
+# Subcharts are not in the bundle (the packaged chart has no dependencies).
+otelCollector:
+  enabled: false
+
+observability:
+  serviceMonitor:
+    enabled: false
+
+# Optional components stay off; their images are not in the default bundle.
+medic:
+  enabled: false
+splunk:
+  enabled: false
+pgadmin:
+  enabled: false
+
+networkPolicies:
+  enabled: true
+  egress:
+    # The chart's "-deny-all" policy allows only in-cluster destinations
+    # (namespaceSelector: {} — every pod, including kube-dns) instead of "- {}".
+    inClusterOnly: true
+    # Add CIDRs the pods must reach that are not pods, e.g. NodeLocal DNSCache
+    # ("169.254.20.10/32") or an on-prem SIEM/EDR the daemon polls.
+    extraCIDRs: []
+
+config:
+  DEV_MODE: "false"
+
+  # In-cluster LLM stack from k8s/llm-stack.yaml (Services "bifrost", "ollama").
+  BIFROST_URL: "http://bifrost:8080"
+  OLLAMA_URL: "http://ollama:11434"
+
+  # MCP: do not dial configured servers at startup, and keep AutoSecOps' own
+  # HTTP MCP surface closed. mcp-config.json servers are disabled by default
+  # except the local security-detections server (reads the offline rule
+  # corpora) and the customer's own self-hosted Splunk.
+  MCP_AUTO_CONNECT_ON_STARTUP: "false"
+  VIGIL_MCP_ENABLED: "false"
+
+  # Telemetry
+  VIGIL_OTEL_ENABLED: "false"
+
+  # Outbound notifications and cloud services
+  DAEMON_SLACK_ENABLED: "false"
+  DAEMON_PAGERDUTY_ENABLED: "false"
+  JOE_SANDBOX_ENABLED: "false"
+  CAPE_SANDBOX_ENABLED: "false"
+  HYBRID_ANALYSIS_ENABLED: "false"
+  ANYRUN_ENABLED: "false"
+  SANDBOX_AUTO_SUBMIT: "false"
+  DARKTRACE_ENABLED: "false"
+  DAEMON_ESCALATION_ENABLED: "false"
+  KAFKA_ENABLED: "false"
+  VIGIL_MEDIC_ENABLED: "false"
+  DEMO_MODE: "false"
+  # Mail goes to the log, not to an SMTP relay.
+  VIGIL_EMAIL_BACKEND: "console"

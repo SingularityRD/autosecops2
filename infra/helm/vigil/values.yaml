@@ -443,6 +443,7 @@ dbInit:
     - 49_approval_action_lifecycle.sql
     - 50_regulatory_clocks.sql
     - 55_lessons_promotion.sql
+    - 56_alert_lane_decisions.sql
   resources:
     requests:
       cpu: 50m
@@ -901,6 +902,15 @@ networkPolicies:
     # policy takes the Deployment down. Set false on Calico or Cilium, which
     # permit node-sourced health checks — then only the backend can reach it.
     allowProbesFromAnyNamespace: true
+  egress:
+    # false (default): the "-deny-all" policy allows all egress, because the
+    # backend and daemon call external APIs. true: only in-cluster pods (any
+    # namespace, kube-dns included) plus extraCIDRs -- the air-gapped profile
+    # (infra/airgap/values-airgap.yaml). Needs networkPolicies.enabled.
+    inClusterOnly: false
+    # ipBlock CIDRs allowed in addition when inClusterOnly is true, e.g. NodeLocal
+    # DNSCache ("169.254.20.10/32") or an on-prem SIEM the daemon polls.
+    extraCIDRs: []
 
 # -----------------------------------------------------------------------------
 # Medic — the install's own ops-health watcher (System Watcher). Off by default.
