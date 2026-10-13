@@ -180,6 +180,25 @@ yeniden kullanılır.
   karakterlik gizli anahtarlar, Hugging Face, npm, PyPI, SendGrid, JWT);
   ayrıca sanitizer'ın kalıpları (kimlik bilgili DSN, ≥32 karakter onaltılık).
   İstisna: defterin kendi `prev_hash`/`event_hash` alanları.
+- **Serbest metin, Round 5:** anahtar adı ayırıcı gerektirmeden eşleşir
+  (`PGPASSWORD=`, `dbPass`, `MYSQLPWD`, `pass=`, `?pw=`; camelCase ve sözcük
+  sınırı duyarlı, `bypass`/`max_tokens` değil); CLI biçimleri
+  (`--password X`, `--password=X`, `mysql -pX`, `sshpass -p X`,
+  `htpasswd -b dosya kullanıcı X`, `net use \\h\p X`,
+  `echo X | docker login --password-stdin`); boşlukla ayrılmış
+  `PASSWORD<tab>X`/`token X` (değer sözcük gibi değilse); XML
+  `<password>X</password>` ve .NET `<add key="Password" value="X"/>`;
+  YAML blok skalerleri (`password: >-` + girintili satırlar); yüzde kodlu
+  metin (`password%3DX`) kod çözülerek de taranır; OTP kodları
+  (`TOTP code 123456`); ek jeton önekleri (Vault `hvs.`/`hvb.`/`hvr.`,
+  Grafana `glsa_`/`glc_`, Databricks `dapi`, DigitalOcean, Shopify, Linear,
+  Doppler, Pulumi, Postman). Bilinçli istisna: `user=` (kullanıcı adı denetim
+  izinin kendisidir).
+- **Yapısal eşleştirme:** bir sözlükte `name`/`key`/`header`/`param` alanı
+  gizli bir ad taşıyorsa (`{"name": "DB_PASSWORD", "value": "x"}` —
+  Kubernetes env, başlık listeleri, ayar satırları) kardeş `value`/`data`
+  alanı maskelenir; argüman listelerinde gizli bayraktan sonraki öğe
+  (`["--password", "x"]`, `["sshpass", "-p", "x"]`) maskelenir.
 - `redact_pii: true` (varsayılan) iken e-posta adresleri `[REDACTED-EMAIL]` olur
   ve `email`, `phone`, `full_name`, `address`, `tckn`, `national_id`, `ssn`
   anahtarları maskelenir.
@@ -270,6 +289,15 @@ LLM anahtarını) seçip dışarı gönderemez. İstemci anahtarı diske yalnız
   IPv6 ULA izinlidir (SIEM aktarıcıları genelde oradadır); metadata adresleri bu
   aralıkların içinde de reddedilir. Yanıttaki tek bir yasak adres ana makineyi
   reddeder.
+- **LLM sağlayıcıları ve CGNAT (W3.6 yan etkisi):** `url_safety` artık global
+  olmayan her adresi (CGNAT `100.64.0.0/10` dahil) varsayılan olarak reddeder.
+  Bu, LLM sağlayıcı keşfini de etkiler: Tailscale üzerinden erişilen şirket içi
+  bir LLM ağ geçidi (`100.x.y.z`) `allow_loopback` olmayan sağlayıcı
+  türlerinde (OpenAI uyumlu özel URL, Anthropic) reddedilir. İzin listesi:
+  `LLM_PROVIDER_ALLOWED_CIDRS="100.64.0.0/10"` (ya da ağ geçidinin `/32`'si;
+  virgülle ayrılmış CIDR; hatalı değer hiçbir şeye izin vermez). Metadata
+  adresleri bu aralıkların içinde de reddedilir. Giden webhook'lar için
+  karşılığı `WEBHOOK_ALLOWED_CIDRS`'tir.
 - **DNS yeniden bağlama (rebinding) yok:** ad bir kez çözülür, denetlenir ve
   bağlantı yalnızca denetlenen IP'ye kurulur (syslog: IP'ye bağlanılır, TLS SNI
   ve doğrulama özgün ad ile; HTTPS: istek IP'ye gider, `Host` başlığı ve TLS
@@ -320,9 +348,41 @@ Prometheus (`/metrics`):
 | `autosecops_audit_export_spool_dropped_total` | counter | — |
 | `autosecops_audit_export_queue_depth` | gauge | `destination` |
 | `autosecops_audit_export_last_success_timestamp_seconds` | gauge | `destination` |
+| `autosecops_audit_export_cursor_commit_failures_total` | counter | `destination` |
+| `autosecops_audit_export_cursor_commit_stalled` | gauge | `destination` |
+| `autosecops_audit_export_pipeline_restarts_total` | counter | — |
+| `autosecops_audit_export_xid_horizon_held_seconds` | gauge | — |
+| `autosecops_audit_export_xid_horizon_stalled` | gauge | `reason` |
 
 Önerilen alarmlar: `time() - last_success_timestamp_seconds > 600` (aktarım
-durdu), `delivery_failures_total` artışı, `spool_dropped_total > 0`.
+durdu), `delivery_failures_total` artışı, `spool_dropped_total > 0`,
+`cursor_commit_stalled == 1` (teslim edildi ama imleç diske yazılamıyor),
+`xid_horizon_stalled == 1` (aktarım gecikmesi; aşağıya bakın).
+
+**İmleç kaydı başarısız olursa** (disk dolu, salt okunur birim) gönderici
+ölmez ve partiyi yeniden göndermez: yalnız imleç kaydını üstel geri çekilme ile
+yeniden dener, `commit_stalled: true`, `last_error: cursor_commit_failed` ve
+`cursor_commit_failures` ile bildirir. Önceden gönderici ölüyor, denetçi onu
+hemen yeniden başlatıyor ve aynı parti saniyede yüzlerce kez yeniden
+gönderiliyordu.
+
+**Ölü hat yeniden başlatma** üstel geri çekilmelidir (1 s'den başlar, her
+ardışık yeniden başlatmada ikiye katlanır, `[t/2, t]` arası rastgele,
+`max_backoff_s` ile sınırlı; `max_backoff_s` süresince sağlıklı çalışan hat
+sayacı sıfırlar). Yapılandırma değişikliği hemen yeniden başlatır.
+`status.restarts` toplam sayıdır.
+
+**İşlem ufku (Postgres):** kaynaklar en eski açık işlemin altındaki satırları
+okur (bkz. Teslim garantisi). Yazıp `idle in transaction` kalan tek bir oturum
+(sunucudaki herhangi bir veritabanında) aktarımı o oturum bitene dek durdurur.
+Denetçi her turda `pg_snapshot_xmin` ve onu tutan oturumu
+(`pg_stat_activity`: pid, veritabanı, durum, süreler — sorgu metni okunmaz)
+yoklar; ufuk `horizon_alert_s` (varsayılan 600 s) boyunca ilerlemezse
+`status.horizon.stalled: true` ve `reason: idle_in_transaction` ya da
+`long_running_transaction` olur ve uyarı günlüğe yazılır. Rol diğer oturumları
+göremiyorsa (`pg_read_all_stats` yok) yalnız ilerlemeyen `xmin`'e bakılır.
+Çözüm: oturumu bitirin (`pg_terminate_backend(pid)`) ve
+`idle_in_transaction_session_timeout` ayarlayın.
 
 ## Bilinen sınırlar
 

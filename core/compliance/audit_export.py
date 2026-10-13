@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fcntl
+import functools
 import hashlib
 import hmac
 import ipaddress
@@ -66,7 +67,7 @@ from typing import (
     Optional,
     Union,
 )
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -229,6 +230,15 @@ class AuditExportConfig(_Strict):
         "the oldest running transaction instead, so no wait is needed.",
     )
     max_backoff_s: float = Field(60.0, ge=0.1, le=3600)
+    horizon_alert_s: float = Field(
+        600.0,
+        ge=30,
+        le=86400,
+        description="Postgres only: flag export as lagging (status "
+        "horizon.stalled, metric xid_horizon_stalled) when the oldest running "
+        "transaction has held the export horizon this long, e.g. a session "
+        "left idle in transaction.",
+    )
     spool_max_bytes: int = Field(256 * 1024 * 1024, ge=1024 * 1024, le=10 * 1024**3)
     destinations: list[Destination] = Field(default_factory=list, max_length=8)
 
@@ -480,24 +490,107 @@ def secret_key(path: str) -> bool:
 
 # -- free text ---------------------------------------------------------------
 
-_KEY_WORDS = (
-    r"(?:password|passwd|pwd|passphrase|secret|client[_-]?secret|"
-    r"api[_-]?key|apikey|access[_-]?key|secret[_-]?key|private[_-]?key|"
-    r"signing[_-]?key|encryption[_-]?key|account[_-]?key|master[_-]?key|"
-    r"shared[_-]?access[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|"
-    r"auth[_-]?token|session[_-]?token|session[_-]?id|token|credentials?|creds|"
-    r"pin|sig|signature|x-amz-signature|x-amz-credential|x-amz-security-token|"
-    r"otp|mfa[_-]?code|webhook[_-]?url|database[_-]?url|db[_-]?url|dsn|"
-    r"connection[_-]?string|sas[_-]?token|cookie|auth)"
+# A free-text key (``PGPASSWORD``, ``dbPass``, ``x_api_key``, ``--password``)
+# names a credential when :func:`secret_key` says so, when it contains one of
+# these words anywhere (no separator needed: ``PGPASSWORD``, ``MYSQLPWD``), or
+# when it is one of the short words below on its own or as its last segment.
+_EMBEDDED_WORDS = (
+    "password",
+    "passwd",
+    "passphrase",
+    "secret",
+    "apikey",
+    "accesskey",
+    "privatekey",
+    "credential",
+    "authtoken",
+    "accesstoken",
+    "refreshtoken",
+    "sessiontoken",
+    "securitytoken",
+    "vaulttoken",
 )
-# ``password=…``, ``"apiKey": "…"``, ``Pwd={…};``, ``?api_key=…&``. The key may
-# carry a prefix or suffix (``db_password``, ``token_v2``); the value runs to
-# whitespace or a separator, or is a quoted/braced string.
-_KEY_VALUE = re.compile(
-    r"(?i)(?<![A-Za-z0-9])((?:[A-Za-z0-9]+[_.\-])*"
-    + _KEY_WORDS
-    + r"(?:[_.\-][A-Za-z0-9]+)*[\"']?\s*[=:]\s*)"
-    r"(\"[^\"]*\"|'[^']*'|\{[^}]*\}|[^\s;&,\"'<>]+)"
+_SHORT_LEAVES = frozenset({"pass", "pw", "pwd", "key", "auth", "pin", "otp", "token"})
+# ``…pass`` / ``…pwd`` glued to a prefix (``DBPASS``, ``MYSQLPWD``) unless the
+# word is an ordinary one that happens to end that way.
+_GLUED_SUFFIXES = ("pass", "pwd")
+_NOT_GLUED = frozenset({"bypass", "compass", "surpass", "overpass", "underpass"})
+# Flags naming where a secret comes from rather than the secret itself.
+_INDIRECT_FLAG = re.compile(r"(?i)[-_](?:stdin|file|path|env|prompt|policy)$")
+
+
+@functools.lru_cache(maxsize=4096)
+def secret_identifier(name: str) -> bool:
+    """Whether a free-text key, flag, tag or ``name`` field names a credential.
+
+    Word-boundary and camelCase aware: ``dbPass``, ``DB_PASSWORD``,
+    ``PGPASSWORD``, ``pass``, ``pw``, ``--password``, ``Password`` all hit;
+    ``max_tokens``, ``bypass``, ``config_key`` do not.
+    """
+    bare = name.strip("\"'-\\ ")
+    if not bare or len(bare) > 96:
+        return False
+    if secret_key(bare):
+        return True
+    flat = re.sub(r"[^a-z0-9]", "", bare.lower())
+    if any(word in flat for word in _EMBEDDED_WORDS):
+        return True
+    segments = key_segments(bare)
+    if not segments:
+        return False
+    leaf = segments[-1]
+    if len(segments) == 1 and leaf in _SHORT_LEAVES:
+        return True
+    if leaf in {"pass", "pw", "pwd"}:
+        return True
+    return leaf not in _NOT_GLUED and leaf.endswith(_GLUED_SUFFIXES)
+
+
+_IDENT = r"-{0,2}[A-Za-z_][A-Za-z0-9_.\-]{0,95}"
+# ``key=value``, ``"key": "value"``, ``key%3Dvalue`` (URL-encoded), with an
+# optional quote (plain or JSON-escaped) closing the key.
+_KEY_SEP = re.compile(
+    r"(?<![A-Za-z0-9_.\-%])(\\?[\"']?)(" + _IDENT + r")"
+    r"((?:\\?[\"'])?[ \t]*(?:=|:|%3[Dd]|%3[Aa])[ \t]*)"
+)
+# ``PASSWORD<tab>value``, ``token value``, ``--password value``.
+_KEY_SPACE = re.compile(r"(?<![A-Za-z0-9_.\-%=:/\\])(" + _IDENT + r")([ \t]+)")
+_VALUE = re.compile(
+    r"\\\"(?:[^\"\\]|\\[^\"])*\\\"|\"[^\"]*\"|'[^']*'|\{[^}]*\}|[^\s;&,\"'<>]+"
+)
+_SPACE_VALUE = re.compile(r"\"[^\"]*\"|'[^']*'|[^\s;,\"'<>|]+")
+_YAML_BLOCK_INDICATOR = re.compile(r"^[|>][+-]?\d*$")
+# ``password: >-`` / ``password: |`` and the indented lines under it.
+_YAML_BLOCK = re.compile(
+    r"(?m)^([ \t]*)(-[ \t]+)?([\"']?)([A-Za-z_][A-Za-z0-9_.\-]*)\3[ \t]*:[ \t]*"
+    r"([|>][+-]?\d*)[ \t]*(?:#[^\n]*)?\n((?:\1[ \t]+\S[^\n]*(?:\n|$))+)"
+)
+# ``<password>x</password>``, ``<ns:ApiKey attr="1">x</ns:ApiKey>``.
+_XML_ELEMENT = re.compile(
+    r"<((?:[A-Za-z_][\w.\-]*:)?([A-Za-z_][\w.\-]*))(\s[^<>]*)?>([^<]*)</\1\s*>"
+)
+# .NET ``<add key="Password" value="x"/>`` and ``name="..." value="..."``.
+_NAMED_VALUE_ATTR = re.compile(
+    r"(?i)\b((?:key|name)\s*=\s*([\"'])([^\"']*)\2\s+value\s*=\s*)([\"'])([^\"']*)\4"
+)
+# ``mysql -pS3cret`` (attached), only where it reads as a password.
+_DASH_P = re.compile(r"(?<![\w\-])(-p)([^\s\-;&,\"'<>|][^\s;&,\"'<>|]*)")
+_MYSQL_CONTEXT = re.compile(
+    r"(?i)\b(?:mysql|mysqldump|mysqladmin|mysqlimport|mariadb|mariadb-dump|mycli)\b"
+)
+_PORT_SHAPE = re.compile(r"^[\d.:\-\[\]]+(?:/(?:tcp|udp|sctp))?$")
+_SSHPASS = re.compile(r"(?i)(\bsshpass\b[^\n|;&]{0,256}?\s-p[ \t]*)([^\s;&|]+)")
+_NET_USE = re.compile(
+    r"(?i)(\bnet\s+use\b[^\n]{0,256}?\\\\\S+[ \t]+)(?![/*])([^\s/]\S*)"
+)
+_STDIN_SECRET = re.compile(
+    r"(?i)(\b(?:echo|printf)\s+(?:-[neE]+\s+)?)([\"']?)([^\s\"'|]+)\2"
+    r"(?=\s*\|[^\n|]{0,256}--password-stdin)"
+)
+_HTPASSWD = re.compile(r"(?i)\bhtpasswd((?:[ \t]+[^\s;&|]+)+)")
+_OTP_CODE = re.compile(
+    r"(?i)\b((?:totp|otp|mfa|2fa|one[- ]time|verification|authenticator)"
+    r"[ \t]+(?:code|token|pin|passcode)[ \t]*(?:[:=][ \t]*|is[ \t]+)?)(\d{6,8})\b"
 )
 _AUTH_HEADER = re.compile(
     r"(?i)\b((?:proxy-)?authorization[\"']?\s*[:=]\s*[\"']?)"
@@ -541,6 +634,19 @@ _TOKEN_SHAPES = [
         r"\bpypi-[A-Za-z0-9_\-]{50,}",
         r"\bSG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}",
         r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*",
+        # HashiCorp Vault service/batch/recovery tokens.
+        r"\bhv[sbr]\.[A-Za-z0-9_\-]{20,}",
+        # Grafana service-account and Grafana Cloud tokens.
+        r"\bglsa_[A-Za-z0-9_]{20,}",
+        r"\bglc_[A-Za-z0-9+/=_\-]{20,}",
+        # Databricks, DigitalOcean, Shopify, Linear, Doppler, Pulumi, Postman.
+        r"\bdapi[0-9a-f]{32}(?:-\d)?",
+        r"\bdo[opr]_v1_[a-f0-9]{64}",
+        r"\bshp(?:at|ss|ca|pa)_[a-fA-F0-9]{32}",
+        r"\blin_(?:api|oauth)_[A-Za-z0-9]{32,}",
+        r"\bdp\.(?:st|ct|pt|sa)\.[A-Za-z0-9_\-]{20,}",
+        r"\bpul-[a-f0-9]{40}",
+        r"\bPMAK-[A-Za-z0-9\-]{30,}",
     )
 ]
 # The sanitizer's patterns match a secret's start (``sk-ant-``, ``AKIA...``, a
@@ -555,11 +661,132 @@ _VERBATIM_HEX = frozenset({"prev_hash", "event_hash", "hash"})
 _HEX = re.compile(r"^[0-9a-fA-F]{32,128}$")
 
 
-def _quoted_redaction(match: "re.Match[str]") -> str:
-    value = match.group(2)
+def _redacted_value(value: str) -> str:
+    """``"x"`` -> ``"[REDACTED]"``: keep the quoting, lose the value."""
+    if value.startswith('\\"') and value.endswith('\\"') and len(value) >= 4:
+        return f'\\"{REDACTED}\\"'
     if value[:1] in "\"'" and value[-1:] == value[:1] and len(value) >= 2:
-        return f"{match.group(1)}{value[0]}{REDACTED}{value[0]}"
-    return match.group(1) + REDACTED
+        return f"{value[0]}{REDACTED}{value[0]}"
+    return REDACTED
+
+
+def _redact_pairs(text_: str) -> str:
+    """``key=value`` / ``"key": "value"`` / ``key%3Dvalue`` whose key names a
+    credential. Scanned key by key so that a non-secret pair never swallows a
+    secret one after it (``foo=password=x``)."""
+    out: list[str] = []
+    pos = 0
+    for m in _KEY_SEP.finditer(text_):
+        if m.start() < pos or not secret_identifier(m.group(2)):
+            continue
+        vm = _VALUE.match(text_, m.end())
+        if vm is None:
+            continue
+        value = vm.group(0)
+        if value == REDACTED or _YAML_BLOCK_INDICATOR.match(value):
+            continue
+        if value.startswith("[REDACTED"):
+            continue
+        if text_.startswith(" " + REDACTED, vm.end()):
+            continue  # ``Authorization: Basic [REDACTED]``: the scheme stays
+        out.append(text_[pos : vm.start()])
+        out.append(_redacted_value(value))
+        pos = vm.end()
+    out.append(text_[pos:])
+    return "".join(out)
+
+
+def _random_enough(value: str) -> bool:
+    """A space-separated value is taken for a secret only when it does not
+    read as a word: a digit next to a letter, or mixed case."""
+    body = value.strip("\"'")
+    if len(body) < 6:
+        return False
+    has_digit = any(c.isdigit() for c in body)
+    has_alpha = any(c.isalpha() for c in body)
+    mixed = any(c.isupper() for c in body[1:]) and any(c.islower() for c in body)
+    return (has_digit and has_alpha) or mixed or any(c in "!@#$%^*+/=~" for c in body)
+
+
+def _redact_spaced(text_: str) -> str:
+    """``--password value``, ``PASSWORD<tab>value``, ``token value``."""
+    out: list[str] = []
+    pos = 0
+    for m in _KEY_SPACE.finditer(text_):
+        ident = m.group(1)
+        if m.start() < pos or not secret_identifier(ident):
+            continue
+        vm = _SPACE_VALUE.match(text_, m.end())
+        if vm is None:
+            continue
+        value = vm.group(0)
+        if value.startswith("[REDACTED") or value.startswith("-"):
+            continue
+        is_flag = ident.startswith("-")
+        if is_flag:
+            if _INDIRECT_FLAG.search(ident):
+                continue
+        elif not _random_enough(value):
+            continue
+        out.append(text_[pos : vm.start()])
+        out.append(_redacted_value(value))
+        pos = vm.end()
+    out.append(text_[pos:])
+    return "".join(out)
+
+
+def _yaml_block_redaction(match: "re.Match[str]") -> str:
+    if not secret_identifier(match.group(4)):
+        return match.group(0)
+    indent = match.group(1)
+    head = match.group(0)[: match.start(6) - match.start(0)]
+    trailing = "\n" if match.group(6).endswith("\n") else ""
+    return f"{head}{indent}  {REDACTED}{trailing}"
+
+
+def _xml_redaction(match: "re.Match[str]") -> str:
+    if not secret_identifier(match.group(2)) or not match.group(4).strip():
+        return match.group(0)
+    attrs = match.group(3) or ""
+    return f"<{match.group(1)}{attrs}>{REDACTED}</{match.group(1)}>"
+
+
+def _named_attr_redaction(match: "re.Match[str]") -> str:
+    if not secret_identifier(match.group(3)):
+        return match.group(0)
+    q = match.group(4)
+    return f"{match.group(1)}{q}{REDACTED}{q}"
+
+
+def _dash_p_redaction(match: "re.Match[str]") -> str:
+    value = match.group(2)
+    if value.startswith("[REDACTED") or _PORT_SHAPE.match(value):
+        return match.group(0)
+    line_start = match.string.rfind("\n", 0, match.start()) + 1
+    context = match.string[line_start : match.start()]
+    has_digit = any(c.isdigit() for c in value)
+    has_alpha = any(c.isalpha() for c in value)
+    mixed = any(c.isupper() for c in value) and any(c.islower() for c in value)
+    if _MYSQL_CONTEXT.search(context) or (has_digit and has_alpha) or mixed:
+        return match.group(1) + REDACTED
+    return match.group(0)
+
+
+def _htpasswd_redaction(match: "re.Match[str]") -> str:
+    """``htpasswd -b file user PASS`` / ``htpasswd -nb user PASS``."""
+    args = match.group(1)
+    tokens = re.findall(r"[ \t]+|[^\s]+", args)
+    words = [i for i, t in enumerate(tokens) if not t.isspace()]
+    flags = "".join(
+        tokens[i][1:] for i in words if tokens[i].startswith("-") and len(tokens[i]) > 1
+    )
+    if "b" not in flags:
+        return match.group(0)
+    positional = [i for i in words if not tokens[i].startswith("-")]
+    index = 1 if "n" in flags else 2
+    if len(positional) > index:
+        tokens[positional[index]] = REDACTED
+    return "htpasswd" + "".join(tokens)
 
 
 def _auth_header_redaction(match: "re.Match[str]") -> str:
@@ -594,8 +821,7 @@ def _aws_secret_redaction(match: "re.Match[str]") -> str:
     return value
 
 
-def redact_text(value: str) -> str:
-    """Cut every credential this module recognises out of free text."""
+def _redact_raw(value: str) -> str:
     out = _PEM_PRIVATE.sub(REDACTED, value)
     out = _AUTH_HEADER.sub(_auth_header_redaction, out)
     out = _WEBHOOK_URLS.sub(lambda m: m.group(1) + REDACTED, out)
@@ -603,10 +829,97 @@ def redact_text(value: str) -> str:
     for pattern in _TOKEN_SHAPES:
         out = pattern.sub(REDACTED, out)
     out = _SCHEME_CREDENTIAL.sub(_scheme_redaction, out)
-    out = _KEY_VALUE.sub(_quoted_redaction, out)
+    out = _YAML_BLOCK.sub(_yaml_block_redaction, out)
+    out = _XML_ELEMENT.sub(_xml_redaction, out)
+    out = _NAMED_VALUE_ATTR.sub(_named_attr_redaction, out)
+    out = _redact_pairs(out)
+    out = _SSHPASS.sub(lambda m: m.group(1) + REDACTED, out)
+    out = _NET_USE.sub(lambda m: m.group(1) + REDACTED, out)
+    out = _STDIN_SECRET.sub(
+        lambda m: m.group(1) + m.group(2) + REDACTED + m.group(2), out
+    )
+    out = _HTPASSWD.sub(_htpasswd_redaction, out)
+    out = _OTP_CODE.sub(lambda m: m.group(1) + REDACTED, out)
+    out = _DASH_P.sub(_dash_p_redaction, out)
+    out = _redact_spaced(out)
     for pattern in _SECRET_TOKENS:
         out = pattern.sub(REDACTED, out)
     return _AWS_SECRET.sub(_aws_secret_redaction, out)
+
+
+_PERCENT = re.compile(r"%[0-9A-Fa-f]{2}")
+
+
+def redact_text(value: str) -> str:
+    """Cut every credential this module recognises out of free text.
+
+    Text carrying percent-escapes is also redacted after decoding
+    (``password%3Dx``, ``%22secret%22%3A%22x%22``); when the decoded form hides
+    a secret the raw form did not show, the decoded, redacted text is what is
+    exported."""
+    out = _redact_raw(value)
+    if _PERCENT.search(value):
+        decoded = unquote(value)
+        for _ in range(2):  # double-encoded (``%253D``) as well
+            if not _PERCENT.search(decoded):
+                break
+            decoded = unquote(decoded)
+        decoded_out = _redact_raw(decoded)
+        if decoded_out.count(REDACTED) > out.count(REDACTED):
+            return decoded_out
+    return out
+
+
+# ``{"name": "DB_PASSWORD", "value": "x"}`` (Kubernetes env, HTTP header
+# lists, ``{"key": "password", "value": "x"}`` settings rows): the secret's
+# name sits in one field and the secret in a sibling.
+_NAME_FIELDS = frozenset(
+    {"name", "key", "param", "parameter", "header", "field", "variable", "var", "id"}
+)
+_VALUE_FIELDS = frozenset(
+    {
+        "value",
+        "val",
+        "values",
+        "data",
+        "content",
+        "stringvalue",
+        "string_value",
+        "secret",
+    }
+)
+
+
+def _paired_value_keys(mapping: dict) -> set:
+    """Keys of ``mapping`` whose value is a secret named by a sibling field."""
+    named = any(
+        str(k).lower() in _NAME_FIELDS and isinstance(v, str) and secret_identifier(v)
+        for k, v in mapping.items()
+    )
+    if not named:
+        return set()
+    return {k for k in mapping if str(k).lower() in _VALUE_FIELDS}
+
+
+_FLAG = re.compile(r"^-{1,2}[A-Za-z][A-Za-z0-9_.\-]*$")
+
+
+def _secret_argument(args: Any, index: int) -> bool:
+    """``["--password", "x"]``, ``["sshpass", "-p", "x"]``: the argument after a
+    flag naming a credential."""
+    if index == 0:
+        return False
+    prev = args[index - 1]
+    if not isinstance(prev, str) or not _FLAG.match(prev):
+        return False
+    if prev == "-p":
+        return any(
+            isinstance(a, str) and os.path.basename(a) == "sshpass"
+            for a in args[: index - 1]
+        )
+    if args[index].startswith("-") or _INDIRECT_FLAG.search(prev):
+        return False
+    return secret_identifier(prev)
 
 
 class Redactor:
@@ -675,15 +988,26 @@ class Redactor:
             return "[truncated]"
         if isinstance(value, dict):
             out = {}
+            paired = _paired_value_keys(value)
             for i, (k, v) in enumerate(value.items()):
                 if i >= self.max_items:
                     out["_truncated"] = True
                     break
                 key = str(k)[:128]
+                if k in paired and v not in (None, "", {}, []):
+                    self.count += 1
+                    out[key] = REDACTED
+                    continue
                 out[key] = self.value(f"{path}.{key}" if path else key, v, depth + 1)
             return out
         if isinstance(value, (list, tuple)):
-            items = [self.value(path, v, depth + 1) for v in value[: self.max_items]]
+            items = []
+            for i, v in enumerate(value[: self.max_items]):
+                if isinstance(v, str) and v and _secret_argument(value, i):
+                    self.count += 1
+                    items.append(REDACTED)
+                    continue
+                items.append(self.value(path, v, depth + 1))
             if len(value) > self.max_items:
                 items.append("[truncated]")
             return items
@@ -1726,6 +2050,42 @@ class _DbSource(Source):
         return {"xid": safe, **keys}
 
 
+_HORIZON_HOLDER_SQL = text(
+    "SELECT pid, datname, state, "
+    "EXTRACT(EPOCH FROM (now() - xact_start))::float AS xact_age_s, "
+    "EXTRACT(EPOCH FROM (now() - state_change))::float AS state_age_s "
+    "FROM pg_stat_activity "
+    "WHERE backend_xid IS NOT NULL AND pid <> pg_backend_pid() "
+    "ORDER BY age(backend_xid) DESC LIMIT 1"
+)
+
+
+def probe_xid_horizon(session: Session) -> Optional[dict]:
+    """The export horizon (``pg_snapshot_xmin``) and the session holding it.
+
+    Postgres sources only export rows below the oldest running transaction,
+    so one session left ``idle in transaction`` after a write stops export
+    (of every database on the server) until it ends. Returns ``None`` off
+    Postgres. ``holder`` is ``None`` when nothing holds the horizon, or when
+    this role may not see the other session (``pg_read_all_stats`` lets it);
+    no query text is read.
+    """
+    if session.get_bind().dialect.name != "postgresql":
+        return None
+    safe, top = _DbSource._snapshot(session)
+    holder = None
+    row = session.execute(_HORIZON_HOLDER_SQL).mappings().first()
+    if row is not None:
+        holder = {
+            "pid": int(row["pid"]),
+            "database": row["datname"],
+            "state": row["state"],
+            "xact_age_s": float(row["xact_age_s"] or 0.0),
+            "state_age_s": float(row["state_age_s"] or 0.0),
+        }
+    return {"xmin": safe, "xmax": top, "holder": holder}
+
+
 class _IdSource(_DbSource):
     """A table with an autoincrement id: cursor ``{"xid": x, "id": n}``.
 
@@ -2204,6 +2564,10 @@ class PipelineMetrics:
     redactions: int = 0
     queue_depth: int = 0
     queue_max: int = 0
+    cursor_commit_failures: int = 0
+    # Delivered, but the cursor could not be saved: the sender holds and
+    # retries the commit (never the batch) until it lands.
+    commit_stalled: bool = False
     last_success_at: Optional[str] = None
     last_error: Optional[str] = None
     last_error_at: Optional[str] = None
@@ -2470,6 +2834,48 @@ class Pipeline:
                     return False
         return False
 
+    async def _commit(self, last: dict[str, _Item]) -> bool:
+        """Save the cursors of a delivered batch, retrying with backoff.
+
+        A failing commit (disk full, read-only volume) must not kill the
+        sender: a restart would re-read and re-send the same batch, and a
+        commit that keeps failing turned that into a tight re-delivery loop.
+        Instead the sender holds here, retries only the commit, and reports
+        ``commit_stalled`` / ``cursor_commit_failures`` until it lands. False
+        only if stopping first.
+        """
+        pending = dict(last)
+        attempt = 0
+        while pending:
+            source, item = next(iter(pending.items()))
+            try:
+                await asyncio.to_thread(
+                    self.cursors.commit, self.destination, source, item.cursor
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - hold, do not re-send
+                attempt += 1
+                self.metrics.cursor_commit_failures += 1
+                self.metrics.commit_stalled = True
+                self._error("cursor_commit_failed")
+                if attempt in (1, 10) or attempt % 100 == 0:
+                    logger.error(
+                        "audit export: delivered to %s but saving the %s cursor "
+                        "failed (%s), attempt %d; holding",
+                        self.destination,
+                        source,
+                        type(exc).__name__,
+                        attempt,
+                    )
+                if await self._wait(self._delay(attempt, None)):
+                    return False
+                continue
+            del pending[source]
+            self.metrics.last_event_at_by_source[source] = iso_utc(item.event.timestamp)
+        self.metrics.commit_stalled = False
+        return True
+
     async def _send_loop(self) -> None:
         while not self._stop.is_set():
             batch = await self._next_batch()
@@ -2483,13 +2889,8 @@ class Pipeline:
                 self.metrics.sent_by_source[item.source] = (
                     self.metrics.sent_by_source.get(item.source, 0) + 1
                 )
-            for source, item in last.items():
-                await asyncio.to_thread(
-                    self.cursors.commit, self.destination, source, item.cursor
-                )
-                self.metrics.last_event_at_by_source[source] = iso_utc(
-                    item.event.timestamp
-                )
+            if not await self._commit(last):
+                return  # stopping; the batch is re-read (and re-sent) next start
             self.metrics.events_sent += len(batch)
             self.metrics.batches_sent += 1
             self.metrics.last_success_at = iso_utc(_now())
@@ -2657,6 +3058,21 @@ class AuditExportService:
         self._wake: Optional[asyncio.Event] = None
         self._lock = asyncio.Lock()
         self._id_key: Optional[bytes] = None
+        # Restarts of dead pipelines (as opposed to config changes): spaced by
+        # a jittered exponential backoff so a pipeline that dies at once on
+        # every start cannot spin.
+        self.restart_base_s = 1.0
+        self.restart_cap_s = 300.0
+        self.restarts = 0  # total, for metrics
+        self._consecutive_restarts = 0
+        self._restart_not_before = 0.0
+        self._started_at = 0.0
+        self._restart_timer: Optional[asyncio.TimerHandle] = None
+        self._rng = random.Random()
+        # Export horizon (Postgres): see probe_xid_horizon.
+        self.horizon: Optional[dict] = None
+        self._horizon_xmin: Optional[int] = None
+        self._horizon_since = 0.0
 
     # -- recording (request path) -----------------------------------------
 
@@ -2740,6 +3156,9 @@ class AuditExportService:
         self._task = asyncio.create_task(self._supervise(), name="audit-export")
 
     async def stop(self) -> None:
+        if self._restart_timer is not None:
+            self._restart_timer.cancel()
+            self._restart_timer = None
         task, self._task = self._task, None
         if task is not None:
             task.cancel()
@@ -2789,14 +3208,58 @@ class AuditExportService:
                     self.is_leader = False
                 if not self.is_leader:
                     return
-            if self._fingerprint != cfg.fingerprint() or not all(
-                p.running for p in self.pipelines.values()
-            ):
+            dead = not all(p.running for p in self.pipelines.values())
+            if self._fingerprint != cfg.fingerprint():
+                self._consecutive_restarts = 0
+                self._restart_not_before = 0.0
                 await self._stop_pipelines()
                 self._start_pipelines(cfg)
+            elif dead:
+                await self._restart_dead(cfg)
+            elif (
+                self._consecutive_restarts
+                and time.monotonic() - self._started_at >= self._restart_cap(cfg)
+            ):
+                self._consecutive_restarts = 0  # healthy long enough: forgive
             await asyncio.to_thread(self._prune_spool)
+            await self._check_horizon(cfg)
+
+    def _restart_cap(self, cfg: AuditExportConfig) -> float:
+        return max(self.restart_base_s, min(self.restart_cap_s, cfg.max_backoff_s))
+
+    def restart_delay(self, n: int, cfg: Optional[AuditExportConfig] = None) -> float:
+        """Jittered delay before the ``n``-th consecutive restart (n >= 1)."""
+        cap = self._restart_cap(cfg or self.config)
+        ceiling = min(cap, self.restart_base_s * (2 ** min(n - 1, 20)))
+        return self._rng.uniform(ceiling / 2, ceiling)
+
+    async def _restart_dead(self, cfg: AuditExportConfig) -> None:
+        now = time.monotonic()
+        if now < self._restart_not_before:
+            self._schedule_wake(self._restart_not_before - now)
+            return
+        self._consecutive_restarts += 1
+        self.restarts += 1
+        delay = self.restart_delay(self._consecutive_restarts, cfg)
+        self._restart_not_before = now + delay
+        logger.warning(
+            "audit export: restarting a dead pipeline (restart %d in a row; "
+            "next no sooner than %.1fs)",
+            self._consecutive_restarts,
+            delay,
+        )
+        await self._stop_pipelines()
+        self._start_pipelines(cfg)
+
+    def _schedule_wake(self, delay: float) -> None:
+        if self._loop is None or self._loop.is_closed():
+            return
+        if self._restart_timer is not None:
+            self._restart_timer.cancel()
+        self._restart_timer = self._loop.call_later(max(0.0, delay), self.wake)
 
     def _start_pipelines(self, cfg: AuditExportConfig) -> None:
+        self._started_at = time.monotonic()
         for dest in cfg.destinations:
             pipeline = Pipeline(
                 destination=dest.name,
@@ -2823,6 +3286,79 @@ class AuditExportService:
         self._fingerprint = None
         for pipeline in pipelines.values():
             await pipeline.stop()
+
+    async def _check_horizon(self, cfg: AuditExportConfig) -> None:
+        """Flag export lag from a transaction holding the xid horizon."""
+        if self.session_scope is None or not any(
+            name != "auth" for name in cfg.sources.enabled()
+        ):
+            self.horizon = None
+            return
+        try:
+            probe = await asyncio.to_thread(self._probe_horizon)
+        except Exception as exc:  # noqa: BLE001 - a health probe must not stop export
+            logger.debug("audit export: horizon probe failed (%s)", exc)
+            return
+        self.horizon = self.assess_horizon(probe, cfg.horizon_alert_s)
+
+    def _probe_horizon(self) -> Optional[dict]:
+        assert self.session_scope is not None
+        with self.session_scope() as session:
+            return probe_xid_horizon(session)
+
+    def assess_horizon(
+        self, probe: Optional[dict], alert_s: float, *, now: Optional[float] = None
+    ) -> Optional[dict]:
+        """Turn a probe into the ``horizon`` status block.
+
+        ``held_s`` is how long the horizon has stood still while newer
+        transactions exist (everything they wrote is waiting on it). The
+        holder's own transaction age is used when visible, so the flag is
+        right on the first probe after a restart too.
+        """
+        if probe is None:
+            return None
+        now = time.monotonic() if now is None else now
+        xmin, xmax = int(probe["xmin"]), int(probe["xmax"])
+        if xmin >= xmax:  # nothing running: nothing held
+            self._horizon_xmin, self._horizon_since = xmin, now
+            held = 0.0
+        else:
+            if xmin != self._horizon_xmin:
+                self._horizon_xmin, self._horizon_since = xmin, now
+            held = now - self._horizon_since
+        holder = probe.get("holder")
+        if holder is not None and xmin < xmax:
+            held = max(held, float(holder.get("xact_age_s") or 0.0))
+        idle = bool(
+            holder and str(holder.get("state") or "").startswith("idle in transaction")
+        )
+        idle_s = float(holder.get("state_age_s") or 0.0) if idle and holder else 0.0
+        stalled = held >= alert_s
+        reason = None
+        if stalled:
+            reason = (
+                "idle_in_transaction"
+                if idle and idle_s >= alert_s
+                else "long_running_transaction"
+            )
+            logger.warning(
+                "audit export: export horizon held for %.0fs by %s (pid %s, %s); "
+                "Postgres events after it are waiting",
+                held,
+                reason,
+                holder.get("pid") if holder else "?",
+                holder.get("database") if holder else "another session",
+            )
+        return {
+            "xmin": xmin,
+            "held_s": round(held, 1),
+            "alert_s": alert_s,
+            "stalled": stalled,
+            "reason": reason,
+            "idle_in_transaction": idle,
+            "holder": holder,
+        }
 
     def _prune_spool(self) -> None:
         if not self.config.sources.auth or not self.spool.directory.is_dir():
@@ -2911,6 +3447,8 @@ class AuditExportService:
                 "dropped": self.spool.dropped,
             },
             "destinations": destinations,
+            "restarts": self.restarts,
+            "horizon": self.horizon,
         }
 
 
@@ -3015,6 +3553,9 @@ class _Collector:
             "leader",
             "queue_depth",
             "last_success_timestamp_seconds",
+            "xid_horizon_held_seconds",
+            "xid_horizon_stalled",
+            "cursor_commit_stalled",
         ):
             yield GaugeMetricFamily(f"{_METRIC_PREFIX}_{name}", name)
         for name in (
@@ -3022,6 +3563,8 @@ class _Collector:
             "events_sent",
             "delivery_failures",
             "events_dropped",
+            "pipeline_restarts",
+            "cursor_commit_failures",
         ):
             yield CounterMetricFamily(f"{_METRIC_PREFIX}_{name}", name)
 
@@ -3070,8 +3613,41 @@ class _Collector:
             "Unix time of the last accepted batch.",
             labels=["destination"],
         )
+        horizon = svc.horizon or {}
+        held = GaugeMetricFamily(
+            f"{_METRIC_PREFIX}_xid_horizon_held_seconds",
+            "Postgres: how long the oldest running transaction has held the "
+            "export horizon (export lag it causes).",
+        )
+        held.add_metric([], float(horizon.get("held_s") or 0.0))
+        stalled = GaugeMetricFamily(
+            f"{_METRIC_PREFIX}_xid_horizon_stalled",
+            "1 when the export horizon has been held longer than horizon_alert_s.",
+            labels=["reason"],
+        )
+        stalled.add_metric(
+            [str(horizon.get("reason") or "")], 1.0 if horizon.get("stalled") else 0.0
+        )
+        restarts = CounterMetricFamily(
+            f"{_METRIC_PREFIX}_pipeline_restarts",
+            "Dead pipelines restarted (with backoff).",
+        )
+        restarts.add_metric([], float(svc.restarts))
+        commit_failures = CounterMetricFamily(
+            f"{_METRIC_PREFIX}_cursor_commit_failures",
+            "Failed cursor saves after an accepted batch (retried; never re-sent).",
+            labels=["destination"],
+        )
+        commit_stalled = GaugeMetricFamily(
+            f"{_METRIC_PREFIX}_cursor_commit_stalled",
+            "1 while a delivered batch's cursor cannot be saved.",
+            labels=["destination"],
+        )
+        yield from (held, stalled, restarts)
         for name, pipeline in list(svc.pipelines.items()):
             m = pipeline.metrics
+            commit_failures.add_metric([name], float(m.cursor_commit_failures))
+            commit_stalled.add_metric([name], 1.0 if m.commit_stalled else 0.0)
             for source, count in m.sent_by_source.items():
                 sent.add_metric([name, source], float(count))
             failures.add_metric([name], float(m.delivery_failures))
@@ -3079,7 +3655,7 @@ class _Collector:
             depth.add_metric([name], float(pipeline._queue.qsize()))
             if m.last_success_at:
                 last.add_metric([name], as_utc(m.last_success_at).timestamp())
-        yield from (sent, failures, drops, depth, last)
+        yield from (sent, failures, drops, depth, last, commit_failures, commit_stalled)
 
 
 def register_metrics(service: AuditExportService) -> None:

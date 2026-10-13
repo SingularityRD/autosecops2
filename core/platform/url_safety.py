@@ -202,6 +202,7 @@ def validate_provider_url(
     allow_loopback: bool = False,
     allowed_hosts: Iterable[str] = DEFAULT_ALLOWED_PROVIDER_HOSTS,
     allowed_schemes: Iterable[str] = ("http", "https"),
+    allowed_networks: Iterable = (),
 ) -> SafeUrl:
     """Validate a user-supplied provider URL and return a sanitized form.
 
@@ -217,7 +218,14 @@ def validate_provider_url(
     ``allow_loopback=True`` permits a self-hosted provider on a
     loopback/private/link-local address (the cloud-metadata IP stays
     blocked). Pass it only for an admin-gated, provider-type-scoped call.
+
+    ``allowed_networks`` (``LLM_PROVIDER_ALLOWED_CIDRS``) lets an operator
+    reach a gateway in a range that is refused by default, for any provider
+    type: e.g. ``100.64.0.0/10`` for an on-prem LLM gateway on a Tailscale /
+    carrier-grade-NAT overlay, which is "non-global" and refused since W3.6.
+    The cloud-metadata addresses stay refused even inside these networks.
     """
+    networks = tuple(allowed_networks)
     if not url or not isinstance(url, str):
         raise UrlSafetyError("url is required")
 
@@ -254,6 +262,12 @@ def validate_provider_url(
             # link-local block, but the cloud-metadata address — the actual
             # SSRF target — stays blocked regardless.
             if blocked and allow_loopback and reason != "cloud metadata address":
+                continue
+            if (
+                blocked
+                and reason != "cloud metadata address"
+                and _in_networks(addr, networks)
+            ):
                 continue
             if blocked:
                 raise UrlSafetyError(f"resolved address {addr} is disallowed: {reason}")

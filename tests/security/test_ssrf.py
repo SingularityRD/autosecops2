@@ -116,3 +116,40 @@ def test_allow_loopback_permits_localhost_but_not_metadata():
 def test_metadata_addresses_blocked_even_with_loopback(url):
     with pytest.raises(UrlSafetyError, match="metadata"):
         validate_provider_url(url, allow_loopback=True)
+
+
+# W3.6 made carrier-grade NAT (100.64.0.0/10) "non-global" and refused. An
+# on-prem LLM gateway reached over Tailscale lives there: the operator opts it
+# in with LLM_PROVIDER_ALLOWED_CIDRS, and metadata addresses stay refused.
+def test_allowed_networks_admit_a_tailscale_gateway_but_not_metadata():
+    from core.platform.url_safety import parse_networks
+
+    nets = parse_networks("100.64.0.0/10")
+    with pytest.raises(UrlSafetyError):
+        validate_provider_url("http://100.101.102.103:8080/v1", allow_custom=True)
+    safe = validate_provider_url(
+        "http://100.101.102.103:8080/v1", allow_custom=True, allowed_networks=nets
+    )
+    assert safe.host == "100.101.102.103"
+    with pytest.raises(UrlSafetyError):
+        validate_provider_url(
+            "http://100.100.100.200/latest/meta-data",
+            allow_custom=True,
+            allowed_networks=nets,
+        )
+
+
+def test_llm_provider_allowed_cidrs_setting_reaches_discovery(monkeypatch):
+    from core.config import get_settings
+    from core.llm.providers import discovery
+
+    monkeypatch.setenv("LLM_PROVIDER_ALLOWED_CIDRS", "100.64.0.0/10")
+    get_settings.cache_clear()
+    try:
+        nets = discovery.provider_allowed_networks()
+        assert [str(n) for n in nets] == ["100.64.0.0/10"]
+        monkeypatch.setenv("LLM_PROVIDER_ALLOWED_CIDRS", "100.64.0.0/10,oops")
+        get_settings.cache_clear()
+        assert discovery.provider_allowed_networks() == ()
+    finally:
+        get_settings.cache_clear()

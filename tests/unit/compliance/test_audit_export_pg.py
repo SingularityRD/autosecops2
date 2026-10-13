@@ -17,6 +17,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from urllib.parse import quote
 
 import pytest
@@ -314,3 +315,36 @@ def test_a_cursor_ahead_of_the_database_rereads_instead_of_waiting_forever(clean
         _config_row(conn, "after-restore")
     seen, _ = _drain(source, {"xid": 2**40, "id": 10**6}, expect=1)
     assert seen == ["config:1"]
+
+
+def test_horizon_probe_names_an_idle_in_transaction_holder(engine, clean):
+    """A session that wrote and then sat idle in transaction holds the export
+    horizon; the probe sees it (pid, state) and the service flags the lag."""
+    from core.compliance.audit_export import AuditExportService, probe_xid_horizon
+
+    from .test_audit_export_service import MemoryConfigStore
+
+    idle = engine.connect()
+    tx = idle.begin()
+    try:
+        idle.execute(text("INSERT INTO unrelated VALUES (1)"))
+        pid = idle.execute(text("SELECT pg_backend_pid()")).scalar()
+        time.sleep(0.2)  # let pg_stat_activity show it as idle in transaction
+        with Session(engine) as session:
+            probe = probe_xid_horizon(session)
+        assert probe is not None and probe["xmin"] < probe["xmax"]
+        holder = probe["holder"]
+        assert holder is not None  # superuser/owner test role sees the session
+        if holder["pid"] == pid:
+            assert holder["state"].startswith("idle in transaction")
+        svc = AuditExportService(
+            state_dir=Path(os.getenv("TMPDIR", "/tmp")) / uuid.uuid4().hex,
+            config_store=MemoryConfigStore(None),
+            secrets={}.get,
+        )
+        held = dict(probe, holder=dict(holder, xact_age_s=700.0, state_age_s=700.0))
+        flagged = svc.assess_horizon(held, 600)
+        assert flagged["stalled"] is True
+    finally:
+        tx.rollback()
+        idle.close()
