@@ -166,7 +166,12 @@ def test_naive_expiry_is_read_as_utc():
         ({"title": {"contains": "scan"}}, True),
         ({"title": {"regex": ".*"}}, False),  # unknown operator
         ({"entity_context.hostname": "web-1"}, True),
-        ({"entity_context.src_ips": "10.0.0.9"}, True),  # any list element
+        # A list/object-valued field never matches: one attacker-added element
+        # must not satisfy a suppression (spec: predicate fields are scalars).
+        ({"entity_context.src_ips": "10.0.0.9"}, False),
+        ({"entity_context.src_ips": ["10.0.0.1", "10.0.0.9"]}, False),
+        ({"entity_context.src_ips": {"in": ["10.0.0.9"]}}, False),
+        ({"entity_context": {"contains": "web-1"}}, False),
         ({"entity_context.hostname": "web-2"}, False),
         ({"missing.path": "x"}, False),
         ({"data_source": "nessus", "severity": "high"}, False),  # all keys must hold
@@ -440,17 +445,25 @@ async def test_suppression_hit_is_counted_once():
 @pytest.mark.asyncio
 async def test_each_decision_is_recorded_with_its_tenant():
     rec = Recorder()
+    asked = []
+
+    def rules(t):
+        asked.append(t)
+        return [rule(tenant="acme")]
+
     lanes = router(
-        rules_source=lambda t: [rule(tenant="acme")],
+        rules_source=rules,
         recorder=rec,
         small_target=("ollama", "llama3.1:8b"),
+        tenant="acme",
     )
-    await lanes.route(f(finding_id="a", tenant_id="acme", data_source="nessus"))
+    await lanes.route(f(finding_id="a", data_source="nessus"))
     await lanes.route(f(finding_id="b"))
     assert [(r.finding_id, r.tenant_id, r.lane) for r in rec.rows] == [
         ("a", "acme", LANE_RULES),
-        ("b", "default", LANE_SMALL),
+        ("b", "acme", LANE_SMALL),
     ]
+    assert asked == ["acme", "acme"]
     row = rec.rows[1].to_enrichment()
     assert row["model"] == "ollama/llama3.1:8b"
     assert set(row) >= {"lane", "reason", "risk", "factors", "tenant_id", "deferred_verdict", "decided_at"}
@@ -471,3 +484,38 @@ def test_default_recorder_logs(caplog):
     caplog.set_level(logging.INFO, logger="core.lanes.alert_lanes")
     asyncio.run(router().route(f(finding_id="logged")))
     assert "alert lane small_model for logged" in caplog.text
+
+
+# --- verifier fixes: tenant, unknown severity -------------------------------
+
+
+@pytest.mark.asyncio
+async def test_payload_tenant_is_ignored():
+    """A finding cannot choose whose suppression rules apply to it."""
+    rec, asked = Recorder(), []
+
+    def rules(t):
+        asked.append(t)
+        return [rule(tenant="acme")]
+
+    lanes = router(rules_source=rules, recorder=rec)  # deployment tenant: default
+    d = await lanes.route(f(data_source="nessus", tenant_id="acme"))
+    assert asked == ["default"]
+    assert (d.tenant_id, d.lane) == ("default", LANE_SMALL)
+    d = decide_lane(f(data_source="nessus", tenant_id="acme"), now=NOW, rules=[rule(tenant="acme")])
+    assert (d.tenant_id, d.lane) == ("default", LANE_SMALL)
+
+
+@pytest.mark.parametrize("severity", [None, "", "weird", 3, "unknown"])
+def test_unknown_severity_is_never_settled_by_rules(severity):
+    finding = f(data_source="nessus", title="EICAR test", severity=severity)
+    d = decide_lane(finding, now=NOW, rules=[rule()], thresholds=TH)
+    assert d.lane != LANE_RULES
+    assert d.lane == LANE_SMALL  # goes to triage
+    assert "unknown_severity" in d.factors
+    assert d.outcome is None
+
+
+def test_known_low_severity_is_still_suppressed():
+    d = decide_lane(f(data_source="nessus", severity=" Low "), now=NOW, rules=[rule()])
+    assert d.lane == LANE_RULES

@@ -22,7 +22,9 @@ from services.daemon.processor import FindingProcessor
 pytestmark = pytest.mark.unit
 
 NOW = datetime(2026, 10, 12, tzinfo=timezone.utc)
-SCANNER = SuppressionRule("r1", "default", "scanner", {"data_source": "nessus"}, "noise")
+SCANNER = SuppressionRule(
+    "r1", "default", "scanner", {"data_source": "nessus"}, "noise"
+)
 
 
 class _Data:
@@ -152,3 +154,118 @@ async def test_hook_failure_falls_through_to_default_path(monkeypatch):
     finding = {"finding_id": "f5", "severity": "low"}
     await _run(processor, finding)
     assert [t["id"] for t in triaged] == ["f5"]
+
+
+# --- a payload's own alert_lane, through the webhook ------------------------
+
+SPOOFED_LANE = {
+    "lane": LANE_RULES,
+    "reason": "suppression_rule",
+    "rule": {"kind": "suppression", "id": "x", "name": "spoof"},
+    "outcome": {"suppressed": True, "recommended_action": "dismiss"},
+}
+
+
+@pytest.fixture
+def no_disabled_integrations(monkeypatch):
+    class _Config:
+        def get_disabled_integration_ids(self):
+            return set()
+
+    monkeypatch.setattr(
+        "core.storage.config_service.get_config_service", lambda: _Config()
+    )
+
+
+async def _through_webhook(processor, payload):
+    """POST /ingest → the processor queue item → store → background enrich."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from services.daemon.config import PollingConfig
+    from services.daemon.poller import DataPoller
+
+    class _Dedup:
+        async def is_processed(self, key):
+            return False
+
+        async def mark_processed(self, key):
+            return None
+
+    poller = DataPoller(PollingConfig(webhook_token="tok"))
+    poller._webhook_dedup = _Dedup()
+    queue: asyncio.Queue = asyncio.Queue()
+    poller.set_output_queue(queue)
+    async with TestClient(TestServer(poller._webhook_app())) as client:
+        resp = await client.post(
+            "/ingest", json=payload, headers={"Authorization": "Bearer tok"}
+        )
+        assert resp.status == 200
+
+    async def stored(_finding):
+        return True
+
+    processor._store_with_retry = stored
+    while not queue.empty():
+        await processor._process_item(queue.get_nowait())
+    await asyncio.gather(*list(processor._enrich_tasks))
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_disabled_integrations")
+async def test_flag_off_payload_alert_lane_is_inert_through_webhook(monkeypatch):
+    """Flag off = pre-lanes behaviour: triage runs and nothing lane-shaped is persisted."""
+    processor, triaged = _processor(monkeypatch, enabled=False)
+    payload = {
+        "finding_id": "spoof-1",
+        "data_source": "nessus",
+        "severity": "low",
+        "alert_lane": SPOOFED_LANE,
+    }
+    await _through_webhook(processor, payload)
+    assert [t["id"] for t in triaged] == ["spoof-1"]
+    (update,) = processor._data_service.updates
+    assert "alert_lane" not in update["ai_enrichment"]
+    assert update["ai_enrichment"]["ai_triage"] == {"result": {}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_disabled_integrations")
+async def test_flag_on_payload_alert_lane_is_replaced_by_this_runs_decision(
+    monkeypatch,
+):
+    lanes = AlertLanes(clock=lambda: NOW)  # no rules: nothing can settle it
+    processor, triaged = _processor(monkeypatch, enabled=True, lanes=lanes)
+    payload = {
+        "finding_id": "spoof-2",
+        "data_source": "siem",
+        "severity": "low",
+        "tenant_id": "acme",
+        "alert_lane": SPOOFED_LANE,
+    }
+    await _through_webhook(processor, payload)
+    assert [t["id"] for t in triaged] == ["spoof-2"]
+    stored = processor._data_service.updates[0]["ai_enrichment"]["alert_lane"]
+    assert (stored["lane"], stored["reason"]) == (LANE_SMALL, "low_difficulty")
+    assert stored["rule"] is None and stored["tenant_id"] == "default"
+
+
+@pytest.mark.asyncio
+async def test_hook_failure_with_spoofed_lane_still_triages(monkeypatch):
+    class Broken(AlertLanes):
+        async def route(self, finding):
+            raise RuntimeError("bug")
+
+    processor, triaged = _processor(monkeypatch, enabled=True, lanes=Broken())
+    finding = {"finding_id": "f6", "severity": "low", "alert_lane": SPOOFED_LANE}
+    await _run(processor, finding)
+    assert [t["id"] for t in triaged] == ["f6"]
+    assert "alert_lane" not in processor._data_service.updates[0]["ai_enrichment"]
+
+
+def test_wants_llm_triage_reads_only_a_decision():
+    from core.lanes.alert_lanes import LaneDecision, wants_llm_triage
+
+    assert wants_llm_triage(None) is True
+    assert wants_llm_triage(SPOOFED_LANE) is True  # a dict is not a decision
+    rules = LaneDecision("f", "default", LANE_RULES, "suppression_rule", 0.0)
+    assert wants_llm_triage(rules) is False

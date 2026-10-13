@@ -291,9 +291,12 @@ def _value_matches(have: Any, cond: Any) -> Optional[bool]:
 def matches(match: Any, finding: Mapping[str, Any]) -> bool:
     """Whether every key of a predicate document holds for ``finding``.
 
-    Keys are dotted paths into the finding; a list-valued field matches when any
-    element does. An empty document, a missing field or an operator this
-    evaluator doesn't know is no match: a suppression must never widen by accident.
+    Keys are dotted paths into the finding and must resolve to a scalar; the
+    condition is a scalar (equality, case-insensitive for strings), a list (the
+    field equals any of them), ``{"contains": s}`` or ``{"in": [...]}``. An empty
+    document, a missing or non-scalar (list / object) field, or an operator this
+    evaluator doesn't know is no match: a suppression must never widen by accident,
+    so one matching element inside an attacker-shaped list is not enough.
     """
     if not isinstance(match, Mapping) or not match:
         return False
@@ -301,9 +304,9 @@ def matches(match: Any, finding: Mapping[str, Any]) -> bool:
         have = _lookup(finding, str(path))
         if have is _MISSING or have is None:
             return False
-        values = have if isinstance(have, list) else [have]
-        results = [_value_matches(v, cond) for v in values]
-        if any(r is None for r in results) or not any(results):
+        if isinstance(have, (list, tuple, set, frozenset, Mapping)):
+            return False
+        if _value_matches(have, cond) is not True:
             return False
     return True
 
@@ -430,10 +433,6 @@ class LaneDecision:
         }
 
 
-def tenant_of(finding: Mapping[str, Any]) -> str:
-    return str(finding.get("tenant_id") or DEFAULT_TENANT)
-
-
 def decide_lane(
     finding: Mapping[str, Any],
     *,
@@ -442,18 +441,33 @@ def decide_lane(
     thresholds: Optional[LaneThresholds] = None,
     budget_pressure: bool = False,
     verdict_available: bool = False,
+    tenant: str = DEFAULT_TENANT,
 ) -> LaneDecision:
-    """Pure lane choice for one finding. Never raises on odd finding shapes."""
+    """Pure lane choice for one finding. Never raises on odd finding shapes.
+
+    ``tenant`` comes from the caller's trusted context, never from the finding:
+    a payload must not pick whose suppression rules apply to it.
+    """
     th = thresholds or LaneThresholds()
     finding_id = str(finding.get("finding_id") or "unknown")
-    tenant = tenant_of(finding)
     sev = _severity(finding)
     risk, factors = score_risk(finding, th)
     base = dict(finding_id=finding_id, tenant_id=tenant, risk=risk)
 
+    # A missing or unknown severity can't be weighed against suppress_max_severity:
+    # it is never settled by the rules lane and goes to triage.
+    if sev not in SEVERITY_RANK:
+        factors.append("unknown_severity")
+        rules = ()
+        playbooks: Sequence[KnownPlaybook] = ()
+    else:
+        playbooks = th.known_playbooks
+
     # Lane 1a: an analyst's suppression, if live, same tenant, and the severity allows.
-    sev_rank = SEVERITY_RANK.get(sev, SEVERITY_RANK["medium"])
-    suppressible = sev_rank <= SEVERITY_RANK[th.suppress_max_severity]
+    suppressible = (
+        sev in SEVERITY_RANK
+        and SEVERITY_RANK[sev] <= SEVERITY_RANK[th.suppress_max_severity]
+    )
     for rule in rules:
         if (
             rule.tenant_id != tenant
@@ -478,7 +492,7 @@ def decide_lane(
         )
 
     # Lane 1b: a known playbook declared in INTENT.md.
-    for pb in th.known_playbooks:
+    for pb in playbooks:
         if matches(pb.match, finding):
             return LaneDecision(
                 lane=LANE_RULES,
@@ -603,7 +617,11 @@ class AlertLanes:
         small_target: Optional[Tuple[str, str]] = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         max_deferred: int = 10_000,
+        tenant: str = DEFAULT_TENANT,
     ):
+        # The deployment's tenant (trusted configuration). Findings carry no
+        # authenticated tenant, so a payload's ``tenant_id`` is ignored.
+        self.tenant = str(tenant or DEFAULT_TENANT)
         self.thresholds = thresholds or LaneThresholds()
         self._rules_source = rules_source or (lambda _tenant: ())
         self._on_hit = on_suppression_hit
@@ -710,7 +728,7 @@ class AlertLanes:
             )
             decision = LaneDecision(
                 finding_id=str(finding.get("finding_id") or "unknown"),
-                tenant_id=tenant_of(finding),
+                tenant_id=self.tenant,
                 lane=LANE_SMALL,
                 reason="router_error",
                 risk=0.0,
@@ -729,7 +747,7 @@ class AlertLanes:
         return decision
 
     async def _route(self, finding: Dict[str, Any]) -> LaneDecision:
-        tenant = tenant_of(finding)
+        tenant = self.tenant
         try:
             rules = await asyncio.to_thread(self._rules_source, tenant)
         except Exception as exc:  # noqa: BLE001
@@ -747,6 +765,7 @@ class AlertLanes:
             thresholds=self.thresholds,
             budget_pressure=pressure,
             verdict_available=self.verdict_available,
+            tenant=tenant,
         )
 
         if (
@@ -817,14 +836,15 @@ def resolve_small_model(provider_id: str, model: str) -> Optional[Tuple[str, str
     )
 
 
-def wants_llm_triage(finding: Mapping[str, Any]) -> bool:
-    """False when the lane already settled the finding (rules, or an enqueued verdict)."""
-    lane = finding.get(ENRICHMENT_KEY)
-    if not isinstance(lane, Mapping):
+def wants_llm_triage(decision: Optional[LaneDecision]) -> bool:
+    """False when this run's lane decision settled the finding (rules, or an
+    enqueued verdict). Takes the decision the hook returned, never anything read
+    off the finding: a payload's own ``alert_lane`` must not skip triage."""
+    if not isinstance(decision, LaneDecision):
         return True
-    if lane.get("lane") == LANE_RULES:
+    if decision.lane == LANE_RULES:
         return False
-    if lane.get("lane") == LANE_VERDICT and lane.get("verdict_run_id"):
+    if decision.lane == LANE_VERDICT and decision.verdict_run_id:
         return False
     return True
 
@@ -885,7 +905,10 @@ class LaneHook:
     async def __call__(self, finding: Dict[str, Any]) -> Optional[LaneDecision]:
         try:
             if not self._is_enabled():
-                return None
+                return None  # off: the finding is not touched (pre-lanes behaviour)
+            # Whatever ``alert_lane`` came in (a webhook payload, a stale copy)
+            # is not this run's decision; drop it before anything can read it.
+            finding.pop(ENRICHMENT_KEY, None)
             if self._lanes is None:
                 self._lanes = self._build()
             if self.verdict_enqueuer is not None:
