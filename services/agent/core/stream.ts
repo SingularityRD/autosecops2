@@ -6,7 +6,7 @@ import { GatewayExhausted } from "./limiter.js";
 import { ZERO_TOKENS, type Refusal, type SpendPayload, type TokenCounts } from "../contracts/budget.js";
 import type { CheckpointPayload, DispatchPayload, NewEvent, ResolutionPayload, TerminalPayload } from "../contracts/events.js";
 import { hasRecall, isRecalled, recalledNotesOf, recalledNotes, type RecallPayload } from "../contracts/memory.js";
-import { ToolBoundsViolation, type RegisteredTool, type ToolResult } from "../contracts/tool.js";
+import { isGated, ToolBoundsViolation, type RegisteredTool, type ToolResult } from "../contracts/tool.js";
 import {
   approvalId,
   TOOL_APPROVAL,
@@ -206,7 +206,7 @@ class Run<T, Kinds extends Record<string, unknown>> {
           yield* this.record(call, gate.result, gate.checkpoint_id);
           continue;
         }
-        const measured = await this.invoke(tool, call.args);
+        const measured = await this.invoke(tool, call.args, gate.checkpoint_id);
         yield* this.record(call, measured.result, gate.checkpoint_id, measured.duration_ms);
       }
     }
@@ -232,7 +232,9 @@ class Run<T, Kinds extends Record<string, unknown>> {
   // An approval says a call may go through; the executed record says it already
   // has. Only the second stops a resume making the same call a second time.
   private gate(tool: RegisteredTool, args: string, fold: Fold): Gate {
-    if (!this.cfg.approvals.has(tool.id)) return { kind: "allowed" };
+    // Gated by the deployment's list or by what the tool does: an effect that
+    // changes the world parks for a person even when the list left it off.
+    if (!this.cfg.approvals.has(tool.id) && !isGated(tool)) return { kind: "allowed" };
     const checkpoint_id = approvalId(this.cfg.run_id, tool.id, args);
     const served = fold.executed.get(checkpoint_id);
     if (served !== undefined) return { kind: "served", checkpoint_id, result: served };
@@ -241,7 +243,11 @@ class Run<T, Kinds extends Record<string, unknown>> {
     return answer === "approve" ? { kind: "allowed", checkpoint_id } : { kind: "rejected" };
   }
 
-  private async invoke(tool: RegisteredTool, rawArgs: string): Promise<{ result: ToolResult; duration_ms: number }> {
+  private async invoke(
+    tool: RegisteredTool,
+    rawArgs: string,
+    checkpointId?: string,
+  ): Promise<{ result: ToolResult; duration_ms: number }> {
     const started = performance.now();
     const finish = (result: ToolResult): { result: ToolResult; duration_ms: number } => ({
       result,
@@ -251,7 +257,8 @@ class Run<T, Kinds extends Record<string, unknown>> {
     if (args === null) {
       return finish({ ok: false, failure: { kind: "invalid_args", detail: "arguments were not valid JSON" } });
     }
-    return finish(await this.harness.dispatch.invoke(tool, args, this.cfg.signal, this.cfg.agent_id));
+    const approval = checkpointId === undefined ? undefined : { run_id: this.cfg.run_id, checkpoint_id: checkpointId };
+    return finish(await this.harness.dispatch.invoke(tool, args, this.cfg.signal, this.cfg.agent_id, approval));
   }
 
   // The one path a result takes, and where wrap scans it. A gated call is journaled

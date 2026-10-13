@@ -1,1 +1,4 @@
-"""Verdict quality: canaries (W1.5); offline evals and QA sampling to follow."""
+"""Verdict quality: QA sampling of live AI decisions and the Scorecard (W1.6).
+
+Callers import directly from ``core.quality.<module>``.
+"""

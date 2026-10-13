@@ -75,6 +75,32 @@ GATED_ROUTES = [
     ),
     ("POST", "/api/workflows/w-1/execute", {}, "ai_chat.use"),
     ("POST", "/api/claude/chat/stream", {"messages": []}, "ai_chat.use"),
+    ("POST", "/api/qa/samples/draw", {}, "ai_decisions.approve"),
+    ("POST", "/api/qa/samples/1/review", {"agrees": True}, "findings.write"),
+    (
+        "POST",
+        "/api/webhook-endpoints",
+        {"name": "x", "url": "https://example.com"},
+        "settings.write",
+    ),
+    (
+        "PATCH",
+        "/api/webhook-endpoints/9c1c2d3e-0000-4000-8000-0000000000aa",
+        {"enabled": False},
+        "settings.write",
+    ),
+    (
+        "DELETE",
+        "/api/webhook-endpoints/9c1c2d3e-0000-4000-8000-0000000000aa",
+        None,
+        "settings.write",
+    ),
+    (
+        "POST",
+        "/api/webhook-endpoints/9c1c2d3e-0000-4000-8000-0000000000aa/test",
+        None,
+        "settings.write",
+    ),
 ]
 
 

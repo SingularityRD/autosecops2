@@ -40,7 +40,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Tuple
 
-GENERATOR_VERSION = "v1.1"
+GENERATOR_VERSION = "v1.2"
 DEFAULT_SEED = 7
 PER_TWIN = 30  # alerts per (pair, verdict)
 INJECTION_COUNT = 240
@@ -206,7 +206,7 @@ PAIRS: Dict[str, List[Pair]] = {
              "Failed sign-ins across many accounts from one address", "Sign-in failures across many accounts from one address", "in",
              "{ext} attempted sign-in to {n} different accounts with one or two attempts each over {n2} minutes. One attempt for {user} succeeded and that session immediately enumerated the directory.",
              "Spray pattern across many accounts, success then directory enumeration.",
-             ("usernames",),
+             ("entity_context.usernames",),
              "{ext}, the egress of the head-office network, produced failed sign-ins for {n} accounts over {n2} minutes after a certificate rollover broke saved credentials in a desktop app. Failures stopped after hotfix CHG-{ticket}; the successful sign-ins, including {user}, used MFA from managed devices.",
              "Office egress failures caused by a broken client, resolved by a documented fix."),
         Pair("id03", "T1558.003", "sentinel", "high",
@@ -292,7 +292,7 @@ PAIRS: Dict[str, List[Pair]] = {
              "RDP logon failures then success", "RDP logon failures followed by success", "in",
              "{ext} made {n} RDP logon attempts against server {host}, which is exposed to the internet, and then logged on successfully as {user}. The account had not used RDP before.",
              "Brute force from the internet ending in a successful RDP logon.",
-             ("usernames",),
+             ("entity_context.usernames",),
              "{ext}, the remote-support vendor's registered address, made {n} failed RDP logons against server {host} after the vendor's saved password expired, then logged on as {user} once it was reset under INC-{ticket}. The firewall only allows RDP from that address.",
              "Contracted support vendor retrying an expired saved credential."),
         Pair("nw07", "T1190", "sentinel", "high",
@@ -329,7 +329,7 @@ PAIRS: Dict[str, List[Pair]] = {
              "IAM principal created with administrator policy", "IAM principal created with AdministratorAccess", "in",
              "Role {role} created IAM user '{user}' with AdministratorAccess and an access key from {ext}. All IAM changes in account {acct} normally come from the infrastructure pipeline, and the session tag cites CHG-{ticket}, which has no IAM scope.",
              "Admin user creation outside the infrastructure-as-code path.",
-             ("usernames",),
+             ("entity_context.usernames",),
              "The break-glass runbook created IAM user '{user}' with AdministratorAccess in account {acct} from {ext}, the corporate VPN egress, during announced recovery drill DR-{ticket}. The key went to the vault and the user was deleted {n2} minutes later.",
              "Announced recovery drill following the break-glass runbook."),
         Pair("cl04", "T1530", "aws_guardduty", "high",
@@ -485,7 +485,7 @@ def _host_prefix(rng: random.Random, desc: str) -> str:
         return rng.choice(_WS_PREFIX)
     if "domain controller {host}" in d:
         return "DC"
-    if "appliance {host}" in d:
+    if "vpn appliance {host}" in d:
         return "VPN"
     if "file server {host}" in d:
         return "FS"

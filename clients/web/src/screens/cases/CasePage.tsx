@@ -18,6 +18,7 @@ import type { CaseRow } from '../../data/data'
 import Chat from '../../shell/Chat'
 import { EvidenceTrail } from './EvidenceTrail'
 import { EvidenceCard, IOCsCard } from './CaseSections'
+import { CaseActions, useCaseActions } from './CaseActions'
 import { CaseSide } from './CaseSide'
 import { fmtCost } from '../../shared/cost'
 import { timeLeft, when } from './caseFormat'
@@ -47,7 +48,9 @@ import {
 import './cases.css'
 import { CLOSURE_CATEGORIES, type CaseClosureView, type CaseInvestigationRef, type CaseLinkedFinding, type Phase } from './useCases'
 
-const TABS = ['Summary', 'Explanations', 'Evidence', 'Checked', 'Memory and blind spots', 'Record'] as const
+const TABS = ['Summary', 'Explanations', 'Evidence', 'Checked', 'Memory and blind spots', 'Actions', 'Record'] as const
+/** Tabs reached from the Summary's doors. Actions has its own tab and no door. */
+type DoorTab = Exclude<Tab, 'Summary' | 'Actions'>
 type Tab = (typeof TABS)[number]
 const NEEDS_POLL_MS = 20_000
 
@@ -269,7 +272,7 @@ function memoryRows(fold: RunFold | null): number {
   return opening + recallEntityCalls(fold).length + (recall?.gaps.length ?? 0) + visibilityGaps(fold).length
 }
 
-function counts(fold: RunFold | null, record: number): Record<Tab, number> {
+function counts(fold: RunFold | null, record: number, actions: number): Record<Tab, number> {
   const calls = fold?.calls.length ?? 0
   const memory = memoryRows(fold)
   if (fold?.kind === 'hunt') {
@@ -279,6 +282,7 @@ function counts(fold: RunFold | null, record: number): Record<Tab, number> {
       Evidence: fold.evidenceCount,
       Checked: calls,
       'Memory and blind spots': memory,
+      Actions: actions,
       Record: record,
     }
   }
@@ -289,6 +293,7 @@ function counts(fold: RunFold | null, record: number): Record<Tab, number> {
     Evidence: findings,
     Checked: calls,
     'Memory and blind spots': memory,
+    Actions: actions,
     Record: record,
   }
 }
@@ -296,7 +301,7 @@ function counts(fold: RunFold | null, record: number): Record<Tab, number> {
 const DOOR_ORDER = ['proven', 'standing', 'weakened', 'forming', 'ruled out']
 
 /** The line under each door's count, from the fold already loaded. */
-function doorLines(fold: RunFold | null, foldPhase: Phase, hasRun: boolean, rows: CaseRecordRow[], recordPhase: Phase): Record<Exclude<Tab, 'Summary'>, string> {
+function doorLines(fold: RunFold | null, foldPhase: Phase, hasRun: boolean, rows: CaseRecordRow[], recordPhase: Phase): Record<DoorTab, string> {
   const none = foldPhase === 'loading' ? 'Loading…' : foldPhase === 'error' ? 'Couldn’t read the run' : hasRun ? 'Run started' : 'No run yet'
   const tally = new Map<string, number>()
   if (fold?.kind === 'hunt') {
@@ -331,14 +336,14 @@ function doorLines(fold: RunFold | null, foldPhase: Phase, hasRun: boolean, rows
 }
 
 /** Five doors into the audit tabs, in every mood. */
-function Doors({ counts: n, lines, onOpen }: { counts: Record<Tab, number>; lines: Record<Exclude<Tab, 'Summary'>, string>; onOpen: (tab: Tab) => void }) {
+function Doors({ counts: n, lines, onOpen }: { counts: Record<Tab, number>; lines: Record<DoorTab, string>; onOpen: (tab: Tab) => void }) {
   return (
     <section className="case-doors" aria-label="Audit doors">
-      {TABS.filter((name) => name !== 'Summary').map((name) => (
+      {TABS.filter((name): name is DoorTab => name !== 'Summary' && name !== 'Actions').map((name) => (
         <button key={name} type="button" className="case-door" onClick={() => onOpen(name)}>
           <span className="door-label">{name}<span aria-hidden="true">›</span></span>
           <span className="door-count">{n[name]}</span>
-          <span className="door-sub">{lines[name as Exclude<Tab, 'Summary'>]}</span>
+          <span className="door-sub">{lines[name]}</span>
         </button>
       ))}
     </section>
@@ -497,6 +502,7 @@ export function CasePage({
   onMerge,
   onDelete,
   canDelete,
+  canRevert = false,
   onChanged,
   onRefresh,
 }: {
@@ -522,6 +528,8 @@ export function CasePage({
   onMerge: () => void
   onDelete: () => void
   canDelete: boolean
+  /** The viewer may revert an agent's change (ai_decisions.approve). */
+  canRevert?: boolean
   onChanged: () => void
   /** Re-read the case in place, without blanking it. Used while the run is live. */
   onRefresh?: () => void
@@ -704,7 +712,9 @@ export function CasePage({
     }
   }, [id, recordKey])
 
-  const tabCounts = counts(fold, rows.length)
+  // Re-read with the record (a live run's poll) and when a decision settles.
+  const caseActions = useCaseActions(id, recordKey + settled)
+  const tabCounts = counts(fold, rows.length, caseActions.actions.length)
   const gaps = visibilityGaps(fold)
   const recalled = recallEntityCalls(fold)
   const shown = chip === 'all' ? rows : rows.filter((row) => recordChip(row.kind) === chip)
@@ -1066,6 +1076,20 @@ export function CasePage({
             ) : (
               <MemoryCards fold={fold} recalled={recalled} gaps={gaps} />
             )
+          )}
+
+          {tab === 'Actions' && (
+            <CaseActions
+              actions={caseActions.actions}
+              phase={caseActions.phase}
+              error={caseActions.error}
+              canRevert={canRevert}
+              onRetry={caseActions.reload}
+              onReverted={() => {
+                caseActions.reload()
+                setRecordKey((k) => k + 1)
+              }}
+            />
           )}
 
           {tab === 'Record' && (

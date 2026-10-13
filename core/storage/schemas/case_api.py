@@ -214,3 +214,84 @@ class CaseSearchResponse(BaseModel):
     limit: int
     offset: int
     has_more: bool
+
+
+class CaseActionStateRow(BaseModel):
+    """One key of an action's observed before/after state, value as text."""
+
+    key: str
+    value: str
+
+
+class CaseActionEvent(BaseModel):
+    """One dated step of an action's lifecycle.
+
+    ``kind``: proposed, approved, rejected, executed, failed, verified,
+    reversed. ``detail`` is the rejection reason, execution message or error,
+    or the verify status.
+    """
+
+    kind: str
+    at: Optional[str] = None
+    actor: Optional[str] = None
+    detail: Optional[str] = None
+
+
+class CaseActionPolicy(BaseModel):
+    """What the approval gate recorded: whether a person had to approve, and
+    the decision rule stored on the reason (``field=value [met|not met (x)]``)."""
+
+    requires_approval: bool
+    decision_rule: Optional[str] = None
+
+
+class CaseActionExecution(BaseModel):
+    success: Optional[bool] = None
+    status: Optional[str] = None
+    message: Optional[str] = None
+    error: Optional[str] = None
+
+
+class CaseActionTimelineItem(BaseModel):
+    """A response action on the case and its lifecycle (W0.5 columns).
+
+    ``can_revert`` is the row's state only (executed, reversible, not yet
+    reversed, not itself a revert); whether the caller may revert is RBAC's.
+    """
+
+    action_id: str
+    action_type: str
+    title: str
+    target: str
+    status: str
+    reversibility: str
+    can_revert: bool
+    proposed_at: Optional[str] = None
+    proposed_by: Optional[str] = None
+    confidence: Optional[float] = None
+    reason: str = ""
+    policy: CaseActionPolicy
+    approved_at: Optional[str] = None
+    approved_by: Optional[str] = None
+    second_approver: Optional[str] = None
+    rejection_reason: Optional[str] = None
+    executed_at: Optional[str] = None
+    execution: Optional[CaseActionExecution] = None
+    verified_at: Optional[str] = None
+    verify_status: Optional[str] = None
+    expires_at: Optional[str] = None
+    reversed_at: Optional[str] = None
+    reverse_of: Optional[str] = None
+    reverted_by: Optional[str] = None
+    before_state: Optional[list[CaseActionStateRow]] = None
+    after_state: Optional[list[CaseActionStateRow]] = None
+    events: list[CaseActionEvent] = []
+
+
+class CaseActionTimelineResponse(BaseModel):
+    """Newest first. ``truncated`` when the case had more than the cap."""
+
+    case_id: str
+    count: int
+    truncated: bool = False
+    actions: list[CaseActionTimelineItem] = []
