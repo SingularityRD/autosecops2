@@ -160,9 +160,10 @@ class PasswordResetConfirm(BaseModel):
 def _apply_new_password(user: User, plaintext: str) -> None:
     """Enforce history, hash, set, update history + changed_at in one place.
     The request's unit of work owns the commit."""
-    if password_matches_any(plaintext, user.password_history or []) or (
-        user.password_hash
-        and AuthService.verify_password(plaintext, user.password_hash)
+    # Current hash + history through the legacy-aware matcher: under strict
+    # FIPS_MODE a bcrypt current hash must still count as "same password".
+    if password_matches_any(
+        plaintext, [user.password_hash, *(user.password_history or [])]
     ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

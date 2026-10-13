@@ -296,3 +296,40 @@ def test_settings_cap_configured_iterations():
         ).password_pbkdf2_iterations
         == passwords.MAX_PBKDF2_ITERATIONS
     )
+
+
+# --- Round 5 fixes ---------------------------------------------------------------
+
+
+def test_strict_fips_reset_refuses_same_password_on_bcrypt_user(strict_fips):
+    """_apply_new_password must check the *current* bcrypt hash with legacy
+    verify: under strict FIPS, verify_password refuses bcrypt, so a bcrypt user
+    could otherwise "reset" to the very same password."""
+    from fastapi import HTTPException
+
+    from services.api.routers.auth import _apply_new_password
+
+    current = _bcrypt("same-pass-123")
+    user = SimpleNamespace(
+        password_hash=current, password_history=[], password_changed_at=None
+    )
+    with pytest.raises(HTTPException) as exc:
+        _apply_new_password(user, "same-pass-123")
+    assert exc.value.status_code == 400
+    assert user.password_hash == current
+
+    # A genuinely new password is accepted and lands as PBKDF2.
+    _apply_new_password(user, "brand-new-456")
+    assert user.password_hash.startswith("pbkdf2_sha256$")
+    assert user.password_history == [current]
+
+
+def test_apply_new_password_tolerates_missing_current_hash(strict_fips):
+    from services.api.routers.auth import _apply_new_password
+
+    user = SimpleNamespace(
+        password_hash=None, password_history=None, password_changed_at=None
+    )
+    _apply_new_password(user, "first-pass-789")
+    assert user.password_hash.startswith("pbkdf2_sha256$")
+    assert user.password_history == []
