@@ -1,3 +1,7 @@
+import { GATED, type Effect } from "./tool-effects.js";
+
+export type { Effect } from "./tool-effects.js";
+
 // One of the four Phase-0 contracts. Consumed by the registry and dispatch, the
 // query port and its SIEM adapters, and the hunt workflow's tools.
 
@@ -9,6 +13,13 @@ export interface ToolBounds {
 // Opaque to this layer: the API signs it for a session's user, InvokeRequest.principal
 // verifies it. Absent means no person is behind the run, and tools record "agent".
 export type ToolPrincipal = string;
+
+// The approved checkpoint a gated call carries to the far side: the run that
+// parked on it and the checkpoint a person answered. InvokeRequest.approval.
+export interface ToolApproval {
+  run_id: string;
+  checkpoint_id: string;
+}
 
 // timeout and unavailable are genuine visibility gaps; refused and invalid_args
 // are defects and must never be recorded as one (CONTEXT.md, Visibility gap).
@@ -46,8 +57,18 @@ export interface RegisteredTool {
   // Whether this tool answers in this process. Dispatch reads it: the remote one
   // posts an id to a backend that has never heard of the run's own ledger.
   readonly local: boolean;
+  // What calling it does to the world, from the one table (core/llm/tool_effects.py,
+  // mirrored in tool-effects.ts). A gated effect parks the call for a person
+  // whatever the run's approvals list says. Absent only for a tool built by hand
+  // in-process, which the approvals list alone then governs.
+  readonly effect?: Effect;
   invoke(args: Record<string, unknown>): Promise<ToolResult>;
   close(): Promise<void>;
+}
+
+// Whether a call to this tool may run only once a person approves it.
+export function isGated(tool: Pick<RegisteredTool, "effect">): boolean {
+  return tool.effect !== undefined && GATED.has(tool.effect);
 }
 
 // An adapter returning more rows than it was told to is a defect in the adapter,
@@ -56,13 +77,14 @@ export class ToolBoundsViolation extends Error {}
 
 // The brand is type-only and is never materialised, so the cast is the whole
 // mechanism: an object literal cannot satisfy RegisteredTool on its own.
-export function defineTool(adapter: ToolAdapter, bounds: ToolBounds, local = false): RegisteredTool {
+export function defineTool(adapter: ToolAdapter, bounds: ToolBounds, local = false, effect?: Effect): RegisteredTool {
   return {
     id: adapter.id,
     description: adapter.description,
     parameters: adapter.parameters,
     bounds,
     local,
+    ...(effect === undefined ? {} : { effect }),
     invoke: (args) => invokeBounded(adapter, bounds, args),
     close: async () => void (await adapter.close?.()),
   } as RegisteredTool;
