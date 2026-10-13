@@ -548,9 +548,7 @@ class RegulatoryService:
         broken = order_violations(regime, {**current, instant: value}, instant)
         if broken:
             earlier, later = broken[0]
-            raise InstantRefused(
-                f"{regime.upper()} {later} cannot be before {earlier}"
-            )
+            raise InstantRefused(f"{regime.upper()} {later} cannot be before {earlier}")
         last = events[-1] if events else None
         event = ClockEvent(
             case_id=case_id,

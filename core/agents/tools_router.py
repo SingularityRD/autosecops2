@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import logging
+import re
 from contextlib import nullcontext
 from typing import Any, Callable, ContextManager, Dict, List, Optional, Tuple
 

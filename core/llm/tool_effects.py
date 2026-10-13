@@ -405,6 +405,14 @@ WRITE_VERBS = frozenset(
         "escalate",
         "install",
         "deploy",
+        # Move data out of or into the tenant: not a read, whatever follows.
+        "export",
+        "import",
+        "share",
+        "transfer",
+        "copy",
+        "move",
+        "forward",
     }
 )
 
@@ -470,10 +478,20 @@ def _known_namespaces() -> frozenset:
 _KNOWN_NAMESPACES = _known_namespaces()
 
 
-def _is_prefix(segment: str) -> bool:
+def _is_prefix(segment: str, position: int) -> bool:
+    """Whether ``segment`` at ``position`` reads as a server or vendor prefix.
+
+    The first segment may be any non-verb: the registry flattens every MCP tool
+    to ``{server}_{tool}``, so it is the server name (``shodan_search_host``).
+    A second one must look like a vendor prefix -- hyphenated, a known
+    namespace, or a short abbreviation -- so an unknown word there
+    (``acme_frobnicate_get``) is taken for the verb, not skipped.
+    """
     words = _words(segment)
-    if not words or words[0] in _ALL_VERBS:
+    if not words or any(w in _ALL_VERBS for w in words[:1]):
         return False
+    if position == 0:
+        return True
     return (
         "-" in segment
         or segment.lower() in _KNOWN_NAMESPACES
@@ -489,9 +507,9 @@ def heuristic(name: str) -> str:
     destructive verb anywhere is ``destructive`` and a write verb anywhere is
     ``write``, whatever leads. Otherwise the name is ``read_only`` only when
     its leading verb reads: the first word after at most two server or vendor
-    prefixes (``acme-edr_xdr_get_host``; a prefix is hyphenated, a known
-    server or tool namespace, or a short abbreviation, and never a verb). A
-    read word further in (``acme_frobnicate_get``) is not the verb, and a
+    prefixes (``shodan_search_host``, ``acme-edr_xdr_get_host``; see
+    :func:`_is_prefix`, and a prefix is never a verb). A read word further in
+    (``acme_frobnicate_get``) is not the verb, and a
     destructive-looking noun after a read verb (``get_isolation_status``) is
     not one either. Everything else is ``destructive``: a name that says
     nothing is not evidence that the tool does nothing.
@@ -506,7 +524,7 @@ def heuristic(name: str) -> str:
     while (
         skipped < _PREFIX_SEGMENTS
         and skipped < len(segments) - 1
-        and _is_prefix(segments[skipped])
+        and _is_prefix(segments[skipped], skipped)
     ):
         skipped += 1
     lead = _words(segments[skipped]) if skipped < len(segments) else []

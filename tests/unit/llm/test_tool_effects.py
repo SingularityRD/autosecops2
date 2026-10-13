@@ -73,10 +73,13 @@ def test_the_table_classifies_by_name_and_by_flattened_name(name, effect):
         ("getUser", READ_ONLY),
         ("acme-edr_getHostStatus", READ_ONLY),
         # Only the leading verb reads: a read word further in is not the verb.
-        ("export_list_users", DESTRUCTIVE),
+        ("shodan_search_host", READ_ONLY),
         ("acme_frobnicate_get", DESTRUCTIVE),
-        ("transfer_query_results", DESTRUCTIVE),
+        ("acme_frobnicate_get_host", DESTRUCTIVE),
         ("foo_bar_baz_get", DESTRUCTIVE),
+        # Moving data out is not a read, whatever follows.
+        ("export_list_users", WRITE),
+        ("acme_transfer_query_results", WRITE),
         # Says nothing: the restrictive end.
         ("acme_frobnicate", DESTRUCTIVE),
         ("vendor_tool", DESTRUCTIVE),

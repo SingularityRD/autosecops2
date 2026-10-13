@@ -194,7 +194,6 @@ def _honoured_seed(seed: Optional[int]) -> Optional[int]:
     return None
 
 
-
 @router.post(
     "/samples/draw",
     response_model=QADrawResponse,

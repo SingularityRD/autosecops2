@@ -214,7 +214,9 @@ class CaseNotificationService:
                     session.add(notification)
                     session.flush()
             except IntegrityError:
-                logger.info("Case event %s already raised; not raising again", event_key)
+                logger.info(
+                    "Case event %s already raised; not raising again", event_key
+                )
                 return None
             return notification
 
