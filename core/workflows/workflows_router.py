@@ -20,7 +20,7 @@ from core.deps import (
 from core.documents.condense import condense
 from core.documents.extract import MAX_DOCUMENT_CHARS, DocumentRefused, extract_upload
 from core.memory.source_tier import InvestigationKind, resolve_source_tier
-from core.response.approval_service import ApprovalService
+from core.response.approval_service import ApprovalService, SecondApproverConflict
 from core.routing import Auth, RouterMeta
 from core.storage.models import User
 from core.workflows import catalog, hunt_preflight
@@ -552,7 +552,24 @@ async def resume_workflow_run(
             "decide each through /approvals/{action_id}",
         )
 
-    approval_service.approve_action(pending[0].action_id, approved_by=approved_by)
+    try:
+        updated = approval_service.approve_action(
+            pending[0].action_id, approved_by=approved_by
+        )
+    except SecondApproverConflict:
+        # Two-person rule (W2.4): the first approver cannot also be the second.
+        raise HTTPException(
+            status_code=409,
+            detail="A different person must give the second approval",
+        )
+    if updated is not None and updated.status == ActionStatus.PENDING.value:
+        # First of two approvals recorded; the run stays paused until the second.
+        return {
+            "run_id": run_id,
+            "status": "paused",
+            "action_id": updated.action_id,
+            "awaiting": "second_approver",
+        }
     return await resume_run(run_id, pending[0].action_id, approved_by)
 
 

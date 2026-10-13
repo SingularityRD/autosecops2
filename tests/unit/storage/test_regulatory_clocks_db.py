@@ -31,6 +31,7 @@ SQL = (
     / "init"
     / "50_regulatory_clocks.sql"
 )
+HEADS_SQL = SQL.with_name("58_broadcast_unique_and_clock_heads.sql")
 NOW = datetime(2026, 3, 2, 12, 0, tzinfo=timezone.utc)
 CASE = "W38-TEST-CASE"
 
@@ -43,6 +44,9 @@ def session():
             sql = SQL.read_text(encoding="utf-8")
             conn.execute(text(sql))
             conn.execute(text(sql))
+            heads = HEADS_SQL.read_text(encoding="utf-8")
+            conn.execute(text(heads))
+            conn.execute(text(heads))
             conn.execute(
                 text(
                     "INSERT INTO cases (case_id, title, status, priority, timeline, created_at, updated_at) "
@@ -208,3 +212,98 @@ def test_case_deletion_takes_its_clock_rows(session):
         {"c": CASE},
     ).scalar()
     assert left == 0
+
+
+# --- chain head (W0.10, 58_broadcast_unique_and_clock_heads.sql) ---------------
+
+
+def _three_events(service):
+    for hour in (5, 6, 7):
+        service.record_instant(
+            CASE, "dora", "aware_at", datetime(2026, 3, 2, hour, tzinfo=timezone.utc),
+            "ayse", "fix",
+        )
+
+
+def test_the_trigger_keeps_the_chain_head(session):
+    service = RegulatoryService(SqlClockStore(session), now=lambda: NOW)
+    _three_events(service)
+    head = SqlClockStore(session).head(CASE)
+    last = service.events(CASE)[-1]
+    assert head == {"seq": 3, "row_hash": last.row_hash, "broken_at": None}
+    assert service.verify_chain(CASE)["ok"] is True
+    assert service.verify_chain(CASE)["anchored"] is True
+
+
+def test_deleting_the_last_event_is_detected(session):
+    service = RegulatoryService(SqlClockStore(session), now=lambda: NOW)
+    _three_events(service)
+    session.execute(
+        text("DELETE FROM regulatory_clock_events WHERE case_id = :c AND seq = 3"),
+        {"c": CASE},
+    )
+    assert service.verify_chain(CASE) == {
+        "ok": False,
+        "broken_at": 3,
+        "why": "missing row",
+    }
+
+
+def test_deleting_every_event_is_detected(session):
+    service = RegulatoryService(SqlClockStore(session), now=lambda: NOW)
+    _three_events(service)
+    session.execute(
+        text("DELETE FROM regulatory_clock_events WHERE case_id = :c"), {"c": CASE}
+    )
+    assert service.verify_chain(CASE)["ok"] is False
+
+
+def test_a_forged_append_after_a_deletion_is_remembered(session):
+    service = RegulatoryService(SqlClockStore(session), now=lambda: NOW)
+    _three_events(service)
+    session.execute(
+        text("DELETE FROM regulatory_clock_events WHERE case_id = :c AND seq = 3"),
+        {"c": CASE},
+    )
+    service.record_instant(
+        CASE, "dora", "aware_at", datetime(2026, 3, 2, 4, tzinfo=timezone.utc),
+        "mallory", "forged",
+    )
+    assert service.verify_chain(CASE)["why"] == "append out of sequence"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "UPDATE regulatory_clock_heads SET seq = 1 WHERE case_id = :c",
+        "UPDATE regulatory_clock_heads SET broken_at = NULL WHERE case_id = :c",
+        "DELETE FROM regulatory_clock_heads WHERE case_id = :c",
+        "INSERT INTO regulatory_clock_heads (case_id, seq, row_hash) VALUES (:c, 9, 'x')",
+    ],
+)
+def test_the_head_is_written_only_by_the_trigger(session, sql):
+    service = RegulatoryService(SqlClockStore(session), now=lambda: NOW)
+    _three_events(service)
+    _refused(session, sql, {"c": CASE}, exc=DBAPIError)
+
+
+def test_case_deletion_takes_its_head(session):
+    service = RegulatoryService(SqlClockStore(session), now=lambda: NOW)
+    _three_events(service)
+    session.execute(text("DELETE FROM cases WHERE case_id = :c"), {"c": CASE})
+    left = session.execute(
+        text("SELECT count(*) FROM regulatory_clock_heads WHERE case_id = :c"),
+        {"c": CASE},
+    ).scalar()
+    assert left == 0
+
+
+def test_existing_chains_are_anchored_by_the_backfill(session):
+    service = RegulatoryService(SqlClockStore(session), now=lambda: NOW)
+    _three_events(service)
+    # As if the events predated the head table: drop it and re-apply the file.
+    session.execute(text("DROP TABLE regulatory_clock_heads CASCADE"))
+    session.execute(text(HEADS_SQL.read_text(encoding="utf-8")))
+    head = SqlClockStore(session).head(CASE)
+    assert head["seq"] == 3 and head["broken_at"] is None
+    assert service.verify_chain(CASE)["ok"] is True

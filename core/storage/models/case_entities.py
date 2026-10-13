@@ -874,4 +874,16 @@ class CaseNotification(Base):
         Index("idx_case_notification_is_read", "is_read"),
         Index("idx_case_notification_is_sent", "is_sent"),
         Index("idx_case_notification_created_at", "created_at"),
+        # One broadcast row per event (see BROADCAST_USER_ID in
+        # core/cases/case_notification_service.py). Two SLA monitors or
+        # stale-case detectors racing past the "already raised?" read cannot
+        # both write the event: the second insert conflicts and is dropped.
+        # Mirrors infra/database/init/58_case_notification_broadcast_unique.sql
+        # and the scripts/migrate_schema.py step for existing databases.
+        Index(
+            "uq_case_notification_broadcast_event",
+            text("(notification_metadata ->> 'event_key')"),
+            unique=True,
+            postgresql_where=text("user_id = 'system:broadcast'"),
+        ),
     )

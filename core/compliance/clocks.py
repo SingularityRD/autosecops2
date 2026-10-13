@@ -360,11 +360,15 @@ def evaluate_clock(
         _require_aware(met_at, clock.met_by)
     started_at = instants.get(bound_to) if bound_to else None
     if due is None:
+        # A clock that has not started cannot be met: DORA's notified_at
+        # recorded before the incident is classified as major does not satisfy
+        # an initial-notification clock that does not exist yet. met_at is still
+        # reported so the UI can show what was recorded.
         return ClockStatus(
             key=clock.key,
             regime=clock.regime,
             label=clock.label,
-            state=MET if met_at is not None else NOT_STARTED,
+            state=NOT_STARTED,
             due_at=None,
             bound_to=None,
             started_at=None,
@@ -420,6 +424,45 @@ def evaluate(
         for clock in CLOCKS
         if clock.regime in regimes
     ]
+
+
+# The order the instants of a regime happen in: each pair is (earlier, later),
+# and a later instant may not be recorded before an earlier one when both are
+# known (equal is fine: an early warning can go out the minute you are aware).
+# DORA's chain is strict -- classification, initial notification,
+# intermediate, final. NIS2's early warning and incident notification both
+# follow awareness but either may come first.
+INSTANT_ORDER: Dict[str, Tuple[Tuple[str, str], ...]] = {
+    "dora": tuple(
+        (a, b)
+        for i, a in enumerate(INSTANTS["dora"])
+        for b in INSTANTS["dora"][i + 1 :]
+    ),
+    "nis2": (
+        ("aware_at", "early_warning_at"),
+        ("aware_at", "notified_at"),
+        ("aware_at", "final_at"),
+        ("early_warning_at", "final_at"),
+        ("notified_at", "final_at"),
+    ),
+}
+
+
+def order_violations(
+    regime: str,
+    instants: Mapping[str, Optional[datetime]],
+    involving: Optional[str] = None,
+) -> list[Tuple[str, str]]:
+    """The (earlier, later) pairs ``instants`` breaks, optionally only those
+    that involve the instant ``involving``. Unset instants break nothing."""
+    out = []
+    for earlier, later in INSTANT_ORDER.get(regime, ()):
+        if involving is not None and involving not in (earlier, later):
+            continue
+        a, b = instants.get(earlier), instants.get(later)
+        if a is not None and b is not None and b < a:
+            out.append((earlier, later))
+    return out
 
 
 def validate_instant(regime: str, instant: str) -> None:

@@ -112,6 +112,13 @@ class MetricsServer:
         self.orchestrator = None
 
         self._tasks: Dict[str, asyncio.Task] = {}
+        # services.daemon.leadership.DaemonLeadership when leader election is on.
+        self.leadership: Any = None
+
+    @property
+    def role(self) -> str:
+        """leader / standby / demoted with leader election, else single."""
+        return self.leadership.role if self.leadership is not None else "single"
 
     def register_task(self, name: str, task: "asyncio.Task") -> None:
         """Track a component's task so /health reflects whether it is alive."""
@@ -183,9 +190,14 @@ class MetricsServer:
         """Handle health check request."""
         health: Dict[str, Any] = {
             "status": "healthy",
+            "role": self.role,
             "timestamp": utcnow().isoformat(),
             "uptime_seconds": (utcnow() - self._start_time).total_seconds(),
         }
+        if self.role == "standby":
+            # A standby runs no components; it is healthy while it waits.
+            health["status"] = "standby"
+            return web.json_response(health, status=200)
 
         components = {
             name: self._component_state(name, obj)
@@ -234,6 +246,11 @@ class MetricsServer:
             "scheduler": metrics.get("scheduler", {}),
             "orchestrator": metrics.get("orchestrator", {}),
             "vendors": metrics["vendors"],
+            "leadership": (
+                self.leadership.snapshot()
+                if self.leadership is not None
+                else {"role": "single"}
+            ),
         }
 
         return web.json_response(status)

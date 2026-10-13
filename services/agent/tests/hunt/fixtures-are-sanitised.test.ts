@@ -132,8 +132,8 @@ describe("the committed fixtures carry nothing real", () => {
 
   // Counted so the sweep below cannot pass by reading nothing: a fixture that
   // stopped being found is a fixture that stopped being checked.
-  it("has the recorded run the replay gate reads", () => {
-    expect(replayed.filter((name) => name.endsWith(".jsonl.gz"))).toHaveLength(1);
+  it("has the recorded runs the replay gates read", () => {
+    expect(replayed.filter((name) => name.endsWith(".jsonl.gz"))).toEqual(["hunt-recall.jsonl.gz", "verdict-malicious.jsonl.gz"]);
   });
 
   it.each(swept)("%s holds no identifier outside the allowlist", (name) => {

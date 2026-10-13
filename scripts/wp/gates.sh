@@ -80,8 +80,9 @@ mapfile -t changed < <(
   { git diff --name-only "$mb"; git ls-files --others --exclude-standard; } \
     | grep -Ev "$nm_re" | sort -u
 )
-# Tracked (committed or staged) node_modules paths in the diff: never wanted.
-mapfile -t tracked_nm < <(git diff --name-only "$mb" | grep -E "$nm_re" | sort -u)
+# Tracked (committed or staged) node_modules paths added or modified in the diff:
+# never wanted. Deletions (the "git rm --cached" fix itself) are excluded.
+mapfile -t tracked_nm < <(git diff --name-only --diff-filter=d "$mb" | grep -E "$nm_re" | sort -u)
 exists() { [ -e "$1" ] || [ -L "$1" ]; }
 # changed files that still exist, matching an extended regex
 pick() { local f; for f in "${changed[@]}"; do [[ "$f" =~ $1 ]] && exists "$f" && printf '%s\n' "$f"; done; }
