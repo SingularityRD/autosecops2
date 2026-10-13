@@ -209,6 +209,61 @@ def test_postgres_ssl_mode_applies_when_url_has_no_sslmode(monkeypatch, tmp_path
         get_settings.cache_clear()
 
 
+class _Refused(Exception):
+    pass
+
+
+def _migrate_connect_kwargs(monkeypatch, url):
+    """What scripts/migrate_schema.py hands psycopg2.connect for ``url`` when
+    upgrade_database's migrate step runs it."""
+    import psycopg2
+
+    seen = []
+
+    def fake_connect(*args, **kwargs):
+        seen.append((args, kwargs))
+        raise _Refused("no database in a unit test")
+
+    monkeypatch.setattr(psycopg2, "connect", fake_connect)
+    with pytest.raises(Exception):
+        up.migrate(url)
+    assert seen, "migrate never reached psycopg2.connect"
+    return seen[0]
+
+
+def test_migrate_step_honours_postgres_ssl_mode(monkeypatch):
+    # Round 6 fix: migrate(url) gave scripts/migrate_schema.py the raw URL, so
+    # POSTGRES_SSL_MODE=require/verify-full was dropped for that one step.
+    from core.config import get_settings
+
+    monkeypatch.setenv("POSTGRES_SSL_MODE", "verify-full")
+    get_settings.cache_clear()
+    try:
+        url = "postgresql://u:p%40ss@db.internal:6543/vigil?sslrootcert=/etc/vigil/ca.pem"
+        args, kwargs = _migrate_connect_kwargs(monkeypatch, url)
+        assert kwargs["sslmode"] == "verify-full"
+        assert kwargs["sslrootcert"] == "/etc/vigil/ca.pem"
+        assert (kwargs["host"], kwargs["port"], kwargs["user"], kwargs["password"],
+                kwargs["dbname"]) == ("db.internal", 6543, "u", "p@ss", "vigil")
+        # An explicit ?sslmode= still wins over the setting.
+        _, kwargs = _migrate_connect_kwargs(monkeypatch, url + "&sslmode=disable")
+        assert kwargs["sslmode"] == "disable"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_query_password_goes_to_pgpassword_not_conninfo(monkeypatch, tmp_path):
+    # Round 6 fix: a ?password= query key was copied into the -d conninfo (argv).
+    url = "postgresql://u@db.internal/vigil?password=s3cr%27et&sslmode=require"
+    assert "password" not in up.libpq_conninfo(url)
+    assert up.libpq_env(url)["PGPASSWORD"] == "s3cr'et"
+    for args, env in _captured_argv(monkeypatch, tmp_path, url):
+        assert "s3cr" not in " ".join(args) and "password=" not in " ".join(args)
+        assert env["PGPASSWORD"] == "s3cr'et"
+    # The query key wins over the userinfo one, as libpq applies it last.
+    assert up.libpq_env("postgresql://u:old@h/db?password=new")["PGPASSWORD"] == "new"
+
+
 def test_backup_is_owner_only_whatever_the_umask(monkeypatch, tmp_path):
     # Round 5 fix: the dump holds the whole database; it must not be world-readable.
     old = os.umask(0o002)
@@ -231,6 +286,17 @@ def test_upgrade_guide_keeps_backups_private():
     guide = (REPO / "docs" / "upgrade-0.7-to-2.0.md").read_text(encoding="utf-8")
     assert "install -d -m 700 backups" in guide
     assert "777" not in guide
+
+
+def test_upgrade_guide_keeps_passwords_off_argv():
+    # Round 6 fix: -e DATABASE_URL=postgresql://u:${POSTGRES_PASSWORD}@... and
+    # --database-url "...:PAROLA@..." put the password on a command line (ps).
+    guide = (REPO / "docs" / "upgrade-0.7-to-2.0.md").read_text(encoding="utf-8")
+    for line in guide.splitlines():
+        code = line.split("#", 1)[0]
+        if re.search(r"(^|\s)(-e|--env)\s+\w+=", code) or "--database-url " in code:
+            assert not re.search(r"://[^/@\s]*:[^@\s]+@", code), line
+    assert "-e DATABASE_URL \\" in guide
 
 
 def test_backup_flags_are_exclusive():

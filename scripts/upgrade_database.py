@@ -255,9 +255,34 @@ def libpq_params(url: str) -> dict:
     if u.username:
         params["user"] = u.username
     for key, value in u.query.items():
+        # A ?password= key is a secret: it goes to PGPASSWORD (libpq_env),
+        # never into the -d conninfo on the command line.
+        if key == "password":
+            continue
         params[key] = _query_value(value)
     params.setdefault("sslmode", default_ssl_mode())
     return params
+
+
+def url_password(url: str) -> Optional[str]:
+    """The password of ``url``; a ?password= query key wins over the userinfo
+    one, as libpq applies URI query parameters last."""
+    u = make_url(normalize_url(url))
+    if "password" in u.query:
+        return _query_value(u.query["password"])
+    return None if u.password is None else str(u.password)
+
+
+def migrate_url(url: str) -> str:
+    """``url`` for scripts/migrate_schema.py, which builds its engine from the
+    URL alone: the effective libpq parameters it would otherwise lose
+    (sslmode from POSTGRES_SSL_MODE) are added to the query, so the migrate
+    step connects as securely as the backup, SQL and ORM steps."""
+    u = make_url(normalize_url(url))
+    extra = {k: v for k, v in engine_connect_args(url).items() if k not in u.query}
+    if extra:
+        u = u.update_query_dict(extra)
+    return u.render_as_string(hide_password=False)
 
 
 def engine_connect_args(url: str) -> dict:
@@ -288,8 +313,9 @@ def libpq_env(url: str) -> dict:
         name = _LIBPQ_QUERY_ENV.get(key)
         if name is not None:
             env[name] = value
-    if u.password is not None:
-        env["PGPASSWORD"] = str(u.password)
+    password = url_password(url)
+    if password is not None:
+        env["PGPASSWORD"] = password
     return env
 
 
@@ -587,7 +613,7 @@ def orm_tables(engine: Engine) -> None:
 def migrate(url: str) -> None:
     from scripts.migrate_schema import run_migrations
 
-    result = run_migrations(url)
+    result = run_migrations(migrate_url(url))
     if result["failed"] or result["skipped"]:
         names = [d for _, d in result["failed"]] + [d for _, d, _ in result["skipped"]]
         raise UpgradeError(f"migrate_schema did not apply: {'; '.join(names)}")

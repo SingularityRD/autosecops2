@@ -43,14 +43,17 @@ Her zaman önce `--dry-run` çalıştırın. Hiçbir şey yazmaz; ön kontroller
 planı (uygulanacak SQL dosyaları, eklenecek tablo ve kolonlar) basar:
 
 ```bash
-python scripts/upgrade_database.py --dry-run \
-  --database-url "postgresql://deeptempo:PAROLA@localhost:5432/deeptempo_soc"
+read -rsp 'veritabanı parolası: ' PAROLA; echo
+export DATABASE_URL="postgresql://deeptempo:${PAROLA}@localhost:5432/deeptempo_soc"
+python scripts/upgrade_database.py --dry-run
 ```
 
 `--database-url` verilmezse bağlantı `DATABASE_URL`'den, sonra
 `~/.deeptempo/.env`'den, sonra `POSTGRES_*` değişkenlerinden okunur
 (`scripts/migrate_schema.py` ile aynı sıra). Parola, `psql` ve `pg_dump`'a
-yalnızca ortam değişkeniyle geçer, komut satırında görünmez.
+yalnızca ortam değişkeniyle geçer, komut satırında görünmez. Parola içeren
+bir adresi `--database-url` ile vermeyin: aracın kendi komut satırı da `ps`
+ile okunabilir; `DATABASE_URL`'yi kullanın.
 
 Ön kontroller: `connect`, `server-version`, `vigil-database` (boş veya Vigil
 olmayan veritabanı reddedilir: bu bir kurulumdur, yükseltme değil),
@@ -96,20 +99,25 @@ docker compose -f infra/docker/docker-compose.yml up -d postgres
 # yedeği 0600 izinle (yalnızca sahibi okur) yazar. Dizini başkalarına yazılabilir
 # yapmayın; yedek, parola özetleri dahil tüm veritabanını içerir.
 install -d -m 700 backups
+# Bağlantı adresi (parolayla) komut satırına değil ortama konur: komut satırını
+# (`ps`, /proc) makinedeki herkes okuyabilir. `export` kabuğun kendi komutudur,
+# `-e DATABASE_URL` (değersiz) değeri bu ortamdan kapsayıcıya aktarır.
+export DATABASE_URL="postgresql://deeptempo:${POSTGRES_PASSWORD}@postgres:5432/deeptempo_soc"
 docker compose -f infra/docker/docker-compose.yml run --rm --no-deps \
   --user "$(id -u):$(id -g)" \
   -v "$PWD/scripts:/app/scripts:ro" -v "$PWD/backups:/backups" \
-  -e DATABASE_URL="postgresql://deeptempo:${POSTGRES_PASSWORD}@postgres:5432/deeptempo_soc" \
+  -e DATABASE_URL \
   --entrypoint python backend scripts/upgrade_database.py --dry-run
 
 # 4. Yükseltme (yedekle birlikte).
 docker compose -f infra/docker/docker-compose.yml run --rm --no-deps \
   --user "$(id -u):$(id -g)" \
   -v "$PWD/scripts:/app/scripts:ro" -v "$PWD/backups:/backups" \
-  -e DATABASE_URL="postgresql://deeptempo:${POSTGRES_PASSWORD}@postgres:5432/deeptempo_soc" \
+  -e DATABASE_URL \
   --entrypoint python backend scripts/upgrade_database.py --backup /backups/pre-2.0.dump
 
 # 5. Yığını başlatın.
+unset DATABASE_URL
 docker compose -f infra/docker/docker-compose.yml up -d
 ```
 
@@ -125,8 +133,12 @@ erişin:
 ```bash
 kubectl scale deploy -n NAMESPACE -l app.kubernetes.io/instance=SURUM --replicas=0
 kubectl port-forward -n NAMESPACE svc/SURUM-postgresql 5432:5432 &
-python scripts/upgrade_database.py --dry-run --database-url "postgresql://postgres:PAROLA@localhost:5432/VERITABANI"
-python scripts/upgrade_database.py --backup ./pre-2.0.dump --database-url "postgresql://postgres:PAROLA@localhost:5432/VERITABANI"
+# Parola komut satırında görünmesin diye --database-url yerine DATABASE_URL.
+read -rsp 'postgres parolası: ' PAROLA; echo
+export DATABASE_URL="postgresql://postgres:${PAROLA}@localhost:5432/VERITABANI"
+python scripts/upgrade_database.py --dry-run
+python scripts/upgrade_database.py --backup ./pre-2.0.dump
+unset DATABASE_URL PAROLA
 helm upgrade SURUM infra/helm/vigil -n NAMESPACE -f degerler.yaml
 ```
 
