@@ -50,7 +50,22 @@ AUDIT_KEY = "sso.login"
 #: hash, so ``AuthService.verify_password`` fails for every password.
 SSO_ONLY_PASSWORD_HASH = "!sso-only"
 
-_USERNAME_SAFE = re.compile(r"[^A-Za-z0-9._@-]+")
+#: Usernames made by JIT never contain "@": a username that looks like an
+#: e-mail address could shadow another account's address at the
+#: username-or-email password login.
+_USERNAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+#: C0/C1 controls and the Unicode line/paragraph separators.
+_UNPRINTABLE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def printable(value: Any, limit: int = 200) -> str:
+    """``value`` made safe for one log line or audit field.
+
+    Control characters (CR/LF, ESC, NEL, U+2028/9, ...) become ``?`` so text
+    an identity provider or a browser chose cannot forge log lines.
+    """
+    return _UNPRINTABLE.sub("?", str(value))[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +183,49 @@ def known_role_ids(session: Session) -> set[str]:
     return {r for (r,) in session.query(Role.role_id).all()}
 
 
+def mappable_role_ids(provider: ProviderConfig) -> set[str]:
+    """Every role ``map_role`` could ever give a user of ``provider``."""
+    roles = {VIEWER_ROLE_ID}
+    if provider.default_role_id != ADMIN_ROLE_ID:
+        roles.add(provider.default_role_id)
+    for mapping in provider.role_mappings:
+        if mapping.role_id != ADMIN_ROLE_ID or provider.allow_admin_mapping:
+            roles.add(mapping.role_id)
+    return roles
+
+
+def _granted(role: Optional[Role]) -> set[str]:
+    if role is None:
+        return set()
+    return {p for p, on in (role.permissions or {}).items() if on}
+
+
+def within_provider_reach(
+    session: Session, provider: ProviderConfig, user: User
+) -> bool:
+    """May ``provider`` link to ``user`` by e-mail?
+
+    Only if the account holds no more than some role the provider could map
+    a user to anyway. Linking must never be a way into an account more
+    powerful than the provider itself may grant; above all, never into an
+    Admin unless the provider is allowed to map to Admin (which only someone
+    holding every permission can turn on).
+    """
+    allowed = mappable_role_ids(provider)
+    if user.role_id == ADMIN_ROLE_ID and ADMIN_ROLE_ID not in allowed:
+        return False
+    if user.role_id in allowed:
+        return True
+    roles = {
+        r.role_id: r
+        for r in session.query(Role)
+        .filter(Role.role_id.in_(allowed | {user.role_id}))
+        .all()
+    }
+    held = _granted(roles.get(user.role_id))
+    return any(held <= _granted(roles.get(r)) for r in allowed if r in roles)
+
+
 # ---------------------------------------------------------------------------
 # Resolving the account
 # ---------------------------------------------------------------------------
@@ -193,10 +251,20 @@ def _unique_username(session: Session, claims: Dict[str, Any], email: str) -> st
     raw = claims.get("preferred_username")
     if not isinstance(raw, str) or not raw.strip():
         raw = email
-    base = _USERNAME_SAFE.sub("-", raw.strip())[:80].strip("-") or "sso-user"
+    # "alice@example.com" -> "alice": never an address-shaped username.
+    raw = raw.strip().split("@", 1)[0]
+    base = _USERNAME_SAFE.sub("-", raw)[:80].strip("-.") or "sso-user"
     candidate = base
     for _ in range(20):
-        if not session.query(User.user_id).filter(User.username == candidate).first():
+        taken = (
+            session.query(User.user_id)
+            .filter(
+                (func.lower(User.username) == candidate.lower())
+                | (func.lower(User.email) == candidate.lower())
+            )
+            .first()
+        )
+        if not taken:
             return candidate
         candidate = f"{base}-{uuid.uuid4().hex[:6]}"
     raise OidcError("account", "could not choose a unique username")
@@ -261,6 +329,12 @@ def resolve_user(
                 # Linking trusts only the verified "email" claim, never
                 # preferred_username/upn.
                 raise OidcError("account", "verified email claim does not match")
+            if not within_provider_reach(session, provider, existing):
+                raise OidcError(
+                    "account",
+                    f"linking refused: role {existing.role_id} exceeds what "
+                    f"provider {provider.id} may grant",
+                )
             user = existing
             linked = True
         else:
@@ -344,6 +418,12 @@ def is_sso_only(user: User) -> bool:
     return getattr(user, "password_hash", None) == SSO_ONLY_PASSWORD_HASH
 
 
+def has_usable_password(user: User) -> bool:
+    """Can ``user`` sign in with a password at all (e.g. as break-glass)?"""
+    value = getattr(user, "password_hash", None)
+    return bool(value) and value != SSO_ONLY_PASSWORD_HASH and not value.startswith("!")
+
+
 # ---------------------------------------------------------------------------
 # Audit
 # ---------------------------------------------------------------------------
@@ -391,9 +471,9 @@ def audit_failure(
                     action="sso_failure",
                     old_value=None,
                     new_value={
-                        "provider_id": provider_id[:64],
-                        "reason": code,
-                        "detail": detail[:500],
+                        "provider_id": printable(provider_id, 64),
+                        "reason": printable(code, 64),
+                        "detail": printable(detail, 500),
                         "client_ip": client_ip,
                     },
                     changed_by="sso",

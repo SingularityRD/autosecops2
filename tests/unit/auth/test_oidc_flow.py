@@ -598,7 +598,10 @@ def test_a_verified_email_links_and_keeps_the_local_role(world):
     )
     world.set_provider(
         link_by_verified_email=True,
-        role_mappings=[{"value": "soc", "role_id": "role-analyst"}],
+        role_mappings=[
+            {"value": "soc", "role_id": "role-analyst"},
+            {"value": "leads", "role_id": "role-senior-analyst"},
+        ],
     )
     world.idp.claims = {"groups": ["soc"]}
     response, _, _ = world.login()
@@ -608,6 +611,120 @@ def test_a_verified_email_links_and_keeps_the_local_role(world):
     user = world.user_by_email("Alice@Example.com")
     assert user.role_id == "role-senior-analyst"
     assert world.audit("sso_login")[-1]["linked"] is True
+
+
+def test_linking_never_reaches_a_role_above_what_the_provider_may_grant(world):
+    world.add_user(
+        "u-alice", "alice-local", "role-senior-analyst", email="alice@example.com"
+    )
+    # The provider can only ever make analysts/viewers; a senior analyst holds
+    # ai_decisions.approve, which neither grants.
+    world.set_provider(
+        link_by_verified_email=True,
+        role_mappings=[{"value": "soc", "role_id": "role-analyst"}],
+    )
+    response, _, _ = world.login()
+    assert world.sso_error(response) == "account"
+    assert "access_token" not in response.cookies
+    assert "exceeds" in world.audit("sso_failure")[-1]["detail"]
+    with world.db() as s:
+        assert (
+            s.query(SystemConfig)
+            .filter(SystemConfig.config_type == IDENTITY_CONFIG_TYPE)
+            .count()
+            == 0
+        )
+
+
+def test_a_manager_cannot_take_over_the_admin_through_email_linking(world):
+    """Regression (verifier W1.9 HIGH): Manager -> own IdP -> link -> Admin.
+
+    A Manager (settings.write + users.write, not Admin) adds a provider at an
+    identity provider they control, turns linking by verified email on, and
+    has their IdP assert the Admin's address. Both steps must fail.
+    """
+    world.add_user("u-admin", "root", "role-admin", email="root@corp.example")
+    world.add_user("u-mgr", "maria", "role-manager")
+    world.as_user("u-mgr")
+
+    # 1. The Manager cannot save a provider with linking on...
+    body = _provider_body(link_by_verified_email=True)
+    response = world.client.put("/api/auth/sso/admin/providers/kc", json=body)
+    assert response.status_code == 403, response.text
+    assert "linking" in response.json()["detail"]
+    # ...nor with "allow mapping to Admin" on (even with no Admin mapping).
+    body = _provider_body(allow_admin_mapping=True)
+    response = world.client.put("/api/auth/sso/admin/providers/kc", json=body)
+    assert response.status_code == 403, response.text
+    with world.db() as s:
+        assert s.get(SystemConfig, "auth.oidc.providers") is None
+
+    # ...nor re-point an Admin-configured provider that has linking on.
+    world.set_provider(link_by_verified_email=True)
+    body = _provider_body(link_by_verified_email=True, issuer="https://evil.test/r")
+    response = world.client.put("/api/auth/sso/admin/providers/kc", json=body)
+    assert response.status_code == 403
+
+    # 2. Even where linking is on (as an Admin set it), a provider that may not
+    #    map to Admin never links to the Admin account.
+    world.app.dependency_overrides.pop(get_current_user)
+    world.set_provider(
+        link_by_verified_email=True,
+        role_mappings=[{"value": "soc", "role_id": "role-manager"}],
+    )
+    world.idp.claims = {"email": "root@corp.example", "groups": ["soc"]}
+    response, _, _ = world.login()
+    assert world.sso_error(response) == "account"
+    assert "access_token" not in response.cookies
+    with world.db() as s:
+        assert s.get(User, "u-admin").login_count == 0
+
+    # 3. Only a provider an Admin allowed to map to Admin may link to one.
+    world.set_provider(
+        link_by_verified_email=True,
+        allow_admin_mapping=True,
+        role_mappings=[{"value": "soc-admins", "role_id": "role-admin"}],
+    )
+    world.client.cookies.clear()
+    response, _, _ = world.login()
+    payload = AuthService.verify_jwt_token(response.cookies["access_token"])
+    assert payload["user_id"] == "u-admin"
+
+
+def test_an_admin_may_turn_linking_on(world):
+    world.add_user("u-admin", "root", "role-admin")
+    world.as_user("u-admin")
+    body = _provider_body(link_by_verified_email=True, allow_admin_mapping=True)
+    response = world.client.put("/api/auth/sso/admin/providers/okta", json=body)
+    assert response.status_code == 200, response.text
+
+
+def test_a_jit_username_never_looks_like_an_email(world):
+    world.add_user("u-root", "root", "role-admin", email="root@corp.example")
+    world.set_provider()
+    world.idp.claims = {"preferred_username": "root@corp.example"}
+    world.login()
+    user = world.user_by_email("alice@example.com")
+    assert "@" not in user.username
+    assert user.username.startswith("root-")  # "root" is taken
+    with world.db() as s:
+        assert s.get(User, "u-root").username == "root"
+
+
+def test_an_idp_error_cannot_forge_log_lines(world, caplog):
+    world.set_provider()
+    started = world.start()
+    _, state = world.idp.authorize(started.headers["location"])
+    response = world.client.get(
+        "/api/auth/sso/kc/callback",
+        params={"error": "x\r\nINFO forged\u2028line\x1b[31m", "state": state},
+    )
+    assert world.sso_error(response) == "idp_error"
+    detail = world.audit("sso_failure")[-1]["detail"]
+    for bad in ("\r", "\n", "\u2028", "\x1b"):
+        assert bad not in detail
+        assert all(bad not in r.getMessage() for r in caplog.records)
+    assert "forged" in detail
 
 
 def test_a_service_account_cannot_sign_in_with_sso(world):
@@ -807,6 +924,46 @@ def test_a_service_account_is_not_a_break_glass_account(world):
         json={"local_login_enabled": True, "break_glass_user_ids": ["u-svc"]},
     )
     assert response.status_code == 400
+
+
+def test_an_sso_only_account_is_not_a_break_glass_account(world):
+    world.add_user(
+        "u-sso-admin", "sso-root", "role-admin", password_hash=SSO_ONLY_PASSWORD_HASH
+    )
+    world.add_user("u-admin", "root", "role-admin")
+    world.set_provider()
+    world.as_user("u-admin")
+    response = world.client.put(
+        "/api/auth/sso/admin/login-policy",
+        json={"local_login_enabled": False, "break_glass_user_ids": ["u-sso-admin"]},
+    )
+    assert response.status_code == 400
+    assert "password" in response.json()["detail"]
+
+
+def test_the_last_enabled_provider_cannot_be_disabled_while_local_is_off(world):
+    world.add_user("u-admin", "root", "role-admin")
+    world.as_user("u-admin")
+    assert (
+        world.client.put(
+            "/api/auth/sso/admin/providers/okta", json=_provider_body()
+        ).status_code
+        == 200
+    )
+    assert (
+        world.client.put(
+            "/api/auth/sso/admin/login-policy",
+            json={"local_login_enabled": False, "break_glass_user_ids": ["u-admin"]},
+        ).status_code
+        == 200
+    )
+    response = world.client.put(
+        "/api/auth/sso/admin/providers/okta", json=_provider_body(enabled=False)
+    )
+    assert response.status_code == 409
+    with world.db() as s:
+        stored = s.get(SystemConfig, "auth.oidc.providers").value
+    assert stored["providers"][0]["enabled"] is True
 
 
 def test_an_sso_account_gets_no_password_reset_email(world, monkeypatch):

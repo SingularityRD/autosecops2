@@ -65,8 +65,10 @@ from core.auth.oidc_accounts import (
     audit_failure,
     audit_success,
     get_provider,
+    has_usable_password,
     known_role_ids,
     load_providers,
+    printable,
     resolve_user,
     save_providers,
 )
@@ -218,7 +220,10 @@ def _clear_flow_cookie(response) -> None:
 
 async def _fail(provider_id: str, exc: OidcError, request: Request) -> RedirectResponse:
     logger.warning(
-        "SSO login via %s refused (%s): %s", provider_id, exc.code, exc.detail
+        "SSO login via %s refused (%s): %s",
+        printable(provider_id, 64),
+        exc.code,
+        printable(exc.detail, 500),
     )
     await asyncio.to_thread(
         audit_failure, provider_id, exc.code, exc.detail, _client_ip(request)
@@ -351,7 +356,9 @@ async def sso_callback(
         # URL can never be used twice.
         flow = await _take_flow(provider_id, state, request)
         if error:
-            raise OidcError("idp_error", f"provider returned error={error[:100]}")
+            raise OidcError(
+                "idp_error", f"provider returned error={printable(error, 100)}"
+            )
         if not code:
             raise OidcError("token", "callback carried no code")
         provider = await asyncio.to_thread(get_provider, session, provider_id)
@@ -476,6 +483,30 @@ def _require_role_privileges(session, current_user: User, role_ids: set[str]) ->
                 )
 
 
+def _require_every_privilege(session, current_user: User, what: str) -> None:
+    """Refuse unless the caller holds every permission any role grants.
+
+    For settings that can put a provider's users into *any* account
+    (linking by e-mail) or into Admin: only someone who could already do
+    everything may turn them on, so they are never a privilege escalation.
+    The Admin role always qualifies, so a permission later granted to some
+    other role only cannot lock administrators out of these settings.
+    """
+    if current_user.role_id == ADMIN_ROLE_ID:
+        return
+    held = AuthService.get_user_permissions(current_user.user_id, session) or {}
+    for role in session.query(Role).all():
+        for perm, granted in (role.permissions or {}).items():
+            if granted and not held.get(perm, False):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        f"Only an administrator holding every permission can "
+                        f"turn on {what}: you do not hold {perm}"
+                    ),
+                )
+
+
 @router.get("/admin/config", response_model=SsoAdminConfig)
 def get_sso_config(
     request: Request,
@@ -506,10 +537,26 @@ def upsert_provider(
 
     mapped = {m.role_id for m in provider.role_mappings} | {provider.default_role_id}
     _require_role_privileges(session, current_user, mapped)
+    # Checked on every save, not only when switched on: whoever saves a
+    # provider with these on also chooses its issuer.
+    if provider.link_by_verified_email:
+        _require_every_privilege(session, current_user, "linking by verified email")
+    if provider.allow_admin_mapping:
+        _require_every_privilege(session, current_user, "mapping to Admin")
 
     providers = load_providers(session)
     existed = any(p.id == provider_id for p in providers)
     providers = [p for p in providers if p.id != provider_id] + [provider]
+    if not any(p.enabled for p in providers) and not (
+        get_login_policy(session).local_login_enabled
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Local sign-in is off; disabling the last enabled provider would "
+                "leave only break-glass accounts. Turn local sign-in on first."
+            ),
+        )
     save_providers(
         session,
         providers,
@@ -580,6 +627,14 @@ def update_login_policy(
             raise HTTPException(
                 status_code=400,
                 detail=f"{user.username} is a service account; it never needs break-glass",
+            )
+        if not has_usable_password(user):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{user.username} signs in only with single sign-on and has no "
+                    "password; a break-glass account needs one"
+                ),
             )
 
     if not body.local_login_enabled:
