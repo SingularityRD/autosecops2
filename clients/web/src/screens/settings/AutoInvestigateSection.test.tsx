@@ -4,6 +4,7 @@ import AutoInvestigateSection from './AutoInvestigateSection'
 import type { OrchestratorBounds, OrchestratorConfig, Phase } from './useSettings'
 
 vi.mock('./IntentReportCard', () => ({ default: () => null }))
+vi.mock('./AutonomyTiersPanel', () => ({ default: () => null }))
 
 const DEFAULTS: OrchestratorConfig = {
   enabled: false,

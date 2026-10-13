@@ -82,7 +82,7 @@ def _register_lag_gauge() -> None:
         get_meter("vigil.federation").create_observable_gauge(
             "soc_daemon_federation_source_lag_seconds",
             callbacks=[_observe],
-            description="How far behind each polling federation source Vigil is",
+            description="How far behind each polling federation source AutoSecOps is",
             unit="s",
         )
     except Exception as e:
