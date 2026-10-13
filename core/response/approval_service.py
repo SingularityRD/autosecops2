@@ -20,7 +20,7 @@ from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional
 
 from opentelemetry.metrics import Observation
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from core.response.config import (
@@ -583,6 +583,32 @@ class ApprovalService:
         except SQLAlchemyError as e:
             logger.error("DB error rejecting action %s: %s", action_id, e)
             return None
+
+    def claim_execution(self, action_id: str) -> bool:
+        """Claim an approved row for one run, before any vendor call.
+
+        Sets ``executed_at`` on a row that is approved and has none, in one
+        conditional UPDATE: True for exactly one caller.
+        ``execute_approved_actions`` skips rows with ``executed_at`` set, so a
+        row whose change went out but whose ``mark_executed`` then failed is
+        never run again; it stays approved with executed_at set, for a person
+        to settle. False on a lost race, a row not approved, or a database
+        error: do not execute.
+        """
+        try:
+            db = get_db_manager()
+            with db.session_scope() as session:
+                result = session.execute(
+                    update(ApprovalActionRow)
+                    .where(ApprovalActionRow.action_id == action_id)
+                    .where(ApprovalActionRow.status == ActionStatus.APPROVED.value)
+                    .where(ApprovalActionRow.executed_at.is_(None))
+                    .values(executed_at=utcnow())
+                )
+                return (result.rowcount or 0) == 1
+        except SQLAlchemyError as e:
+            logger.error("DB error claiming %s for execution: %s", action_id, e)
+            return False
 
     def mark_executed(
         self,

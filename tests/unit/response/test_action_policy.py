@@ -73,8 +73,12 @@ class _Approvals:
     def list_actions(self, status=None, **_):
         return self.rows
 
+    def claim_execution(self, action_id):
+        return action_id not in self.executed and action_id not in self.failed
+
     def mark_executed(self, action_id, result, **lifecycle):
         self.executed[action_id] = {"result": result, **lifecycle}
+        return self.executed[action_id]
 
     def mark_failed(self, action_id, error):
         self.failed[action_id] = error
