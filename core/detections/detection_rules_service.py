@@ -129,7 +129,8 @@ def _git_allowed_networks() -> tuple:
         return parse_networks(raw)
     except ValueError:
         logger.error(
-            f"{GIT_ALLOWED_CIDRS_ENV} is not a list of CIDRs; no private git hosts allowed"
+            "%s is not a list of CIDRs; no private git hosts allowed",
+            GIT_ALLOWED_CIDRS_ENV,
         )
         return ()
 
@@ -149,7 +150,7 @@ def check_git_url(url: Optional[str]) -> List[str]:
 
 def _git_env() -> Dict[str, str]:
     """Environment for every git subprocess: https only, never prompt."""
-    env = dict(os.environ)
+    env = dict(os.environ)  # noqa: ENV001 - child process env
     env.update(
         {
             "GIT_ALLOW_PROTOCOL": "https",

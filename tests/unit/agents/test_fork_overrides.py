@@ -18,8 +18,9 @@ from core.storage.models import Base, ConfigAuditLog, CustomAgent
 from services.api.middleware.auth import get_current_active_user
 from services.api.routers import agents as agents_router
 from services.api.routers import custom_agents
+from tests.unit._signed_in import signed_in  # noqa: E402,F401 - fixture
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("signed_in")]
 
 
 @compiles(JSONB, "sqlite")
