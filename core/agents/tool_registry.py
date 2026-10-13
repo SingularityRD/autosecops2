@@ -499,12 +499,15 @@ def approve_action(*, action_id: str) -> Args:
         return {"error": "Action cannot be approved: no principal is bound"}
     if refusal := _without_approval_right():
         return refusal
-    from core.response.approval_service import SecondApproverConflict
+    from core.response.approval_service import (
+        SecondApproverConflict,
+        second_approver_detail,
+    )
 
     try:
         return _decided(_approvals().approve_action(action_id, actor()), "approved")
-    except SecondApproverConflict:
-        return {"error": "A different person must give the second approval"}
+    except SecondApproverConflict as e:
+        return {"error": second_approver_detail(e)}
 
 
 def reject_action(*, action_id: str, reason: str) -> Args:
