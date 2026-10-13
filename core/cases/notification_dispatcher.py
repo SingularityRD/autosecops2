@@ -34,11 +34,12 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 import httpx
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from core.cases.case_notification_service import BROADCAST_CHANNEL, BROADCAST_USER_ID
 from core.config import get_settings
 from core.integrations import outbound_webhooks
+from core.storage.canary_exclusion import case_canary_profile, is_canary_finding
 from core.storage.models import Case, CaseNotification, User
 from core.storage.unit_of_work import unit_of_work
 from core.time import utcnow
@@ -57,7 +58,20 @@ def is_canary(entity: Any) -> bool:
     (``canary_injections``); nothing it produces may reach a person or an
     external system. A finding is a canary when ``entity_context["canary"]`` is
     truthy; a case is one when any of its findings is.
+
+    Hidden canaries (W1.5) carry no flag: their only record is their
+    ``canary_injections`` row, so an entity with an id is also looked up there
+    (``core.storage.canary_exclusion``): a finding by its ``finding_id``, a case
+    when every finding it links is a canary (a mixed case is real work and
+    keeps its notifications). A failed lookup raises, so the caller sends
+    nothing for that entity this pass.
     """
+    if entity is None:
+        return False
+    return _flagged(entity) or _hidden_canary(entity)
+
+
+def _flagged(entity: Any) -> bool:
     if entity is None:
         return False
     if isinstance(entity, dict):
@@ -69,8 +83,23 @@ def is_canary(entity: Any) -> bool:
     if isinstance(context, dict) and context.get("canary"):
         return True
     if isinstance(findings, (list, tuple)):
-        return any(is_canary(f) for f in findings if not isinstance(f, str))
+        return any(_flagged(f) for f in findings if not isinstance(f, str))
     return False
+
+
+def _hidden_canary(entity: Any) -> bool:
+    def _get(name: str) -> Any:
+        if isinstance(entity, dict):
+            return entity.get(name)
+        return getattr(entity, name, None)
+
+    finding_id, case_id = _get("finding_id"), _get("case_id")
+    if not isinstance(finding_id, str) and not isinstance(case_id, str):
+        return False
+    session = None if isinstance(entity, dict) else object_session(entity)
+    if isinstance(finding_id, str) and finding_id:
+        return is_canary_finding(finding_id, session)
+    return bool(case_canary_profile(case_id, session)["only_canaries"])
 
 
 def post_slack_message(text: str, channel: Optional[str] = None) -> Tuple[bool, str]:
@@ -179,7 +208,8 @@ class CaseNotificationDispatcher:
         if row.case_id:
             case = session.query(Case).filter(Case.case_id == row.case_id).first()
             if is_canary(case):
-                return {"skipped": "canary"}
+                # No "canary" on a hidden canary's row: the record is readable.
+                return {"skipped": "canary" if _flagged(case) else "withheld"}
 
         channels: Dict[str, str] = {}
         if (

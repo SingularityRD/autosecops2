@@ -330,6 +330,27 @@ async def test_palo_alto_xml_api_params_survive_encoding(monkeypatch):
 
 
 @respx.mock
+async def test_palo_alto_block_refuses_non_ip_and_escapes_reason(monkeypatch):
+    """The ip goes into an xpath and the reason into XML: no injection."""
+    _stub_config(
+        monkeypatch, pan, {"hostname": "pan.test", "api_key": "k", "verify_ssl": True}
+    )
+    route = respx.get(url__startswith="https://pan.test/api/").mock(
+        return_value=httpx.Response(200, text="<response status='success'/>")
+    )
+    for bad in ("1.2.3.4']/../x", "fe80::1%eth0", "not-an-ip"):
+        body = _body(await pan.handle_call_tool("pan_block_ip", {"ip": bad}))
+        assert "error" in body
+    assert not route.called
+
+    await pan.handle_call_tool(
+        "pan_block_ip", {"ip": "1.2.3.4", "reason": "</description><x/>&"}
+    )
+    element = route.calls.last.request.url.params["element"]
+    assert "Blocked: &lt;/description&gt;&lt;x/&gt;&amp;</description>" in element
+
+
+@respx.mock
 async def test_palo_alto_block_carries_the_status_code(monkeypatch):
     """A 3xx means the configured hostname is wrong, and nothing follows it.
 
