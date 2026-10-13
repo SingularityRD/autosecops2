@@ -175,6 +175,7 @@ ENV_CREDENTIAL_NAMES: frozenset[str] = frozenset(
     {
         "AGENT_INTERNAL_TOKEN",
         "ALIENVAULT_OTX_API_KEY",
+        "AUDIT_CHECKPOINT_SIGNING_KEY",
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
         "CAPE_SANDBOX_API_KEY",
