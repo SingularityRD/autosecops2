@@ -20,6 +20,12 @@ protected assets
     from the config (``asset_tags``: target -> tags) and from the action's own
     ``parameters["tags"]`` / ``parameters["asset_tags"]``. The config is the
     one that matters: a proposer can omit a tag, not remove one.
+    Names are compared normalised (``identify``): host names case-folded,
+    without a trailing dot or a ``DOMAIN\\`` prefix, and by short name (first
+    label) as well as in full; addresses through ``ipaddress`` (IPv4-mapped
+    IPv6 is the IPv4 it maps) and refused when they overlap a protected address
+    or range. A range broader than /24 (IPv4) or /64 (IPv6), /0 included, is
+    refused whatever it holds.
 blast radius
     At most ``hourly_limits[type]`` (else ``default_hourly_limit``) actions of
     one type executed per rolling hour.
@@ -39,12 +45,14 @@ Configuration is the system config row ``response.policy`` (JSON, keys as in
 
 from __future__ import annotations
 
+import ipaddress
 import logging
+import math
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from types import MappingProxyType
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from core.response.executors.base import ExecutorRegistry, PolicyResult, TypedAction
 
@@ -69,20 +77,73 @@ DEFAULT_HOURLY_LIMITS: Mapping[str, int] = MappingProxyType(
 )
 BLAST_RADIUS_WINDOW = timedelta(hours=1)
 
-# Parameters that name the same thing the target does, in another form.
+# Parameters that name the same thing the target does, in another form. Every
+# one is checked against the protected set, not only the target: an executor
+# may act on a parameter, and a proposer chooses the parameters.
 _IDENTIFIER_PARAMS = (
     "hostname",
     "host",
+    "fqdn",
+    "computer_name",
+    "computer_dns_name",
+    "device_name",
+    "machine",
+    "machine_id",
+    "device_id",
     "ip",
     "ip_address",
+    "ips",
+    "address",
+    "cidr",
+    "network",
     "email",
     "upn",
     "user",
     "username",
+    "user_principal_name",
     "domain",
-    "machine_id",
+    "target",
+    "subject",
 )
 _EMPTY_TARGETS = frozenset({"", "unknown", "none", "null", "n/a"})
+
+# The narrowest network a single action may name. Anything broader is not a
+# response to one host; it is an outage. /0 is the extreme case.
+MIN_IPV4_PREFIX = 24
+MIN_IPV6_PREFIX = 64
+
+# The longest a reversible change may stand before it is undone. A ttl beyond
+# it is refused, not clamped: the approver saw the number.
+MAX_TTL = timedelta(days=30)
+
+IPNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
+
+
+def ttl_from_parameters(parameters: Mapping[str, Any]) -> Optional[timedelta]:
+    """``parameters["ttl_seconds"]`` as a ttl; None when absent.
+
+    Raises ``ValueError`` for anything that is not a positive, finite number of
+    seconds no longer than ``MAX_TTL``. A ttl that cannot be turned into an
+    expiry must stop the action before it runs: afterwards there is no
+    ``expires_at`` to record and the row would be executed again.
+    """
+    raw = parameters.get("ttl_seconds")
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        raise ValueError("ttl_seconds must be a number of seconds")
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("ttl_seconds must be a number of seconds") from None
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError("ttl_seconds must be a positive number of seconds")
+    if seconds > MAX_TTL.total_seconds():
+        raise ValueError(
+            f"ttl_seconds {seconds:g} exceeds the maximum of "
+            f"{int(MAX_TTL.total_seconds())} ({MAX_TTL.days} days)"
+        )
+    return timedelta(seconds=seconds)
 
 
 def _norm(value: Any) -> str:
@@ -95,6 +156,121 @@ def _norm_set(values: Any) -> frozenset[str]:
     if isinstance(values, str):
         values = [values]
     return frozenset(_norm(v) for v in values if str(v).strip())
+
+
+def _as_network(value: str) -> Optional[IPNetwork]:
+    """``value`` as a network (a bare address is a /32 or /128), canonical.
+
+    IPv4-mapped IPv6 (``::ffff:10.0.0.5``) becomes the IPv4 it maps; a scope
+    id (``fe80::1%eth0``) is dropped.
+    """
+    text = value.strip().strip("[]")
+    if "%" in text:
+        text = text.split("%", 1)[0]
+    try:
+        net = ipaddress.ip_network(text, strict=False)
+    except ValueError:
+        return None
+    if isinstance(net, ipaddress.IPv6Network):
+        mapped = net.network_address.ipv4_mapped
+        if mapped is not None and net.prefixlen >= 96:
+            return ipaddress.ip_network(f"{mapped}/{net.prefixlen - 96}", strict=False)
+    return net
+
+
+def _too_broad(net: IPNetwork) -> bool:
+    floor = MIN_IPV4_PREFIX if net.version == 4 else MIN_IPV6_PREFIX
+    return net.prefixlen < floor
+
+
+@dataclass(frozen=True)
+class Identifier:
+    """One name an action carries, in every form it is compared in.
+
+    ``name`` is the canonical full name (host names lower-case, no trailing
+    dot, no ``DOMAIN\\`` prefix; addresses in canonical text form). ``short``
+    is a host name's first label (``dc01`` for ``dc01.corp.local``), so a
+    protected short name matches any qualification of it and the reverse.
+    ``network`` is set for addresses and CIDRs.
+    """
+
+    raw: str
+    name: str
+    short: Optional[str] = None
+    network: Optional[IPNetwork] = None
+
+
+def identify(value: Any) -> Optional[Identifier]:
+    """``value`` normalised for protected-asset matching; None when blank."""
+    raw = str(value).strip()
+    if not raw:
+        return None
+    text = raw.casefold()
+    if text.startswith("host:"):
+        text = text[len("host:") :].strip()
+    net = _as_network(text)
+    if net is not None:
+        name = (
+            str(net.network_address)
+            if net.prefixlen == net.max_prefixlen
+            else str(net)
+        )
+        return Identifier(raw=raw, name=name, network=net)
+    if "\\" in text:
+        # CORP\\dc01 -> dc01 (NetBIOS domain prefix).
+        text = text.rsplit("\\", 1)[1].strip()
+    text = text.rstrip(".")
+    if not text:
+        return None
+    if "@" in text:
+        # A mailbox / UPN: compared whole, never by its first label.
+        return Identifier(raw=raw, name=text)
+    short = text.split(".", 1)[0] or None
+    return Identifier(raw=raw, name=text, short=short)
+
+
+def _param_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return [str(value)]
+    if isinstance(value, Iterable) and not isinstance(value, Mapping):
+        return [str(v) for v in value if isinstance(v, (str, int)) and str(v).strip()]
+    return []
+
+
+class ProtectedSet:
+    """The protected names and networks, normalised once per config."""
+
+    def __init__(self, entries: Iterable[str]) -> None:
+        self.names: set[str] = set()
+        self.shorts: set[str] = set()
+        self.networks: list[IPNetwork] = []
+        for entry in entries:
+            ident = identify(entry)
+            if ident is None:
+                continue
+            if ident.network is not None:
+                self.networks.append(ident.network)
+            else:
+                self.names.add(ident.name)
+                if ident.short:
+                    self.shorts.add(ident.short)
+
+    def match(self, ident: Identifier) -> Optional[str]:
+        """The protected entry ``ident`` names or overlaps, if any."""
+        if ident.network is not None:
+            for net in self.networks:
+                if net.version == ident.network.version and net.overlaps(
+                    ident.network
+                ):
+                    return str(net)
+            return None
+        if ident.name in self.names:
+            return ident.name
+        if ident.short and ident.short in self.shorts:
+            return ident.short
+        return None
 
 
 @dataclass(frozen=True)
@@ -123,10 +299,13 @@ class PolicyConfig:
         limits = dict(DEFAULT_HOURLY_LIMITS)
         for key, value in (raw.get("hourly_limits") or {}).items():
             limits[_norm(key)] = int(value)
-        asset_tags = {
-            _norm(target): _norm_set(tags)
-            for target, tags in (raw.get("asset_tags") or {}).items()
-        }
+        asset_tags: dict[str, frozenset[str]] = {}
+        for target, tags in (raw.get("asset_tags") or {}).items():
+            ident = identify(target)
+            if ident is None:
+                continue
+            key = ident.name
+            asset_tags[key] = asset_tags.get(key, frozenset()) | _norm_set(tags)
         return cls(
             protected_targets=_norm_set(raw.get("protected_targets")),
             protected_tags=DEFAULT_PROTECTED_TAGS
@@ -161,13 +340,23 @@ class PolicyConfig:
         return _norm(action_type) in self.four_eyes_types
 
 
-def _identifiers(action: TypedAction) -> set[str]:
-    found = {_norm(action.target)}
+def _identifiers(action: TypedAction) -> list[Identifier]:
+    """The target and every identifier parameter, normalised."""
+    values = [action.target]
     for name in _IDENTIFIER_PARAMS:
-        value = action.parameters.get(name)
-        if isinstance(value, str) and value.strip():
-            found.add(_norm(value))
+        values.extend(_param_values(action.parameters.get(name)))
+    found: list[Identifier] = []
+    for value in values:
+        ident = identify(value)
+        if ident is not None:
+            found.append(ident)
     return found
+
+
+def _names_something(action: TypedAction) -> bool:
+    return any(
+        ident.name not in _EMPTY_TARGETS for ident in _identifiers(action)
+    )
 
 
 def _declared_tags(action: TypedAction) -> frozenset[str]:
@@ -206,17 +395,41 @@ class ActionPolicy:
     def protected_reason(
         self, action: TypedAction, config: Optional[PolicyConfig] = None
     ) -> Optional[str]:
+        """Why ``action`` touches a protected asset, or None.
+
+        Every identifier is compared normalised (see ``identify``): a host by
+        its full name and by its short name, an address or CIDR by overlap
+        with any protected address or range. A range broader than /24 (IPv4)
+        or /64 (IPv6) is refused outright.
+        """
         cfg = config or self.config
-        ids = _identifiers(action)
-        hit = sorted(ids & cfg.protected_targets)
-        if hit:
-            return f"protected asset: {hit[0]} is listed in protected_targets"
+        idents = _identifiers(action)
+        for ident in idents:
+            if ident.network is not None and _too_broad(ident.network):
+                return (
+                    f"protected asset: {ident.raw} is too broad a range "
+                    f"(narrowest allowed /{MIN_IPV4_PREFIX} IPv4, "
+                    f"/{MIN_IPV6_PREFIX} IPv6)"
+                )
+        protected = ProtectedSet(cfg.protected_targets)
+        for ident in idents:
+            hit = protected.match(ident)
+            if hit:
+                return f"protected asset: {ident.raw} matches {hit} in protected_targets"
+
         tags: set[str] = set(_declared_tags(action))
-        for ident in ids:
-            tags |= cfg.asset_tags.get(ident, frozenset())
-        hit = sorted(tags & cfg.protected_tags)
-        if hit:
-            return f"protected asset: {action.target} is tagged {hit[0]}"
+        tagged = [
+            (entry, tag_set)
+            for entry, tag_set in cfg.asset_tags.items()
+            if tag_set & cfg.protected_tags
+        ]
+        for entry, tag_set in tagged:
+            one = ProtectedSet([entry])
+            if any(one.match(ident) for ident in idents):
+                tags |= tag_set
+        hit_tags = sorted(tags & cfg.protected_tags)
+        if hit_tags:
+            return f"protected asset: {action.target} is tagged {hit_tags[0]}"
         return None
 
     def evaluate(
@@ -237,7 +450,7 @@ class ActionPolicy:
         cfg = self.config
         if cfg.degraded:
             return PolicyResult.deny("response policy configuration unavailable")
-        if not (_identifiers(action) - _EMPTY_TARGETS):
+        if not _names_something(action):
             return PolicyResult.deny(f"target {action.target!r} names nothing")
 
         protected = self.protected_reason(action, cfg)
@@ -278,7 +491,14 @@ class ActionPolicy:
 
 
 __all__ = [
+    "MAX_TTL",
+    "MIN_IPV4_PREFIX",
+    "MIN_IPV6_PREFIX",
     "ActionPolicy",
+    "Identifier",
+    "ProtectedSet",
+    "identify",
+    "ttl_from_parameters",
     "BLAST_RADIUS_WINDOW",
     "DEFAULT_FOUR_EYES_TYPES",
     "DEFAULT_PROTECTED_TAGS",

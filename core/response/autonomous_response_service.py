@@ -29,13 +29,22 @@ from core.response.executors.base import (
     PolicyResult,
     TypedAction,
 )
-from core.response.policy import ActionPolicy
+from core.response.policy import ActionPolicy, ttl_from_parameters
 from core.time import utcnow
 
 logger = logging.getLogger(__name__)
 
 # approved_by / created_by on the reverse rows the expiry sweep writes.
 TTL_SWEEP_ACTOR = "system:ttl-sweep"
+
+
+def _invalid_reason(error: ValueError) -> str:
+    """The first message of a validation error, or the error's text."""
+    if isinstance(error, ValidationError):
+        errors = error.errors()
+        if errors:
+            return str(errors[0].get("msg", "invalid"))
+    return str(error) or "invalid"
 
 
 class AutonomousResponseService:
@@ -190,18 +199,16 @@ class AutonomousResponseService:
 
         Reversibility is the registry's, not the row's: the row's value was
         the creator's claim, and the registry's is what the executor can undo.
+
+        Raises ``ValueError`` (``ValidationError`` included) for a row that is
+        not a valid action, a ttl outside ``(0, MAX_TTL]`` among them. A
+        reverse carries no ttl: undoing a change does not expire.
         """
         params = dict(action.parameters or {})
         params.setdefault("reason", action.reason)
-        ttl: Optional[timedelta] = None
-        raw_ttl = params.get("ttl_seconds")
-        if raw_ttl is not None:
-            try:
-                seconds = float(raw_ttl)
-            except (TypeError, ValueError):
-                seconds = 0.0
-            if seconds > 0:
-                ttl = timedelta(seconds=seconds)
+        ttl: Optional[timedelta] = (
+            None if reverse_of is not None else ttl_from_parameters(params)
+        )
         executor = self.executors.get(action.action_type)
         reversibility = (
             self.executors.reversibility_of(action.action_type)
@@ -275,11 +282,8 @@ class AutonomousResponseService:
 
         try:
             typed = self._typed(action)
-        except ValidationError as e:
-            first = e.errors()[0] if e.errors() else {}
-            return self._refuse(
-                action, f"invalid action: {first.get('msg', 'invalid')}"
-            )
+        except ValueError as e:
+            return self._refuse(action, f"invalid action: {_invalid_reason(e)}")
 
         verdict = self.evaluate(typed)
         if not verdict.allowed:
@@ -298,7 +302,20 @@ class AutonomousResponseService:
                     f"{action.action_type} needs a second approver distinct from the first",
                 )
 
+        # Everything recorded about the run is computed before it runs: a
+        # failure here must stop the action, not strand an executed change on
+        # a row still marked approved (which the next loop would run again).
         executed_at = utcnow()
+        reversible = typed.reversibility == "reversible"
+        try:
+            columns = typed.to_approval_columns(
+                executed_at=executed_at,
+                default_ttl=executor.default_ttl if reversible else None,
+            )
+        except (OverflowError, ValueError, TypeError) as e:
+            return self._refuse(
+                action, f"invalid action: cannot compute expiry ({type(e).__name__})"
+            )
         try:
             outcome = executor.execute(typed)
         except Exception as e:  # noqa: BLE001
@@ -313,11 +330,6 @@ class AutonomousResponseService:
             )
             return outcome.to_execution_result()
 
-        reversible = typed.reversibility == "reversible"
-        columns = typed.to_approval_columns(
-            executed_at=executed_at,
-            default_ttl=executor.default_ttl if reversible else None,
-        )
         expires_at = (
             columns["expires_at"]
             if reversible and outcome.status == "executed"
@@ -385,10 +397,10 @@ class AutonomousResponseService:
                     if self.executors.get(action_type) is not None
                     else "irreversible"
                 ),
+                ttl=ttl_from_parameters(parameters or {}),
             )
-        except ValidationError as e:
-            first = e.errors()[0] if e.errors() else {}
-            return {"status": "refused", "reasons": [str(first.get("msg", "invalid"))]}
+        except ValueError as e:
+            return {"status": "refused", "reasons": [_invalid_reason(e)]}
         verdict = self.evaluate(typed)
         if not verdict.allowed:
             logger.warning(
@@ -611,7 +623,20 @@ class AutonomousResponseService:
                     )
                     continue
 
-                result = self._dispatch(action)
+                try:
+                    result = self._dispatch(action)
+                except Exception as e:  # noqa: BLE001
+                    # One bad row must not stop the queue, nor stay approved
+                    # to be dispatched again on the next loop.
+                    logger.exception("Dispatch of %s failed", action.action_id)
+                    error = f"dispatch error: {type(e).__name__}"
+                    try:
+                        self.approval_service.mark_failed(action.action_id, error)
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "Could not mark %s failed", action.action_id
+                        )
+                    result = {"success": False, "error": error, "status": "failed"}
                 if result is None:
                     # Unknown action type — leave for another executor or manual handling.
                     continue
@@ -689,11 +714,15 @@ class AutonomousResponseService:
 
         try:
             typed = self._typed(original, reverse_of=original.action_id)
-        except ValidationError:
+        except ValueError:
             return {"outcome": "conflict", "message": "stored action is not valid"}
-        verdict = self.executors.validate(typed)
-        if not verdict.allowed:
-            return {"outcome": "conflict", "message": "; ".join(verdict.reasons)}
+        # No executor.validate here. It resolves the target afresh (Defender
+        # looks the host up by name), and the reverse must act on what the
+        # original acted on: the identity recorded in its result
+        # (external_ref, before/after state), which reverse() receives. A host
+        # renamed since, or a name now ambiguous, must not strand a change.
+        # The registry checks that matter for a reverse were made above: an
+        # executor holds the type and registered it reversible.
 
         claim = self.approval_service.begin_reversal(action_id, actor, reason)
         if claim is None:

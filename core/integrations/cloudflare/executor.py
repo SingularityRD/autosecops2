@@ -59,20 +59,73 @@ SettingsProvider = Callable[[], Tuple[bool, Dict[str, Any]]]
 
 
 def _live_settings() -> Tuple[bool, Dict[str, Any]]:
-    from core.config import get_integration_config, is_integration_enabled
+    from core.config import is_integration_enabled
+    from core.response.executors.wiring import resolved_integration_config
 
     if not is_integration_enabled("cloudflare"):
         return False, {}
-    return True, dict(get_integration_config("cloudflare") or {})
+    # Resolved, not the stored JSON: api_token is a secret field and lives
+    # only in the secret store.
+    return True, resolved_integration_config("cloudflare")
+
+
+_SUBJECT_PARAM = {WAF_BLOCK: "ip", GATEWAY_BLOCK: "domain", ACCESS_REVOKE: "email"}
+# WAF IP Access Rule modes that block or challenge. "whitelist" is not here: a
+# response action never lets traffic through.
+WAF_MODES = frozenset({"block", "challenge", "js_challenge", "managed_challenge"})
+# Context any action may carry; none of it changes what Cloudflare is told.
+_CONTEXT_PARAMS = frozenset(
+    {
+        "reason",
+        "ttl_seconds",
+        "tags",
+        "asset_tags",
+        "investigation_id",
+        "finding_id",
+        "case_id",
+        "evidence",
+        "notes",
+        "hostname",
+        "correlation",
+    }
+)
+# What each type may carry besides context. Anything else is refused: the
+# approver saw the target and these, and nothing else may steer the call.
+_ALLOWED_PARAMS = {
+    WAF_BLOCK: _CONTEXT_PARAMS | {"ip", "mode"},
+    GATEWAY_BLOCK: _CONTEXT_PARAMS | {"domain", "rule_name"},
+    ACCESS_REVOKE: _CONTEXT_PARAMS | {"email"},
+}
+_RULE_NAME_MAX = 100
+
+
+def _canonical(action_type: str, value: str) -> Optional[str]:
+    """``value`` in the form compared and sent for ``action_type``; None if invalid."""
+    value = value.strip()
+    if action_type == WAF_BLOCK:
+        try:
+            net = ipaddress.ip_network(value, strict=False)
+        except ValueError:
+            return None
+        if net.prefixlen == net.max_prefixlen:
+            return str(net.network_address)
+        return str(net)
+    if action_type == GATEWAY_BLOCK:
+        value = value.casefold().rstrip(".")
+        return value if _DOMAIN_RE.match(value) else None
+    value = value.casefold()
+    return value if _EMAIL_RE.match(value) else None
 
 
 def _subject(action: TypedAction) -> str:
-    """What the action names at Cloudflare: a parameter overrides the target."""
-    key = {WAF_BLOCK: "ip", GATEWAY_BLOCK: "domain", ACCESS_REVOKE: "email"}[
-        action.action_type
-    ]
-    value = action.parameters.get(key)
-    return str(value).strip() if value else action.target.strip()
+    """What the action names at Cloudflare: always the target.
+
+    The target is what the approver saw. A subject parameter (``ip``,
+    ``domain``, ``email``) is accepted only when it names the same thing;
+    ``validate`` refuses one that differs, and execute never reads it.
+    """
+    canonical = _canonical(action.action_type, action.target)
+    return canonical if canonical is not None else action.target.strip()
 
 
 def _errors_text(data: Dict[str, Any]) -> str:
@@ -115,13 +168,39 @@ class CloudflareExecutor:
     def validate(self, action: TypedAction) -> PolicyResult:
         if action.action_type not in self.action_types:
             return PolicyResult.deny(f"cloudflare does not take {action.action_type!r}")
+        stray = sorted(set(action.parameters) - _ALLOWED_PARAMS[action.action_type])
+        if stray:
+            return PolicyResult.deny(
+                f"{action.action_type} does not take parameter(s) {', '.join(stray)}"
+            )
         subject = _subject(action)
+        override = action.parameters.get(_SUBJECT_PARAM[action.action_type])
+        if override is not None and str(override).strip():
+            if not isinstance(override, str) or _canonical(
+                action.action_type, override
+            ) != _canonical(action.action_type, action.target):
+                return PolicyResult.deny(
+                    f"parameters.{_SUBJECT_PARAM[action.action_type]} "
+                    f"{str(override)!r} differs from the target {action.target!r}"
+                )
         if action.action_type == WAF_BLOCK:
+            mode = action.parameters.get("mode")
+            if mode is not None and str(mode) not in WAF_MODES:
+                return PolicyResult.deny(
+                    f"waf_block mode {mode!r} is not one of {sorted(WAF_MODES)}"
+                )
             try:
                 ipaddress.ip_network(subject, strict=False)
             except ValueError:
                 return PolicyResult.deny(f"waf_block target {subject!r} is not an IP")
         elif action.action_type == GATEWAY_BLOCK:
+            rule_name = action.parameters.get("rule_name")
+            if rule_name is not None and (
+                not isinstance(rule_name, str) or len(rule_name) > _RULE_NAME_MAX
+            ):
+                return PolicyResult.deny(
+                    f"gateway_block rule_name must be text of at most {_RULE_NAME_MAX} characters"
+                )
             if not _DOMAIN_RE.match(subject):
                 return PolicyResult.deny(
                     f"gateway_block target {subject!r} is not a domain"
@@ -166,6 +245,10 @@ class CloudflareExecutor:
         try:
             if action.action_type == WAF_BLOCK:
                 mode = str(action.parameters.get("mode") or "block")
+                if mode not in WAF_MODES:
+                    return ExecResult(
+                        status="failed", error=f"waf_block mode {mode!r} refused"
+                    )
                 data = cf._waf_block_ip(
                     api_token=token,
                     account_id=account_id,

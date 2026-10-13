@@ -131,6 +131,22 @@ class TestFourEyes:
         assert second.approved_by == "alice"
         assert second.second_approver == "bob"
 
+    def test_revoke_sessions_is_stored_typed_and_needs_two_people(self):
+        # W2.4 verifier #6: it used to be stored as "custom", which neither
+        # held it for two people at creation nor at approval.
+        svc = ApprovalService(config=ResponseConfig(), policy_config=PolicyConfig())
+        svc.force_manual_approval = False
+        row = _create(
+            svc, ActionType.REVOKE_SESSIONS, "bob@example.com", confidence=0.99
+        )
+        assert row.action_type == "revoke_sessions"
+        assert row.status == ActionStatus.PENDING.value
+        assert row.requires_approval is True
+        assert svc.approve_action(row.action_id, "alice").status == "pending"
+        with pytest.raises(SecondApproverConflict):
+            svc.approve_action(row.action_id, "Alice ")
+        assert svc.approve_action(row.action_id, "bob").second_approver == "bob"
+
     def test_an_ordinary_action_needs_one_approval(self):
         svc = ApprovalService(config=ResponseConfig(), policy_config=PolicyConfig())
         svc.force_manual_approval = False

@@ -7,7 +7,13 @@ startup and inject the result.
 
 Executors plug in by naming a module in ``EXECUTOR_SOURCES``. The module
 exports ``build_executor(config) -> Executor | None``, where ``config`` is the
-integration's settings dict (``core.config.get_integration_config``). A source
+integration's resolved settings: the stored integration config with every
+descriptor field resolved through ``core.integrations._base.config``, so secret
+fields (Entra's ``client_secret``) come from the secret store. The stored JSON
+never holds a secret (``integration_secrets.split_secrets`` strips them), so a
+factory handed the raw config would be missing its credentials.
+``integration_id`` is the descriptor id (``microsoft-defender``, ``azure-ad``,
+``palo-alto``): the key ``enabled_integrations`` and the secret store use. A source
 whose module is not installed is skipped; one whose integration is disabled is
 skipped unless ``always`` (the executor then reads its settings per call and
 fails the action itself while disabled, as Cloudflare does). A factory that
@@ -40,10 +46,10 @@ class ExecutorSource:
 EXECUTOR_SOURCES: tuple[ExecutorSource, ...] = (
     ExecutorSource("cloudflare", "core.integrations.cloudflare.executor", always=True),
     ExecutorSource(
-        "microsoft_defender", "core.integrations.microsoft_defender.executor"
+        "microsoft-defender", "core.integrations.microsoft_defender.executor"
     ),
-    ExecutorSource("azure_ad", "core.integrations.azure_ad.executor"),
-    ExecutorSource("palo_alto", "core.integrations.palo_alto.executor"),
+    ExecutorSource("azure-ad", "core.integrations.azure_ad.executor"),
+    ExecutorSource("palo-alto", "core.integrations.palo_alto.executor"),
 )
 
 
@@ -53,10 +59,24 @@ def _is_enabled(integration_id: str) -> bool:
     return is_integration_enabled(integration_id)
 
 
-def _config_for(integration_id: str) -> Dict[str, Any]:
-    from core.config import get_integration_config
+def resolved_integration_config(integration_id: str) -> Dict[str, Any]:
+    """The stored config with descriptor fields resolved, secrets included.
 
-    return dict(get_integration_config(integration_id) or {})
+    Keys the descriptor does not declare (an executor's own settings, such as
+    ``protected_users``) pass through from the stored config; a declared field
+    takes its resolved value when it has one.
+    """
+    from core.config import get_integration_config
+    from core.integrations._base.config import resolve
+    from core.integrations._base.descriptor import get_descriptor
+
+    config: Dict[str, Any] = dict(get_integration_config(integration_id) or {})
+    descriptor = get_descriptor(integration_id)
+    if descriptor is not None:
+        for key, value in resolve(descriptor).items():
+            if value is not None and value != "":
+                config[key] = value
+    return config
 
 
 def _import(module: str) -> Optional[Any]:
@@ -74,7 +94,7 @@ def build_executor_registry(
     sources: Iterable[ExecutorSource] = EXECUTOR_SOURCES,
     *,
     enabled: Callable[[str], bool] = _is_enabled,
-    config_for: Callable[[str], Dict[str, Any]] = _config_for,
+    config_for: Callable[[str], Dict[str, Any]] = resolved_integration_config,
 ) -> ExecutorRegistry:
     """A registry holding every available, enabled executor."""
     registry = ExecutorRegistry()
@@ -126,4 +146,5 @@ __all__ = [
     "ExecutorSource",
     "build_executor_registry",
     "registry_snapshot",
+    "resolved_integration_config",
 ]
