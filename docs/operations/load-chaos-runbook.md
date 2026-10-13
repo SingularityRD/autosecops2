@@ -268,6 +268,13 @@ bulgu yeni bir İP").
 Yerel duman koşusunun sonuçları `docs/wp/w4.1.md` → Evidence bölümündedir.
 Staging koşusu bunları doğrulamalı ya da çürütmelidir:
 
+- **Postgres kesintisinde kabul edilmiş bulgular kayboluyor.** Yerel duman
+  koşusunda 30 sn'lik kesintide webhook'un 200 ile kabul ettiği 30 bulgunun
+  30'u da yazılamadı ve bırakıldı (daemon yazmayı yalnızca 3 × 0.2 sn dener).
+  `pg_restart` staging'de de FAIL vermesi beklenir; düzeltme ayrı iş paketidir.
+- **LLM worker Redis kaybında çıkar**; Kubernetes yeniden başlatır.
+  `redis_restart` sonrasında `kubectl get pods` yeniden başlatma sayısını
+  kayda geçirin.
 - **Webhook 200 = bellekte kuyruk.** Daemon webhook'u bulguyu bellekteki devir
   kuyruğuna koyduğu anda 200 döner ve Redis tekilleştirme anahtarını işaretler.
   Daemon o anda öldürülürse kuyruktaki bulgular kaybolur; gönderici yeniden
