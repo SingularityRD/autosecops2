@@ -6,19 +6,25 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import nullcontext
-from typing import Any, ContextManager, Dict, List, Optional, Tuple
+from typing import Any, Callable, ContextManager, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.agents.integration_tools import resolve_integration_call
 from core.agents.internal_auth import authorise
-from core.agents.mcp_tools import MCPFailure, execute_mcp_tool, split_tool_name
+from core.agents.mcp_tools import (
+    MCPFailure,
+    approved_call,
+    execute_mcp_tool,
+    split_tool_name,
+)
 from core.agents.tool_registry import MANIFEST, execute_backend_tool
 from core.auth import tool_principal
 from core.deps import provide_mcp_registry
 from core.integrations.mcp.registry import MCPRegistry
 from core.integrations.mcp.surface import acting_as
+from core.llm.tool_effects import classify
 from core.llm.tool_schemas import CALL_INTEGRATION_TOOL
 from core.routing import Auth, RouterMeta
 from core.skills.skill_library import READ_SKILL_TOOL
@@ -45,6 +51,14 @@ class Bounds(BaseModel):
     timeout_ms: int = Field(..., gt=0)
 
 
+# The approved checkpoint a gated call carries: the run that parked on it and
+# the checkpoint a person answered. Sent by the agent layer only for a call it
+# parked and saw approved (core/stream.ts); absent for every other call.
+class Approval(BaseModel):
+    run_id: str = Field(..., min_length=1)
+    checkpoint_id: str = Field(..., min_length=1)
+
+
 class InvokeRequest(BaseModel):
     tool: str
     args: Dict[str, Any] = Field(default_factory=dict)
@@ -57,6 +71,11 @@ class InvokeRequest(BaseModel):
     # across phases run by different agents. Absent means unattributed: a
     # skill read is still counted, with no agent to credit.
     agent_id: Optional[str] = None
+    approval: Optional[Approval] = None
+
+
+class GateRefused(Exception):
+    """A gated tool was called without an approval a person gave."""
 
 
 def _failure(kind: str, **detail: Any) -> Dict[str, Any]:
@@ -201,16 +220,94 @@ def _source_system(tool: str, registry: MCPRegistry) -> str:
     return SOURCE_SYSTEM if split is None else split[0]
 
 
+ApprovalsSource = Callable[[], Any]
+
+
+def _default_approvals() -> Any:
+    from core.response.approval_service import ApprovalService
+
+    return ApprovalService()
+
+
+# Resolved only when a gated call needs it: most calls are reads, and an app that
+# never built an approvals service still serves them.
+def provide_approvals_source(request: Request) -> ApprovalsSource:
+    return lambda: getattr(request.app.state, "approvals", None) or _default_approvals()
+
+
+# The two ways the agent layer words a parked tool call (core/stream.ts): the
+# checkpoint question lead / investigate / hunt raise, and the reason compose
+# mirrors onto its phase. Matched as written, not as a word anywhere in the text,
+# so a phase or an argument that merely mentions a tool does not approve it.
+def _names_tool(text: str, tool: str) -> bool:
+    if f" wants to call {tool} with " in f" {text}":
+        return True
+    return any(
+        line.strip() == f"parked on approval for {tool}" for line in text.splitlines()
+    )
+
+
+# The one check a gated call must pass on this side, whatever the agent layer's
+# config said: a person approved this run's checkpoint, and that checkpoint is
+# about this tool. A run's own approvals list is a convenience that parks the
+# call for a person; this is what makes an omission there fail closed.
+def _approved(
+    approval: Optional[Approval], tool: str, approvals: ApprovalsSource
+) -> bool:
+    if approval is None:
+        return False
+    from core.response.approval_service import ActionStatus
+
+    try:
+        actions = approvals().list_actions(
+            status=ActionStatus.APPROVED, workflow_run_id=approval.run_id
+        )
+    except Exception:  # noqa: BLE001 — an unreadable queue is not a yes
+        logger.exception("could not read approvals for run %s", approval.run_id)
+        return False
+    for action in actions:
+        parameters = action.parameters or {}
+        if str(parameters.get("checkpoint_id") or "") != approval.checkpoint_id:
+            continue
+        if parameters.get("tool") == tool:
+            return True
+        if parameters.get("tool"):
+            # Named outright: that name and no other.
+            continue
+        if _names_tool(action.title or "", tool) or _names_tool(
+            action.description or "", tool
+        ):
+            return True
+    return False
+
+
+# True when the call is gated and was approved; False for an ungated call.
+def _gate(tool: str, body: InvokeRequest, approvals: ApprovalsSource) -> bool:
+    effect = classify(tool)
+    if not effect.gated:
+        return False
+    if _approved(body.approval, tool, approvals):
+        return True
+    raise GateRefused(
+        f"{tool} is a {effect.effect} tool and runs only once a person approves "
+        "the call; no approved checkpoint for it was presented"
+    )
+
+
 # Backend tools first, then the MCP servers. One ceiling governs both, so a tool
 # does not get a second timeout by virtue of living on the other side.
 #
 # call_integration_tool stands for the integration call it names, so that call is
 # what runs, bounded and attributed as if it had been declared itself.
-async def _run(body: InvokeRequest, registry: MCPRegistry) -> Tuple[Any, bool, str]:
+async def _run(
+    body: InvokeRequest, registry: MCPRegistry, approvals: ApprovalsSource
+) -> Tuple[Any, bool, str]:
     seconds = body.bounds.timeout_ms / 1000
     tool, raw = body.tool, body.args
     if tool == CALL_INTEGRATION_TOOL:
         tool, raw = resolve_integration_call(registry, raw)
+    # After the proxy is unwrapped, so the call it stands for is what is judged.
+    approved = _gate(tool, body, approvals)
     args = _bounded(raw, body.bounds.max_rows, tool, registry)
 
     result, handled = await asyncio.wait_for(
@@ -218,9 +315,10 @@ async def _run(body: InvokeRequest, registry: MCPRegistry) -> Tuple[Any, bool, s
     )
     if handled:
         return result, True, SOURCE_SYSTEM
-    result, handled = await asyncio.wait_for(
-        execute_mcp_tool(tool, args, seconds, registry), timeout=seconds
-    )
+    with approved_call(tool) if approved else nullcontext():
+        result, handled = await asyncio.wait_for(
+            execute_mcp_tool(tool, args, seconds, registry), timeout=seconds
+        )
     return result, handled, _source_system(tool, registry)
 
 
@@ -229,8 +327,12 @@ async def invoke(
     body: InvokeRequest,
     authorization: Optional[str] = Header(default=None),
     registry: MCPRegistry = Depends(provide_mcp_registry),
+    approvals: ApprovalsSource = Depends(provide_approvals_source),
 ) -> Dict[str, Any]:
     authorise(authorization, "tool invocation")
+    # Called directly (not through FastAPI), the dependency is not resolved.
+    if not callable(approvals):
+        approvals = _default_approvals
     # A token that does not verify is refused, never read as "no person": that
     # would record a person's work as an agent's.
     bound: ContextManager[None] = nullcontext()
@@ -243,7 +345,9 @@ async def invoke(
     try:
         # The tool runs in this context (or a copy of it), so it sees the binding.
         with bound:
-            result, handled, source = await _run(body, registry)
+            result, handled, source = await _run(body, registry, approvals)
+    except GateRefused as exc:
+        return _failure("refused", detail=str(exc))
     except asyncio.TimeoutError:
         return _failure("timeout", timeoutMs=body.bounds.timeout_ms)
     # An MCP server that could not be reached is a gap in visibility, not a defect

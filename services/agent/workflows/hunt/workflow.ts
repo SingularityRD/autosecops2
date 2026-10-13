@@ -3,6 +3,7 @@ import { GatewayExhausted } from "../../core/limiter.js";
 import type { Harness } from "../../core/loop.js";
 import type { RunKind, RunOutcome, TerminalHandoff } from "../../contracts/events.js";
 import { recalledPayloadOf } from "../../contracts/memory.js";
+import { isGated } from "../../contracts/tool.js";
 import type { RunSpec } from "../../core/spec.js";
 import { BudgetRefused, disconfirmationCritic, decisionProvider, narrativeWriter, workerDispatcher } from "./adapters.js";
 import { narrativeInput, type Narrative } from "./narrative.js";
@@ -347,12 +348,13 @@ async function linkFindings(
 }
 
 // What the workers were granted and nothing else: a chain runs with no decision
-// behind it, so it must not reach a tool no role may call.
+// behind it, so it must not reach a tool no role may call -- nor a gated one,
+// since nobody is asked before a chain step runs.
 function enrichmentTools(harness: Harness<HuntKinds>, spec: RunSpec): Tool[] {
   const seen = new Map<string, Tool>();
   for (const role of Object.keys(spec.roles.workers)) {
     for (const tool of harness.registry.granted(role)) {
-      if (seen.has(tool.id)) continue;
+      if (seen.has(tool.id) || isGated(tool) || spec.approvals.includes(tool.id)) continue;
       seen.set(tool.id, {
         id: tool.id,
         description: tool.description,

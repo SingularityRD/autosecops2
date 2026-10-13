@@ -1,4 +1,4 @@
-"""GET /agents/custom/_meta/tools marks each tool read_only, asks_first or on_its_own."""
+"""GET /agents/custom/_meta/tools marks each tool read_only or asks_first."""
 
 from types import SimpleNamespace
 
@@ -21,7 +21,8 @@ def test_changes_marks_connected_and_built_in_tools():
     assert "splunk_search" in body["tools"]
     changes = body["changes"]
     assert changes["splunk_search"] == "read_only"
-    assert changes["crowdstrike_isolate_host"] == "on_its_own"
+    # Gated on every surface (W1.7), so nothing acts on its own.
+    assert changes["crowdstrike_isolate_host"] == "asks_first"
     assert changes["create_approval_action"] == "asks_first"
     # Built-in tools are always there, connected or not.
     assert changes["read_skill"] == "read_only"

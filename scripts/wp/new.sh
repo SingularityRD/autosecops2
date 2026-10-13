@@ -66,6 +66,13 @@ sed -e "s|{{ID}}|$id|g" -e "s|{{BRANCH}}|$branch|g" -e "s|{{BASE_SHA}}|$base_sha
 
 # node_modules is not tracked; borrow the main checkout's so gates can run at once.
 # gates.sh does the same lazily, this just saves the first run a step.
+# The symlink is not matched by .gitignore's "node_modules/" (a directory
+# pattern), so exclude it first: a stray `git add -A` must not commit it.
+# info/exclude is shared by all worktrees; the line is idempotent.
+exclude="$(git -C "$wt" rev-parse --path-format=absolute --git-path info/exclude)"
+if ! grep -qxF node_modules "$exclude" 2>/dev/null; then
+  mkdir -p "$(dirname "$exclude")" && printf 'node_modules\n' >>"$exclude"
+fi
 main_wt="$(git -C "$repo" worktree list --porcelain | sed -n '1s/^worktree //p')"
 for d in clients/web services/agent; do
   if [ -d "$main_wt/$d/node_modules" ] && [ ! -e "$wt/$d/node_modules" ] && [ -d "$wt/$d" ]; then
