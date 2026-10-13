@@ -1156,6 +1156,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/autonomy/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Audit
+         * @description Tier changes and demotions, newest first.
+         */
+        get: operations["get_api_autonomy_audit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autonomy/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Check
+         * @description Run the circuit breaker now: demote tiers whose QA bound broke.
+         */
+        post: operations["post_api_autonomy_check"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autonomy/tiers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Tiers
+         * @description Every (category, action class) with its tier, and each category's QA bound.
+         */
+        get: operations["get_api_autonomy_tiers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autonomy/tiers/{category}/{action_type}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Tier
+         * @description Set one tier. Raising needs a person and an evidence link.
+         */
+        put: operations["put_api_autonomy_tiers_category_action_type"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/bifrost/routability": {
         parameters: {
             query?: never;
@@ -7874,6 +7954,39 @@ export interface components {
              */
             approved_by?: string | null;
         };
+        /** AutonomyAuditEntry */
+        AutonomyAuditEntry: {
+            /** Action */
+            action: string;
+            /** At */
+            at?: string | null;
+            /** Changed By */
+            changed_by: string;
+            /** Id */
+            id: number;
+            /** Key */
+            key: string;
+            /** New Value */
+            new_value?: {
+                [key: string]: unknown;
+            } | null;
+            /** Old Value */
+            old_value?: {
+                [key: string]: unknown;
+            } | null;
+            /** Reason */
+            reason?: string | null;
+        };
+        /** AutonomyAuditList */
+        AutonomyAuditList: {
+            /** Entries */
+            entries?: components["schemas"]["AutonomyAuditEntry"][];
+        };
+        /** AutonomyCheckResult */
+        AutonomyCheckResult: {
+            /** Demoted */
+            demoted?: components["schemas"]["AutonomyDemotion"][];
+        };
         /**
          * AutonomyConfig
          * @description The two flags the console chip folds into Assist or Act.
@@ -7887,6 +8000,46 @@ export interface components {
             auto_response_enabled: boolean;
             /** Force Manual Approval */
             force_manual_approval: boolean;
+        };
+        /** AutonomyDemotion */
+        AutonomyDemotion: {
+            /** Action Type */
+            action_type: string;
+            /** Category */
+            category: string;
+            /** From */
+            from: string;
+            /** Reason */
+            reason: string;
+            /** To */
+            to: string;
+        };
+        /** AutonomyMatrix */
+        AutonomyMatrix: {
+            /** Action Classes */
+            action_classes: string[];
+            /** Bounds */
+            bounds?: {
+                [key: string]: components["schemas"]["BoundModel"];
+            };
+            /** Bounds Readable */
+            bounds_readable: boolean;
+            /** Categories */
+            categories: string[];
+            /** Default Tier */
+            default_tier: string;
+            /** Eligible */
+            eligible: string[];
+            /** Entries */
+            entries?: components["schemas"]["TierEntryModel"][];
+            /** Fn Bound Min Reviews */
+            fn_bound_min_reviews: number;
+            /** Fn Bound Target */
+            fn_bound_target: number;
+            /** Max Ttl Seconds */
+            max_ttl_seconds: number;
+            /** Tiers */
+            tiers: string[];
         };
         /** AutostartRequest */
         AutostartRequest: {
@@ -7966,6 +8119,38 @@ export interface components {
         BootstrapStatusResponse: {
             /** Required */
             required: boolean;
+        };
+        /** BoundModel */
+        BoundModel: {
+            /** Category */
+            category: string;
+            /** Fn Upper Bound */
+            fn_upper_bound?: number | null;
+            /**
+             * Holds
+             * @default false
+             */
+            holds: boolean;
+            /**
+             * Misses
+             * @default 0
+             */
+            misses: number;
+            /**
+             * Readable
+             * @default true
+             */
+            readable: boolean;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Reviewed
+             * @default 0
+             */
+            reviewed: number;
         };
         /** Bounds */
         Bounds: {
@@ -12326,6 +12511,52 @@ export interface components {
              */
             theme: string;
         };
+        /** TierEntryModel */
+        TierEntryModel: {
+            /** Action Type */
+            action_type: string;
+            /** Category */
+            category: string;
+            /**
+             * Eligible
+             * @default false
+             */
+            eligible: boolean;
+            /**
+             * Explicit
+             * @default false
+             */
+            explicit: boolean;
+            /** Max Ttl Seconds */
+            max_ttl_seconds?: number | null;
+            /** Min Confidence */
+            min_confidence?: number | null;
+            /** Tier */
+            tier: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Updated By */
+            updated_by?: string | null;
+        };
+        /** TierUpdate */
+        TierUpdate: {
+            /**
+             * Evidence Url
+             * @description Link to the evidence (Scorecard, eval run) a raise rests on.
+             */
+            evidence_url?: string | null;
+            /** Max Ttl Seconds */
+            max_ttl_seconds?: number | null;
+            /** Min Confidence */
+            min_confidence?: number | null;
+            /** Reason */
+            reason: string;
+            /**
+             * Tier
+             * @enum {string}
+             */
+            tier: "watch" | "suggest" | "approve" | "autonomous";
+        };
         /**
          * TimelineEvent
          * @description Timeline event model.
@@ -14681,6 +14912,139 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LoginResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_autonomy_audit: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomyAuditList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_autonomy_check: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomyCheckResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_autonomy_tiers: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomyMatrix"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_api_autonomy_tiers_category_action_type: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                category: string;
+                action_type: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TierUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TierEntryModel"];
                 };
             };
             /** @description Validation Error */

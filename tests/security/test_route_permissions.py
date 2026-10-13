@@ -68,6 +68,13 @@ GATED_ROUTES = [
         "settings.write",
     ),
     (
+        "PUT",
+        "/api/autonomy/tiers/phishing/waf_block",
+        {"tier": "approve", "reason": "x"},
+        "settings.write",
+    ),
+    ("POST", "/api/autonomy/check", None, "settings.write"),
+    (
         "POST",
         "/api/workflows/runs/r-1/cancel",
         {"reason": "no"},

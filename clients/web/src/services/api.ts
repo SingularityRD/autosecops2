@@ -216,6 +216,22 @@ export const segregationApi = {
     api.put<Schema<'FourEyesConfig'>>(`/response/four-eyes/${encodeURIComponent(actionType)}`, data),
 }
 
+/** autonomy tiers per (alert category x action class), W3.1 */
+export const autonomyApi = {
+  tiers: () => api.get<Schema<'AutonomyMatrix'>>('/autonomy/tiers'),
+
+  setTier: (category: string, actionType: string, data: Schema<'TierUpdate'>) =>
+    api.put<Schema<'TierEntryModel'>>(
+      `/autonomy/tiers/${encodeURIComponent(category)}/${encodeURIComponent(actionType)}`,
+      data
+    ),
+
+  check: () => api.post<Schema<'AutonomyCheckResult'>>('/autonomy/check'),
+
+  audit: (limit = 20) =>
+    api.get<Schema<'AutonomyAuditList'>>('/autonomy/audit', { params: { limit } }),
+}
+
 /** how a findings read treats findings naming an analyst-excluded IP */
 export type ExclusionView = 'include' | 'hide' | 'only'
 
