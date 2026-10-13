@@ -18,9 +18,10 @@ import mcp.types as types
 from mcp.server import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 
-from core.integrations._base.aad_token import TokenError, fetch_client_credentials_token
+from core.integrations._base.aad_token import TokenError
 from core.integrations._base.config import resolve
 from core.integrations._base.tool_result import run_tool
+from core.integrations.azure_ad.client import GraphClient, get_graph_token
 from core.integrations.azure_ad.descriptor import AZURE_AD
 
 logger = logging.getLogger(__name__)
@@ -35,19 +36,7 @@ def get_token():
 
     Raises ``TokenError`` when they are configured but the exchange fails.
     """
-    config = resolve(AZURE_AD)
-    tenant = config.get("tenant_id")
-    client_id = config.get("client_id")
-    client_secret = config.get("client_secret")
-    if not all([tenant, client_id, client_secret]):
-        return None
-    return fetch_client_credentials_token(
-        "Azure AD",
-        tenant,
-        client_id,
-        client_secret,
-        "https://graph.microsoft.com/.default",
-    )
+    return get_graph_token(resolve(AZURE_AD))
 
 
 async def handle_list_tools():
@@ -127,13 +116,8 @@ async def handle_call_tool(name: str, arguments: dict | None):
             uid = args.get("user_id")
             if not uid:
                 return result({"error": "user_id required"})
-            resp = httpx.patch(
-                f"https://graph.microsoft.com/v1.0/users/{uid}",
-                headers=headers,
-                json={"accountEnabled": False},
-                timeout=30,
-            )
-            resp.raise_for_status()
+            # The same Graph client the Entra ID executor uses (executor.py).
+            GraphClient(lambda: token, timeout=30).set_account_enabled(uid, False)
             return result({"success": True, "user_id": uid, "action": "disabled"})
 
         elif name == "aad_get_sign_ins":

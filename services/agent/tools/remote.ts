@@ -1,4 +1,5 @@
-import { defineTool, type RegisteredTool, type ToolBounds, type ToolResult } from "../contracts/tool.js";
+import { defineTool, type Effect, type RegisteredTool, type ToolBounds, type ToolResult } from "../contracts/tool.js";
+import { EFFECTS, TOOL_EFFECTS } from "../contracts/tool-effects.js";
 import { SpecError, type ToolSpec } from "../core/spec.js";
 import { LOCAL, localTool, type LocalExecutor } from "./local.js";
 
@@ -36,7 +37,24 @@ export function remoteTool(spec: ToolSpec): RegisteredTool {
       execute: async () => unreachable(spec.id),
     },
     boundsOf(spec),
+    false,
+    effectOf(spec),
   );
+}
+
+// What a declared tool does to the world. The far side stamps every spec it
+// writes with the class from its table; a spec without one (hand-written
+// config) is looked up in the mirrored table, and a name neither knows is
+// taken as destructive -- the restrictive end -- so it parks for a person.
+export function effectOf(spec: ToolSpec): Effect {
+  const stated = spec["effect"];
+  if (stated !== undefined) {
+    if (typeof stated !== "string" || !(EFFECTS as readonly string[]).includes(stated)) {
+      throw new SpecError(`tool ${spec.id} declares effect ${String(stated)}; expected one of ${EFFECTS.join(", ")}`);
+    }
+    return stated as Effect;
+  }
+  return TOOL_EFFECTS[spec.id] ?? "destructive";
 }
 
 export function boundsOf(spec: ToolSpec): ToolBounds {
@@ -56,7 +74,7 @@ export function toolsFrom(
     if (spec.kind === REMOTE) return remoteTool(spec);
     if (spec.kind === LOCAL) {
       const execute = locals[spec.id] ?? (async () => unsupplied(spec.id));
-      return localTool(spec, execute, boundsOf(spec));
+      return localTool(spec, execute, boundsOf(spec), effectOf(spec));
     }
     throw new SpecError(`tool ${spec.id} declares kind ${spec.kind}, which no adapter implements`);
   });

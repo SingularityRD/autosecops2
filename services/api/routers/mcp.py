@@ -326,7 +326,7 @@ class CredentialMint(BaseModel):
 
 @router.get("/surface")
 async def get_surface(current_user: User = Depends(get_current_active_user)):
-    """Whether Vigil's own tools are reachable, and whether anything can reach them."""
+    """Whether AutoSecOps' own tools are reachable, and whether anything can reach them."""
     from core.auth.mcp_credential_service import list_for_user
     from core.integrations.mcp.surface import is_enabled
     from services.api.mcp_surface import MOUNT_PATH

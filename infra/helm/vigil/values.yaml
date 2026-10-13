@@ -441,6 +441,7 @@ dbInit:
     - 47_webhooks_alert_routes.sql
     - 48_autonomy_lessons_suppression_retention.sql
     - 49_approval_action_lifecycle.sql
+    - 50_regulatory_clocks.sql
     - 56_alert_lane_decisions.sql
   resources:
     requests:

@@ -225,17 +225,20 @@ def test_comment_mention_records_author_and_content():
 
 
 def test_sla_warning_records_threshold_and_type():
-    # The assignee notification is the one carrying metadata; it is only created
-    # when the case has an assignee. No watchers, so nothing is added by the
-    # fan-out and the direct notification is the only row.
+    # Two rows, both carrying the payload: the broadcast row for the event (sent
+    # to webhooks / the Slack channel by the dispatcher) and the assignee's own.
+    # No watchers, so nothing is added by the fan-out. event_key is what the SLA
+    # monitor uses to raise each threshold once.
     session = _FakeSession(case=_FakeCase("CASE-1", assignee="analyst-1"))
 
     assert _service().notify_sla_warning(
         case_id="CASE-1", threshold_percent=90, sla_type="response", session=session
     )
 
-    assert len(session.added) == 1
-    assert session.added[0].notification_metadata == {
-        "threshold_percent": 90,
-        "sla_type": "response",
-    }
+    assert [n.user_id for n in session.added] == ["system:broadcast", "analyst-1"]
+    for notification in session.added:
+        assert notification.notification_metadata == {
+            "threshold_percent": 90,
+            "sla_type": "response",
+            "event_key": "sla:CASE-1:response:90",
+        }
