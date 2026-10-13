@@ -17,6 +17,7 @@ import { buildSpec, type RunSpec } from "../../core/spec.js";
 import { InProcessState } from "../../core/state.js";
 import { BASE_RATE_PROVENANCE, startHunt } from "../../workflows/hunt/controller.js";
 import { InProcessDirectiveQueue } from "../../workflows/hunt/directives.js";
+import { steer } from "../../workflows/hunt/inbox.js";
 import { newId } from "../../workflows/hunt/ids.js";
 import type { HuntEvent, HuntKinds, Journal } from "../../workflows/hunt/journal.js";
 import { fold } from "../../workflows/hunt/ledger.js";
@@ -33,6 +34,8 @@ import {
   MALICIOUS_UNPROVEN_GAP,
   NO_CONCLUDE_GAP,
   NO_VERDICT_GAP,
+  OPERATOR_CONCLUDE_GAP,
+  OPERATOR_CONCLUDE_REFUSED_GAP,
   VERDICT_PROMPT_VERSION,
   verdictOf,
   verdictProjection,
@@ -102,6 +105,7 @@ interface Run {
   state: InProcessState<HuntKinds>;
   runId: string;
   ledger: Journal;
+  queue: InProcessDirectiveQueue;
   intentId: string;
 }
 
@@ -109,9 +113,10 @@ async function verdictRun(overrides: Parameters<typeof huntSpecFor>[0] = {}, onB
   const state = new InProcessState<HuntKinds>();
   const runId = newId("run");
   const spec = { ...huntSpecFor({ hypotheses: [ALERT], hypothesisLoop: true, ...overrides }), arch: "verdict", on_budget: onBudget };
-  const ledger = await startHunt(state, new InProcessDirectiveQueue(), runId, spec, "test", "verdict");
+  const queue = new InProcessDirectiveQueue();
+  const ledger = await startHunt(state, queue, runId, spec, "test", "verdict");
   const [intent] = [...ledger.projection.hypotheses.values()].filter((h) => h.provenance !== BASE_RATE_PROVENANCE);
-  return { state, runId, ledger, intentId: intent!.hypothesis_id };
+  return { state, runId, ledger, queue, intentId: intent!.hypothesis_id };
 }
 
 const evidenceIds = (ledger: Journal) =>
@@ -405,6 +410,145 @@ describe("a CONCLUDE the controller refused is never the verdict", () => {
     expect(verdict).toMatchObject({ verdict: "inconclusive", confidence: 0 });
     expect(verdict.gaps[0]).toContain(CONCLUDE_REFUSED_GAP);
     expect(verdict.gaps[0]).toContain("aborted");
+  });
+});
+
+// An operator's conclude directive ends the hunt on what it had, as completed, without
+// the termination predicate. It accepts no CONCLUDE: a draft the controller refused
+// before it stays a refused draft, and only a CONCLUDE the controller journaled as
+// accepted is ever read as the verdict.
+describe("an operator's conclude is not the controller accepting a CONCLUDE", () => {
+  const benign = (beacon: string) => ({
+    verdict: "benign",
+    confidence: 0.9,
+    category: "network",
+    cited_fields: [`${beacon}.conn_count`],
+    gaps: [],
+    recommended_action: null,
+  });
+  const malicious = (beacon: string) => ({
+    verdict: "malicious",
+    confidence: 0.95,
+    category: "malware",
+    cited_fields: [`${beacon}.conn_count`],
+    gaps: [],
+    recommended_action: { type: "isolate_host", target: "10.128.0.5" },
+  });
+
+  // Drained at the top of the next iteration, before the lead is asked anything.
+  async function operatorConcludes(run: Run): Promise<void> {
+    await steer(run.queue, run.runId, "conclude", "wrap it up on what you have");
+    await controllerFor(run.ledger, []).advanceIteration();
+    expect(run.ledger.projection.hunt.status).toBe("terminal");
+    expect(run.ledger.projection.hunt.outcome).toBe("completed");
+    expect(run.ledger.projection.hunt.accepted_conclude ?? null).toBeNull();
+  }
+
+  function expectOperatorInconclusive(verdict: Verdict | null): asserts verdict is Verdict {
+    expectValid(verdict);
+    expect(verdict).toMatchObject({ verdict: "inconclusive", confidence: 0, category: "other", cited_fields: [], recommended_action: null });
+    expect(verdict.gaps).toHaveLength(1);
+    expect(verdict.gaps[0]).toContain(OPERATOR_CONCLUDE_REFUSED_GAP);
+    expect(verdict.gaps[0]).toContain("completed");
+  }
+
+  it("benign: a refused CONCLUDE then an operator conclude records inconclusive, not the draft", async () => {
+    const run = await verdictRun({ budgets: budgets(10, 5) });
+    const [beacon, dns] = await investigate(run);
+    await validate(run, [beacon!, dns!], false);
+    // The critic gate alone would pass benign; the controller refused the CONCLUDE.
+    expect(criticGate(run.ledger.projection, "benign")).toBeNull();
+    const refused = await conclude(run, benign(beacon!));
+    expect(refused.note).toContain("CONCLUDE refused");
+    expect(run.ledger.projection.decisions.at(-1)?.decision.action).toBe("CONCLUDE");
+
+    await operatorConcludes(run);
+    // The refused CONCLUDE is still the last decision the lead made.
+    expect(run.ledger.projection.decisions.at(-1)?.decision.action).toBe("CONCLUDE");
+    expectOperatorInconclusive((await finish(run)).verdict);
+  });
+
+  it("malicious: the refused draft's confidence, category and citations are dropped", async () => {
+    const run = await verdictRun({ budgets: budgets(10, 5) });
+    const [beacon] = await investigate(run);
+    const refused = await conclude(run, malicious(beacon!));
+    expect(refused.note).toContain("CONCLUDE refused");
+
+    await operatorConcludes(run);
+    const { verdict } = await finish(run);
+    expectOperatorInconclusive(verdict);
+    expect(JSON.stringify(verdict)).not.toContain("malware");
+    expect(JSON.stringify(verdict)).not.toContain("isolate_host");
+  });
+
+  it("names the operator alone when the lead never proposed a CONCLUDE", async () => {
+    const run = await verdictRun({ budgets: budgets(10, 5) });
+    await investigate(run);
+    await operatorConcludes(run);
+    const { verdict } = await finish(run);
+    expectValid(verdict);
+    expect(verdict).toMatchObject({ verdict: "inconclusive", confidence: 0, cited_fields: [] });
+    expect(verdict.gaps[0]).toContain(OPERATOR_CONCLUDE_GAP);
+  });
+
+  // Up to the review, so the predicate passed: the draft is the one the controller
+  // would accept, but the operator rejected it at verdict_review and then concluded.
+  async function reviewedConclude(): Promise<{ run: Run; beacon: string; checkpointId: string }> {
+    const run = await verdictRun({ budgets: budgets(10, 5), checkpoints: { verdict_review: "ask" } });
+    const [beacon, dns] = await investigate(run);
+    await validate(run, [beacon!, dns!], false);
+    await abandon(run, beacon!);
+    const parked = await conclude(run, { ...benign(beacon!), confidence: 0.7 });
+    expect(parked.hunt_status).toBe("parked");
+    const review = [...run.ledger.projection.checkpoints.values()].filter(
+      (checkpoint) => checkpoint.checkpoint_class === "verdict_review" && checkpoint.context?.["kind"] === "conclude",
+    );
+    expect(review).toHaveLength(1);
+    expect(review[0]!.context?.["decision_id"]).toBe(run.ledger.projection.decisions.at(-1)?.decision_id);
+    return { run, beacon: beacon!, checkpointId: review[0]!.checkpoint_id };
+  }
+
+  it("a CONCLUDE rejected at verdict_review, then an operator conclude, records inconclusive", async () => {
+    const { run, checkpointId } = await reviewedConclude();
+    await steer(run.queue, run.runId, "reject", "not convinced", { checkpoint_id: checkpointId });
+    await operatorConcludes(run);
+    expectOperatorInconclusive((await finish(run)).verdict);
+  });
+
+  it("a CONCLUDE approved at verdict_review is the verdict, and a conclude queued behind it changes nothing", async () => {
+    const { run, beacon, checkpointId } = await reviewedConclude();
+    const accepted = run.ledger.projection.decisions.at(-1)!.decision_id;
+    await steer(run.queue, run.runId, "approve", "agreed", { checkpoint_id: checkpointId });
+    await steer(run.queue, run.runId, "conclude", "and stop");
+    await controllerFor(run.ledger, []).advanceIteration();
+    expect(run.ledger.projection.hunt.outcome).toBe("completed");
+    expect(run.ledger.projection.hunt.accepted_conclude).toBe(accepted);
+    expect(run.ledger.projection.hunt.operator_concluded ?? false).toBe(false);
+
+    // And once more after the terminal: a conclude reaching a finished hunt is a no-op.
+    await steer(run.queue, run.runId, "conclude", "stop again");
+    await controllerFor(run.ledger, []).advanceIteration().catch(() => undefined);
+
+    const { verdict } = await finish(run);
+    expectValid(verdict);
+    expect(verdict.verdict).toBe("benign");
+    expect(verdict.confidence).toBe(0.7);
+    expect(verdict.cited_fields).toEqual([{ field: `${beacon}.conn_count`, authored: "sensor" }]);
+  });
+
+  it("an accepted CONCLUDE is recorded by id, not by being the last decision", async () => {
+    const run = await verdictRun();
+    const [beacon, dns] = await investigate(run);
+    await validate(run, [beacon!, dns!], true);
+    await conclude(run, malicious(beacon!));
+    const decision = run.ledger.projection.decisions.at(-1)!;
+    expect(run.ledger.projection.hunt.accepted_conclude).toBe(decision.decision_id);
+
+    // The same ledger with the acceptance taken away is a completed run whose last
+    // decision is a CONCLUDE -- which is exactly what an operator conclude looks like.
+    const stripped = { ...run.ledger.projection, hunt: { ...run.ledger.projection.hunt, accepted_conclude: null } };
+    expect(verdictOf(stripped)).toMatchObject({ verdict: "inconclusive", confidence: 0, cited_fields: [] });
+    expect(verdictOf(run.ledger.projection)?.verdict).toBe("malicious");
   });
 });
 

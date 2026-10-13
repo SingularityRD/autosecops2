@@ -5,15 +5,15 @@
     "category": "network",
     "cited_fields": [
       {
-        "field": "ev-cc04f37640ec.conn_count",
+        "field": "ev-350573e9c258.conn_count",
         "authored": "sensor"
       },
       {
-        "field": "ev-cc04f37640ec.user_agent",
+        "field": "ev-350573e9c258.user_agent",
         "authored": "adversary"
       },
       {
-        "field": "ev-c38a297a6201.first_seen_days",
+        "field": "ev-33d152d832c8.first_seen_days",
         "authored": "sensor"
       }
     ],

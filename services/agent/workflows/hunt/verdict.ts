@@ -43,6 +43,10 @@ export const UNKNOWN_MODEL = "unknown";
 export const NO_CONCLUDE_GAP = "the run ended before the lead concluded";
 export const CONCLUDE_REFUSED_GAP =
   "the controller refused the lead's CONCLUDE and the run ended without concluding; its proposed verdict is not recorded";
+export const OPERATOR_CONCLUDE_GAP =
+  "an operator concluded the hunt on what it had before the lead concluded; no verdict of the lead's is recorded";
+export const OPERATOR_CONCLUDE_REFUSED_GAP =
+  "an operator concluded the hunt on what it had; the controller never accepted the lead's CONCLUDE, so its refused draft verdict is not recorded";
 export const NO_VERDICT_GAP = "the lead concluded without a well-formed verdict";
 export const MALICIOUS_UNPROVEN_GAP =
   "malicious verdict without the alert's hypothesis proven through the critic (VALIDATE); downgraded to inconclusive";
@@ -91,29 +95,36 @@ export function ledgerProvenance(projection: Projection): ProvenanceMap {
   return map;
 }
 
-// The outcomes the controller reaches only by concluding: the termination predicate
-// passed (on a CONCLUDE, past its verdict review, or at the last of the budget), or an
-// operator asked the hunt to conclude on what it had. Every other ending --
-// budget_terminated on iterations, cost or the wall clock, failed, aborted -- is a run
-// that stopped without concluding, whatever the lead last proposed.
-const CONCLUDED: ReadonlySet<HuntOutcome> = new Set<HuntOutcome>(["completed", "data_starved"]);
-
-// The CONCLUDE the run ended on, if it ended by concluding. A CONCLUDE the controller
-// refused is a draft the evidence did not yet support: when the run then ends on its
-// budget (or fails, or is aborted) the draft is not a verdict, even when it was the
-// last decision the lead made.
+// The CONCLUDE the controller accepted, if it accepted one: its termination predicate
+// passed on that decision, directly or past an approved verdict review, and the
+// controller journaled the decision's id as it concluded (hunt.accepted_conclude).
+// Nothing else counts. A CONCLUDE the controller refused is a draft the evidence did
+// not yet support -- when the run then ends on its budget, fails, is aborted, or an
+// operator's conclude directive ends it on what it had (completed, without the
+// predicate), the draft is not a verdict, even when it was the last decision the lead
+// made.
 function lastConclude(projection: Projection): DecisionRecord | undefined {
+  const accepted = projection.hunt.accepted_conclude;
+  if (typeof accepted !== "string" || accepted === "") return undefined;
   const outcome = projection.hunt.outcome;
   if (outcome === null || !CONCLUDED.has(outcome)) return undefined;
-  const last = projection.decisions.at(-1);
-  return last?.decision.action === "CONCLUDE" ? last : undefined;
+  const decision = projection.decisions.find((record) => record.decision_id === accepted);
+  return decision?.decision.action === "CONCLUDE" ? decision : undefined;
 }
+
+// The outcomes a concluding run ends on. Every other ending -- budget_terminated on
+// iterations, cost or the wall clock, failed, aborted -- stopped without concluding.
+const CONCLUDED: ReadonlySet<HuntOutcome> = new Set<HuntOutcome>(["completed", "data_starved"]);
 
 // Why the run has no verdict of the lead's to record, naming how it ended.
 function unconcludedGap(projection: Projection): string {
   const outcome = projection.hunt.outcome ?? "ended";
   const why = projection.hunt.termination_reason || outcome || "no conclusion";
-  const refused = projection.decisions.at(-1)?.decision.action === "CONCLUDE" && !CONCLUDED.has(outcome as HuntOutcome);
+  const drafted = projection.decisions.some((record) => record.decision.action === "CONCLUDE");
+  if (projection.hunt.operator_concluded === true) {
+    return `${drafted ? OPERATOR_CONCLUDE_REFUSED_GAP : OPERATOR_CONCLUDE_GAP} (${outcome}): ${why}`;
+  }
+  const refused = projection.decisions.at(-1)?.decision.action === "CONCLUDE";
   return `${refused ? CONCLUDE_REFUSED_GAP : NO_CONCLUDE_GAP} (${outcome}): ${why}`;
 }
 
