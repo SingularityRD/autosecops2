@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, Optional
 
 from core.coordination.leader import (
@@ -78,7 +79,16 @@ class DaemonLeadership:
         self.since: Optional[str] = None
         self.lost_reason: Optional[str] = None
         self._remove_fence: Optional[Callable[[], None]] = None
+        # Own thread: the default executor is shared with every component's
+        # blocking DB call, and a heartbeat queued behind them would look
+        # like a frozen leader.
+        self._executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="leader-lock"
+        )
         _set_gauge(0)
+
+    async def _call(self, fn: Callable[[], Any]) -> Any:
+        return await asyncio.get_running_loop().run_in_executor(self._executor, fn)
 
     @property
     def instance_id(self) -> str:
@@ -115,7 +125,7 @@ class DaemonLeadership:
         )
         while not stop.is_set():
             try:
-                got = await asyncio.to_thread(self.lock.try_acquire)
+                got = await self._call(self.lock.try_acquire)
             except UnsupportedServerError:
                 # Waiting cannot fix this; crash so the pod status shows it.
                 raise
@@ -157,7 +167,7 @@ class DaemonLeadership:
                 return
             try:
                 ok = await asyncio.wait_for(
-                    asyncio.to_thread(self.lock.heartbeat),
+                    self._call(self.lock.heartbeat),
                     timeout=max(0.1, deadline - sent),
                 )
             except asyncio.TimeoutError:
@@ -180,11 +190,12 @@ class DaemonLeadership:
         if self.lost:
             return
         try:
-            await asyncio.wait_for(asyncio.to_thread(self.lock.release), timeout=5)
+            await asyncio.wait_for(self._call(self.lock.release), timeout=5)
         except Exception as exc:  # noqa: BLE001 - exiting closes the session anyway
             logger.warning("Leader lock release failed: %s", exc)
         self.role = "standby"
         _set_gauge(0)
+        self._executor.shutdown(wait=False)
 
 
 def build_daemon_leadership(
