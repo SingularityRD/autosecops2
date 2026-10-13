@@ -7,12 +7,18 @@
 #
 # What this profile guarantees:
 #   * every image comes from the local registry (no public registry is named);
-#   * remote MCP servers are not dialled and Vigil's own MCP surface is off;
+#   * remote MCP servers are not dialled and AutoSecOps' own MCP surface is off;
 #   * telemetry is off (OTEL SDK, OTEL collector subchart, ServiceMonitor);
 #   * outbound notifications and cloud sandboxes are off;
 #   * NetworkPolicies are on and pod egress is limited to in-cluster pods.
 # The application has no "update check" to turn off; anything else that would
 # try to leave the cluster is dropped by the egress policy.
+#
+# The on/off switches under `config` match infra/airgap/airgap.env (W3.4), the
+# same profile for host-native and Compose installs; tests/unit/airgap checks
+# that every switch both files set has the same value. airgap.env's loopback
+# service URLs and empty secrets do not apply here (the chart sets the
+# in-cluster service names and takes secrets from its Secret).
 #
 # Image references here are exactly airgap_images.py `localize` applied to the
 # chart's upstream ones; tests/unit/airgap checks they agree.
@@ -104,3 +110,10 @@ config:
   HYBRID_ANALYSIS_ENABLED: "false"
   ANYRUN_ENABLED: "false"
   SANDBOX_AUTO_SUBMIT: "false"
+  DARKTRACE_ENABLED: "false"
+  DAEMON_ESCALATION_ENABLED: "false"
+  KAFKA_ENABLED: "false"
+  VIGIL_MEDIC_ENABLED: "false"
+  DEMO_MODE: "false"
+  # Mail goes to the log, not to an SMTP relay.
+  VIGIL_EMAIL_BACKEND: "console"

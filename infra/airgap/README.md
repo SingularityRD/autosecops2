@@ -9,6 +9,7 @@ gereken her şeyi içerir:
 | `install.sh` | Hedef ortamda paketi **önce doğrular**, sonra imajları yükler ve Helm ile kurar |
 | `airgap_images.py` | Helm grafiği + Compose + LLM yığınından imaj listesini çıkarır (ağsız) |
 | `values-airgap.yaml` | Air-gap Helm profili: yerel kayıt defteri, uzak MCP/telemetri kapalı, egress yalnızca küme içi |
+| `airgap.env` | Air-gap ortam profili (W3.4): host üzerinde (`start.sh`) veya Compose ile kurulumda aynı anahtarları kapatır; `tests/airgap` sıfır egress'i bununla doğrular |
 | `k8s/llm-stack.yaml` | Küme içi Bifrost (LLM ağ geçidi) + Ollama (yerel model sunucusu) |
 
 Hedef süre: paket elinizdeyken kurulum **30 dakikanın altında**.
@@ -105,8 +106,13 @@ Sık kullanılan seçenekler:
 
 Sonuç: `dist/airgap/autosecops-airgap-0.7.1/` ve `dist/airgap/autosecops-airgap-0.7.1.tar`.
 İçerik: `images/`, `images.tsv`, `chart/vigil-0.7.1.tgz`, `values-airgap.yaml`,
-`k8s/llm-stack.yaml`, `models/`, `rules/`, `docs/`, `install.sh`,
+`airgap.env`, `k8s/llm-stack.yaml`, `models/`, `rules/`, `docs/`, `install.sh`,
 `manifest.json`, `SHA256SUMS`, `SHA256SUMS.sig` (veya `.minisig`).
+
+Kural ve model tar'larına yalnızca normal dosya ve dizin girer: klon içindeki bir
+dosyaya işaret eden sembolik bağ o dosyanın içeriği olarak, sabit bağlar kopya
+olarak yazılır; ağacın dışına çıkan, kırık ya da bir dizine işaret eden bir
+sembolik bağ derlemeyi durdurur (derleme makinesinden dosya sızmasın diye).
 
 Tar dosyasını onaylı ortam aktarım sürecinizle (veri diyotu, onaylı medya) taşıyın.
 
@@ -114,10 +120,21 @@ Tar dosyasını onaylı ortam aktarım sürecinizle (veri diyotu, onaylı medya)
 
 ## 3. Hedef ortamda doğrulama (~2–5 dk)
 
+Dış tar henüz doğrulanmamıştır (imza içindeki `SHA256SUMS` üzerindedir). Önce
+içeriğini listeleyin, sonra **yalnızca sizin yazabildiğiniz boş bir dizine**
+açın — var olan bir dizine açmak, içindeki dosyaların üzerine yazılmasına veya
+paket dışı dosyaların karışmasına yol açabilir:
+
 ```bash
-tar -xf autosecops-airgap-0.7.1.tar
-cd autosecops-airgap-0.7.1
+tar -tvf autosecops-airgap-0.7.1.tar | less          # yalnızca autosecops-airgap-0.7.1/ altı,
+                                                     # normal dosya (-) ve dizin (d) olmalı
+install -d -m 0700 /opt/autosecops-kurulum           # yeni, boş, size ait dizin
+tar -xf autosecops-airgap-0.7.1.tar -C /opt/autosecops-kurulum --no-same-owner
+cd /opt/autosecops-kurulum/autosecops-airgap-0.7.1
 ```
+
+Listede `autosecops-airgap-0.7.1/` dışına çıkan, mutlak ya da `..` içeren bir
+yol veya bağ (`l`, `h`) görürseniz paketi kullanmayın.
 
 **Önce yükleyicinin kendisini doğrulayın** — `install.sh` paketin içinden gelir;
 ona güvenmeden önce imzayı elle kontrol edin:
@@ -134,13 +151,24 @@ Ardından tam doğrulama:
 ./install.sh verify --pubkey /guvenli/yol/autosecops-airgap.pub
 ```
 
+`install.sh` paket dizinini yerinde kullanmaz: her dosyayı önce `$TMPDIR`
+altında yeni, yalnızca kendisinin okuyabildiği (`mktemp -d`, 0700) bir hazırlık
+dizinine kopyalar, imzayı ve özetleri **bu kopya üzerinde** doğrular ve imajları,
+grafiği, kuralları ve modeli **yalnızca bu kopyadan** yükler. "bundle verified"
+mesajından sonra paket dizininde yapılan bir değişiklik kuruluma yansımaz.
+`$TMPDIR`'de paketin bir kopyası kadar boş yer olmalıdır (gerekirse
+`TMPDIR=/buyuk/disk ./install.sh ...`); kopya çıkışta silinir.
+
 `install.sh` aşağıdakilerden **herhangi biri** olursa sıfırdan farklı kodla
 (`REFUSED: ...`) durur ve hiçbir `docker`/`ctr`/`kubectl`/`helm` komutu çalıştırmaz:
 
 - `SHA256SUMS` imzası yok ya da verilen açık anahtarla doğrulanmıyor
-- bir dosyanın SHA-256'sı tutmuyor, dosya eksik, `SHA256SUMS`'ta olmayan bir
-  dosya veya sembolik bağ var, güvensiz yol (`..`, mutlak yol) var
+- bir dosyanın SHA-256'sı tutmuyor, dosya eksik, güvensiz yol (`..`, mutlak yol) var
+- paket dizininde `SHA256SUMS`'ta olmayan herhangi bir şey var: listelenmemiş
+  dosya, sembolik bağ, FIFO, soket, aygıt dosyası ya da boş/listelenmemiş dizin
 - `manifest.json` veya `images.tsv`, `SHA256SUMS` ile çelişiyor
+- kural (`rules/*.tar.gz`) veya model (`models/*.tar`) arşivinde normal dosya ve
+  dizin dışında bir üye (sembolik/sabit bağ, aygıt) ya da güvensiz üye adı var
 
 > Paketin içinde bir açık anahtar olsa bile **kullanılmaz**; yalnızca
 > `--pubkey` ile verdiğiniz, bant dışı aldığınız anahtar geçerlidir.
@@ -198,6 +226,11 @@ kubectl -n autosecops exec deploy/ollama -- ollama list      # model görünmeli
   üzerinden Ollama modelini (`ollama/<model>`) ekleyip varsayılan yapın. Bulut
   sağlayıcı anahtarları air-gap ortamında işe yaramaz ve egress politikası
   tarafından zaten engellenir.
+- Host üzerinde (`start.sh`) veya Compose ile çalışan bileşenler için aynı
+  kapatmalar paketteki `airgap.env` dosyasındadır (W3.4):
+  `set -a; . ./airgap.env; set +a` ya da Compose servislerinde
+  `env_file: [airgap.env]`. Helm kurulumunda `values-airgap.yaml` aynı
+  anahtarları aynı değerlerle verir (testlerle eşitliği denetlenir).
 - Ek dış hedefler (şirket içi SIEM/EDR, NodeLocal DNS gibi pod olmayan
   adresler) gerekiyorsa `networkPolicies.egress.extraCIDRs` listesine ekleyin.
 
@@ -213,6 +246,8 @@ kubectl -n autosecops exec deploy/ollama -- ollama list      # model görünmeli
 | `VIGIL_OTEL_ENABLED`, `otelCollector`, `serviceMonitor` | kapalı | Telemetri yok |
 | Slack/PagerDuty/sandbox (Joe, CAPE, Hybrid Analysis, ANY.RUN) | `false` | Dış bildirim/analiz servisleri yok |
 | `networkPolicies.enabled` + `egress.inClusterOnly` | `true` | Pod çıkışı yalnızca küme içi (+ `extraCIDRs`) |
+| Kafka, Darktrace, daemon eskalasyonu, Medic (`*_ENABLED`), `DEMO_MODE` | `false` | `airgap.env` ile aynı: dış satıcı/servis çağrısı yok |
+| `VIGIL_EMAIL_BACKEND` | `console` | E-posta SMTP'ye değil loga gider |
 | `medic`, `splunk`, `pgadmin`, Bitnami alt grafikleri | kapalı | İmajları pakette değil |
 
 Uygulamada ayrı bir "güncelleme kontrolü" yoktur; kapatılamayan her dış istek
@@ -227,6 +262,8 @@ Ollama için de aynı küme-içi kuralını uygular.
 |---|---|
 | `REFUSED: ... signature ... does not verify` | Yanlış açık anahtar ya da paket değiştirilmiş. Paketi yeniden aktarın; anahtarın parmak izini sürüm mühendisiyle doğrulayın. |
 | `REFUSED: checksum mismatch` / `missing file` | Aktarım bozuk veya eksik; tar'ı yeniden taşıyın. |
+| `REFUSED: ... not listed` / `non-regular file` / `directory not listed` | Paket dizinine sonradan bir şey eklenmiş; tar'ı boş bir dizine yeniden açın. |
+| `No space left on device` (doğrulama sırasında) | Hazırlık kopyası için yer yok; `TMPDIR`'i büyük bir diske yönlendirin. |
 | `minisign/cosign is not installed` | Açık anahtar o araca ait; aracı kurun ya da OpenSSL anahtarıyla imzalanmış paket isteyin. |
 | `ImagePullBackOff` | `--registry` düğümlerden erişilebilir mi, TLS/güven ayarları doğru mu? `--loader ctr` ile her düğüme aktarmayı deneyin. |
 | Pod dışarı bağlanamıyor (beklenen) | Gerçekten gerekli bir şirket içi hedefse `networkPolicies.egress.extraCIDRs` ile izin verin. |

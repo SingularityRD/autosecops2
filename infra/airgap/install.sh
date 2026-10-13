@@ -4,14 +4,23 @@
 #   install.sh verify  --pubkey KEY [--bundle DIR]
 #   install.sh install --pubkey KEY --registry HOST[:PORT] [options] [-- helm args]
 #
-# Nothing is loaded, pushed, applied or installed until the bundle verifies:
+# The bundle directory is never used in place. Every file is first copied into
+# a private staging directory (mktemp -d, mode 0700, under $TMPDIR, which needs
+# room for a second copy of the bundle); the checks below run on that copy and
+# only that copy is loaded, applied and installed, so changing the bundle
+# directory after "bundle verified" has no effect. Nothing is loaded, pushed,
+# applied or installed until the copy verifies:
 #   1. SHA256SUMS carries a valid signature by KEY. KEY is the public key you got
 #      out of band; a key shipped inside the bundle is never used. The method
 #      comes from KEY's format: minisign public key -> minisign, PEM Ed25519 ->
 #      openssl, any other PEM public key -> cosign.
 #   2. Every SHA256SUMS line is a safe relative path and every file matches it.
-#   3. No file in the bundle is missing from SHA256SUMS; no symlinks.
+#   3. The bundle directory holds nothing but the listed regular files, the
+#      directories they sit in and SHA256SUMS(.sig|.minisig): no unlisted file,
+#      symlink, FIFO, socket, device or empty/unlisted directory.
 #   4. manifest.json and images.tsv agree with SHA256SUMS.
+#   5. The rule and model archives contain only regular files and directories
+#      (no symlink, hard link or device) with safe relative member names.
 # Any failure exits 1 without calling docker, ctr, kubectl or helm.
 #
 # install options:
@@ -75,14 +84,41 @@ if [ "$cmd" = install ]; then
   [[ "$release" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || { echo "bad --release" >&2; usage; }
 fi
 [ -d "$bundle" ] || fail "bundle directory $bundle does not exist"
-bundle="$(cd "$bundle" && pwd)"
 [ -r "$pubkey" ] || fail "cannot read public key $pubkey"
 pubkey="$(cd "$(dirname "$pubkey")" && pwd)/$(basename "$pubkey")"
 
+# src: the bundle as delivered; anyone with write access to it may change it at
+# any time, so it is only ever read once, file by file, into $bundle (the
+# private staging copy). Everything after the copy reads $bundle only.
+src="$(cd "$bundle" && pwd)"
+stage="" work=""
+cleanup() { rm -rf "$stage" "$work"; }
+trap cleanup EXIT
+stage="$(mktemp -d "${TMPDIR:-/tmp}/autosecops-airgap.XXXXXXXXXX")"
+work="$(mktemp -d "${TMPDIR:-/tmp}/autosecops-airgap-work.XXXXXXXXXX")"
+chmod 0700 "$stage" "$work"
+bundle="$stage"
+
+# stage_file REL: copy $src/REL to $bundle/REL. dd opens the source with
+# O_NOFOLLOW (a symlink swapped in fails) and O_NONBLOCK (a FIFO swapped in
+# reads as empty instead of hanging); the copy is hashed afterwards anyway.
+stage_file() {
+  local rel="$1"
+  [ -f "$src/$rel" ] && [ ! -L "$src/$rel" ] || return 1
+  mkdir -p "$bundle/$(dirname "$rel")"
+  dd if="$src/$rel" of="$bundle/$rel" bs=4M iflag=nofollow,nonblock \
+    conv=excl status=none 2>"$work/dd.err" \
+    || fail "cannot copy $rel into the staging directory ($(head -n 1 "$work/dd.err")): changed while being copied, or TMPDIR full?"
+  [ -f "$bundle/$rel" ] && [ ! -L "$bundle/$rel" ]
+}
+
 # --- 1. signature -------------------------------------------------------------
 verify_signature() {
-  local sums="$bundle/SHA256SUMS" first key_text
-  [ -f "$sums" ] && [ ! -L "$sums" ] || fail "SHA256SUMS missing"
+  local sums="$bundle/SHA256SUMS" first key_text f
+  stage_file SHA256SUMS || fail "SHA256SUMS missing"
+  for f in SHA256SUMS.sig SHA256SUMS.minisig; do
+    [ ! -e "$src/$f" ] && [ ! -L "$src/$f" ] || stage_file "$f" || fail "$f is not a regular file"
+  done
   first="$(head -n 1 "$pubkey")"
   case "$first" in
     *minisign*)
@@ -92,7 +128,7 @@ verify_signature() {
         || fail "minisign signature on SHA256SUMS does not verify"
       sig_method=minisign ;;
     "-----BEGIN PUBLIC KEY-----")
-      [ -f "$bundle/SHA256SUMS.sig" ] && [ ! -L "$bundle/SHA256SUMS.sig" ] || fail "SHA256SUMS.sig missing"
+      [ -f "$bundle/SHA256SUMS.sig" ] || fail "SHA256SUMS.sig missing"
       key_text="$(openssl pkey -pubin -in "$pubkey" -noout -text 2>/dev/null || true)"
       if [[ "$key_text" == ED25519* ]]; then
         openssl pkeyutl -verify -pubin -inkey "$pubkey" -rawin -in "$sums" \
@@ -111,9 +147,27 @@ verify_signature() {
 }
 
 # --- 2-4. checksums, completeness, manifest -------------------------------------
-declare -A SUM=()
+declare -A SUM=() DIRS=()
+# check_archive REL [z]: members of $bundle/REL are only regular files and
+# directories with safe relative names (extraction must not create links,
+# devices, or write outside the target directory).
+check_archive() {
+  local rel="$1" z="${2:-}" line name
+  tar -t"${z}"vf "$bundle/$rel" >"$work/members.v" 2>/dev/null || fail "$rel: not a readable archive"
+  tar -t"${z}"f "$bundle/$rel" >"$work/members" 2>/dev/null || fail "$rel: not a readable archive"
+  while IFS= read -r line; do
+    case "${line:0:1}" in
+      -|d) ;;
+      *) fail "$rel: archive member is not a regular file or directory (link/device): $line" ;;
+    esac
+  done <"$work/members.v"
+  while IFS= read -r name; do
+    case "/$name/" in //*|*/../*) fail "$rel: unsafe archive member name: $name" ;; esac
+  done <"$work/members"
+}
+
 verify_contents() {
-  local line hash path n=0 f
+  local line hash path n=0 f entry type d
   while IFS= read -r line || [ -n "$line" ]; do
     [[ "$line" =~ ^([0-9a-f]{64})\ \ ([A-Za-z0-9._/+-]+)$ ]] || fail "malformed SHA256SUMS line: $line"
     hash="${BASH_REMATCH[1]}" path="${BASH_REMATCH[2]}"
@@ -125,17 +179,29 @@ verify_contents() {
   done <"$bundle/SHA256SUMS"
   [ "$n" -gt 0 ] || fail "SHA256SUMS is empty"
   for path in "${!SUM[@]}"; do
-    f="$bundle/$path"
-    [ -f "$f" ] && [ ! -L "$f" ] || fail "missing file: $path"
-    hash="$(sha256sum "$f" | cut -d' ' -f1)"
+    d="$(dirname "$path")"
+    while [ "$d" != . ]; do DIRS[$d]=1; d="$(dirname "$d")"; done
+  done
+
+  # Everything in the delivered directory, of every type, must be accounted for.
+  find "$src" -mindepth 1 -printf '%y %P\0' >"$work/tree" || fail "cannot list $src"
+  while IFS= read -r -d '' entry; do
+    type="${entry:0:1}" path="${entry:2}"
+    case "$type" in
+      f) case "$path" in SHA256SUMS|SHA256SUMS.sig|SHA256SUMS.minisig) continue ;; esac
+         [ -n "${SUM[$path]+x}" ] || fail "file not listed in SHA256SUMS: $path" ;;
+      d) [ -n "${DIRS[$path]+x}" ] || fail "directory not listed in SHA256SUMS (empty or extra): $path" ;;
+      l) fail "symlink in bundle: $path" ;;
+      *) fail "non-regular file in bundle (type $type: FIFO, socket or device): $path" ;;
+    esac
+  done <"$work/tree"
+
+  # Copy each listed file once into the private stage, then check the copy.
+  for path in "${!SUM[@]}"; do
+    stage_file "$path" || fail "missing file: $path"
+    hash="$(sha256sum "$bundle/$path" | cut -d' ' -f1)"
     [ "$hash" = "${SUM[$path]}" ] || fail "checksum mismatch: $path"
   done
-  while IFS= read -r -d '' f; do
-    path="${f#"$bundle"/}"
-    case "$path" in SHA256SUMS|SHA256SUMS.sig|SHA256SUMS.minisig) continue ;; esac
-    [ ! -L "$f" ] || fail "symlink in bundle: $path"
-    [ -n "${SUM[$path]+x}" ] || fail "file not listed in SHA256SUMS: $path"
-  done < <(find "$bundle" \( -type f -o -type l \) -print0)
 
   # manifest.json: every listed file appears with the same digest, and nothing else.
   local manifest="$bundle/manifest.json" listed
@@ -166,6 +232,14 @@ verify_contents() {
   done <"$bundle/images.tsv"
   [ "$count" -gt 0 ] || fail "images.tsv is empty"
   [ "$(grep -c '^    {"ref": ' "$manifest" || true)" -eq "$count" ] || fail "manifest.json and images.tsv list different images"
+
+  # Archives install.sh extracts.
+  for path in "${!SUM[@]}"; do
+    case "$path" in
+      rules/*.tar.gz) check_archive "$path" z ;;
+      models/*.tar) check_archive "$path" ;;
+    esac
+  done
 }
 
 sig_method=""
@@ -197,9 +271,7 @@ localize() {  # same rule as airgap_images.py localize
 
 version="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$bundle/manifest.json")"
 chart="$bundle/chart/vigil-$version.tgz"
-[ -f "$chart" ] || fail "chart/vigil-$version.tgz missing"
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+[ -n "${SUM[chart/vigil-$version.tgz]+x}" ] || fail "chart/vigil-$version.tgz missing"
 
 log "loading images with --loader $loader into $registry"
 while IFS=$'\t' read -r ref local_path file <&3; do
@@ -252,7 +324,7 @@ if [ -n "$rules_dir" ] || [ "$rules_into_backend" = 1 ]; then
     [ -f "$tarball" ] || continue
     if [ -n "$rules_dir" ]; then
       run mkdir -p "$rules_dir"
-      run tar -xzf "$tarball" -C "$rules_dir"
+      run tar --no-same-owner -xzf "$tarball" -C "$rules_dir"
     fi
     if [ "$rules_into_backend" = 1 ]; then
       # shellcheck disable=SC2016  # $HOME expands in the pod, not here

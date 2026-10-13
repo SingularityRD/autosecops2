@@ -7,6 +7,7 @@ with a throwaway OpenSSL Ed25519 key.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -36,9 +37,15 @@ STUB = """#!/usr/bin/env bash
 printf '%s' "$(basename "$0")" >>"$CALLS/calls.log"
 printf ' %s' "$@" >>"$CALLS/calls.log"
 printf '\\n' >>"$CALLS/calls.log"
+if [ -n "${WAIT_FOR:-}" ]; then
+  for _ in $(seq 600); do [ -e "$WAIT_FOR" ] && break; sleep 0.1; done
+fi
 prev=""
 for a in "$@"; do
   if [ "$prev" = "-f" ] && [ -f "$a" ]; then cp "$a" "$CALLS/$(basename "$0")-$(basename "$a")"; fi
+  if [ -f "$a" ]; then
+    printf '%s %s %s\n' "$(basename "$0")" "$a" "$(sha256sum "$a" | cut -d' ' -f1)" >>"$CALLS/hashes.log"
+  fi
   prev="$a"
 done
 if [ "$(basename "$0")" = kubectl ] && [ "${1:-}" = create ]; then echo "kind: Namespace"; fi
@@ -90,6 +97,26 @@ def _calls(calls: Path) -> list[str]:
     return log.read_text().splitlines() if log.exists() else []
 
 
+def _hashes(calls: Path) -> dict[str, str]:
+    """{path argument: sha256 of that file when the stub tool ran}."""
+    log = calls / "hashes.log"
+    out = {}
+    for line in log.read_text().splitlines() if log.exists() else []:
+        _tool, path, digest = line.rsplit(" ", 2)
+        out[path] = digest
+    return out
+
+
+def _sums(bundle: Path) -> dict[str, str]:
+    return {
+        rel: digest
+        for digest, rel in (
+            line.split("  ", 1)
+            for line in (bundle / "SHA256SUMS").read_text().splitlines()
+        )
+    }
+
+
 def _images():
     return airgap_images.Enumerator(REPO, VERSION).run()
 
@@ -108,6 +135,9 @@ def built(tmp_path_factory):
     for clone in ("sigma", "security_content"):
         (rules / clone / "rules").mkdir(parents=True)
         (rules / clone / "rules" / "r.yml").write_text(f"title: {clone}\n")
+    # An in-tree file symlink and a hard link: stored as plain files.
+    (rules / "sigma" / "rules" / "link.yml").symlink_to("r.yml")
+    os.link(rules / "sigma" / "rules" / "r.yml", rules / "sigma" / "hard.yml")
     bin_dir, calls = _stubs(tmp)
     (bin_dir / "helm").unlink()  # no helm: the chart is packaged with tar
     out = tmp / "dist"
@@ -138,6 +168,7 @@ def built(tmp_path_factory):
         "key": key,
         "pub": pub,
         "tmp": tmp,
+        "images_dir": images_dir,
     }
 
 
@@ -214,6 +245,7 @@ def test_bundle_layout_and_manifest(built):
     for path in (
         "chart/vigil-0.7.1.tgz",
         "values-airgap.yaml",
+        "airgap.env",
         "k8s/llm-stack.yaml",
         "install.sh",
         "images.tsv",
@@ -263,6 +295,64 @@ def test_rule_snapshot_unpacks_to_clone(built, tmp_path):
         check=True,
     )
     assert (tmp_path / "sigma" / "rules" / "r.yml").read_text() == "title: sigma\n"
+
+
+def test_rule_snapshot_has_no_links(built):
+    listing = subprocess.run(
+        ["tar", "-tzvf", str(built["bundle"] / "rules" / "sigma.tar.gz")],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    assert listing and all(line[0] in "-d" for line in listing), listing
+    names = " ".join(listing)
+    assert "sigma/rules/link.yml" in names and "sigma/hard.yml" in names
+
+
+def test_bundled_airgap_env_is_the_w34_profile(built):
+    assert (built["bundle"] / "airgap.env").read_bytes() == (
+        AIRGAP / "airgap.env"
+    ).read_bytes()
+
+
+@pytest.mark.parametrize("target", ["outside", "dangling", "directory"])
+def test_build_refuses_rule_symlink_it_cannot_inline(target, built, tmp_path, stubs):
+    rules = tmp_path / "security-detections"
+    (rules / "sigma").mkdir(parents=True)
+    (rules / "sigma" / "r.yml").write_text("title: x\n")
+    secret = tmp_path / "build-machine-secret"
+    secret.write_text("do not ship\n")
+    link = rules / "sigma" / "evil"
+    (stubs[0] / "helm").unlink()  # no helm: the chart is packaged with tar
+    if target == "outside":
+        link.symlink_to(secret)
+    elif target == "dangling":
+        link.symlink_to(tmp_path / "nope")
+    else:
+        (rules / "sigma" / "sub").mkdir()
+        link.symlink_to("sub")
+    proc = subprocess.run(
+        [
+            str(BUILD),
+            "--version",
+            VERSION,
+            "--out",
+            str(tmp_path / "o"),
+            "--images-from",
+            str(built["images_dir"]),
+            "--skip-ollama-model",
+            "--rules-dir",
+            str(rules),
+            "--key",
+            str(built["key"]),
+            "--no-tar",
+        ],
+        env=_env(stubs[0], stubs[1], _path_without("helm")),
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 1, proc.stderr
+    assert "symlink" in proc.stderr and str(link) in proc.stderr, proc.stderr
 
 
 # --- verification -------------------------------------------------------------
@@ -352,7 +442,59 @@ def _traversal_entry_resigned(b: Path, key: Path) -> None:
     )
 
 
+def _fifo_added(b: Path, _key: Path) -> None:
+    os.mkfifo(b / "docs" / "pipe")
+
+
+def _empty_dir_added(b: Path, _key: Path) -> None:
+    (b / "extra").mkdir()
+
+
+def _nested_empty_dir_added(b: Path, _key: Path) -> None:
+    (b / "images" / "sub").mkdir()
+
+
+def _replace_resigned(b: Path, key: Path, rel: str, data: bytes) -> None:
+    """Swap *rel* for *data*, fix its manifest digest and re-sign (a signer
+    who shipped a hostile archive)."""
+    old = _sums(b)[rel]
+    (b / rel).write_bytes(data)
+    new = hashlib.sha256(data).hexdigest()
+    m = b / "manifest.json"
+    m.write_text(m.read_text().replace(old, new))
+    _resign(b, key)
+
+
+def _rule_tar(tmp: Path, member: str) -> bytes:
+    src = tmp / "rt"
+    (src / "sigma").mkdir(parents=True)
+    (src / "sigma" / "r.yml").write_text("x\n")
+    if member == "symlink":
+        (src / "sigma" / "evil").symlink_to("/etc/passwd")
+    else:
+        os.link(src / "sigma" / "r.yml", src / "sigma" / "hard")
+    out = tmp / "rt.tar.gz"
+    subprocess.run(["tar", "-C", str(src), "-czf", str(out), "sigma"], check=True)
+    shutil.rmtree(src)
+    data = out.read_bytes()
+    out.unlink()
+    return data
+
+
+def _rule_tar_with_symlink_resigned(b: Path, key: Path) -> None:
+    _replace_resigned(b, key, "rules/sigma.tar.gz", _rule_tar(b.parent, "symlink"))
+
+
+def _rule_tar_with_hardlink_resigned(b: Path, key: Path) -> None:
+    _replace_resigned(b, key, "rules/sigma.tar.gz", _rule_tar(b.parent, "hardlink"))
+
+
 TAMPERS = {
+    "fifo": (_fifo_added, "non-regular file"),
+    "empty-dir": (_empty_dir_added, "directory not listed"),
+    "nested-empty-dir": (_nested_empty_dir_added, "directory not listed"),
+    "rule-tar-symlink": (_rule_tar_with_symlink_resigned, "not a regular file"),
+    "rule-tar-hardlink": (_rule_tar_with_hardlink_resigned, "not a regular file"),
     "byte-flipped-image": (_flip_byte, "checksum mismatch"),
     "deleted-file": (_delete_file, "missing file"),
     "unlisted-file": (_add_unlisted, "not listed"),
@@ -484,18 +626,29 @@ def test_install_with_registry_loader(bundle, built, stubs):
     )
     assert proc.returncode == 0, proc.stderr
     log = _calls(calls)
+    hashes = _hashes(calls)
+    sums = _sums(bundle)
+    loads = [line.split()[-1] for line in log if line.startswith("docker load -i ")]
+    assert len(loads) == len(_images())
+    for path in loads:
+        # Loaded from the private staging copy, never from the bundle directory.
+        assert not path.startswith(str(bundle)), path
+        rel = path.split("/images/", 1)[1]
+        assert hashes[path] == sums["images/" + rel]
+    assert not Path(loads[0]).exists(), "staging copy not cleaned up"
     for entry in _images():
         target = airgap_images.localize(entry["ref"], LOCAL_REG)
-        archive = str(bundle / entry["file"])
-        assert f"docker load -i {archive}" in log
+        assert any(p.endswith("/" + entry["file"]) for p in loads)
         assert f"docker tag {entry['ref']} {target}" in log
         assert f"docker push {target}" in log
     assert any(line.startswith("kubectl -n soc apply -f ") for line in log)
     helm = [line for line in log if line.startswith("helm ")]
     assert len(helm) == 1
-    assert helm[0].startswith(
-        f"helm upgrade --install autosecops {bundle}/chart/vigil-{VERSION}.tgz --namespace soc -f "
-    )
+    assert re.match(
+        rf"helm upgrade --install autosecops \S+/chart/vigil-{VERSION}\.tgz --namespace soc -f ",
+        helm[0],
+    ), helm[0]
+    assert str(bundle) not in helm[0]
     assert "values-airgap.yaml" in helm[0] and helm[0].endswith(
         "--set backend.replicaCount=1"
     )
@@ -535,6 +688,101 @@ def test_install_ctr_loader_and_rules_dir(bundle, built, stubs, tmp_path):
         _images()
     )
     assert (rules / "sigma" / "rules" / "r.yml").is_file()
+
+
+def test_bundle_swapped_after_verification_installs_verified_bytes(
+    bundle, built, stubs, tmp_path
+):
+    """TOCTOU: a writer replaces every image (and the chart) in the bundle
+    directory right after "bundle verified"; the loaders must still get the
+    verified bytes."""
+    bin_dir, calls = stubs
+    go = tmp_path / "go"
+    env = _env(bin_dir, calls)
+    env["WAIT_FOR"] = str(go)
+    sums = _sums(bundle)
+    proc = subprocess.Popen(
+        [
+            str(INSTALL),
+            "install",
+            "--bundle",
+            str(bundle),
+            "--pubkey",
+            str(built["pub"]),
+            "--registry",
+            LOCAL_REG,
+        ],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    err = []
+    try:
+        for line in proc.stderr:
+            err.append(line)
+            if "bundle verified" in line:
+                break
+        assert any("bundle verified" in e for e in err), "".join(err)
+        evil = b"attacker image " + os.urandom(16)
+        for f in (bundle / "images").iterdir():
+            f.unlink()
+            f.write_bytes(evil)
+        (bundle / f"chart/vigil-{VERSION}.tgz").write_bytes(evil)
+        go.touch()
+        err.append(proc.stderr.read())
+        assert proc.wait(timeout=300) == 0, "".join(err)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    hashes = _hashes(calls)
+    evil_digest = hashlib.sha256(evil).hexdigest()
+    assert evil_digest not in hashes.values()
+    loads = [ln.split()[-1] for ln in _calls(calls) if ln.startswith("docker load -i ")]
+    assert len(loads) == len(_images())
+    for path in loads:
+        rel = "images/" + path.split("/images/", 1)[1]
+        assert hashes[path] == sums[rel]
+    charts = [p for p in hashes if p.endswith(f"/chart/vigil-{VERSION}.tgz")]
+    assert charts and all(hashes[p] == sums[f"chart/vigil-{VERSION}.tgz"] for p in charts)
+
+
+def test_staging_directory_is_private(bundle, built, stubs, tmp_path):
+    """The verified copy lives in a fresh 0700 directory under $TMPDIR."""
+    bin_dir, calls = stubs
+    tmpdir = tmp_path / "tmpdir"
+    tmpdir.mkdir()
+    probe = bin_dir / "docker"
+    probe.write_text(
+        STUB.replace(
+            "exit 0\n",
+            'case "$1" in load) stat -c "%a %n" "$(dirname "$(dirname "$3")")" '
+            '>>"$CALLS/stage.log" ;; esac\nexit 0\n',
+        )
+    )
+    env = _env(bin_dir, calls)
+    env["TMPDIR"] = str(tmpdir)
+    proc = subprocess.run(
+        [
+            str(INSTALL),
+            "install",
+            "--bundle",
+            str(bundle),
+            "--pubkey",
+            str(built["pub"]),
+            "--registry",
+            LOCAL_REG,
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    modes = {line.split()[0] for line in (calls / "stage.log").read_text().splitlines()}
+    assert modes == {"700"}
+    dirs = {line.split()[1] for line in (calls / "stage.log").read_text().splitlines()}
+    assert all(d.startswith(str(tmpdir) + "/") for d in dirs)
+    assert list(tmpdir.iterdir()) == [], "staging directories left behind"
 
 
 def test_install_dry_run_prints_and_calls_nothing(bundle, built, stubs):
@@ -681,6 +929,39 @@ def test_overlay_turns_off_remote_and_telemetry():
     text = (AIRGAP / "values-airgap.yaml").read_text()
     for public in ("ghcr.io", "docker.io", "quay.io"):
         assert public not in re.sub(r"#.*", "", text)
+
+
+def _airgap_env() -> dict[str, str]:
+    env = {}
+    for line in (AIRGAP / "airgap.env").read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            key, _, value = line.partition("=")
+            env[key] = value
+    return env
+
+
+def test_overlay_switches_match_airgap_env():
+    """values-airgap.yaml (Helm) and airgap.env (host/Compose, W3.4) turn the
+    same things off: every on/off switch in airgap.env that the code reads is
+    in the overlay with the same value, and no shared key disagrees."""
+    from tests.unit._ratchets.test_helm_env_names_are_read import _read_names
+
+    env, config = _airgap_env(), _overlay()["config"]
+    switches = {
+        k: v
+        for k, v in env.items()
+        if v in ("false", "true", "console") and k in _read_names()
+    }
+    assert switches, "airgap.env has no switches?"
+    missing = sorted(k for k in switches if k not in config)
+    assert not missing, f"airgap.env switches missing from values-airgap.yaml: {missing}"
+    differ = sorted(
+        k
+        for k in set(env) & set(config)
+        if not k.endswith("_URL") and env[k] != config[k]
+    )
+    assert not differ, f"values-airgap.yaml and airgap.env disagree on {differ}"
 
 
 def test_overlay_config_keys_are_read_by_the_code():
