@@ -280,6 +280,19 @@ def _apply_user_update(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
 
+    # The ceiling that applies to assigning a role also applies to the account
+    # being edited: users.write must not reach an account that holds more than
+    # the editor does. Otherwise a Manager could point an Admin's email at their
+    # own inbox and take the account over with a password reset, or demote or
+    # deactivate every Admin.
+    if user.user_id != current_user.user_id:
+        held = session.query(Role).filter(Role.role_id == user.role_id).first()
+        if held is not None and not _can_assign_role(current_user, held, session):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot change a user with more privileges than your own",
+            )
+
     stale_reason = None
     if request.full_name is not None:
         user.full_name = request.full_name
