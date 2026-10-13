@@ -7,6 +7,7 @@ in #632 as well; this is what keeps it true.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -61,16 +62,47 @@ def collect(blocks):
 """
 
 
-def run_gate() -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(GATE)], capture_output=True, text=True)
+def run_gate(gate: Path = GATE) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(gate)], capture_output=True, text=True)
+
+
+@pytest.fixture(scope="module")
+def tree_copy(tmp_path_factory) -> Path:
+    """A copy of every Python file the gate scans, with the gate beside it.
+
+    The gate roots itself at its own parent directory, so a copy of it scans the
+    copy. Planting there keeps the real tree untouched: other tests walk core/
+    too, and under xdist they would race a module that appears and vanishes.
+    """
+    root = tmp_path_factory.mktemp("one_loop_tree")
+    sys.path.insert(0, str(GATE.parent))
+    try:
+        import check_one_loop as gate
+    finally:
+        sys.path.pop(0)
+    for top in gate.SCAN:
+        for src in (REPO / top).rglob("*.py"):
+            rel = src.relative_to(REPO)
+            if any(part in gate.SKIP for part in rel.parts):
+                continue
+            dst = root / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+    # The copy is a faithful stand-in only if the gate sees it clean as it sees
+    # the real tree, and it saw every file.
+    result = run_gate(root / "scripts" / GATE.name)
+    assert result.returncode == 0, result.stdout
+    real = run_gate()
+    assert result.stdout == real.stdout, (result.stdout, real.stdout)
+    return root
 
 
 @pytest.fixture()
-def planted(request):
-    """Write a module into the scanned tree, and always take it back out."""
-    path = REPO / "core" / "llm" / "_gate_fixture.py"
+def planted(request, tree_copy):
+    """Write a module into the copied tree, and always take it back out."""
+    path = tree_copy / "core" / "llm" / "_gate_fixture.py"
     path.write_text(request.param)
-    yield path
+    yield tree_copy / "scripts" / GATE.name
     path.unlink(missing_ok=True)
 
 
@@ -81,7 +113,7 @@ def test_the_tree_is_clean():
 
 @pytest.mark.parametrize("planted", [A_TOOL_LOOP, AN_OPENAI_TOOL_LOOP], indirect=True)
 def test_fails_on_a_planted_loop(planted):
-    result = run_gate()
+    result = run_gate(planted)
     assert result.returncode == 1
     assert "_gate_fixture.py" in result.stdout
     # Names where the loop belongs, so the failure is actionable rather than a veto.
@@ -91,5 +123,5 @@ def test_fails_on_a_planted_loop(planted):
 @pytest.mark.parametrize("planted", [A_RETRY_LOOP, TOOL_HANDLING_ALONE], indirect=True)
 def test_leaves_the_near_misses_alone(planted):
     # A gate that fires on either of these gets switched off within a week.
-    result = run_gate()
+    result = run_gate(planted)
     assert result.returncode == 0, result.stdout

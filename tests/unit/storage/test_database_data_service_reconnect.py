@@ -8,7 +8,19 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from core.storage.database_data_service import DatabaseDataService
+
+
+@pytest.fixture(autouse=True)
+def _not_demo_mode(monkeypatch):
+    """These tests exercise the Postgres path, which demo mode bypasses entirely.
+
+    DEMO_MODE=false rather than delenv: unset, is_demo_mode() falls back to the
+    general config file, which a developer's machine may also have flipped.
+    """
+    monkeypatch.setenv("DEMO_MODE", "false")
 
 
 def _make_disconnected_service() -> DatabaseDataService:
