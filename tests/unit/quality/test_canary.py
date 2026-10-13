@@ -4,10 +4,13 @@ finding, the AI-verdict reader, the response guard and the daemon hooks."""
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
+import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -52,9 +55,10 @@ def test_an_unreadable_setting_is_off():
 
 async def test_a_disabled_sweep_touches_neither_the_queue_nor_the_table():
     queue: asyncio.Queue = asyncio.Queue()
-    with patch.object(
-        cq, "read_canary_settings", return_value=cq.CanarySettings()
-    ), patch.object(cq, "unit_of_work", side_effect=AssertionError("no DB")):
+    with (
+        patch.object(cq, "read_canary_settings", return_value=cq.CanarySettings()),
+        patch.object(cq, "unit_of_work", side_effect=AssertionError("no DB")),
+    ):
         assert await cq.inject_canary(queue) is None
     assert queue.empty()
 
@@ -94,6 +98,108 @@ def test_every_corpus_id_fits_the_finding_id_column():
     now = datetime.now(timezone.utc)
     for record in cq.load_corpus_records():
         assert len(cq.build_canary_finding(record, now)["finding_id"]) <= 50
+
+
+_TEST_NETS = ("192.0.2.", "198.51.100.", "203.0.113.")
+
+
+def test_a_replay_carries_no_documentation_addresses_or_corpus_hashes():
+    now = datetime(2026, 10, 12, 8, 30, tzinfo=timezone.utc)
+    pool = cq.address_pool("10.20.0.0/16")
+    for record in cq.load_corpus_records():
+        source = json.dumps(record["alert"])
+        alert = cq.build_canary_finding(record, now, pool=pool)
+        text = json.dumps(alert)
+        assert not any(net in text for net in _TEST_NETS), record["meta"]
+        for h in re.findall(r"[0-9a-f]{64}", source):
+            assert h not in text
+        ctx = alert["entity_context"]
+        for ip in ctx["src_ips"] + ctx["dest_ips"]:
+            assert ipaddress.ip_address(ip) in pool[0]
+
+
+def test_rewrites_are_consistent_between_entities_and_text():
+    record = next(
+        r
+        for r in cq.load_corpus_records()
+        if r["alert"]["entity_context"]["file_hashes"]
+        and r["alert"]["entity_context"]["dest_ips"]
+        and r["alert"]["entity_context"]["dest_ips"][0] in r["alert"]["description"]
+    )
+    alert = cq.build_canary_finding(record, datetime.now(timezone.utc))
+    ctx = alert["entity_context"]
+    assert ctx["dest_ips"][0] in alert["description"]
+    assert ctx["file_hashes"][0] in alert["description"]
+
+
+def test_a_replay_carries_its_vendors_per_alert_fields():
+    now = datetime.now(timezone.utc)
+    seen = {}
+    for record in cq.load_corpus_records():
+        raw = cq.build_canary_finding(record, now)["raw_event"]
+        seen.setdefault(record["alert"]["data_source"], raw)
+    assert len(seen) >= 5
+    for source, raw in seen.items():
+        assert len(raw) > 4, source  # more than vendor/rule_name/event_count
+    assert seen["crowdstrike"]["detection_id"].startswith("ldt:")
+    assert "SystemAlertId" in seen["sentinel"]
+    # Two replays of one record differ in every per-alert id.
+    record = cq.load_corpus_records()[0]
+    a = cq.build_canary_finding(record, now)["raw_event"]
+    b = cq.build_canary_finding(record, now)["raw_event"]
+    assert a["detection_id"] != b["detection_id"]
+
+
+def test_the_address_pool_refuses_routable_ranges():
+    nets = cq.address_pool("8.8.8.0/24, 10.9.0.0/16, junk, 2001:db8::/32")
+    assert [str(n) for n in nets] == ["10.9.0.0/16"]
+    # Nothing usable left: the private default, never a public range.
+    assert all(not n.is_global for n in cq.address_pool("1.1.1.0/24"))
+
+
+def test_reserved_domains_move_under_the_operators_suffix_only_when_set():
+    record = next(
+        r for r in cq.load_corpus_records() if ".test" in r["alert"]["description"]
+    )
+    now = datetime.now(timezone.utc)
+    kept = cq.build_canary_finding(record, now, domain_suffix="")
+    assert ".test" in kept["description"]
+    moved = cq.build_canary_finding(record, now, domain_suffix="lab.acme.net")
+    assert ".test" not in moved["description"]
+    assert ".lab.acme.net" in moved["description"]
+
+
+async def test_an_injection_leaves_no_info_line_in_the_log(caplog):
+    record = cq.load_corpus_records()[0]
+    finding = cq.build_canary_finding(record, datetime.now(timezone.utc))
+    queue: asyncio.Queue = asyncio.Queue()
+    with (
+        patch.object(cq, "_prepare", return_value=finding),
+        caplog.at_level(logging.INFO, logger="core.quality.canary"),
+    ):
+        assert await cq.inject_canary(queue) == finding["finding_id"]
+    assert queue.qsize() == 1
+    assert [r for r in caplog.records if r.levelno >= logging.INFO] == []
+
+
+def test_table_absence_is_cached_so_metrics_do_not_pay_a_lookup_per_call():
+    from core.storage import canary_exclusion as ce
+
+    ce.forget_table_presence()
+    session = MagicMock()
+    session.get_bind.return_value.url = "postgresql://x/absent-test"
+    session.execute.return_value.scalar.return_value = None
+    try:
+        assert ce.canary_table_present(session) is False
+        assert ce.canary_table_present(session) is False
+        assert session.execute.call_count == 1
+        # Expired: asked again, and a table that appeared is seen.
+        with patch.object(ce.time, "monotonic", return_value=1e12):
+            session.execute.return_value.scalar.return_value = "canary_injections"
+            assert ce.canary_table_present(session) is True
+        assert session.execute.call_count == 2
+    finally:
+        ce.forget_table_presence()
 
 
 def test_the_daemon_image_ships_the_corpus_it_replays():
@@ -173,6 +279,39 @@ async def test_the_processor_never_hands_a_canary_to_the_responder():
         processor._evaluate_for_response.assert_awaited_once()
 
 
+async def test_no_canary_indicator_reaches_threat_intel_or_a_sandbox():
+    from services.daemon.config import ProcessingConfig
+    from services.daemon.processor import FindingProcessor
+
+    processor = FindingProcessor(
+        ProcessingConfig(auto_triage_enabled=False, auto_enrich_enabled=True)
+    )
+    processor._data_service = None
+    processor._evaluate_for_response = AsyncMock()
+    processor._enrich_ip = AsyncMock(return_value=None)
+    processor._enrich_hash = AsyncMock(return_value=None)
+    processor._sandbox_submitter = MagicMock()
+    processor._sandbox_submitter.submit_hash = AsyncMock(return_value=None)
+    ctx = {"src_ips": ["10.1.2.3"], "file_hashes": ["ab" * 32]}
+
+    with patch.object(cq, "is_canary_finding", side_effect=lambda fid: fid == "c"):
+        await processor._enrich_in_background(
+            {"finding_id": "c", "severity": "high", "entity_context": ctx},
+            "crowdstrike",
+        )
+        processor._enrich_ip.assert_not_awaited()
+        processor._enrich_hash.assert_not_awaited()
+        processor._sandbox_submitter.submit_hash.assert_not_awaited()
+
+        await processor._enrich_in_background(
+            {"finding_id": "r", "severity": "high", "entity_context": ctx},
+            "crowdstrike",
+        )
+        processor._enrich_ip.assert_awaited_once_with("10.1.2.3")
+        processor._enrich_hash.assert_awaited_once()
+        processor._sandbox_submitter.submit_hash.assert_awaited_once()
+
+
 # --- the daemon schedule -----------------------------------------------------
 
 
@@ -205,8 +344,9 @@ async def test_the_scheduler_sweep_scores_then_injects_onto_the_processor_queue(
         calls.append(("inject", q is queue))
         return "cs-1"
 
-    with patch.object(cq, "score_due_canaries", side_effect=score), patch.object(
-        cq, "inject_canary", side_effect=inject
+    with (
+        patch.object(cq, "score_due_canaries", side_effect=score),
+        patch.object(cq, "inject_canary", side_effect=inject),
     ):
         result = await scheduler._run_canary_sweep()
 
@@ -257,20 +397,23 @@ def test_siem_write_back_has_one_caller_and_it_skips_canaries():
     assert "canaries = canary_finding_ids()" in src
 
 
-def test_outbound_webhooks_deliver_nothing_yet():
-    """Case-event webhooks are management stubs: no request leaves the install.
-    When delivery lands it must drop canaries (core.storage.canary_exclusion)."""
-    src = (REPO / "core" / "integrations" / "webhooks_router.py").read_text(
-        encoding="utf-8"
+def test_outbound_case_events_are_queued_only_by_the_canary_aware_dispatcher():
+    """Case-event webhooks, Slack and email leave through one dispatcher, which
+    skips a case made of hidden canaries (canary_injections, not only a flag)."""
+    callers = sorted(
+        p.relative_to(REPO).as_posix()
+        for p in _py_sources()
+        if "outbound_webhooks.enqueue_event" in p.read_text(encoding="utf-8")
     )
-    for client in ("httpx", "requests", "aiohttp", "urllib"):
-        assert client not in src
+    assert callers == ["core/cases/notification_dispatcher.py"]
+    src = (REPO / callers[0]).read_text(encoding="utf-8")
+    body = src.split("def _dispatch_one(", 1)[1].split("\n    def ", 1)[0]
+    assert "if is_canary(case):" in body
+    assert "case_canary_profile(" in src and "is_canary_finding(" in src
 
 
 def test_every_ioc_export_format_goes_through_the_canary_filter():
-    src = (REPO / "core" / "cases" / "case_ioc_service.py").read_text(
-        encoding="utf-8"
-    )
+    src = (REPO / "core" / "cases" / "case_ioc_service.py").read_text(encoding="utf-8")
     for fn in ("export_iocs_json", "export_iocs_csv", "export_iocs_stix"):
         body = src.split(f"def {fn}(", 1)[1].split("\n    def ", 1)[0]
         assert "self._exportable_iocs(" in body, fn

@@ -316,6 +316,12 @@ class Settings(BaseSettings):
     # quality.canary); this turns the daemon's sweep off whatever that says.
     daemon_canaries_enabled: bool = True
     daemon_canary_interval: int = 3600
+    # Comma-separated private IPv4 CIDRs canary addresses are drawn from (global
+    # ranges are refused). Point it at an unused internal subnet.
+    canary_address_pool: str = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+    # A domain the operator owns; when set, the corpus' reserved-TLD domains
+    # (.test, .example) are rewritten under it. Empty: left as they are.
+    canary_domain_suffix: str = ""
     daemon_cleanup_retention_days: int = 90
     # Separate from cleanup_retention_days on purpose: that only ages out the
     # episodic read log, while an unanswered containment proposal goes stale

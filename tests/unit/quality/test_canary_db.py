@@ -44,14 +44,17 @@ from core.storage.database_data_service import DatabaseDataService
 from core.storage.models import (
     AIDecisionLog,
     Case,
+    CaseEvidence,
     CaseIOC,
     ConfigAuditLog,
     Finding,
+    IntakeTrigger,
     SystemConfig,
     case_findings,
 )
 from core.storage.service import DatabaseService
 from core.storage.unit_of_work import unit_of_work
+from core.time import utcnow
 
 pytestmark = [pytest.mark.unit, pytest.mark.external_service, pytest.mark.database]
 
@@ -93,6 +96,9 @@ def _purge():
         s.query(AIDecisionLog).filter(AIDecisionLog.agent_id == AGENT).delete(
             synchronize_session=False
         )
+        s.query(IntakeTrigger).filter(
+            IntakeTrigger.finding_id.like(f"{PREFIX}%")
+        ).delete(synchronize_session=False)
         s.query(Finding).filter(Finding.finding_id.like(f"{PREFIX}%")).delete(
             synchronize_session=False
         )
@@ -517,15 +523,20 @@ def test_jira_export_refuses_a_canary_only_case_without_calling_jira(estate):
     from services.api.routers import jira_export
 
     user = MagicMock(user_id="u", username="u", full_name="U", email="u@x")
-    with patch.object(
-        jira_export,
-        "resolve",
-        return_value={"url": "https://jira.test", "username": "u", "api_token": "t"},
-    ), patch.object(
-        jira_export.AuthService, "check_permission", return_value=True
-    ), patch.object(
-        jira_export.httpx, "post"
-    ) as post, unit_of_work() as session:
+    with (
+        patch.object(
+            jira_export,
+            "resolve",
+            return_value={
+                "url": "https://jira.test",
+                "username": "u",
+                "api_token": "t",
+            },
+        ),
+        patch.object(jira_export.AuthService, "check_permission", return_value=True),
+        patch.object(jira_export.httpx, "post") as post,
+        unit_of_work() as session,
+    ):
         result = jira_export.export_case_to_jira(
             f"{PREFIX}only",
             jira_export.JiraExportRequest(project_key="SEC"),
@@ -578,8 +589,9 @@ async def test_siem_write_back_skips_canaries(estate):
     data = MagicMock()
     data.get_case.return_value = {"finding_ids": [can, real]}
     data.get_finding.side_effect = findings.get
-    with patch.object(cases_router, "data_service", data), patch.object(
-        cases_router, "_get_ingestion_service", return_value=svc
+    with (
+        patch.object(cases_router, "data_service", data),
+        patch.object(cases_router, "_get_ingestion_service", return_value=svc),
     ):
         await cases_router._sync_upstream_status(f"{PREFIX}mixed", "closed")
     svc.update_upstream_alert_status.assert_awaited_once_with(f"es-{real}", "closed")
@@ -598,10 +610,229 @@ async def test_siem_write_back_fails_closed_when_the_canary_lookup_fails(estate)
         "data_source": "elastic",
         "metadata": {"elastic_alert_id": "es-1"},
     }
-    with patch.object(cases_router, "data_service", data), patch.object(
-        cases_router, "_get_ingestion_service", return_value=svc
-    ), patch.object(
-        cases_router, "canary_finding_ids", side_effect=RuntimeError("db down")
+    with (
+        patch.object(cases_router, "data_service", data),
+        patch.object(cases_router, "_get_ingestion_service", return_value=svc),
+        patch.object(
+            cases_router, "canary_finding_ids", side_effect=RuntimeError("db down")
+        ),
     ):
         await cases_router._sync_upstream_status(f"{PREFIX}mixed", "closed")
     svc.update_upstream_alert_status.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Round 3: intake, text/sandbox IOCs, notifications, QA sampling
+# ---------------------------------------------------------------------------
+
+
+def test_finding_intake_queues_nothing_for_a_canary_and_says_nothing(estate):
+    from services.api.routers.findings import launch_finding_into_intake
+
+    real, can = estate
+    with unit_of_work() as s:
+        res = launch_finding_into_intake(can, s)
+    assert (res.queued, res.already_queued, res.trigger_id) == (False, False, None)
+    assert "canary" not in res.model_dump_json().lower()
+    with unit_of_work() as s:
+        assert s.query(IntakeTrigger).filter_by(finding_id=can).count() == 0
+
+    with unit_of_work() as s:
+        res = launch_finding_into_intake(real, s)
+    assert res.queued is True
+
+
+def test_finding_intake_fails_closed_when_the_canary_lookup_fails(estate):
+    from fastapi import HTTPException
+
+    from services.api.routers import findings as findings_router
+
+    real, _can = estate
+    with (
+        patch.object(
+            findings_router, "is_canary_finding", side_effect=RuntimeError("db down")
+        ),
+        unit_of_work() as s,
+        pytest.raises(HTTPException) as err,
+    ):
+        findings_router.launch_finding_into_intake(real, s)
+    assert err.value.status_code == 503
+    with unit_of_work() as s:
+        assert s.query(IntakeTrigger).filter_by(finding_id=real).count() == 0
+
+
+def test_no_intake_path_queues_a_canary(estate):
+    from services.daemon.orchestrator import insert_intake_trigger
+
+    real, can = estate
+    assert insert_intake_trigger(kind="detection", finding_id=can) is None
+    assert insert_intake_trigger(kind="detection", finding_id=real) is not None
+
+
+def test_mixed_case_export_drops_text_and_sandbox_indicators_of_its_canary(estate):
+    real, _can = estate
+    can2 = f"{PREFIX}can2"
+    sha = "ab" * 32
+    with unit_of_work() as s:
+        s.add(_finding(can2, source="zeek", host="db-02"))
+        s.add(
+            Case(
+                case_id=f"{PREFIX}mix2",
+                title="mix2",
+                status="open",
+                priority="high",
+                created_at=CREATED,
+                updated_at=CREATED,
+            )
+        )
+        s.flush()
+        s.execute(
+            insert(case_findings),
+            [
+                {"case_id": f"{PREFIX}mix2", "finding_id": can2},
+                {"case_id": f"{PREFIX}mix2", "finding_id": real},
+            ],
+        )
+        s.add(
+            CaseEvidence(
+                case_id=f"{PREFIX}mix2",
+                evidence_type="sandbox_report",
+                name="cape report t-9",
+                file_hash_sha256=sha,
+                collected_by="sandbox-poller",
+                collected_at=CREATED,
+                chain_of_custody=[],
+                analysis_results={"sandbox": "cape", "task_id": "t-9"},
+            )
+        )
+        s.add_all(
+            [
+                # Named only in the canary's description.
+                CaseIOC(case_id=f"{PREFIX}mix2", ioc_type="ip", value="10.44.0.7"),
+                CaseIOC(case_id=f"{PREFIX}mix2", ioc_type="hash", value=sha.upper()),
+                # Produced by detonating the canary's file.
+                CaseIOC(
+                    case_id=f"{PREFIX}mix2",
+                    ioc_type="domain",
+                    value="c2.lab.acme.net",
+                    enrichment_data={"sandbox_runs": [{"task_id": "t-9"}]},
+                ),
+                CaseIOC(case_id=f"{PREFIX}mix2", ioc_type="hostname", value="web-01"),
+            ]
+        )
+        s.execute(
+            insert(canary_injections).values(
+                marker="m-can2",
+                canary_kind=cq.CANARY_KIND,
+                expected_verdict="malicious",
+                payload={
+                    "alert": {
+                        "finding_id": can2,
+                        "description": f"Beacon to 10.44.0.7 from a file {sha}.",
+                        "entity_context": {"hostnames": ["db-02"]},
+                    }
+                },
+                injected_at=datetime.now(timezone.utc),
+                finding_id=can2,
+            )
+        )
+
+    values = [
+        i["value"]
+        for i in json.loads(CaseIOCService().export_iocs_json(f"{PREFIX}mix2"))
+    ]
+    assert values == ["web-01"]
+
+
+def test_notifications_skip_a_hidden_canary_only_case_but_not_a_mixed_one(estate):
+    from core.cases.notification_dispatcher import is_canary
+
+    real, can = estate
+    with unit_of_work() as s:
+        only = s.get(Case, f"{PREFIX}only")
+        mixed = s.get(Case, f"{PREFIX}mixed")
+        assert is_canary(only) is True
+        assert is_canary(mixed) is False
+    assert is_canary({"finding_id": can}) is True
+    assert is_canary({"finding_id": real}) is False
+
+
+def test_dispatcher_withholds_a_canary_cases_notifications_without_naming_it(estate):
+    from core.cases.notification_dispatcher import CaseNotificationDispatcher
+    from core.storage.models import CaseNotification
+
+    sent = []
+    dispatcher = CaseNotificationDispatcher(
+        post_slack=lambda *a, **k: sent.append(a) or (True, "sent"),
+        send_email=lambda *a, **k: sent.append(a) or (True, "sent"),
+        enqueue_webhook=lambda *a, **k: sent.append(a) or 1,
+    )
+    with unit_of_work() as s:
+        outcomes = []
+        for case_id, user in ((f"{PREFIX}only", "u-1"), (f"{PREFIX}mixed", "u-1")):
+            row = CaseNotification(
+                case_id=case_id,
+                user_id=user,
+                notification_type="case_assigned",
+                title="t",
+                message="m",
+                priority="high",
+                delivery_channel="slack",
+                is_sent=False,
+            )
+            outcomes.append(
+                dispatcher._dispatch_one(s, row, utcnow(), frozenset(), False)
+            )
+        s.rollback()
+    assert outcomes[0] == {"skipped": "withheld"}
+    assert "skipped" not in outcomes[1]
+    assert len(sent) == 1  # the mixed case's Slack message only
+
+
+def test_qa_sampling_and_the_scorecard_leave_canary_decisions_out(estate):
+    from core.quality import sampling
+
+    real, can = estate
+    closed = {"decision_type": "auto_close", "recommended_action": "dismiss"}
+    with unit_of_work() as s:
+        for fid in (real, can):
+            s.add(
+                AIDecisionLog(
+                    decision_id=f"{PREFIX}qa-{fid}",
+                    agent_id=AGENT,
+                    finding_id=fid,
+                    confidence_score=0.9,
+                    reasoning="r",
+                    timestamp=CREATED,
+                    **closed,
+                )
+            )
+    with unit_of_work() as s:
+        ids = {
+            c.decision_id for c in sampling.load_candidates(s, since=START, until=END)
+        }
+    assert f"{PREFIX}qa-{real}" in ids
+    assert f"{PREFIX}qa-{can}" not in ids
+
+    # A sample drawn before the filter existed stays out of queue and Scorecard.
+    with unit_of_work() as s:
+        s.execute(
+            text(
+                "INSERT INTO qa_samples (tenant_id, sampling_kind, "
+                "inclusion_probability, subject_kind, subject_id, verdict, sampled_at) "
+                "VALUES ('cnq-tenant', 'simple_random', 1, 'ai_decision', :sid, "
+                "CAST(:v AS JSONB), now())"
+            ),
+            {
+                "sid": f"{PREFIX}qa-{can}",
+                "v": json.dumps({"verdict": "benign", "category": "malware"}),
+            },
+        )
+    try:
+        with unit_of_work() as s:
+            assert sampling.list_samples(s, status="all", tenant_id="cnq-tenant") == []
+            card = sampling.scorecard(s, tenant_id="cnq-tenant")
+        assert all(c["pending"] == 0 for c in card["categories"])
+    finally:
+        with unit_of_work() as s:
+            s.execute(text("DELETE FROM qa_samples WHERE tenant_id = 'cnq-tenant'"))

@@ -21,7 +21,9 @@ Safety and hygiene, enforced elsewhere through
 ``core.storage.canary_exclusion``:
 
 - the daemon never sends a canary to the responder (no isolate/block, no
-  Slack/PagerDuty escalation) or to autonomous investigation;
+  Slack/PagerDuty escalation), to autonomous investigation (no intake trigger,
+  whichever path asks), or to external threat-intel and sandbox lookups (the
+  check runs before enrichment);
 - canaries are left out of customer metrics, findings/IOC exports, Jira, and
   any webhook or SIEM write-back.
 
@@ -40,9 +42,12 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import ipaddress
 import json
 import logging
+import re
 import secrets
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -185,16 +190,284 @@ def _iso_z(when: datetime) -> str:
     return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def build_canary_finding(record: Dict[str, Any], now: datetime) -> Dict[str, Any]:
+# --- looking like the real thing ---------------------------------------------
+#
+# The corpus is synthetic and says so to anyone who looks: every address is in
+# an RFC 5737 documentation range (192.0.2/24, 198.51.100/24, 203.0.113/24),
+# domains end in reserved TLDs (.test, .example), the same template always
+# carries the same hash, and raw_event has three keys where a real connector
+# sends a vendor envelope. A replay rewrites all of that, consistently across
+# entity_context and every free-text field, so the canary cannot be picked out
+# by those tells, while staying safe:
+#
+# - addresses come from ``CANARY_ADDRESS_POOL`` (default: the RFC 1918 private
+#   ranges). Only non-global ranges are accepted, so a canary never names a
+#   host on the internet; an operator should point it at an unused internal
+#   subnet so it never names one of theirs either;
+# - hashes are fresh random hex of the same length (never a real file);
+# - reserved-TLD domains are rewritten under ``CANARY_DOMAIN_SUFFIX`` only when
+#   the operator sets one (a domain they own); otherwise they stay as they are,
+#   because any made-up public name might belong to somebody;
+# - raw_event gains the per-alert identifiers its vendor would send (detection
+#   / alert / event ids), never tenant-level ones (account, tenant, CID) that
+#   a replay cannot know.
+#
+# What stays recognisable is documented in docs/wp/w1.5.md.
+
+DEFAULT_ADDRESS_POOL = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+
+_IPV4 = re.compile(r"(?<!\d)(?<!\d\.)(?:\d{1,3}\.){3}\d{1,3}(?!\d|\.\d)")
+_HASH = re.compile(
+    r"(?<![0-9A-Za-z])(?:[0-9A-Fa-f]{64}|[0-9A-Fa-f]{40}|[0-9A-Fa-f]{32})(?![0-9A-Za-z])"
+)
+_RESERVED_DOMAIN = re.compile(
+    r"(?<![\w.-])((?:[A-Za-z0-9-]+\.)+?)"
+    r"(example\.(?:com|net|org)|test|example|invalid)(?![\w-])",
+    re.IGNORECASE,
+)
+
+
+def address_pool(raw: Optional[str] = None) -> List[ipaddress.IPv4Network]:
+    """The IPv4 networks canary addresses are drawn from.
+
+    ``raw`` (default: ``CANARY_ADDRESS_POOL``) is comma-separated CIDRs. A
+    range that is global (routable on the internet), not IPv4, or too small
+    for a host address is dropped with a warning; nothing usable left means
+    the default private ranges.
+    """
+    if raw is None:
+        try:
+            from core.config import get_settings
+
+            raw = get_settings().canary_address_pool
+        except Exception:  # noqa: BLE001
+            raw = DEFAULT_ADDRESS_POOL
+    nets = []
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            net = ipaddress.ip_network(part, strict=False)
+        except ValueError:
+            logger.warning("Canary address pool: %r is not a CIDR; ignored", part)
+            continue
+        if net.version != 4 or net.is_global or net.num_addresses < 4:
+            logger.warning(
+                "Canary address pool: %s is not a private IPv4 range; ignored", net
+            )
+            continue
+        nets.append(net)
+    if not nets:
+        nets = [ipaddress.ip_network(p) for p in DEFAULT_ADDRESS_POOL.split(",")]
+    return nets
+
+
+def _domain_suffix() -> str:
+    try:
+        from core.config import get_settings
+
+        return (get_settings().canary_domain_suffix or "").strip().strip(".")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+class _Rewriter:
+    """One alert's consistent substitutions (same input, same output)."""
+
+    def __init__(
+        self, pool: List[ipaddress.IPv4Network], domain_suffix: str, rng: Any
+    ) -> None:
+        self.pool = pool
+        self.suffix = domain_suffix
+        self.rng = rng
+        self.ips: Dict[str, str] = {}
+        self.hashes: Dict[str, str] = {}
+
+    def _ip(self, m: "re.Match[str]") -> str:
+        old = m.group(0)
+        try:
+            ipaddress.IPv4Address(old)
+        except ValueError:
+            return old  # a version string, not an address
+        if old not in self.ips:
+            used = set(self.ips.values())
+            while True:
+                net = self.rng.choice(self.pool)
+                host = net.network_address + self.rng.randint(1, net.num_addresses - 2)
+                if str(host) not in used:
+                    break
+            self.ips[old] = str(host)
+        return self.ips[old]
+
+    def _hash(self, m: "re.Match[str]") -> str:
+        old = m.group(0)
+        key = old.lower()
+        if key not in self.hashes:
+            self.hashes[key] = "".join(
+                self.rng.choice("0123456789abcdef") for _ in range(len(old))
+            )
+        new = self.hashes[key]
+        return new.upper() if old.isupper() else new
+
+    def _domain(self, m: "re.Match[str]") -> str:
+        return f"{m.group(1)}{self.suffix}"
+
+    def text(self, value: str) -> str:
+        value = _IPV4.sub(self._ip, value)
+        value = _HASH.sub(self._hash, value)
+        if self.suffix:
+            value = _RESERVED_DOMAIN.sub(self._domain, value)
+        return value
+
+    def walk(self, value: Any) -> Any:
+        if isinstance(value, str):
+            return self.text(value)
+        if isinstance(value, list):
+            return [self.walk(v) for v in value]
+        if isinstance(value, dict):
+            return {k: self.walk(v) for k, v in value.items()}
+        return value
+
+
+def _hex(rng: Any, n: int) -> str:
+    return "".join(rng.choice("0123456789abcdef") for _ in range(n))
+
+
+def _uuid(rng: Any) -> str:
+    return str(uuid.UUID(_hex(rng, 32), version=4))
+
+
+def _vendor_fields(alert: Dict[str, Any], rng: Any) -> Dict[str, Any]:
+    """Per-alert identifiers and fields the source's connector would carry."""
+    source = str(alert.get("data_source") or "").lower()
+    severity = str(alert.get("severity") or "medium").lower()
+    techniques = sorted(
+        (alert.get("mitre_predictions") or {}).items(), key=lambda kv: -kv[1]
+    )
+    technique = techniques[0][0] if techniques else None
+    ts = alert.get("timestamp")
+    sev_num = {"low": 2, "medium": 5, "high": 7, "critical": 9}.get(severity, 5)
+    if source == "crowdstrike":
+        return {
+            "detection_id": f"ldt:{_hex(rng, 32)}:{rng.randint(10**10, 10**11 - 1)}",
+            "device_id": _hex(rng, 32),
+            "severity_name": severity.capitalize(),
+            "technique_id": technique,
+            "pattern_id": rng.randint(10000, 99999),
+            "product": "epp",
+            "created_timestamp": ts,
+        }
+    if source == "sentinel":
+        return {
+            "SystemAlertId": _uuid(rng),
+            "ProductName": "Azure Sentinel",
+            "ProviderName": "ASI Scheduled Alerts",
+            "AlertSeverity": severity.capitalize(),
+            "Techniques": [technique] if technique else [],
+            "TimeGenerated": ts,
+        }
+    if source == "defender":
+        return {
+            "alertId": f"da{rng.randint(10**17, 10**18 - 1)}_{rng.randint(10**8, 10**9 - 1)}",
+            "incidentId": rng.randint(1000, 99999),
+            "serviceSource": "microsoftDefenderForEndpoint",
+            "detectionSource": "microsoftDefenderForEndpoint",
+            "mitreTechniques": [technique] if technique else [],
+            "createdDateTime": ts,
+        }
+    if source == "entra":
+        return {
+            "id": _hex(rng, 64),
+            "correlationId": _uuid(rng),
+            "source": "IdentityProtection",
+            "riskLevel": severity if severity in ("low", "medium", "high") else "high",
+            "activityDateTime": ts,
+        }
+    if source == "aws_guardduty":
+        return {
+            "Id": _hex(rng, 32),
+            "SchemaVersion": "2.0",
+            "Severity": float(sev_num) + rng.randint(0, 9) / 10,
+            "Service": {
+                "ServiceName": "guardduty",
+                "Count": alert.get("raw_event", {}).get("event_count", 1),
+            },
+            "UpdatedAt": ts,
+        }
+    if source == "proofpoint":
+        return {
+            "GUID": "".join(
+                rng.choice(
+                    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+                )
+                for _ in range(30)
+            ),
+            "QID": f"{rng.randint(10**8, 10**9 - 1):x}{_hex(rng, 6)}",
+            "policyRoutes": ["default_inbound"],
+            "messageTime": ts,
+        }
+    if source == "zeek":
+        return {
+            "uid": "C"
+            + "".join(
+                rng.choice(
+                    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+                )
+                for _ in range(17)
+            ),
+            "ts": round(_epoch(ts, rng), 6),
+            "proto": "tcp",
+        }
+    if source == "dlp":
+        return {
+            "incident_id": rng.randint(100000, 999999),
+            "policy_name": alert.get("raw_event", {}).get("rule_name"),
+            "detected_at": ts,
+        }
+    if source == "kubernetes":
+        return {
+            "auditID": _uuid(rng),
+            "stage": "ResponseComplete",
+            "requestReceivedTimestamp": ts,
+        }
+    return {"event_id": _uuid(rng), "event_time": ts}
+
+
+def _epoch(ts: Any, rng: Any) -> float:
+    try:
+        base = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        base = datetime.now(timezone.utc)
+    return base.timestamp() + rng.random()  # sub-second part, as zeek logs it
+
+
+def build_canary_finding(
+    record: Dict[str, Any],
+    now: datetime,
+    *,
+    pool: Optional[List[ipaddress.IPv4Network]] = None,
+    domain_suffix: Optional[str] = None,
+    rng: Any = None,
+) -> Dict[str, Any]:
     """The alert as a fresh, ordinary-looking finding.
 
     Same source, same shape. New ``finding_id`` and ``external_id`` in the
     corpus' own ``<prefix>-<20 hex>`` form (so a replay never collides with an
-    earlier one or with the dedup key), the current time, and no
-    ``raw_event.synthetic`` flag. Nothing on it names it a canary.
+    earlier one or with the dedup key), the current time, no
+    ``raw_event.synthetic`` flag, addresses / hashes (and, when configured,
+    reserved domains) rewritten consistently everywhere they appear, and the
+    vendor's per-alert identifiers in ``raw_event``. Nothing on it names it a
+    canary.
     """
-    alert = copy.deepcopy(record["alert"])
-    source_id = str(alert.get("finding_id") or "")
+    rng = rng or secrets.SystemRandom()
+    rewriter = _Rewriter(
+        pool if pool is not None else address_pool(),
+        _domain_suffix() if domain_suffix is None else domain_suffix,
+        rng,
+    )
+    alert = rewriter.walk(copy.deepcopy(record["alert"]))
+    source_id = str(record["alert"].get("finding_id") or "")
     prefix = source_id.split("-", 1)[0] if "-" in source_id else ""
     ext = secrets.token_hex(10)
     alert["finding_id"] = f"{prefix}-{ext}" if prefix else ext
@@ -202,8 +475,12 @@ def build_canary_finding(record: Dict[str, Any], now: datetime) -> Dict[str, Any
     alert["timestamp"] = _iso_z(now)
     alert["status"] = "new"
     raw = alert.get("raw_event")
-    if isinstance(raw, dict):
-        raw.pop("synthetic", None)
+    if not isinstance(raw, dict):
+        raw = {}
+        alert["raw_event"] = raw
+    raw.pop("synthetic", None)
+    for key, value in _vendor_fields(alert, rng).items():
+        raw.setdefault(key, value)
     return alert
 
 
@@ -331,9 +608,10 @@ async def inject_canary(
                 _mark_error(finding["finding_id"], "hand-off queue full", session)
 
         await asyncio.to_thread(_fail)
-        logger.info("Hand-off full; canary not injected this sweep")
+        # Debug only: the daemon log is readable by analysts, and a line at the
+        # moment of injection (or of scoring, a fixed time later) would date it.
+        logger.debug("Hand-off full; canary not injected this sweep")
         return None
-    logger.info("Injected a canary alert")  # no id in the log: analysts read logs
     return finding["finding_id"]
 
 
@@ -536,7 +814,7 @@ def score_due_canaries(
             )
             scored += 1
     if scored:
-        logger.info("Scored %d canary alert(s)", scored)
+        logger.debug("Scored %d canary alert(s)", scored)
     return scored
 
 

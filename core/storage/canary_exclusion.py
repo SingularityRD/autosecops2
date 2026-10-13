@@ -22,14 +22,17 @@ rule lives in one place:
 The table is SQL-owned (no ORM model, so ``create_all`` never builds it). An
 install that has not applied the init file has no canaries, so every helper
 here treats a missing table as "nothing to exclude" instead of failing the
-caller's query. Storage tier: imports nothing from a capability domain.
+caller's query (absence is cached briefly, see ``ABSENT_TTL_SECONDS``).
+Storage tier: imports nothing from a capability domain.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import threading
-from typing import Any, Iterable, List, Optional, Set
+import time
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from sqlalchemy import (
     Column,
@@ -44,9 +47,11 @@ from sqlalchemy import (
     true,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from core.storage.models.base import case_findings
+from core.storage.models.case_entities import CaseEvidence
 from core.storage.unit_of_work import unit_of_work
 
 logger = logging.getLogger(__name__)
@@ -72,10 +77,14 @@ canary_injections = Table(
     Column("error", String),
 )
 
-# Engine URLs on which the table has been seen. Only presence is cached: a
-# table appears once (the init file runs) and is never dropped, while an absent
-# one may be created at any time, so absence is re-checked on every call.
+# Engine URL -> presence. A table that exists is cached for good: it appears
+# once (the init file runs) and is never dropped. Absence is cached for
+# ``ABSENT_TTL_SECONDS``: the init file may be applied to a running install,
+# and that is picked up within the TTL, while a metrics or export call no
+# longer pays a catalogue lookup per request on an install without canaries.
+ABSENT_TTL_SECONDS = 60.0
 _present_on: Set[str] = set()
+_absent_until: Dict[str, float] = {}
 _present_lock = threading.Lock()
 
 
@@ -86,19 +95,38 @@ def _bind_key(session: Session) -> str:
         return ""
 
 
+def _probe(session: Session) -> bool:
+    """Ask the catalogue. On its own pooled connection when the session is
+    bound to an engine, so the caller's transaction (and any statement count
+    taken on its connection) sees only the caller's own query."""
+    sql = text("SELECT to_regclass('canary_injections')")
+    try:
+        bind = session.get_bind()
+    except Exception:  # noqa: BLE001
+        bind = None
+    if isinstance(bind, Engine):
+        with bind.connect() as conn:
+            return conn.execute(sql).scalar() is not None
+    return session.execute(sql).scalar() is not None
+
+
 def canary_table_present(session: Session) -> bool:
     """Whether ``canary_injections`` exists in the session's database."""
     key = _bind_key(session)
+    now = time.monotonic()
     with _present_lock:
         if key and key in _present_on:
             return True
-    found = (
-        session.execute(text("SELECT to_regclass('canary_injections')")).scalar()
-        is not None
-    )
-    if found and key:
+        if key and _absent_until.get(key, 0.0) > now:
+            return False
+    found = _probe(session)
+    if key:
         with _present_lock:
-            _present_on.add(key)
+            if found:
+                _present_on.add(key)
+                _absent_until.pop(key, None)
+            else:
+                _absent_until[key] = now + ABSENT_TTL_SECONDS
     return found
 
 
@@ -106,6 +134,7 @@ def forget_table_presence() -> None:
     """Drop the presence cache (tests that create the table mid-process)."""
     with _present_lock:
         _present_on.clear()
+        _absent_until.clear()
 
 
 def _is_canary(column: Any):
@@ -188,6 +217,12 @@ def drop_canaries(
     return [item for item in items if _id(item) not in ids]
 
 
+_IPV4_IN_TEXT = re.compile(r"(?<!\d)(?<!\d\.)(?:\d{1,3}\.){3}\d{1,3}(?!\d|\.\d)")
+_HASH_IN_TEXT = re.compile(
+    r"(?<![0-9A-Za-z])(?:[0-9A-Fa-f]{64}|[0-9A-Fa-f]{40}|[0-9A-Fa-f]{32})(?![0-9A-Za-z])"
+)
+
+
 def _entity_values(value: Any, out: Set[str]) -> None:
     if isinstance(value, dict):
         for v in value.values():
@@ -199,17 +234,47 @@ def _entity_values(value: Any, out: Set[str]) -> None:
         out.add(value.strip().lower())
 
 
+def _text_indicators(value: Any, out: Set[str]) -> None:
+    """IPv4 addresses and MD5/SHA-1/SHA-256 hashes named anywhere in ``value``
+    (title, description, raw_event), not only in entity_context."""
+    if isinstance(value, dict):
+        for v in value.values():
+            _text_indicators(v, out)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _text_indicators(v, out)
+    elif isinstance(value, str):
+        out.update(m.lower() for m in _IPV4_IN_TEXT.findall(value))
+        out.update(m.lower() for m in _HASH_IN_TEXT.findall(value))
+
+
+def canary_indicator_values(alert: Optional[dict]) -> Set[str]:
+    """Lower-cased indicator values a canary's alert carries: every
+    entity_context value plus IPs and hashes in its free text."""
+    alert = alert or {}
+    values: Set[str] = set()
+    _entity_values(alert.get("entity_context") or {}, values)
+    _text_indicators(
+        {k: v for k, v in alert.items() if k not in ("finding_id", "external_id")},
+        values,
+    )
+    return values
+
+
 def case_canary_profile(case_id: str, session: Optional[Session] = None) -> dict:
     """What a case's exports must leave out.
 
     ``only_canaries``: every finding the case links is a canary's (and it links
-    at least one). ``entity_values``: lower-cased entity values (IPs, hosts,
-    users, hashes, domains) of the canaries the case links, for dropping the
-    IOCs that came from them out of a mixed case's export.
+    at least one). ``entity_values``: lower-cased indicator values (IPs, hosts,
+    users, hashes, domains; from entity_context and from IPs/hashes named in
+    the alert's text) of the canaries the case links. ``sandbox_task_ids``:
+    sandbox reports attached to the case for one of those canaries' files;
+    the IOCs they produced came from the canary too.
     """
+    empty = {"only_canaries": False, "entity_values": set(), "sandbox_task_ids": set()}
     with unit_of_work(session) as s:
         if not canary_table_present(s):
-            return {"only_canaries": False, "entity_values": set()}
+            return empty
         linked = [
             r[0]
             for r in s.execute(
@@ -219,18 +284,48 @@ def case_canary_profile(case_id: str, session: Optional[Session] = None) -> dict
             )
         ]
         if not linked:
-            return {"only_canaries": False, "entity_values": set()}
+            return empty
         rows = s.execute(
             select(canary_injections.c.finding_id, canary_injections.c.payload).where(
                 canary_injections.c.finding_id.in_(linked)
             )
         ).all()
-    values: Set[str] = set()
-    for _fid, payload in rows:
-        alert = (payload or {}).get("alert") or {}
-        _entity_values(alert.get("entity_context") or {}, values)
+        values: Set[str] = set()
+        for _fid, payload in rows:
+            values |= canary_indicator_values((payload or {}).get("alert"))
+        tasks: Set[str] = set()
+        if values:
+            for md5, sha256, results in s.execute(
+                select(
+                    CaseEvidence.file_hash_md5,
+                    CaseEvidence.file_hash_sha256,
+                    CaseEvidence.analysis_results,
+                ).where(
+                    CaseEvidence.case_id == case_id,
+                    CaseEvidence.evidence_type == "sandbox_report",
+                )
+            ):
+                hashes = {(h or "").strip().lower() for h in (md5, sha256)}
+                task = (results or {}).get("task_id")
+                if task and hashes & values:
+                    tasks.add(str(task))
     canary_ids = {r[0] for r in rows}
     return {
         "only_canaries": bool(canary_ids) and set(linked) <= canary_ids,
         "entity_values": values,
+        "sandbox_task_ids": tasks,
     }
+
+
+def is_canary_ioc(ioc: Any, profile: dict) -> bool:
+    """Whether a case IOC came from one of the case's canaries (``profile``
+    from ``case_canary_profile``): its value is a canary's indicator, or a
+    sandbox run that produced it detonated a canary's file."""
+    value = (getattr(ioc, "value", None) or "").strip().lower()
+    if value and value in profile.get("entity_values", ()):
+        return True
+    tasks = profile.get("sandbox_task_ids") or set()
+    if not tasks:
+        return False
+    runs = (getattr(ioc, "enrichment_data", None) or {}).get("sandbox_runs") or []
+    return any(str((run or {}).get("task_id")) in tasks for run in runs)

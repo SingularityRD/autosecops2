@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
-from core.storage.canary_exclusion import case_canary_profile
+from core.storage.canary_exclusion import case_canary_profile, is_canary_ioc
 from core.storage.models import CaseIOC
 from core.storage.unit_of_work import unit_of_work
 from core.time import utcnow
@@ -173,17 +173,18 @@ class CaseIOCService:
         """The case's IOCs minus what hidden canaries (W1.5) contributed.
 
         A case of canaries only exports nothing. A mixed case drops the IOCs
-        whose value is one of its canaries' entity values, so no replayed test
-        indicator leaves the install as CSV, STIX or JSON.
+        whose value is one of its canaries' indicators (entity values, and IPs
+        or hashes named in the alert's text) or that a sandbox run on one of
+        its canaries' files produced, so no replayed test indicator leaves the
+        install as CSV, STIX or JSON.
         """
         iocs = self.get_case_iocs(case_id, session=session)
         profile = case_canary_profile(case_id, session=session)
         if profile["only_canaries"]:
             return []
-        values = profile["entity_values"]
-        if not values:
+        if not profile["entity_values"] and not profile["sandbox_task_ids"]:
             return iocs
-        return [ioc for ioc in iocs if (ioc.value or "").strip().lower() not in values]
+        return [ioc for ioc in iocs if not is_canary_ioc(ioc, profile)]
 
     def export_iocs_json(self, case_id: str, session: Optional[Session] = None) -> str:
         """
@@ -238,10 +239,10 @@ class CaseIOCService:
             lines = ["type,value,threat_level,confidence,source,first_seen,last_seen"]
             for ioc in iocs:
                 lines.append(
-                    f'{ioc.ioc_type},{ioc.value},{ioc.threat_level or ""},'
-                    f'{ioc.confidence or ""},{ioc.source or ""},'
-                    f'{ioc.first_seen.isoformat() if ioc.first_seen else ""},'
-                    f'{ioc.last_seen.isoformat() if ioc.last_seen else ""}'
+                    f"{ioc.ioc_type},{ioc.value},{ioc.threat_level or ''},"
+                    f"{ioc.confidence or ''},{ioc.source or ''},"
+                    f"{ioc.first_seen.isoformat() if ioc.first_seen else ''},"
+                    f"{ioc.last_seen.isoformat() if ioc.last_seen else ''}"
                 )
 
             return "\n".join(lines)
