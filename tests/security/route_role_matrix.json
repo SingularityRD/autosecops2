@@ -608,6 +608,14 @@
    "role-manager": "allow",
    "role-admin": "allow"
   },
+  "GET /api/cases/{case_id}/evidence-pack": {
+   "gate": "login + perm:cases.read",
+   "role-viewer": "allow",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
   "GET /api/cases/{case_id}/iocs": {
    "gate": "login",
    "role-viewer": "allow",
@@ -1059,6 +1067,30 @@
   },
   "GET /api/kafka/status": {
    "gate": "login",
+   "role-viewer": "allow",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "GET /api/lessons": {
+   "gate": "login + perm:findings.read",
+   "role-viewer": "allow",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "GET /api/lessons/{lesson_id}": {
+   "gate": "login + perm:findings.read",
+   "role-viewer": "allow",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "GET /api/lessons/{lesson_id}/events": {
+   "gate": "login + perm:findings.read",
    "role-viewer": "allow",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
@@ -2635,6 +2667,38 @@
    "role-senior-analyst": "deny",
    "role-manager": "deny",
    "role-admin": "deny"
+  },
+  "POST /api/lessons": {
+   "gate": "login + perm:findings.write",
+   "role-viewer": "deny",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "POST /api/lessons/{lesson_id}/promote": {
+   "gate": "login + perm:ai_decisions.approve",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "POST /api/lessons/{lesson_id}/replay": {
+   "gate": "login + perm:findings.write",
+   "role-viewer": "deny",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "POST /api/lessons/{lesson_id}/rollback": {
+   "gate": "login + perm:findings.write",
+   "role-viewer": "deny",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
   },
   "POST /api/llm/providers": {
    "gate": "login + inline:settings.write",
