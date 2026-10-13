@@ -238,7 +238,9 @@ def clock_event_hash(event: Mapping[str, Any], case_id: str, prev_hash: str) -> 
     return sha256_hex((prev_hash + body).encode("utf-8"))
 
 
-def check_clock_chain(case_id: str, events: Sequence[Mapping[str, Any]]) -> Optional[str]:
+def check_clock_chain(
+    case_id: str, events: Sequence[Mapping[str, Any]]
+) -> Optional[str]:
     prev = ""
     for expected, event in enumerate(events, start=1):
         seq = event.get("seq")
@@ -293,7 +295,9 @@ def read_pack(path: str) -> Dict[str, bytes]:
                 if info.is_dir():
                     continue
                 if info.filename in files:
-                    raise PackUnreadable(f"{info.filename} appears twice in the archive")
+                    raise PackUnreadable(
+                        f"{info.filename} appears twice in the archive"
+                    )
                 files[info.filename] = archive.read(info)
     except (OSError, zipfile.BadZipFile) as exc:
         raise PackUnreadable(f"cannot read {path}: {exc}") from None
@@ -363,7 +367,9 @@ def verify_files(
             )
         )
     if signer.get("key_id") and signer.get("key_id") != key_id(public):
-        checks.append(Check("signature", False, "manifest key_id does not match its key"))
+        checks.append(
+            Check("signature", False, "manifest key_id does not match its key")
+        )
 
     # files
     listed = manifest.get("files")
@@ -374,7 +380,12 @@ def verify_files(
     names = set()
     for entry in listed:
         name = entry.get("path") if isinstance(entry, dict) else None
-        if not isinstance(name, str) or not name or name.startswith("/") or ".." in name.split("/"):
+        if (
+            not isinstance(name, str)
+            or not name
+            or name.startswith("/")
+            or ".." in name.split("/")
+        ):
             problems.append(f"bad path {name!r}")
             continue
         if name in names or name in (MANIFEST, SIGNATURE):
@@ -436,7 +447,9 @@ def _content_checks(
             chain = _json_file(files, "data/audit_chain.json")
             rows = chain.get("rows") or []
             why = check_audit_rows(rows)
-            out.append(Check("audit_chain", why is None, why or f"{len(rows)} row(s) match"))
+            out.append(
+                Check("audit_chain", why is None, why or f"{len(rows)} row(s) match")
+            )
 
         index = _json_file(files, "data/citable_index.json")
         digest = citable_digest(index.get("items", []))
@@ -445,11 +458,17 @@ def _content_checks(
             Check(
                 "citable_index",
                 ok,
-                f"digest {digest}" if ok else "items do not match the digest drafts cite",
+                (
+                    f"digest {digest}"
+                    if ok
+                    else "items do not match the digest drafts cite"
+                ),
             )
         )
     except (KeyError, ValueError, AttributeError, TypeError) as exc:
-        out.append(Check("contents", False, f"unreadable content: {type(exc).__name__}: {exc}"))
+        out.append(
+            Check("contents", False, f"unreadable content: {type(exc).__name__}: {exc}")
+        )
     return out
 
 
@@ -462,7 +481,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         prog="autosecops verify-bundle",
         description="Verify an AutoSecOps evidence pack offline.",
     )
-    parser.add_argument("pack", help="the pack (.zip) or the directory it was extracted to")
+    parser.add_argument(
+        "pack", help="the pack (.zip) or the directory it was extracted to"
+    )
     parser.add_argument(
         "--public-key",
         help="the signer's Ed25519 public key you trust (hex, base64, PEM, or @file)",
@@ -496,7 +517,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 {
                     "ok": ok,
                     "checks": [
-                        {"name": c.name, "ok": c.ok, "detail": c.detail, "warning": c.warning}
+                        {
+                            "name": c.name,
+                            "ok": c.ok,
+                            "detail": c.detail,
+                            "warning": c.warning,
+                        }
                         for c in checks
                     ],
                 },

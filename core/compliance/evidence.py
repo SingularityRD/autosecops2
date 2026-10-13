@@ -257,9 +257,7 @@ def row_dict(obj: Any) -> Dict[str, Any]:
     if isinstance(obj, Mapping):
         return jsonable(dict(obj))
     mapper = sa_inspect(obj).mapper
-    return {
-        attr.key: jsonable(getattr(obj, attr.key)) for attr in mapper.column_attrs
-    }
+    return {attr.key: jsonable(getattr(obj, attr.key)) for attr in mapper.column_attrs}
 
 
 def _case_row(session: Session, case_id: str) -> Any:

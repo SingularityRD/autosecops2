@@ -232,7 +232,9 @@ def build_bundle(
                 "canary_exclusion": record.canary_exclusion,
             }
         ),
-        "data/case_evidence.json": _dump({"evidence": [row_dict(e) for e in record.evidence]}),
+        "data/case_evidence.json": _dump(
+            {"evidence": [row_dict(e) for e in record.evidence]}
+        ),
         "data/case_audit.json": _dump({"audit": [row_dict(a) for a in record.audits]}),
         "data/actions.json": _dump({"actions": record.actions}),
         "data/ledger.json": _dump({"runs": record.ledger}),
@@ -243,7 +245,9 @@ def build_bundle(
                 "events": [_clock_dict(e, case_id) for e in record.clock_events],
             }
         ),
-        "data/citable_index.json": _dump({"digest": citable.digest, "items": citable_items}),
+        "data/citable_index.json": _dump(
+            {"digest": citable.digest, "items": citable_items}
+        ),
     }
     if record.audit_chain is not None:
         data["data/audit_chain.json"] = _dump({"rows": record.audit_chain})
@@ -349,7 +353,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"public key (hex):    {public.hex()}")
         print(f"public key (base64): {base64.b64encode(public).decode('ascii')}")
         print(f"key id:              {verify_bundle.key_id(public)}")
-        print("Store the seed as a secret; give the public key to whoever verifies packs.")
+        print(
+            "Store the seed as a secret; give the public key to whoever verifies packs."
+        )
     return 0
 
 

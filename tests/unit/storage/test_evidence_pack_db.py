@@ -64,13 +64,20 @@ def session():
 
 
 def _seed(s: Session) -> None:
-    case = Case(case_id=CASE, title="Beacon", status="open", priority="high", timeline=[])
+    case = Case(
+        case_id=CASE, title="Beacon", status="open", priority="high", timeline=[]
+    )
     finding = Finding(
         finding_id="f-w37",
         title="C2 beacon",
         data_source="edr",
         severity="high",
-        ai_enrichment={"ai_triage": {"timestamp": "2026-03-01T08:00:00", "result": {"confidence": 0.9}}},
+        ai_enrichment={
+            "ai_triage": {
+                "timestamp": "2026-03-01T08:00:00",
+                "result": {"confidence": 0.9},
+            }
+        },
     )
     case.findings.append(finding)
     s.add(case)
@@ -86,8 +93,13 @@ def _seed(s: Session) -> None:
     )
     s.add(
         CaseAuditLog(
-            entity_type="case", entity_id=CASE, action="update", field_name="status",
-            old_value="new", new_value="open", changed_by="ayse",
+            entity_type="case",
+            entity_id=CASE,
+            action="update",
+            field_name="status",
+            old_value="new",
+            new_value="open",
+            changed_by="ayse",
         )
     )
     s.add(
@@ -194,7 +206,9 @@ def test_the_case_record_is_collected_and_verifies(session):
 def test_drafts_and_the_pack_cite_the_same_digest(session):
     record, bundle = _bundle(session)
     events = SqlClockStore(session).events(CASE)
-    assert read_citable(session, CASE, events).digest == bundle.manifest["citable_digest"]
+    assert (
+        read_citable(session, CASE, events).digest == bundle.manifest["citable_digest"]
+    )
     assert read_citable(session, "no-such-case") is None
     assert collect_case_record(session, "no-such-case") is None
 
@@ -205,7 +219,10 @@ def test_a_ledger_row_altered_in_the_database_is_caught(session):
             "UPDATE agent_events SET payload = CAST(:p AS jsonb) "
             "WHERE run_id = CAST(:r AS uuid) AND seq = 1"
         ),
-        {"p": json.dumps({"kind": "finding", "answer": "benign"}), "r": run_id_for(INV)},
+        {
+            "p": json.dumps({"kind": "finding", "answer": "benign"}),
+            "r": run_id_for(INV),
+        },
     )
     _, bundle = _bundle(session)
     files = _files(bundle.data)

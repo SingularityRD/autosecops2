@@ -25,7 +25,12 @@ from core.compliance.evidence_bundle import (
     parse_private_key,
     public_bytes,
 )
-from tests.unit.compliance.test_verify_bundle import CASE, SEED, make_bundle, make_record
+from tests.unit.compliance.test_verify_bundle import (
+    CASE,
+    SEED,
+    make_bundle,
+    make_record,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -90,7 +95,9 @@ def test_pack_lists_every_file_and_signs_the_manifest():
         pub, files["manifest.json"], base64.b64decode(files["manifest.sig"])
     )
     assert bundle.key_id == verify_bundle.key_id(pub)
-    assert bundle.filename.startswith(f"evidence-pack-{CASE}-") and bundle.filename.endswith(".zip")
+    assert bundle.filename.startswith(
+        f"evidence-pack-{CASE}-"
+    ) and bundle.filename.endswith(".zip")
     assert all(c.ok for c in verify_bundle.verify_files(files, pub))
 
 
@@ -112,7 +119,10 @@ def test_pack_carries_the_case_findings_actions_and_provenance():
     assert [e["seq"] for e in run["events"]] == [0, 1, 2]
     clocks = _json(files, "data/regulatory_clock_events.json")["events"]
     assert [c["instant"] for c in clocks] == ["aware_at", "notified_at"]
-    assert _json(files, "data/case_evidence.json")["evidence"][0]["file_hash_sha256"] == "ab" * 32
+    assert (
+        _json(files, "data/case_evidence.json")["evidence"][0]["file_hash_sha256"]
+        == "ab" * 32
+    )
     assert _json(files, "data/case_audit.json")["audit"][0]["audit_id"] == 11
 
 
@@ -123,7 +133,12 @@ def test_manifest_digest_is_what_a_draft_cites():
     index = _json(files, "data/citable_index.json")
     assert manifest["citable_digest"] == index["digest"] == record.citable().digest
     draft = regulatory_drafts.generate_draft(
-        record.citable(), "nis2", "early_warning", [], record.clock_events, "ayse",
+        record.citable(),
+        "nis2",
+        "early_warning",
+        [],
+        record.clock_events,
+        "ayse",
         verify_bundle_now(),
     )
     assert draft["pack_digest"] == manifest["citable_digest"]
@@ -138,7 +153,9 @@ def verify_bundle_now():
 
 def test_a_broken_ledger_at_export_is_recorded_and_rejected():
     record = make_record()
-    record.ledger[0]["events"][1]["payload_text"] = '{"kind": "finding", "answer": "benign"}'
+    record.ledger[0]["events"][1][
+        "payload_text"
+    ] = '{"kind": "finding", "answer": "benign"}'
     files = _files(make_bundle(record).data)
     verification = _json(files, "data/verification.json")
     assert verification["ledger"][0]["ok"] is False

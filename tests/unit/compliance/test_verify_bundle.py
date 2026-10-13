@@ -151,7 +151,12 @@ def make_record(audit_chain=None, canary_exclusion="unavailable") -> CaseRecord:
                 ],
             )
         ],
-        ai={"finding_verdicts": [], "decisions": [], "investigations": [], "workflow_runs": []},
+        ai={
+            "finding_verdicts": [],
+            "decisions": [],
+            "investigations": [],
+            "workflow_runs": [],
+        },
         clock_events=_clock_events(),
         clock_status="read",
         audit_chain=audit_chain,
@@ -252,7 +257,9 @@ def _edit_json(files, name, change):
 
 TAMPERS = {
     "data file edited": lambda f: _edit_json(
-        f, "data/actions.json", lambda b: b["actions"][0].update(after_state={"isolated": False})
+        f,
+        "data/actions.json",
+        lambda b: b["actions"][0].update(after_state={"isolated": False}),
     ),
     "file added": lambda f: f.__setitem__("data/extra.json", b"{}"),
     "file removed": lambda f: f.pop("data/case_audit.json"),
@@ -335,7 +342,9 @@ def test_audit_chain_rows_are_checked_when_present(tmp_path):
     good = make_bundle(make_record(audit_chain=[row]))
     assert _run(tmp_path, good.data, "--public-key", PUB_HEX).returncode == 0
     files = _files(good.data)
-    _edit_json(files, "data/audit_chain.json", lambda b: b["rows"][0].update(canonical="{}"))
+    _edit_json(
+        files, "data/audit_chain.json", lambda b: b["rows"][0].update(canonical="{}")
+    )
     key = Ed25519PrivateKey.from_private_bytes(SEED)
     result = _run(tmp_path, _zip(_resign(files, key)), "--public-key", PUB_HEX)
     assert result.returncode == 1 and "FAIL  audit_chain" in result.stdout
@@ -361,7 +370,10 @@ def test_bad_public_key_is_usage_error(tmp_path):
 def test_json_output(tmp_path):
     result = _run(tmp_path, make_bundle().data, "--json", "--public-key", PUB_HEX)
     body = json.loads(result.stdout)
-    assert body["ok"] is True and {c["name"] for c in body["checks"]} >= {"signature", "ledger"}
+    assert body["ok"] is True and {c["name"] for c in body["checks"]} >= {
+        "signature",
+        "ledger",
+    }
 
 
 def test_pure_python_ed25519_agrees_with_cryptography():
