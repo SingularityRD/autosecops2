@@ -45,6 +45,7 @@ from core.autonomy.tiers import (
     DEFAULT_TIER,
     FN_BOUND_MIN_REVIEWS,
     FN_BOUND_TARGET,
+    NEVER_AUTONOMOUS_CATEGORIES,
     TIER_CATEGORIES,
     TIERS,
     WATCH,
@@ -117,10 +118,29 @@ class _Snapshot:
 
 
 def _valid_url(value: Optional[str]) -> bool:
-    if not value or not value.strip():
+    """An absolute https link with a host: no whitespace, controls or userinfo.
+
+    The link is shown to auditors as the evidence a raise rests on, so it has
+    to be one they can open as written: ``https://host[:port]/...``.
+    """
+    if not isinstance(value, str):
         return False
-    parsed = urlparse(value.strip())
-    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    text = value.strip()
+    if not text or len(text) > 2048:
+        return False
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        return False
+    try:
+        parsed = urlparse(text)
+        _ = parsed.port  # raises ValueError on a bad port
+    except ValueError:
+        return False
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        return False
+    if "@" in parsed.netloc or "\\" in text:
+        return False
+    host = parsed.hostname
+    return not host.startswith(".") and ".." not in host
 
 
 def _confidence_ok(confidence: Any, floor: Optional[float]) -> bool:
@@ -191,6 +211,8 @@ class AutonomyController:
             reasons.append(f"{action_type} needs two approvers")
         if entry.category == ANY_CATEGORY:
             reasons.append("autonomy is granted per category, not for '*'")
+        if entry.category in NEVER_AUTONOMOUS_CATEGORIES:
+            reasons.append(f"the {entry.category} category is never autonomous")
         ttl = entry.max_ttl_seconds
         if not ttl or ttl <= 0 or ttl > AUTONOMOUS_MAX_TTL_SECONDS:
             reasons.append("no valid ttl on the autonomy tier")
@@ -341,6 +363,12 @@ class AutonomyController:
                     holds=False,
                     reason="autonomy is granted per category, not for '*'",
                 )
+            elif entry.category in NEVER_AUTONOMOUS_CATEGORIES:
+                status = BoundStatus(
+                    entry.category,
+                    holds=False,
+                    reason=f"the {entry.category} category is never autonomous",
+                )
             else:
                 status = bounds.get(entry.category) or BoundStatus(
                     entry.category, holds=False, reason="no QA data for category"
@@ -382,8 +410,8 @@ class AutonomyController:
     ) -> TierEntry:
         """Store a tier. Raises ``PromotionRefused`` when the change is not allowed.
 
-        Raising a tier takes a person (``actor_is_human``) and an http(s)
-        evidence link. ``autonomous`` additionally takes an eligible class, a
+        Raising a tier takes a person (``actor_is_human``) and an absolute
+        https evidence link with a host. ``autonomous`` additionally takes an eligible class, a
         named category, a ttl in ``(0, AUTONOMOUS_MAX_TTL_SECONDS]``, a
         confidence floor in ``[0, 1]`` and a bound that holds now.
         """
@@ -414,7 +442,9 @@ class AutonomyController:
                     "only a person may raise an autonomy tier", code="actor"
                 )
             if not _valid_url(evidence_url):
-                raise PromotionRefused("raising a tier needs an http(s) evidence link")
+                raise PromotionRefused(
+                    "raising a tier needs an absolute https evidence link"
+                )
 
         if tier == AUTONOMOUS:
             self._check_autonomous(
@@ -463,6 +493,11 @@ class AutonomyController:
     ) -> None:
         if category == ANY_CATEGORY:
             raise PromotionRefused("autonomy is granted per category, not for '*'")
+        if category in NEVER_AUTONOMOUS_CATEGORIES:
+            raise PromotionRefused(
+                f"the {category} category holds unknown and unmapped alerts; "
+                "it can never be autonomous"
+            )
         if action_type not in AUTONOMOUS_ELIGIBLE:
             raise PromotionRefused(
                 f"{action_type} is irreversible or not undoable by ttl; "
@@ -514,7 +549,9 @@ class AutonomyController:
                 row["tier"] = (stored or effective).tier
                 row["explicit"] = stored is not None
                 row["eligible"] = (
-                    action_type in AUTONOMOUS_ELIGIBLE and category != ANY_CATEGORY
+                    action_type in AUTONOMOUS_ELIGIBLE
+                    and category != ANY_CATEGORY
+                    and category not in NEVER_AUTONOMOUS_CATEGORIES
                 )
                 entries.append(row)
         return {

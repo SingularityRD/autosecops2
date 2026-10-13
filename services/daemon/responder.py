@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Any, Dict, Optional, Tuple
 
-from core.autonomy.tiers import category_of
+from core.autonomy.categories import category_of
 from core.response.approval_service import ApprovalService
 from core.response.autonomous_response_service import AutonomousResponseService
 from core.response.config import response_action_decision

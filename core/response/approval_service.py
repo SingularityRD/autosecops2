@@ -24,7 +24,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from core.autonomy import AutonomyController, AutonomyDecision, AutonomyWatchOnly
-from core.autonomy.tiers import WATCH
+from core.autonomy.tiers import APPROVE, WATCH
 from core.response.config import (
     ResponseConfig,
     approval_requirement,
@@ -432,7 +432,14 @@ class ApprovalService:
                 # Released by the tier; the confidence rule stays the one
                 # named, and the tier is on the row's autonomy record.
                 _cap_ttl(parameters, decision.ttl_seconds)
-            parameters["autonomy"] = decision.record()
+            record = decision.record()
+            if decision.autonomous and requires_approval:
+                # The tier would release it, but another rule (force-manual,
+                # irreversible, the confidence band, four-eyes, human_only)
+                # holds it for a person: the record says what was applied.
+                record["effective"] = APPROVE
+                record["reasons"] = [*record["reasons"], f"held: {rule}"]
+            parameters["autonomy"] = record
         if annotate_rule:
             reason = f"{reason}; {rule}" if reason else rule
 
@@ -749,6 +756,19 @@ class ApprovalService:
                 row.status = ActionStatus.PENDING.value
                 row.requires_approval = True
                 row.approved_at = None
+                # The row now waits for a person: its autonomy record says so,
+                # and the dispatcher no longer reads it as tier-released.
+                params = dict(row.parameters or {})
+                record = params.get("autonomy")
+                if isinstance(record, dict):
+                    record = dict(record)
+                    record["effective"] = APPROVE
+                    record["reasons"] = [
+                        *(record.get("reasons") or []),
+                        f"held at dispatch: {rule}",
+                    ]
+                    params["autonomy"] = record
+                    row.parameters = params
                 row.reason = f"{row.reason}; {rule}" if row.reason else rule
                 session.flush()
                 logger.warning("Action %s held for a person: %s", action_id, rule)

@@ -23,7 +23,7 @@ from core.response.approval_service import (
     PendingAction,
     Reversibility,
 )
-from core.response.config import ResponseConfig
+from core.response.config import ResponseConfig, decision_rule
 from core.response.executors.base import (
     ExecResult,
     ExecutorRegistry,
@@ -265,14 +265,54 @@ class AutonomousResponseService:
         self.approval_service.mark_failed(action.action_id, error)
         return {"success": False, "error": error, "status": "failed"}
 
-    def _autonomy_recheck(self, action: PendingAction) -> Optional[Dict[str, Any]]:
+    def _forced_manual(self) -> bool:
+        """The emergency stop: force-manual approval, this process's or stored."""
+        svc = self.approval_service
+        if getattr(svc, "force_manual_approval", False):
+            return True
+        try:
+            return bool(svc._stored_force_manual_approval())
+        except Exception:  # noqa: BLE001
+            # Cannot tell whether the stop is on: treat it as on.
+            return True
+
+    def _hold(
+        self, action: PendingAction, rule: str, reasons: List[str]
+    ) -> Dict[str, Any]:
+        self.approval_service.hold_for_person(action.action_id, rule)
+        logger.warning(
+            "Action %s held for a person at dispatch: %s (%s)",
+            action.action_id,
+            rule,
+            "; ".join(reasons),
+        )
+        return {
+            "success": False,
+            "status": ActionStatus.PENDING.value,
+            "error": f"autonomy_held: {rule}",
+            "reasons": list(reasons),
+        }
+
+    def _autonomy_recheck(
+        self, action: PendingAction
+    ) -> tuple[Optional[Dict[str, Any]], Optional[int]]:
         """Hold a row released with no person's name if autonomy no longer holds.
 
         The tier is decided again at dispatch, with the registry's
-        reversibility rather than the row's: a demotion, a broken bound or an
+        reversibility rather than the row's: force-manual approval (the
+        emergency stop, checked first), a demotion, a broken bound or an
         executor that cannot undo the type puts the row back in the approval
-        queue. None: the row may proceed (to the policy, which always runs).
+        queue. Returns ``(held, ttl_cap)``: ``held`` is the result to return
+        when the row is held, else None and the row may proceed (to the
+        policy, which always runs); ``ttl_cap`` is the current tier's
+        ``max_ttl_seconds``, which the dispatcher holds the action's ttl to.
         """
+        if self._forced_manual():
+            rule = decision_rule("approval.force_manual", True)
+            return (
+                self._hold(action, rule, ["force-manual approval is on"]),
+                None,
+            )
         record = (action.parameters or {}).get("autonomy") or {}
         reversibility = (
             self.executors.reversibility_of(action.action_type)
@@ -285,22 +325,11 @@ class AutonomousResponseService:
             reversibility,
             action.confidence,
         )
-        if decision is None or decision.autonomous:
-            return None
-        rule = decision.rule
-        self.approval_service.hold_for_person(action.action_id, rule)
-        logger.warning(
-            "Action %s held for a person at dispatch: %s (%s)",
-            action.action_id,
-            rule,
-            "; ".join(decision.reasons),
-        )
-        return {
-            "success": False,
-            "status": ActionStatus.PENDING.value,
-            "error": f"autonomy_held: {rule}",
-            "reasons": list(decision.reasons),
-        }
+        if decision is None:
+            return None, None
+        if decision.autonomous:
+            return None, decision.ttl_seconds
+        return self._hold(action, decision.rule, list(decision.reasons)), None
 
     def _dispatch(self, action: PendingAction) -> Optional[Dict[str, Any]]:
         """Run one approved row through the policy and its executor.
@@ -321,7 +350,7 @@ class AutonomousResponseService:
             if action.action_type != ActionType.ISOLATE_HOST.value:
                 return None
             if not action.approved_by and not action.reverse_of:
-                held = self._autonomy_recheck(action)
+                held, _cap = self._autonomy_recheck(action)
                 if held is not None:
                     return held
             if not self.approval_service.claim_execution(action.action_id):
@@ -370,9 +399,11 @@ class AutonomousResponseService:
         # decided again, after the policy allowed the action and before the
         # executor sees it.
         if not action.approved_by and not action.reverse_of:
-            held = self._autonomy_recheck(action)
+            held, ttl_cap = self._autonomy_recheck(action)
             if held is not None:
                 return held
+            if ttl_cap:
+                typed = self._cap_ttl(typed, executor, ttl_cap)
 
         # Everything recorded about the run is computed before it runs: a
         # failure here must stop the action, not strand an executed change on
@@ -425,6 +456,20 @@ class AutonomousResponseService:
         verify_status = self._verify(executor, typed, outcome)
         self.approval_service.record_verification(action.action_id, verify_status)
         return {**result, "verify_status": verify_status}
+
+    @staticmethod
+    def _cap_ttl(typed: TypedAction, executor: Any, cap_seconds: int) -> TypedAction:
+        """Hold a tier-released action's ttl to the tier's current maximum.
+
+        The row's ttl was capped when it was created; the tier may since have
+        been lowered, so the dispatcher caps again. No ttl on the action means
+        the executor's default, which is capped the same way.
+        """
+        cap = timedelta(seconds=int(cap_seconds))
+        current = typed.ttl if typed.ttl is not None else executor.default_ttl
+        if current is not None and timedelta(0) < current <= cap:
+            return typed
+        return typed.model_copy(update={"ttl": cap})
 
     def _takes_ttl(self, action_type: str) -> bool:
         try:

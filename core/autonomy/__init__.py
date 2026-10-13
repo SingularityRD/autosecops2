@@ -14,6 +14,7 @@ response policy (``core.response.policy``) still runs on every action before
 an executor sees it, whatever the tier. See ``controller`` for the rules.
 """
 
+from core.autonomy.categories import category_of, resolve_category
 from core.autonomy.controller import (
     AutonomyController,
     AutonomyDecision,
@@ -26,7 +27,6 @@ from core.autonomy.tiers import (
     DEFAULT_TIER,
     TIERS,
     TierEntry,
-    category_of,
 )
 
 __all__ = [
@@ -40,4 +40,5 @@ __all__ = [
     "PromotionRefused",
     "TierEntry",
     "category_of",
+    "resolve_category",
 ]

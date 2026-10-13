@@ -7,7 +7,7 @@ for ``autonomy_tiers`` and writes through ``config_audit_log``.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -290,6 +290,126 @@ class TestDispatch:
         failed = approvals.get_action(row.action_id)
         assert failed.status == ActionStatus.FAILED.value
         assert "policy_refused" in failed.execution_result["error"]
+
+
+def _span(action) -> timedelta:
+    return datetime.fromisoformat(action.expires_at) - datetime.fromisoformat(
+        action.executed_at
+    )
+
+
+class TestRound5Fixes:
+    """Round 5 verifier findings, one regression test (or more) each."""
+
+    # (2) The emergency stop is checked at dispatch.
+    def test_force_manual_at_dispatch_holds_a_released_autonomous_row(self):
+        block = _Block()
+        service, approvals, _ = _setup(
+            [_tier("phishing", "waf_block", AUTONOMOUS)], executors=[block]
+        )
+        row = _create(approvals, target="198.51.100.111")
+        assert row.status == ActionStatus.APPROVED.value
+        approvals.set_force_manual_approval(True)
+        service.execute_approved_actions()
+        assert [t for t, _ in block.calls if t == "198.51.100.111"] == []
+        held = approvals.get_action(row.action_id)
+        assert held.status == ActionStatus.PENDING.value
+        assert split_decision_rule(held.reason)[1] == "approval.force_manual=True"
+        assert held.parameters["autonomy"]["effective"] == APPROVE
+
+    def test_the_stored_stop_and_an_unreadable_one_also_hold(self, monkeypatch):
+        for stored in (lambda: True, lambda: (_ for _ in ()).throw(RuntimeError())):
+            block = _Block()
+            service, approvals, _ = _setup(
+                [_tier("phishing", "waf_block", AUTONOMOUS)], executors=[block]
+            )
+            row = _create(approvals, target="198.51.100.112")
+            monkeypatch.setattr(approvals, "_stored_force_manual_approval", stored)
+            service._dispatch(approvals.get_action(row.action_id))
+            assert block.calls == []
+            assert (
+                approvals.get_action(row.action_id).status == ActionStatus.PENDING.value
+            )
+
+    def test_force_manual_holds_an_isolation_row_without_an_executor(self):
+        service, approvals, _ = _setup([_tier("malware", "isolate_host", AUTONOMOUS)])
+        row = _create(
+            approvals, ActionType.ISOLATE_HOST, "10.0.7.7", category="malware"
+        )
+        assert row.status == ActionStatus.APPROVED.value
+        approvals.set_force_manual_approval(True)
+        out = service._dispatch(approvals.get_action(row.action_id))
+        assert out["status"] == ActionStatus.PENDING.value
+        assert approvals.get_action(row.action_id).status == ActionStatus.PENDING.value
+
+    # (3) The ttl is capped again at dispatch, to the tier as it is now.
+    def test_dispatch_caps_the_ttl_to_the_current_tier(self):
+        block = _Block()
+        service, approvals, store = _setup(
+            [_tier("phishing", "waf_block", AUTONOMOUS, ttl=3600)], executors=[block]
+        )
+        row = _create(approvals, target="198.51.100.113")
+        assert row.parameters["ttl_seconds"] == 3600
+        store.rows[("phishing", "waf_block")] = _tier(
+            "phishing", "waf_block", AUTONOMOUS, ttl=300
+        )
+        service._dispatch(approvals.get_action(row.action_id))
+        assert [t for t, _ in block.calls] == ["198.51.100.113"]
+        done = approvals.get_action(row.action_id)
+        assert done.status == ActionStatus.EXECUTED.value
+        assert _span(done) <= timedelta(seconds=300)
+
+    def test_dispatch_caps_the_executor_default_ttl(self):
+        block = _Block()  # default_ttl 24h
+        service, approvals, store = _setup(
+            [_tier("phishing", "waf_block", AUTONOMOUS, ttl=3600)], executors=[block]
+        )
+        row = _create(approvals, target="198.51.100.114")
+        params = dict(row.parameters)
+        params.pop("ttl_seconds")
+        action = approvals.get_action(row.action_id)
+        action.parameters = params
+        store.rows[("phishing", "waf_block")] = _tier(
+            "phishing", "waf_block", AUTONOMOUS, ttl=120
+        )
+        service._dispatch(action)
+        done = approvals.get_action(row.action_id)
+        assert _span(done) <= timedelta(seconds=120)
+
+    # (4) A row held for a person does not say it was autonomous.
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            {"human_only": True},
+            {"reversibility": Reversibility.IRREVERSIBLE},
+            {"confidence": 0.2},
+        ],
+    )
+    def test_a_held_row_does_not_record_effective_autonomous(self, kw):
+        _, approvals, _ = _setup(
+            [_tier("phishing", "waf_block", AUTONOMOUS, floor=0.0)]
+        )
+        row = _create(approvals, **kw)
+        assert row.status == ActionStatus.PENDING.value
+        record = row.parameters["autonomy"]
+        assert record["configured"] == AUTONOMOUS
+        assert record["effective"] == APPROVE
+        assert record["reasons"]  # why it is not autonomous
+
+    def test_a_force_manual_row_does_not_record_effective_autonomous(self):
+        _, approvals, _ = _setup([_tier("phishing", "waf_block", AUTONOMOUS)])
+        approvals.set_force_manual_approval(True)
+        row = _create(approvals)
+        assert row.status == ActionStatus.PENDING.value
+        assert row.parameters["autonomy"]["effective"] == APPROVE
+
+    # (1) ``other`` is never autonomous on the approval path either.
+    def test_an_uncategorised_action_is_held_even_under_an_other_tier(self):
+        _, approvals, _ = _setup([_tier("other", "waf_block", AUTONOMOUS)])
+        for category in (None, "other", "ransomware"):
+            row = _create(approvals, category=category, confidence=1.0)
+            assert row.status == ActionStatus.PENDING.value
+            assert row.parameters["autonomy"]["category"] == "other"
 
 
 @pytest.fixture

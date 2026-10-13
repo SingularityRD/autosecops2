@@ -4,8 +4,10 @@ Since W3.1 nothing is released without a person below the ``autonomous`` tier,
 and the GA default is ``approve``. Tests written before W3.1 that exercise the
 confidence band (auto-approval at or above the threshold) run under
 ``permissive_autonomy()``: every eligible class autonomous in every category,
-with a QA bound that holds. The tier rules themselves are tested in
-tests/unit/autonomy/.
+with a QA bound that holds. Those tests pass no category, and an alert with
+none is ``other``, which is never autonomous (W3.1 round 5); the permissive
+controller reads such an action as ``network`` so the band is what decides.
+The tier rules themselves are tested in tests/unit/autonomy/.
 """
 
 from __future__ import annotations
@@ -20,7 +22,9 @@ from core.autonomy.tiers import (
     ACTION_CLASSES,
     AUTONOMOUS,
     AUTONOMOUS_ELIGIBLE,
+    NEVER_AUTONOMOUS_CATEGORIES,
     TierEntry,
+    normalise_category,
 )
 from core.contracts.verdict import CATEGORIES
 
@@ -95,6 +99,15 @@ def bounds(holds: bool = True, reviewed: int = 299, misses: int = 0):
     return read
 
 
+class _UncategorisedAsNetwork(AutonomyController):
+    """For pre-W3.1 tests only: an action with no category reads as network."""
+
+    def decide(self, *, category: Any, **kw: Any):  # type: ignore[override]
+        if normalise_category(category) in NEVER_AUTONOMOUS_CATEGORIES:
+            category = "network"
+        return super().decide(category=category, **kw)
+
+
 def permissive_autonomy(ttl_seconds: int = 3600) -> AutonomyController:
     """Every eligible class autonomous in every category; the bound holds."""
     store = MemoryTierStore(
@@ -112,7 +125,7 @@ def permissive_autonomy(ttl_seconds: int = 3600) -> AutonomyController:
             if a in AUTONOMOUS_ELIGIBLE
         ]
     )
-    return AutonomyController(store=store, bound_reader=bounds(True))
+    return _UncategorisedAsNetwork(store=store, bound_reader=bounds(True))
 
 
 @pytest.fixture

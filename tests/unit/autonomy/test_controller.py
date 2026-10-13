@@ -16,6 +16,11 @@ import pytest
 
 from core.autonomy import AutonomyController, PromotionRefused
 from core.autonomy.bounds import BoundStatus, judge
+from core.autonomy.categories import (
+    MITRE_TECHNIQUE_CATEGORY,
+    category_of,
+    resolve_category,
+)
 from core.autonomy.controller import BREAKER_ACTOR
 from core.autonomy.tiers import (
     ACTION_CLASSES,
@@ -26,13 +31,14 @@ from core.autonomy.tiers import (
     AUTONOMOUS_MAX_TTL_SECONDS,
     DEFAULT_TIER,
     FROM_DB,
+    NEVER_AUTONOMOUS_CATEGORIES,
     SUGGEST,
     TIER_CATEGORIES,
     TIERS,
     TO_DB,
+    TRIAGE_TO_AUTONOMY,
     WATCH,
     TierEntry,
-    category_of,
 )
 from core.contracts.verdict import CATEGORIES
 from core.response.approval_service import ActionType
@@ -81,12 +87,59 @@ class TestVocabulary:
             assert FROM_DB[TO_DB[tier]] == tier
         assert FROM_DB["two_person"] == APPROVE
 
-    def test_category_of_reads_known_categories_only(self):
+    def test_every_triage_category_has_an_explicit_mapping(self):
+        # The W1.2 verdict schema's enum is the triage vocabulary.
+        assert set(TRIAGE_TO_AUTONOMY) == set(CATEGORIES)
+        assert set(TRIAGE_TO_AUTONOMY.values()) <= set(CATEGORIES)
+        assert set(MITRE_TECHNIQUE_CATEGORY.values()) <= set(CATEGORIES)
+        assert TRIAGE_TO_AUTONOMY["other"] in NEVER_AUTONOMOUS_CATEGORIES
+
+    def test_category_of_maps_triage_categories_and_nothing_else(self):
+        for triage in CATEGORIES:
+            assert category_of({"category": triage}) == TRIAGE_TO_AUTONOMY[triage]
         assert category_of({"category": "Phishing"}) == "phishing"
         assert category_of({"verdict": {"category": "identity"}}) == "identity"
-        assert category_of({"metadata": {"category": "cloud"}}) == "cloud"
         assert category_of({"category": "ransomware"}) == "other"
+        assert category_of({"category": "network\u200b"}) == "other"
         assert category_of(None) == "other"
+        # Sender-chosen metadata is not a category source.
+        assert category_of({"metadata": {"category": "cloud"}}) == "other"
+
+
+class TestSensorCategories:
+    """Round 5: sensor-authored fields outrank the model's category."""
+
+    def test_sensor_mitre_outranks_the_verdict(self):
+        finding = {
+            "data_source": "splunk",
+            "mitre_predictions": {"T1566.001": 0.9},
+            "category": "network",
+        }
+        assert resolve_category(finding) == ("phishing", "sensor")
+
+    def test_webhook_mitre_is_not_sensor_authored(self):
+        finding = {
+            "data_source": "webhook",
+            "mitre_predictions": {"T1566": 0.9},
+            "category": "network",
+        }
+        assert resolve_category(finding) == ("network", "triage")
+
+    def test_data_source_fixes_the_category(self):
+        finding = {"data_source": "aws_security_hub", "category": "phishing"}
+        assert resolve_category(finding) == ("cloud", "sensor")
+
+    def test_ambiguous_sensor_fields_take_the_verdict_only_among_them(self):
+        base = {
+            "data_source": "elastic",
+            "mitre_predictions": {"T1566": 0.5, "T1071": 0.5},
+        }
+        assert category_of({**base, "category": "network"}) == "network"
+        assert category_of({**base, "category": "cloud"}) == "other"
+
+    def test_no_signal_is_other(self):
+        assert resolve_category({"data_source": "splunk"}) == ("other", "none")
+        assert category_of({"mitre_predictions": "garbage"}) == "other"
 
 
 class TestDefaults:
@@ -224,6 +277,8 @@ class TestNoPathMakesIrreversibleAutonomous:
             assert isinstance(conf, float) and math.isfinite(conf)
             assert 0.0 <= conf <= 1.0
             assert d.ttl_seconds and 0 < d.ttl_seconds <= AUTONOMOUS_MAX_TTL_SECONDS
+            assert d.category not in NEVER_AUTONOMOUS_CATEGORIES
+            assert d.category != ANY_CATEGORY
 
     def test_exhaustive_grid(self):
         types = (*ACTION_CLASSES, "workflow_phase", "nuke_everything")
@@ -439,6 +494,16 @@ class TestPromotion:
             {"evidence_url": None},
             {"evidence_url": "javascript:alert(1)"},
             {"evidence_url": "not a url"},
+            {"evidence_url": "http://console.example/scorecard"},
+            {"evidence_url": "https://"},
+            {"evidence_url": "https:///path"},
+            {"evidence_url": "https://console.example/score card"},
+            {"evidence_url": "https://console.example/\tx"},
+            {"evidence_url": "https://user@console.example/"},
+            {"evidence_url": "https://console.example:99999/"},
+            {"evidence_url": "//console.example/x"},
+            {"evidence_url": "ftp://console.example/x"},
+            {"category": "other"},
             {"category": ANY_CATEGORY},
             {"max_ttl_seconds": None},
             {"max_ttl_seconds": 0},
@@ -489,3 +554,30 @@ class TestPromotion:
         assert row["tier"] == AUTONOMOUS and row["explicit"] and row["eligible"]
         assert m["default_tier"] == APPROVE
         assert m["bounds"]["phishing"]["holds"] is True
+
+
+class TestOtherIsNeverAutonomous:
+    """Round 5: ``other`` (unknown, unmapped, ambiguous) is never autonomous."""
+
+    def test_a_stored_autonomous_other_row_decides_approve(self):
+        controller, _ = _controller([_auto(category="other")])
+        for category in ("other", "ransomware", None, ""):
+            d = controller.decide(
+                category=category,
+                action_type="waf_block",
+                reversibility="reversible",
+                confidence=1.0,
+            )
+            assert d.effective == APPROVE
+            assert any("never autonomous" in r for r in d.reasons)
+
+    def test_check_all_demotes_a_stored_autonomous_other_row(self):
+        controller, store = _controller([_auto(category="other")])
+        (demoted,) = controller.check_all()
+        assert demoted["category"] == "other" and demoted["to"] == APPROVE
+        assert store.rows[("other", "waf_block")].tier == APPROVE
+
+    def test_the_matrix_marks_other_ineligible(self):
+        controller, _ = _controller()
+        rows = [e for e in controller.matrix()["entries"] if e["category"] == "other"]
+        assert rows and not any(r["eligible"] for r in rows)

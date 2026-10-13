@@ -82,34 +82,37 @@ FN_BOUND_TARGET = 0.01
 FN_BOUND_MIN_REVIEWS = 299
 
 
+#: The catch-all category. Never autonomous: it is where unknown, unmapped
+#: and ambiguous alerts land, so a tier on it would release them all.
+OTHER = "other"
+#: Categories no tier may make autonomous (refused at configuration and at
+#: every decision).
+NEVER_AUTONOMOUS_CATEGORIES = frozenset({OTHER})
+
+#: Triage verdict category (``core.contracts.verdict.CATEGORIES``, the W1.2
+#: JSON schema's enum) -> autonomy category. Written out rather than derived so
+#: that a category added to the verdict schema lands in ``other`` (never
+#: autonomous) until someone maps it here; a unit test pins every verdict
+#: category to an entry. ``core.autonomy.categories`` is the only reader.
+TRIAGE_TO_AUTONOMY: Mapping[str, str] = {
+    "phishing": "phishing",
+    "malware": "malware",
+    "identity": "identity",
+    "network": "network",
+    "cloud": "cloud",
+    "other": OTHER,
+}
+
+
 def tier_from_db(value: Optional[str]) -> str:
     """Our tier for a stored one; anything unknown reads as the default."""
     return FROM_DB.get(str(value or "").strip().lower(), DEFAULT_TIER)
 
 
 def normalise_category(value: Any) -> str:
+    """An autonomy category; anything not one is ``other``."""
     text = str(value or "").strip().lower()
-    return text if text in CATEGORIES else "other"
-
-
-def category_of(source: Optional[Mapping[str, Any]]) -> str:
-    """The alert category a finding, decision or verdict document names.
-
-    Looks at ``category``, ``verdict_category``, ``verdict.category`` and
-    ``metadata.category``; ``other`` when none names a known category.
-    """
-    if not source:
-        return "other"
-    candidates: list[Any] = [source.get("category"), source.get("verdict_category")]
-    for nested in ("verdict", "metadata"):
-        inner = source.get(nested)
-        if isinstance(inner, Mapping):
-            candidates.append(inner.get("category"))
-    for value in candidates:
-        text = str(value or "").strip().lower()
-        if text in CATEGORIES:
-            return text
-    return "other"
+    return text if text in CATEGORIES else OTHER
 
 
 @dataclass(frozen=True)
@@ -155,7 +158,9 @@ __all__ = [
     "TO_DB",
     "TierEntry",
     "WATCH",
-    "category_of",
+    "NEVER_AUTONOMOUS_CATEGORIES",
+    "OTHER",
+    "TRIAGE_TO_AUTONOMY",
     "normalise_category",
     "tier_from_db",
 ]

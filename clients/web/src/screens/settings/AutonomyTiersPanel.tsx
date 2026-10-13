@@ -91,8 +91,8 @@ export default function AutonomyTiersPanel({ notify }: SectionProps) {
     if (!draft) return
     if (!draft.reason.trim()) { setFormError('A reason is required'); return }
     const needsEvidence = raising(draft) || draft.tier === 'autonomous'
-    if (needsEvidence && !/^https?:\/\//.test(draft.evidence.trim())) {
-      setFormError('Raising a tier needs an evidence link (http or https)')
+    if (needsEvidence && !/^https:\/\/[^\s/@]+(\/\S*)?$/.test(draft.evidence.trim())) {
+      setFormError('Raising a tier needs an https evidence link')
       return
     }
     const body: Schema<'TierUpdate'> = {
