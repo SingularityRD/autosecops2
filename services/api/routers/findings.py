@@ -23,6 +23,7 @@ from core.findings.enrichment import (
     enrich,
 )
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
+from core.storage.canary_exclusion import is_canary_finding
 from core.storage.config_service import get_config_service
 from core.storage.database_data_service import DatabaseDataService
 from core.storage.models import Finding, User
@@ -183,8 +184,30 @@ def launch_finding_into_intake(
     finding_id: str,
     session: UnitOfWorkSession,
 ):
-    """Queue this finding for intake. ``already_queued`` when a queued row exists."""
+    """Queue this finding for intake. ``already_queued`` when a queued row exists.
+
+    A hidden canary (W1.5) is never investigated autonomously: nothing is
+    queued and the answer is an ordinary not-queued one, so the response does
+    not tell the analyst it was a test. A failed canary lookup queues nothing
+    either (fail closed).
+    """
     finding = _finding_or_404(session, finding_id)
+    try:
+        withheld = is_canary_finding(finding.finding_id, session)
+    except Exception as e:  # noqa: BLE001
+        logger.error(
+            "Intake not queued for %s: eligibility check failed: %s", finding_id, e
+        )
+        raise HTTPException(
+            status_code=503, detail="Intake is temporarily unavailable"
+        ) from e
+    if withheld:
+        return IntakeLaunchResponse(
+            finding_id=finding.finding_id,
+            queued=False,
+            already_queued=False,
+            trigger_id=None,
+        )
     trigger_id = insert_intake_trigger(
         kind="detection",
         finding_id=finding.finding_id,
