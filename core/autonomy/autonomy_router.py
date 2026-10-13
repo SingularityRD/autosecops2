@@ -138,7 +138,7 @@ def put_tier(
     current_user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Set one tier. Raising needs a person and an evidence link."""
-    if getattr(current_user, "service_account", False):
+    if current_user.service_account is True:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "A service account cannot change autonomy tiers",
