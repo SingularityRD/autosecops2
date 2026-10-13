@@ -411,3 +411,197 @@ def test_cli_wrapper_runs_the_verifier(tmp_path):
         timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# -- the ZIP container itself (W3.7 round 3) -----------------------------------
+# In-process through main(): the -I subprocess runs above already prove the
+# verifier is stdlib-only.
+
+
+def _main(tmp_path, data: bytes, *args):
+    pack = tmp_path / "pack.zip"
+    pack.write_bytes(data)
+    return verify_bundle.main([str(pack), "--public-key", PUB_HEX, *args])
+
+
+def _offsets(data: bytes, name: str):
+    """(local header offset, central header offset) of ``name``."""
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        local = z.getinfo(name).header_offset
+    central = data.index(b"PK\x01\x02", data.rindex(b"PK\x05\x06") - 4096)
+    while data[central + 46 : central + 46 + len(name)] != name.encode():
+        central = data.index(b"PK\x01\x02", central + 4)
+    return local, central
+
+
+def _patch(data: bytes, name: str, *, local=None, central=None) -> bytes:
+    """Overwrite little-endian fields: {byte offset in the header: (fmt, value)}."""
+    import struct
+
+    out = bytearray(data)
+    lo, co = _offsets(data, name)
+    for base, fields in ((lo, local or {}), (co, central or {})):
+        for at, (fmt, value) in fields.items():
+            struct.pack_into(fmt, out, base + at, value)
+    return bytes(out)
+
+
+def _other_zip() -> bytes:
+    files = _files(make_bundle().data)
+    files["data/case.json"] = b'{"case_id": "SOMETHING-ELSE"}'
+    return _zip(files)
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(lambda d: b"MZ" + b"\0" * 62 + d, id="prepended bytes"),
+        pytest.param(lambda d: d + b"trailing", id="appended bytes"),
+        pytest.param(lambda d: d + _other_zip(), id="second zip appended"),
+        pytest.param(lambda d: _other_zip() + d, id="second zip prepended"),
+    ],
+)
+def test_bytes_around_the_archive_are_refused(tmp_path, capsys, build):
+    good = make_bundle().data
+    assert _main(tmp_path, good) == 0
+    assert _main(tmp_path, build(good)) == 2
+    assert "error:" in capsys.readouterr().err
+
+
+def test_a_zip_comment_is_refused(tmp_path):
+    files = _files(make_bundle().data)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for name, body in files.items():
+            z.writestr(name, body)
+        z.comment = b"hello"
+    assert _main(tmp_path, buf.getvalue()) == 2
+
+
+def test_a_local_header_that_disagrees_with_the_directory_is_refused(tmp_path):
+    data = make_bundle().data
+    lo, _ = _offsets(data, "data/case.json")
+    renamed = bytearray(data)
+    renamed[lo + 30 : lo + 30 + len("data/case.json")] = b"data/cas3.json"
+    assert _main(tmp_path, bytes(renamed)) == 2
+    # local compressed size differs from the central one
+    assert _main(tmp_path, _patch(data, "data/case.json", local={18: ("<I", 1)})) == 2
+    # local method differs
+    assert _main(tmp_path, _patch(data, "data/case.json", local={8: ("<H", 0)})) == 2
+
+
+def test_a_directory_entry_is_rejected(tmp_path, capsys):
+    files = _files(make_bundle().data)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr(zipfile.ZipInfo("data/"), b"")
+        for name, body in files.items():
+            z.writestr(name, body)
+    assert _main(tmp_path, buf.getvalue()) == 1
+    out = capsys.readouterr().out
+    assert "FAIL  archive" in out and "data/ is a directory entry" in out
+
+
+def test_an_unlisted_entry_is_rejected_without_being_read(
+    tmp_path, capsys, monkeypatch
+):
+    files = _files(make_bundle().data)
+    files["data/zz-extra.json"] = b"{}"
+    inflated = []
+    real = verify_bundle._inflate
+    monkeypatch.setattr(
+        verify_bundle,
+        "_inflate",
+        lambda h, e: inflated.append(e.name) or real(h, e),
+    )
+    assert _main(tmp_path, _zip(files)) == 1
+    assert "data/zz-extra.json is not in the manifest" in capsys.readouterr().out
+    assert set(inflated) == {"manifest.json", "manifest.sig"}
+
+
+def test_a_declared_size_unlike_the_manifest_is_not_inflated(tmp_path, capsys):
+    files = _files(make_bundle().data)
+    files["data/case.json"] = b"0" * (
+        50 * 1024 * 1024
+    )  # 50 MiB of zeros, ~50 KiB zipped
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, body in files.items():
+            z.writestr(name, body)
+    assert _main(tmp_path, buf.getvalue()) == 1
+    assert "data/case.json declares 52428800 bytes" in capsys.readouterr().out
+
+
+def test_an_entry_that_inflates_past_its_declared_size_is_refused(tmp_path, capsys):
+    data = make_bundle().data
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        size = z.getinfo("data/case.json").file_size
+    # Under-declare by one byte in both headers: the stream yields more.
+    lie = _patch(
+        data,
+        "data/case.json",
+        local={22: ("<I", size - 1)},
+        central={24: ("<I", size - 1)},
+    )
+    assert _main(tmp_path, lie) == 1  # the manifest size check fires first
+    # With the manifest consulted out of the way, the inflater itself stops.
+    pack = tmp_path / "lie.zip"
+    pack.write_bytes(lie)
+    with open(pack, "rb") as handle:
+        entries = verify_bundle._zip_entries(handle, len(lie))
+        [entry] = [e for e in entries if e.name == "data/case.json"]
+        with pytest.raises(verify_bundle.PackUnreadable, match="past its declared"):
+            verify_bundle._inflate(handle, entry)
+
+
+def test_the_total_size_cap_applies_before_reading(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(verify_bundle, "MAX_PACK_BYTES", 1024)
+    assert _main(tmp_path, make_bundle().data, "--json") == 2
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is False and "uncompressed" in body["error"]
+
+
+@pytest.mark.parametrize(
+    "fields,message",
+    [
+        ({6: ("<H", 0x0001)}, "encrypted"),
+        ({8: ("<H", 99)}, "unsupported compression method 99"),
+        ({8: ("<H", 12)}, "unsupported compression method 12"),
+    ],
+)
+def test_encrypted_or_unknown_compression_is_a_clean_exit_2(
+    tmp_path, capsys, fields, message
+):
+    data = make_bundle().data
+    central = {at + 2: spec for at, spec in fields.items()}  # same field, +2 in CD
+    bad = _patch(data, "data/case.json", local=fields, central=central)
+    assert _main(tmp_path, bad, "--json") == 2
+    captured = capsys.readouterr()
+    body = json.loads(captured.out)
+    assert body == {"ok": False, "error": body["error"]} and message in body["error"]
+    assert "Traceback" not in captured.err
+    assert _main(tmp_path, bad) == 2
+    captured = capsys.readouterr()
+    assert message in captured.err and "Traceback" not in captured.err
+
+
+def test_an_unexpected_failure_is_still_exit_2_without_a_traceback(
+    tmp_path, capsys, monkeypatch
+):
+    def boom(path):
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(verify_bundle, "read_pack", boom)
+    assert _main(tmp_path, make_bundle().data, "--json") == 2
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is False and "disk on fire" in body["error"]
+
+
+def test_a_truncated_or_corrupt_stream_is_exit_2(tmp_path):
+    data = make_bundle().data
+    lo, _ = _offsets(data, "data/case.json")
+    corrupt = bytearray(data)
+    start = lo + 30 + len("data/case.json")
+    corrupt[start : start + 4] = b"\xff\xff\xff\xff"
+    assert _main(tmp_path, bytes(corrupt)) == 2
+    assert _main(tmp_path, data[: len(data) // 2]) == 2

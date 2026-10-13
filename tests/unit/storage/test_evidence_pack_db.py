@@ -231,3 +231,42 @@ def test_a_ledger_row_altered_in_the_database_is_caught(session):
     checks = {c.name: c for c in verify_bundle.verify_files(files, public_bytes(KEY))}
     assert checks["files"].ok and checks["signature"].ok
     assert checks["ledger"].ok is False
+
+
+def test_canary_findings_are_left_out_of_the_pack(session):
+    """W1.5's helper is installed: a canary finding on the case is dropped."""
+    from core.storage import canary_exclusion
+
+    session.execute(text((INIT / "46_eval_qa_canary.sql").read_text(encoding="utf-8")))
+    canary = Finding(
+        finding_id="f-w37-canary", title="Canary", data_source="edr", severity="high"
+    )
+    session.get(Case, CASE).findings.append(canary)
+    session.execute(
+        text(
+            "INSERT INTO canary_injections "
+            "(marker, canary_kind, expected_verdict, finding_id) "
+            "VALUES ('m-w37', 'replay', 'malicious', 'f-w37-canary')"
+        )
+    )
+    session.flush()
+    canary_exclusion.forget_table_presence()
+    try:
+        record, bundle = _bundle(session)
+        assert [f.finding_id for f in record.findings] == ["f-w37"]
+        assert record.canary_exclusion == "applied"
+        assert record.excluded_canaries == 1
+        files = _files(bundle.data)
+        dumped = files["data/findings.json"].decode()
+        assert "f-w37-canary" not in dumped
+        manifest = json.loads(files["manifest.json"])
+        assert manifest["excluded"] == {"canary_findings": 1}
+        assert manifest["sources"]["canary_exclusion"] == "applied"
+        events = SqlClockStore(session).events(CASE)
+        citable = read_citable(session, CASE, events)
+        assert citable.digest == bundle.manifest["citable_digest"]
+        checks = verify_bundle.verify_files(files, public_bytes(KEY))
+        assert all(c.ok for c in checks), [(c.name, c.detail) for c in checks]
+    finally:
+        # The table goes with the rollback; do not leave it cached as present.
+        canary_exclusion.forget_table_presence()
