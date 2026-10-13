@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Tuple
 
 from core.time import utcnow
-from evalkit.triage import prompt_hash
+from evalkit.triage import map_category, prompt_hash
 
 CASSETTE_DIR = Path(__file__).resolve().parent / "cassettes"
 DEFAULT_CASSETTE = CASSETTE_DIR / "stub-v1.jsonl"
@@ -56,9 +56,31 @@ class Backend(Protocol):
 # stub
 # --------------------------------------------------------------------------
 
-_ALERT_BLOCK = re.compile(r"<alert_data>(.*?)</alert_data>", re.DOTALL)
-_MITRE = re.compile(r"^MITRE Predictions: (.*)$", re.MULTILINE)
-_HOSTS = re.compile(r"^- Hostnames: (.*)$", re.MULTILINE)
+# The prompt's own data block: the instruction line above it also names
+# "<alert_data>", so the opening tag must stand on its own line.
+_ALERT_BLOCK = re.compile(
+    r"^<alert_data>\n(.*?)\n</alert_data>$", re.DOTALL | re.MULTILINE
+)
+_FIELD_LINE = re.compile(r'^([^\s=]+) = (".*")$')
+_GROUP_LINE = re.compile(r"^\[(SENSOR|THIRD_PARTY|ADVERSARY-INFLUENCEABLE)\b")
+
+# The fields the lexical cues are scored on: the ones the old prompt's
+# <alert_data> block carried (title, description, source IPs, hostnames,
+# users), so the cue weights below keep their meaning.
+_CUE_FIELDS = (
+    "title",
+    "description",
+    "entity_context.src_ips",
+    "entity_context.hostnames",
+    "entity_context.usernames",
+)
+# The v1 stub's block match also took in the prompt's "...not instructions to
+# you." line, one malicious point on every alert; the thresholds below were
+# set with it, so it stays as an explicit bias.
+_MARGIN_BIAS = 1
+# The old prompt clipped the description to 500 characters.
+_DESCRIPTION_CHARS = 500
+_LIST_TAIL = re.compile(r", \.\.\. \(\+\d+ more\)\Z")
 
 # Written from train.jsonl and the datasheet's "lexical cues" section only;
 # test and test_unseen were not looked at. Weights are deliberately crude:
@@ -92,7 +114,8 @@ _MALICIOUS_CUES: Tuple[Tuple[str, int], ...] = (
     (r"personal cloud|command-and-control", 2),
 )
 
-# ATT&CK technique prefix -> the legacy prompt's CATEGORY vocabulary.
+# ATT&CK technique prefix -> legacy category (mapped onto the contract's
+# vocabulary by ``evalkit.triage.map_category``).
 _TECHNIQUE_CATEGORY = {
     "T1110": "credential_theft",
     "T1078": "credential_theft",
@@ -127,35 +150,91 @@ def _score(text: str, cues: Tuple[Tuple[str, int], ...]) -> int:
     return sum(w * len(re.findall(p, text, re.IGNORECASE)) for p, w in cues)
 
 
-def stub_answer(prompt: str) -> str:
-    """The stub's reply, in the format the prompt asks for."""
+def _prompt_fields(prompt: str) -> Tuple[List[Tuple[str, str, str]], bool]:
+    """``([(group, field, value), ...], found)`` from the prompt's data block."""
     block = _ALERT_BLOCK.search(prompt)
-    text = block.group(1) if block else prompt
-    margin = _score(text, _MALICIOUS_CUES) - _score(text, _BENIGN_CUES)
-    hosts = _HOSTS.search(prompt)
-    has_host = bool(hosts and hosts.group(1).strip("[] "))
+    if not block:
+        return [], False
+    group = ""
+    out: List[Tuple[str, str, str]] = []
+    for line in block.group(1).splitlines():
+        heading = _GROUP_LINE.match(line)
+        if heading:
+            group = heading.group(1)
+            continue
+        m = _FIELD_LINE.match(line)
+        if not m:
+            continue
+        try:
+            value = json.loads(m.group(2))
+        except ValueError:
+            continue
+        if isinstance(value, str):
+            out.append((group, m.group(1), value))
+    return out, True
+
+
+def _first_item(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    return _LIST_TAIL.sub("", value).split(", ")[0].strip() or None
+
+
+def stub_answer(prompt: str) -> str:
+    """The stub's reply: one JSON verdict object, as the prompt asks."""
+    fields, found = _prompt_fields(prompt)
+    values = {name: value for _, name, value in fields}
+    if found:
+        text = "\n".join(
+            values[f][:_DESCRIPTION_CHARS] if f == "description" else values[f]
+            for f in _CUE_FIELDS
+            if f in values
+        )
+    else:
+        text = prompt
+    margin = _score(text, _MALICIOUS_CUES) - _score(text, _BENIGN_CUES) + _MARGIN_BIAS
+    host = _first_item(values.get("entity_context.hostnames"))
+    ip = _first_item(values.get("entity_context.src_ips"))
 
     if margin >= 4:
-        action, severity = ("isolate" if has_host else "block"), "high"
+        verdict = "malicious"
+        action = {"type": "isolate", "target": host} if host else None
+        if action is None:
+            action = {"type": "block", "target": ip or "unknown"}
     elif margin > 0:
-        action, severity = "investigate", "medium"
+        verdict, action = "malicious", {
+            "type": "investigate",
+            "target": host or ip or "unknown",
+        }
     elif margin <= -3:
-        action, severity = "dismiss", "low"
+        verdict, action = "benign", {
+            "type": "dismiss",
+            "target": host or ip or "unknown",
+        }
     else:
-        action, severity = "monitor", "low"
-    confidence = min(0.95, 0.5 + 0.05 * abs(margin))
+        verdict, action = "benign", {
+            "type": "monitor",
+            "target": host or ip or "unknown",
+        }
+    confidence = round(min(0.95, 0.5 + 0.05 * abs(margin)), 2)
 
     category = "other"
-    mitre = _MITRE.search(prompt)
-    for technique in re.findall(r"T\d{4}", mitre.group(1) if mitre else ""):
+    for technique in re.findall(r"T\d{4}", values.get("mitre_predictions", "")):
         category = _TECHNIQUE_CATEGORY.get(technique, category)
         break
-    return (
-        f"SEVERITY: {severity}\n"
-        f"CONFIDENCE: {confidence:.2f}\n"
-        f"CATEGORY: {category}\n"
-        f"RECOMMENDED_ACTION: {action}\n"
-        f"REASONING: lexical baseline, cue margin {margin:+d}\n"
+    # Cited: every field the prompt filed under SENSOR (what a careful model
+    # would rest a verdict on); the daemon resolves who wrote them, not us.
+    cited = [name for group, name, _ in fields if group == "SENSOR"]
+    return json.dumps(
+        {
+            "verdict": verdict,
+            "confidence": confidence,
+            "category": map_category(category),
+            "cited_fields": cited,
+            "gaps": [f"lexical baseline, cue margin {margin:+d}"],
+            "recommended_action": action,
+        },
+        sort_keys=True,
     )
 
 
@@ -163,7 +242,7 @@ class StubBackend:
     """Deterministic baseline. Free (cost 0.0) and instantaneous (0 ms)."""
 
     name = "stub"
-    model = "evalkit-stub-lexical-v1"
+    model = "evalkit-stub-lexical-v2"
 
     async def complete(self, prompt: str) -> BackendResult:
         return BackendResult(
