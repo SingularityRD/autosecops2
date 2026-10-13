@@ -266,6 +266,12 @@ class Settings(BaseSettings):
     # release so the Federation upgrade rule can carry a tuned cadence over.
     daemon_splunk_poll_interval: int = 300
     daemon_crowdstrike_poll_interval: int = 60
+    # Hot standby (W3.9): replicas race for a Postgres advisory lock; only the
+    # leader runs the loops. Lease = server-side idle timeout of the lock
+    # session and the leader's self-demotion bound; retry = standby poll.
+    daemon_leader_election_enabled: bool = False
+    daemon_leader_lease_seconds: float = 15.0
+    daemon_leader_retry_seconds: float = 2.0
     daemon_webhook_enabled: bool = True
     daemon_webhook_port: int = 8081
     daemon_auto_triage: bool = True
