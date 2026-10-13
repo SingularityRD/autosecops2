@@ -220,8 +220,12 @@ def test_case_deletion_takes_its_clock_rows(session):
 def _three_events(service):
     for hour in (5, 6, 7):
         service.record_instant(
-            CASE, "dora", "aware_at", datetime(2026, 3, 2, hour, tzinfo=timezone.utc),
-            "ayse", "fix",
+            CASE,
+            "dora",
+            "aware_at",
+            datetime(2026, 3, 2, hour, tzinfo=timezone.utc),
+            "ayse",
+            "fix",
         )
 
 
@@ -266,8 +270,12 @@ def test_a_forged_append_after_a_deletion_is_remembered(session):
         {"c": CASE},
     )
     service.record_instant(
-        CASE, "dora", "aware_at", datetime(2026, 3, 2, 4, tzinfo=timezone.utc),
-        "mallory", "forged",
+        CASE,
+        "dora",
+        "aware_at",
+        datetime(2026, 3, 2, 4, tzinfo=timezone.utc),
+        "mallory",
+        "forged",
     )
     assert service.verify_chain(CASE)["why"] == "append out of sequence"
 
@@ -285,6 +293,35 @@ def test_the_head_is_written_only_by_the_trigger(session, sql):
     service = RegulatoryService(SqlClockStore(session), now=lambda: NOW)
     _three_events(service)
     _refused(session, sql, {"c": CASE}, exc=DBAPIError)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "TRUNCATE regulatory_clock_heads",
+        "TRUNCATE regulatory_clock_events",
+        "TRUNCATE regulatory_clock_events, regulatory_clock_heads",
+        "TRUNCATE cases CASCADE",
+    ],
+)
+def test_truncate_is_refused(session, sql):
+    """W0.11: TRUNCATE skips row triggers, so a statement trigger refuses it."""
+    service = RegulatoryService(SqlClockStore(session), now=lambda: NOW)
+    _three_events(service)
+    _refused(session, sql, {}, exc=DBAPIError)
+    assert service.verify_chain(CASE)["ok"] is True
+
+
+def test_a_dropped_head_table_breaks_the_chain(session):
+    """W0.11: without the head table a deleted tail would not show: fail."""
+    service = RegulatoryService(SqlClockStore(session), now=lambda: NOW)
+    _three_events(service)
+    session.execute(text("DROP TABLE regulatory_clock_heads CASCADE"))
+    assert service.verify_chain(CASE) == {
+        "ok": False,
+        "broken_at": None,
+        "why": "chain head unavailable",
+    }
 
 
 def test_case_deletion_takes_its_head(session):

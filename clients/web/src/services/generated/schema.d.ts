@@ -8797,6 +8797,8 @@ export interface components {
         };
         /** ChainResponse */
         ChainResponse: {
+            /** Anchored */
+            anchored?: boolean | null;
             /** Broken At */
             broken_at?: number | null;
             /** Ok */

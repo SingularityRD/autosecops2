@@ -9,6 +9,7 @@ import pytest
 
 from core.compliance.clocks import ClockConfigError
 from core.compliance.regulatory_service import (
+    AnchorUnavailable,
     InstantRefused,
     MemoryClockStore,
     RegulatoryService,
@@ -210,6 +211,36 @@ def test_a_deleted_row_breaks_the_chain(service, store):
     assert service.verify_chain("c-1")["ok"] is False
 
 
+@pytest.mark.parametrize("with_events", [True, False])
+def test_a_missing_head_table_breaks_the_chain(
+    service, store, monkeypatch, with_events
+):
+    """W0.11: no anchor to check against is a failure, not "unanchored but ok"."""
+    if with_events:
+        service.record_instant(
+            "c-1", "dora", "aware_at", T("2026-03-02T08:00:00+00:00"), "a"
+        )
+
+    def gone(case_id):
+        raise AnchorUnavailable("regulatory_clock_heads is not installed")
+
+    monkeypatch.setattr(store, "head", gone)
+    assert service.verify_chain("c-1") == {
+        "ok": False,
+        "broken_at": None,
+        "why": "chain head unavailable",
+    }
+    assert service.status("c-1")["chain"]["ok"] is False
+
+
+def test_a_missing_head_row_breaks_the_chain(service, store):
+    service.record_instant(
+        "c-1", "dora", "aware_at", T("2026-03-02T08:00:00+00:00"), "a"
+    )
+    store.heads.clear()
+    assert service.verify_chain("c-1")["why"] == "chain head missing"
+
+
 def test_status_shows_due_remaining_and_overdue(store):
     service = RegulatoryService(store, now=lambda: T("2026-03-03T09:00:00+00:00"))
     service.record_instant(
@@ -353,8 +384,12 @@ def test_instants_in_order_or_equal_are_accepted(service, store):
             "c-1", "dora", instant, T(f"2026-03-02T{hour}:00:00+00:00"), "a"
         )
     # NIS2: the notification may precede the early warning; both follow awareness.
-    service.record_instant("c-1", "nis2", "aware_at", T("2026-03-02T08:00:00+00:00"), "a")
-    service.record_instant("c-1", "nis2", "notified_at", T("2026-03-02T09:00:00+00:00"), "a")
+    service.record_instant(
+        "c-1", "nis2", "aware_at", T("2026-03-02T08:00:00+00:00"), "a"
+    )
+    service.record_instant(
+        "c-1", "nis2", "notified_at", T("2026-03-02T09:00:00+00:00"), "a"
+    )
     service.record_instant(
         "c-1", "nis2", "early_warning_at", T("2026-03-02T10:00:00+00:00"), "a"
     )
