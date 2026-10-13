@@ -275,6 +275,9 @@ class MetricsServer:
                 "queue_maxsize": queue.maxsize,
                 "handoff_full_waits": dict(handoff.full_waits),
             }
+            spool = getattr(self.processor, "spool", None)
+            if spool is not None:
+                metrics["ingest_spool"] = spool.snapshot()
 
         if self.responder:
             metrics["responder"] = self.responder.stats.copy()

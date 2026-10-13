@@ -81,6 +81,8 @@ class SOCDaemon:
         self._case_automation = None
         # Hot standby (W3.9): set by run() when leader election is on.
         self._leadership = None
+        # W0.12 ingest spool; opened by the leader only (_init_components).
+        self._spool = None
 
         logger.info("SOC Daemon initialized")
 
@@ -169,6 +171,12 @@ class SOCDaemon:
 
         self._case_automation = build_case_automation()
 
+        # W0.12: the webhook acknowledges into a durable spool the processor
+        # drains; what a previous run left there is replayed from here.
+        self._spool = await self._open_spool()
+        self._processor.attach_spool(self._spool)
+        self._poller.set_spool(self._spool)
+
         # Connect components via queues
         self._poller.set_output_queue(self._processor.input_queue)
         self._kafka_ingestor.set_output_queue(self._processor.input_queue)
@@ -185,6 +193,46 @@ class SOCDaemon:
             self._metrics_server.orchestrator = self._orchestrator
 
         logger.info("All components initialized")
+
+    async def _open_spool(self):
+        """The opened ingest spool, or None (the webhook then acks on store).
+
+        Only the leader gets here (W3.9), so only the leader replays. The
+        directory is per pod (docs/operations/ingest-durability.md): with
+        leader election a standby's own spool waits until that pod leads.
+        """
+        cfg = self.config.spool
+        if not cfg.enabled:
+            logger.warning(
+                "Ingest spool disabled (DAEMON_INGEST_SPOOL_ENABLED=false): the "
+                "webhook answers 200 only once each row is stored"
+            )
+            return None
+        from core.ingestion.spool import IngestSpool, register_metrics
+
+        try:
+            spool = IngestSpool(
+                cfg.resolved_directory(),
+                max_findings=cfg.max_findings,
+                max_bytes=cfg.max_mb * 1024 * 1024,
+            )
+            loaded = await asyncio.to_thread(spool.open)
+        except Exception as exc:  # noqa: BLE001 - SpoolError, OSError, bad config
+            logger.error(
+                "Ingest spool unavailable (%s); the webhook answers 200 only once "
+                "each row is stored, 503 otherwise",
+                exc,
+            )
+            return None
+        register_metrics(spool)
+        logger.info(
+            "Ingest spool %s open (%d to replay, max %d findings / %d MiB)",
+            spool.directory,
+            loaded,
+            cfg.max_findings,
+            cfg.max_mb,
+        )
+        return spool
 
     async def run(self):
         """Run the daemon (as leader or standby when leader election is on)."""
@@ -244,6 +292,11 @@ class SOCDaemon:
 
         self._running = False
 
+        spool = getattr(self, "_spool", None)
+        if spool is not None:
+            # Unstored entries stay on disk for the next start.
+            spool.close()
+
         if self._leadership is not None:
             if demoted:
                 self._exit_demoted()
@@ -279,6 +332,7 @@ class SOCDaemon:
             self._metrics_server.leadership = self._leadership
             start("metrics", self._metrics_server, "Metrics server")
 
+        self._report_waiting_spool()
         standby = None
         if self.config.polling.webhook_enabled:
             standby = StandbyWebhook(
@@ -291,6 +345,26 @@ class SOCDaemon:
             if standby is not None:
                 # Frees the port for the real webhook in DataPoller.
                 await standby.stop()
+
+    def _report_waiting_spool(self) -> None:
+        """A standby does not replay (only the leader does); say so when this
+        pod's own spool holds findings a previous run acknowledged."""
+        cfg = getattr(self.config, "spool", None)
+        if cfg is None or not cfg.enabled:
+            return
+        try:
+            from core.ingestion.spool import waiting_segments
+
+            waiting = waiting_segments(cfg.resolved_directory())
+        except Exception:  # noqa: BLE001 - informational only
+            return
+        if waiting:
+            logger.warning(
+                "Standby: %d ingest spool segment(s) on this pod wait until it "
+                "leads (docs/operations/ingest-durability.md: hand over by "
+                "restarting the current leader pod)",
+                waiting,
+            )
 
     async def _start_components(self, start) -> None:
         leadership = self._leadership
