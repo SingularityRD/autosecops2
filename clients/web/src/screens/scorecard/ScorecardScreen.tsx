@@ -12,11 +12,12 @@ import {
   type CategoryScore, type QASample, type Scorecard,
 } from './useScorecard'
 import { fmtBound, fmtTarget, plural, titleCase } from './format'
+import LessonsTab from './LessonsTab'
 
 // One list, so an unknown ?tab= falls back to the scorecard rather than a blank page.
-const TABS = ['scorecard', 'queue'] as const
+const TABS = ['scorecard', 'queue', 'lessons'] as const
 type Tab = (typeof TABS)[number]
-const TAB_LABEL: Record<Tab, string> = { scorecard: 'Scorecard', queue: 'Review queue' }
+const TAB_LABEL: Record<Tab, string> = { scorecard: 'Scorecard', queue: 'Review queue', lessons: 'Lessons' }
 
 const DRAW_PERMISSION = 'ai_decisions.approve'
 const REVIEW_PERMISSION = 'findings.write'
@@ -77,6 +78,7 @@ export default function ScorecardScreen() {
       </div>
 
       {tab === 'scorecard' && <ScorecardTab state={card} />}
+      {tab === 'lessons' && <LessonsTab />}
       {tab === 'queue' && (
         <QueueTab
           state={queue}
