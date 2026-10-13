@@ -47,6 +47,8 @@ GATED_ROUTES = [
     ("POST", "/api/cases", {"title": "t"}, "cases.write"),
     ("POST", "/api/cases/c-1/comments", {"content": "x"}, "cases.write"),
     ("DELETE", "/api/cases/c-1", None, "cases.delete"),
+    # Read-gated, and it writes the export to case_audit_logs (W3.7).
+    ("GET", "/api/cases/c-1/evidence-pack", None, "cases.read"),
     ("PATCH", "/api/v1/findings/f-1", {"severity": "low"}, "findings.write"),
     ("POST", "/api/v1/approvals/a-1/approve", {}, "ai_decisions.approve"),
     ("POST", "/api/v1/approvals/a-1/reject", {"reason": "no"}, "ai_decisions.approve"),
