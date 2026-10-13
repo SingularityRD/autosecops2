@@ -41,6 +41,13 @@ logger = logging.getLogger(__name__)
 
 APPROVAL_CONFIG_KEY = "approval.force_manual_approval"
 
+# A reversal claim (``begin_reversal``) still pending after this long was
+# abandoned: the process died, or recording the outcome failed, between the
+# claim and ``finish_reversal``. Executors' vendor calls are bounded far below
+# it. Left alone, such a row holds ``reverse:<id>`` forever and the action can
+# never be reverted, by a person or by its ttl.
+REVERSAL_CLAIM_STALE = timedelta(hours=1)
+
 _pending_gauge: Any = None
 
 
@@ -508,6 +515,7 @@ class ApprovalService:
                 stmt = (
                     select(ApprovalActionRow.action_id)
                     .where(ApprovalActionRow.status == ActionStatus.PENDING.value)
+                    .where(ApprovalActionRow.reverse_of.is_(None))
                     .where(ApprovalActionRow.created_at < cutoff)
                     .order_by(ApprovalActionRow.created_at.asc())
                 )
@@ -537,9 +545,11 @@ class ApprovalService:
                 if row is None:
                     logger.warning("Action %s not found", action_id)
                     return None
-                if row.status != ActionStatus.PENDING.value:
+                if row.status != ActionStatus.PENDING.value or row.reverse_of:
+                    # A reverse row is a reversal in flight, not a question: an
+                    # approval would overwrite who reverted it.
                     logger.warning(
-                        "Action %s is not pending (status: %s)",
+                        "Action %s is not an open approval (status: %s)",
                         action_id,
                         row.status,
                     )
@@ -597,9 +607,11 @@ class ApprovalService:
                 if row is None:
                     logger.warning("Action %s not found", action_id)
                     return None
-                if row.status != ActionStatus.PENDING.value:
+                if row.status != ActionStatus.PENDING.value or row.reverse_of:
+                    # Rejecting a reversal in flight would leave its claim
+                    # holding reverse:<id> (only failed rows release a key).
                     logger.warning(
-                        "Action %s is not pending (status: %s)",
+                        "Action %s is not an open approval (status: %s)",
                         action_id,
                         row.status,
                     )
@@ -804,9 +816,31 @@ class ApprovalService:
                 original = session.get(ApprovalActionRow, original_id)
                 if original is None or original.reversed_at is not None:
                     return None
-                if _nonfailed_by_key(session, key) is not None:
-                    return None
                 now = utcnow()
+                held = _nonfailed_by_key(session, key)
+                if held is not None:
+                    abandoned = held.status == ActionStatus.REJECTED.value or (
+                        held.status == ActionStatus.PENDING.value
+                        and held.created_at is not None
+                        and held.created_at < now - REVERSAL_CLAIM_STALE
+                    )
+                    if not abandoned:
+                        return None
+                    # Release the key: a failed row no longer holds it.
+                    logger.warning(
+                        "Reversal claim %s of %s was abandoned (%s); claiming again",
+                        held.action_id,
+                        original_id,
+                        held.status,
+                    )
+                    held.status = ActionStatus.FAILED.value
+                    held.executed_at = now
+                    held.execution_result = {
+                        "success": False,
+                        "error": "abandoned: the reversal was never settled; "
+                        "superseded by a new claim",
+                    }
+                    session.flush()
                 row = ApprovalActionRow(
                     action_id=f"action-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-rev",
                     action_type=original.action_type,

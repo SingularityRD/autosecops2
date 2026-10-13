@@ -168,3 +168,100 @@ def test_an_old_approved_action_is_dispatched_behind_500_newer_rows(
     assert old_id in [r["action_id"] for r in results]
     assert [a.target for a in executor.executed] == ["203.0.113.7"]
     assert ApprovalService().get_action(old_id).status == "executed"
+
+
+# --- 3. an abandoned reversal claim no longer blocks every later reversal ---------
+
+
+@pytest.mark.external_service
+@pytest.mark.database
+class TestAbandonedReversalClaim:
+    @pytest.fixture
+    def executed(self, throwaway_database):
+        import uuid
+
+        from core.storage.models import ApprovalAction
+        from core.storage.unit_of_work import unit_of_work
+
+        action_id = f"orig-{uuid.uuid4().hex[:10]}"
+        with unit_of_work() as session:
+            session.add(
+                ApprovalAction(
+                    action_id=action_id,
+                    action_type="waf_block",
+                    title="t",
+                    description="d",
+                    target="203.0.113.9",
+                    confidence=0.9,
+                    reason="r",
+                    evidence=[],
+                    created_by="pytest",
+                    requires_approval=True,
+                    status="executed",
+                    approved_by="alice",
+                    created_at=utcnow() - timedelta(days=1),
+                    executed_at=utcnow() - timedelta(days=1),
+                    reversibility="reversible",
+                    parameters={},
+                )
+            )
+        return action_id
+
+    @staticmethod
+    def _claim(action_id, *, age, status="pending"):
+        from core.storage.models import ApprovalAction
+        from core.storage.unit_of_work import unit_of_work
+
+        claim_id = f"{action_id}-rev-old"
+        with unit_of_work() as session:
+            session.add(
+                ApprovalAction(
+                    action_id=claim_id,
+                    action_type="waf_block",
+                    title="Reverse",
+                    description="d",
+                    target="203.0.113.9",
+                    confidence=0.9,
+                    reason="r",
+                    evidence=[action_id],
+                    created_by="bob",
+                    requires_approval=False,
+                    status=status,
+                    approved_by="bob",
+                    created_at=utcnow() - age,
+                    parameters={},
+                    reversibility="reversible",
+                    idempotency_key=f"reverse:{action_id}",
+                    reverse_of=action_id,
+                )
+            )
+        return claim_id
+
+    def test_a_claim_in_flight_still_blocks(self, executed):
+        from core.response.approval_service import ApprovalService
+
+        self._claim(executed, age=timedelta(minutes=1))
+        assert ApprovalService().begin_reversal(executed, "carol", "again") is None
+
+    @pytest.mark.parametrize(
+        "age,status",
+        [(timedelta(hours=2), "pending"), (timedelta(minutes=1), "rejected")],
+    )
+    def test_an_abandoned_claim_is_released(self, executed, age, status):
+        from core.response.approval_service import ApprovalService
+
+        svc = ApprovalService()
+        old = self._claim(executed, age=age, status=status)
+        claim = svc.begin_reversal(executed, "carol", "again")
+        assert claim is not None and claim.reverse_of == executed
+        assert svc.get_action(old).status == "failed"
+
+    def test_a_reversal_in_flight_is_not_an_approval(self, executed):
+        from core.response.approval_service import ApprovalService
+
+        svc = ApprovalService()
+        claim = self._claim(executed, age=timedelta(days=30))
+        assert svc.reject_action(claim, "no", rejected_by="mallory").status == "pending"
+        row = svc.approve_action(claim, approved_by="mallory")
+        assert row.status == "pending" and row.approved_by == "bob"
+        assert claim not in svc.list_stale_pending(utcnow())
