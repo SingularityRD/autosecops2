@@ -633,9 +633,7 @@ class AutonomousResponseService:
                     try:
                         self.approval_service.mark_failed(action.action_id, error)
                     except Exception:  # noqa: BLE001
-                        logger.exception(
-                            "Could not mark %s failed", action.action_id
-                        )
+                        logger.exception("Could not mark %s failed", action.action_id)
                     result = {"success": False, "error": error, "status": "failed"}
                 if result is None:
                     # Unknown action type — leave for another executor or manual handling.

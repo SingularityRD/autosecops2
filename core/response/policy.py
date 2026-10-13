@@ -211,9 +211,7 @@ def identify(value: Any) -> Optional[Identifier]:
     net = _as_network(text)
     if net is not None:
         name = (
-            str(net.network_address)
-            if net.prefixlen == net.max_prefixlen
-            else str(net)
+            str(net.network_address) if net.prefixlen == net.max_prefixlen else str(net)
         )
         return Identifier(raw=raw, name=name, network=net)
     if "\\" in text:
@@ -261,9 +259,7 @@ class ProtectedSet:
         """The protected entry ``ident`` names or overlaps, if any."""
         if ident.network is not None:
             for net in self.networks:
-                if net.version == ident.network.version and net.overlaps(
-                    ident.network
-                ):
+                if net.version == ident.network.version and net.overlaps(ident.network):
                     return str(net)
             return None
         if ident.name in self.names:
@@ -354,9 +350,7 @@ def _identifiers(action: TypedAction) -> list[Identifier]:
 
 
 def _names_something(action: TypedAction) -> bool:
-    return any(
-        ident.name not in _EMPTY_TARGETS for ident in _identifiers(action)
-    )
+    return any(ident.name not in _EMPTY_TARGETS for ident in _identifiers(action))
 
 
 def _declared_tags(action: TypedAction) -> frozenset[str]:
@@ -415,7 +409,9 @@ class ActionPolicy:
         for ident in idents:
             hit = protected.match(ident)
             if hit:
-                return f"protected asset: {ident.raw} matches {hit} in protected_targets"
+                return (
+                    f"protected asset: {ident.raw} matches {hit} in protected_targets"
+                )
 
         tags: set[str] = set(_declared_tags(action))
         tagged = [
