@@ -81,7 +81,7 @@ repository was imported. These files were added here, in this order:
 | `47_webhooks_alert_routes.sql` | AutoSecOps W0.5 contracts |
 | `48_autonomy_lessons_suppression_retention.sql` | AutoSecOps W0.5 contracts |
 | `49_approval_action_lifecycle.sql` | AutoSecOps W0.5 contracts |
-| `50_…` | Reserved for another AutoSecOps work package (merged separately) |
+| `50_regulatory_clocks.sql` | AutoSecOps W3.8 regulatory clocks |
 | `51_audit_chain.sql` | AutoSecOps W1.10 tamper-evident audit chain |
 
 Upstream later merged #1997 with the same table as `40_skill_reads.sql`. That

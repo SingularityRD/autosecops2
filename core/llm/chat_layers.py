@@ -10,6 +10,16 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from core.integrations.atomic_red_team.descriptor import EXECUTE_IDS
+from core.llm.tool_effects import (
+    APPROVAL,
+    DECISION,
+    DESTRUCTIVE,
+    READ_ONLY,
+    RECORDS,
+    WRITE,
+    effect_of,
+    is_gated,
+)
 from core.llm.tool_schemas import (
     ALL_TOOLS,
     CALL_INTEGRATION_TOOL,
@@ -19,101 +29,48 @@ from core.llm.tool_schemas import (
 
 REMOTE = "remote"
 
-# Direct-action verbs that make an MCP tool destructive: calling it changes the
-# world (isolates a host, blocks an IP, kills a process) and a later read cannot
-# undo it. Chat reaches every other connected MCP tool on demand (see
-# ``integration_tools``), but the chat surface has no approval-resume path — a
-# parked call would hang forever, never gate — so these are out of its reach. Real containment
-# goes through the approval queue (``create_approval_action``) and workflows, not
-# ad-hoc chat calls.
-_DESTRUCTIVE_VERBS = frozenset(
-    {
-        "isolate",
-        "unisolate",
-        "contain",
-        "quarantine",
-        "block",
-        "unblock",
-        "kill",
-        "terminate",
-        "shutdown",
-        "disable",
-        "deactivate",
-        "suspend",
-        "delete",
-        "remove",
-        "purge",
-        "wipe",
-        "revoke",
-        "ban",
-        "remediate",
-        "detonate",
-        "reset",
-        "release",
-    }
-)
-# A read-only lead verb (get_isolation_status, list_blocked_ips) is safe even
-# when a destructive noun follows, so it overrides the verb check.
-_READONLY_LEADS = frozenset(
-    {
-        "get",
-        "list",
-        "search",
-        "describe",
-        "fetch",
-        "query",
-        "show",
-        "read",
-        "lookup",
-        "count",
-        "stats",
-        "status",
-        "check",
-    }
-)
 
-
+# What a tool does to the world comes from one table, ``core.llm.tool_effects``.
+# Chat has no approval-resume path -- a parked call would hang forever, never
+# gate -- so a gated tool (``write`` / ``destructive``) is out of its reach.
+# Real containment goes through the approval queue (``create_approval_action``)
+# and workflows, not ad-hoc chat calls.
 def _is_destructive_mcp(name: str) -> bool:
-    """True for a server-prefixed MCP tool that performs an irreversible action.
+    """True for a tool that may run only once a person approves it.
 
-    Every token of the id is read, the server prefix included. Vendor tools
-    arrive as ``{server}_{tool}`` and Vigil's own arrive bare, so there is no
-    one prefix to strip — and stripping the first token off a bare name takes
-    the verb, which is the whole of what this decides on: ``isolate_host``
-    would be read as ``host``.
-
-    A read-only lead verb wins outright; otherwise any destructive verb token
-    marks it. Reading the prefix too can only over-drop, and that is the side to
-    err on — a spurious drop means chat recommends the action instead of calling
-    it, whereas a missed one is an ungated detonation.
-
-    ART execute is named, not verb-matched: adding ``execute`` to the verb set
-    would also drop ``splunk_execute``.
+    Read from the effect table; a name the table does not hold falls back to
+    the verb heuristic there, which errs towards gating. A spurious gate means
+    chat recommends the action instead of calling it, whereas a missed one is
+    an ungated detonation.
     """
-    if name in EXECUTE_IDS:
-        return True
-    tokens = name.split("_")
-    if not tokens:
-        return False
-    if tokens[0] in _READONLY_LEADS:
-        return False
-    return any(tok in _DESTRUCTIVE_VERBS for tok in tokens)
+    return is_gated(name)
 
 
 # Weakest to strongest, so an agent is as hands-on as its most hands-on tool.
+# ``on_its_own`` is kept in the vocabulary for the console, and is what a gated
+# tool would be if any surface ran it unasked; none does, and a ratchet
+# (tests/unit/_ratchets/test_no_ungated_write_tools.py) holds that at zero.
 _CHANGES_RANK = ("read_only", "asks_first", "on_its_own")
+
+# How each effect class reads on the Agents tab. AutoSecOps's own records and a
+# decision a person makes on the approvals screen are not outside changes.
+_CHANGES_BY_EFFECT = {
+    READ_ONLY: "read_only",
+    RECORDS: "read_only",
+    DECISION: "read_only",
+    APPROVAL: "asks_first",
+    WRITE: "asks_first",
+    DESTRUCTIVE: "asks_first",
+}
 
 
 def changes_for_tool(name: str) -> str:
-    """What one tool does to the outside world.
+    """What one tool does to the outside world, as the console words it.
 
-    ``on_its_own`` for a destructive MCP tool with no approval gate; ``asks_first``
-    for the approval tool and ART execute, which the gate covers; otherwise
-    ``read_only``. Vigil's own case writes are not outside changes.
+    ``asks_first`` for the approval tool and for every gated tool, which each
+    surface either parks for a person or refuses; otherwise ``read_only``.
     """
-    if name in EXECUTE_IDS or name == "create_approval_action":
-        return "asks_first"
-    return "on_its_own" if _is_destructive_mcp(name) else "read_only"
+    return _CHANGES_BY_EFFECT[effect_of(name)]
 
 
 def changes_for_tools(tools: List[str]) -> str:
@@ -190,7 +147,8 @@ def _declare(
     # says: a user who connected an integration expects the assistant to use it.
     # Hunts curate separately (playbook_resolver).
     #
-    # Chat has no approval-resume path, so ART execute is dropped by id.
+    # Chat has no approval-resume path, so a gated built-in is dropped by class
+    # (none is today; ART execute, which is not a built-in, was the reason).
     # ``approve_action`` is not dropped, and that is the decision rather than an
     # oversight: what it approves is an action a person already queued and can
     # already release from the approvals screen, so chat releasing it is the same
@@ -200,7 +158,7 @@ def _declare(
     # question.
     static = {t["name"]: t for t in ALL_TOOLS if t.get("name")}
     names = list(static) if wanted is None else [n for n in wanted if n in static]
-    entries = [static[n] for n in names if n not in EXECUTE_IDS]
+    entries = [static[n] for n in names if n not in EXECUTE_IDS and not is_gated(n)]
     if integration_tools(mcp_tools):
         entries += INTEGRATION_TOOLS
     declared = []
@@ -214,6 +172,7 @@ def _declare(
                 "kind": REMOTE,
                 "description": description,
                 "parameters": entry.get("input_schema") or {"type": "object"},
+                "effect": effect_of(entry["name"]),
             }
         )
     return declared
