@@ -2,7 +2,7 @@
 
 > **Bu belge hukuki görüş değildir.** Aşağıdaki tablolar, düzenlemelerin
 > AutoSecOps'u kullanan kurumdan beklediği bazı kontrolleri ürünün bu sürümdeki
-> (`main` @ `b38f6fdb`) özelliklerine ve bu özelliklerin üretebildiği kanıta
+> (`main` @ `167f7b77`) özelliklerine ve bu özelliklerin üretebildiği kanıta
 > eşler. Yükümlülük kurumundur; bir aracın varlığı uyumu kendi başına sağlamaz.
 > Eşleme, kurumun uyum ve hukuk ekibiyle doğrulanmalıdır. Madde numarası
 > verilmeyen satırlarda ilgili hükmün eşlenmesi kurumun uyum ekibine bırakılmıştır.
@@ -42,6 +42,8 @@ Tablolarda kısaltılarak anılan kanıtlar:
 | K11 | Yedek ve geri yükleme testi | `./start.sh restore ... --test` çıktısı; konsolda depolama durumu "Last successful backup" |
 | K12 | Doğruluk ölçümü | Karne (`GET /api/qa/scorecard`); kanarya sonuçları (`GET /api/quality/canaries`, yalnız Admin) |
 | K13 | Soruşturma gözetim zinciri | `GET /api/orchestrator/investigations/{investigation_id}/chain-of-custody` |
+| K14 | Saklama politikaları, yasal saklama listesi, periyodik imha tutanağı | `GET /api/compliance/retention/policies`, `GET /api/compliance/retention/legal-holds`, `GET /api/compliance/retention/reports` (JSON ya da Markdown) |
+| K15 | Kubernetes yedek ve sıcak yedek kanıtı | yedek CronJob iş geçmişi ve döküm `.sha256` dosyaları; daemon `/health` `role` alanı; [docs/operations/rpo-rto.md](../operations/rpo-rto.md) tatbikat kaydı |
 
 ## BDDK — Bankaların Bilgi Sistemleri ve Elektronik Bankacılık Hizmetleri Hakkında Yönetmelik
 
@@ -50,11 +52,11 @@ Tablolarda kısaltılarak anılan kanıtlar:
 | Birincil ve ikincil sistemlerin yurt içinde bulundurulması; verinin kurum denetiminde kalması | Kendi altyapısında kurulum (Helm/Compose); internetsiz kurulum paketi; yerel model (Ollama); sıfır egress profili | K1, K2, K3 | Karşılanıyor (kurulum yeri kurumun kararı) |
 | İz kayıtlarının tutulması, bütünlüğünün korunması | Ajan defterinde koşu başına hash zinciri ve salt ekleme; ayar, vaka ve onay kayıtları | K6, K7, K8, K9 | Kısmi — onay/vaka kayıtlarının zincire alınması ve imzalı kontrol noktası Planlı — `wp/w1.10-audit-chain`, bu sürümde yok |
 | İz kayıtlarının merkezi izleme sistemine aktarılması | — | — | Planlı — `wp/w3.6-audit-export`, bu sürümde yok (geçici: tabloların salt okuma rolüyle periyodik aktarımı) |
-| Görevler ayrılığı | Rol matrisi; onay yetkisi (`ai_decisions.approve`) yalnız Senior Analyst ve üstünde; atayan kişi yalnızca kendi izinlerini aşmayan rolü atayabilir | K4, K5 | Kısmi — dört göz ve farklı rol koşulu Planlı — `wp/w2.4-executors-policy`, `wp/w3.2-sod`, bu sürümde yok |
-| Erişim yönetimi, kimlik doğrulama | Yerel hesaplar, parola politikası, kilitleme, TOTP MFA, oturum iptali | K4, K5 | Kısmi — MFA zorunlu kılınamaz; SSO Planlı — `wp/w1.9-oidc`, bu sürümde yok |
+| Görevler ayrılığı | Rol matrisi; onay yetkisi (`ai_decisions.approve`) yalnız Senior Analyst ve üstünde; kimlik eylemlerinde iki farklı onaylayıcı; atayan kişi yalnızca kendi izinlerini aşmayan rolü atayabilir | K4, K5, K7 | Kısmi — onaylanmış MCP araçları tek onayla çalışır (R2); farklı rol koşulu Planlı — `wp/w3.2-sod`, bu sürümde yok |
+| Erişim yönetimi, kimlik doğrulama | Yerel hesaplar, parola politikası, kilitleme, TOTP MFA, oturum iptali | K4, K5 | Kısmi — MFA zorunlu kılınamaz; Viewer'a açık yazma uçları ve kritik R26 açığı; SSO Planlı — `wp/w1.9-oidc`, bu sürümde yok |
 | Yetkili kullanıcı işlemlerinin kayıt altına alınması | Onaylayan ve onay zamanı, ayar değiştiren kullanıcı | K6, K7 | Karşılanıyor |
 | Bilgi güvenliği olay yönetimi | Alarm alımı, triage, vaka yönetimi, SLA izleyicisi, vaka bildirimleri | K9, K7 | Karşılanıyor (süreç kurumun) |
-| Yedekleme ve iş sürekliliği | Şifreli ve doğrulanan restic yedeği, test geri yükleme, yükseltme öncesi otomatik yedek (Compose/host) | K11 | Kısmi — Kubernetes yedek CronJob'u ve sıcak yedek Planlı — `wp/w3.9-daemon-standby`, bu sürümde yok |
+| Yedekleme ve iş sürekliliği | Şifreli ve doğrulanan restic yedeği, test geri yükleme, yükseltme öncesi otomatik yedek (Compose/host); Helm yedek CronJob'u; daemon sıcak yedeği; RPO/RTO belgesi | K11, K15 | Kısmi — CronJob varsayılan kapalı ve dökümü şifrelemez; RTO kurumun tatbikatıyla ölçülmeli (R17) |
 | Dış hizmet (model sağlayıcı) riskinin yönetimi | Yerel model ile dış sağlayıcıya bağımlılığın kaldırılması | K1, K2 | Karşılanıyor (air-gap profiliyle) |
 | Kriptografik anahtar yönetimi | Bant dışı imza anahtarı; şifreli sır deposu; Secret/ExternalSecrets | K3 | Kısmi — `master.key` için yerleşik döndürme yok |
 
@@ -62,10 +64,10 @@ Tablolarda kısaltılarak anılan kanıtlar:
 
 | Beklenti | AutoSecOps özelliği (bu sürüm) | Kanıt | Durum |
 |---|---|---|---|
-| Md. 12 — veri güvenliği için teknik tedbirler (erişim yetkisi, şifreleme, kayıt) | Rol matrisi; sırların şifreli saklanması; şifreli yedek; denetim kayıtları | K4, K6, K8, K11 | Karşılanıyor (idari tedbirler kurumun) |
+| Md. 12 — veri güvenliği için teknik tedbirler (erişim yetkisi, şifreleme, kayıt) | Rol matrisi; sırların şifreli saklanması; şifreli yedek; denetim kayıtları | K4, K6, K8, K11 | Kısmi — kritik R26 açığının düzeltmesi birleşmedi (tehdit modeli); idari tedbirler kurumun |
 | Md. 9 — yurt dışına aktarım kısıtları | Yerel model, internetsiz kurulum, bulut sağlayıcı anahtarları boş; egress kanıtı | K1, K2 | Karşılanıyor (air-gap profiliyle); bulut sağlayıcı seçilirse aktarım kurumun değerlendirmesine tabidir |
-| Md. 4 — işlendikleri amaç için gerekli süre kadar muhafaza | Onay isteklerinin süresinin dolması, okuma günlüğünün 90 günde silinmesi | — | Kısmi — veri sınıfı başına saklama süresi Planlı — `wp/w3.5-retention`, bu sürümde yok |
-| Md. 7 ve Silme, Yok Etme veya Anonim Hale Getirme Yönetmeliği — periyodik imha, imha kaydı | Elle silme uçları (vaka, tüm bulgular, soruşturmalar) | — | Planlı — `wp/w3.5-retention`, bu sürümde yok (periyodik imha, yasal saklama, imha raporu) |
+| Md. 4 — işlendikleri amaç için gerekli süre kadar muhafaza | Veri sınıfı başına saklama süresi ve yöntemi (silme / anonimleştirme); yasal saklama | K14 | Karşılanıyor (sürelerin belirlenmesi kurumun; kurulumda politika yoktur) |
+| Md. 7 ve Silme, Yok Etme veya Anonim Hale Getirme Yönetmeliği — periyodik imha, imha kaydı | Zamanlanmış ya da elle başlatılan imha işi (kuru çalıştırma varsayılan); vaka bazında yasal saklama; periyodik imha tutanağı | K14 | Kısmi — tutanak kayıtları zincirsiz (R6); elle silme uçları tutanağa girmez (R8) |
 | Kişisel verilere erişimin kaydı | Ayar ve vaka değişiklik kayıtları; ajan defteri | K6, K8, K9 | Kısmi — salt okuma erişimleri kaydedilmez |
 
 ## DORA — (AB) 2022/2554
@@ -73,12 +75,12 @@ Tablolarda kısaltılarak anılan kanıtlar:
 | Beklenti | AutoSecOps özelliği (bu sürüm) | Kanıt | Durum |
 |---|---|---|---|
 | Md. 10 — anormal faaliyetin tespiti | Alarm toplama (federation), AI triage, kanarya ile tespit oranı ölçümü, QA karnesi | K12 | Karşılanıyor |
-| Md. 11 — müdahale ve kurtarma | Onaylı müdahale eylemleri, eylem zaman çizelgesi | K7 | Kısmi — EDR/IdP/güvenlik duvarı yürütücülerinin bağlanması Planlı — `wp/w2.4-executors-policy`, bu sürümde yok |
-| Md. 12 — yedekleme politikaları, geri yükleme | Şifreli, doğrulanan yedek; test geri yükleme; geri yüklemede oturum anahtarı döndürme ve bekleyen onayların reddi | K11 | Kısmi — RPO/RTO ölçümü Planlı — `wp/w3.9-daemon-standby`, bu sürümde yok |
+| Md. 11 — müdahale ve kurtarma | Onaylı müdahale eylemleri (Cloudflare, Defender, Entra ID, PAN-OS); müdahale politikası; süre dolunca ve elle geri alma; eylem zaman çizelgesi | K7 | Kısmi — onaylanmış MCP araçları politikasız çalışır (R2) |
+| Md. 12 — yedekleme politikaları, geri yükleme | Şifreli, doğrulanan yedek; test geri yükleme; geri yüklemede bekleyen onayların reddi ve oturum anahtarı döndürme; Helm yedek CronJob'u; daemon sıcak yedeği; RPO/RTO hedefleri | K11, K15 | Kısmi — RTO kurum ortamında ölçülmeli; anahtar ortamdan geliyorsa elle döndürme gerekir (R17, R29) |
 | Md. 17 — BİT olay yönetim süreci, kayıt | Vaka yönetimi, vaka denetim kaydı, gözetim zinciri dışa aktarımı | K9, K13 | Karşılanıyor |
 | Md. 18 — olay sınıflandırması | Vakada "büyük olay" sınıflandırma anı (`classification_at`) kaydı | K10 | Kısmi — sınıflandırma kriterlerinin uygulanması kurumun |
 | Md. 19 — büyük olayların süreli bildirimi (ilk bildirim, ara rapor, nihai rapor) | DORA sayaçları: ilk bildirim `min(sınıflandırma + 4 saat, farkına varma + 24 saat)`, ara rapor bildirim + 72 saat, nihai rapor son ara rapor + 1 ay; süreler kiracı başına ayarlanabilir; an kayıtları zincirli; rapor taslakları vakanın kanıtından | K10 | Karşılanıyor (resmî bildirimin gönderimi kurumun) |
-| Kayıtların bütünlüğü | Defter zinciri, düzenleyici an zinciri | K8, K10 | Kısmi — zincir başı çapası yok (tehdit modeli R4, R6) |
+| Kayıtların bütünlüğü | Defter zinciri, düzenleyici an zinciri ve zincir başı çapası | K8, K10 | Kısmi — defter zincirinin başı imzasız; düzenleyici tablolar TRUNCATE'e açık (tehdit modeli R6, R27) |
 | Md. 28–30 — üçüncü taraf BİT riski | Yerel model; dış entegrasyonların varsayılan kapalı olması; egress envanteri | K1 | Kısmi |
 | Kanıt paketi | — | — | Planlı — `wp/w3.7-evidence-pack`, bu sürümde yok |
 
@@ -90,8 +92,8 @@ Tablolarda kısaltılarak anılan kanıtlar:
 | Md. 23 — 72 saat olay bildirimi | Farkına varma + 72 saat sayacı | K10 | Karşılanıyor |
 | Md. 23 — 1 ay nihai rapor | Bildirim + 1 ay sayacı; rapor taslağı | K10 | Karşılanıyor |
 | Md. 21 — olay ele alma | Vaka yönetimi, onaylı müdahale | K7, K9 | Karşılanıyor |
-| Md. 21 — iş sürekliliği, yedek yönetimi | Şifreli yedek ve test geri yükleme | K11 | Kısmi (Kubernetes'te zamanlanmış yedek Planlı — `wp/w3.9-daemon-standby`, bu sürümde yok) |
-| Md. 21 — tedarik zinciri güvenliği | İmzalı kurulum paketi; CI'da imaj taraması | K3 | Kısmi — SBOM ve imzalı imajlar Planlı — dal yok, W4.7, bu sürümde yok |
+| Md. 21 — iş sürekliliği, yedek yönetimi | Şifreli yedek ve test geri yükleme; Helm yedek CronJob'u; daemon sıcak yedeği | K11, K15 | Kısmi — CronJob varsayılan kapalı, döküm şifresiz (R17) |
+| Md. 21 — tedarik zinciri güvenliği | İmzalı kurulum paketi; CI'da imaj taraması | K3 | Kısmi — SBOM ve imzalı imajlar Planlı — `wp/w4.7-release`, bu sürümde yok |
 | Md. 21 — kriptografi politikaları | Kriptografi envanteri (güvenlik teknik belgesi §8) | — | Kısmi — FIPS modu Planlı — `wp/w3.10-fips`, bu sürümde yok |
 | Md. 21 — erişim denetimi, çok faktörlü kimlik doğrulama | Rol matrisi, TOTP MFA | K4, K5 | Kısmi — MFA zorunlu kılınamaz; SSO Planlı — `wp/w1.9-oidc`, bu sürümde yok |
 
@@ -102,31 +104,31 @@ Tablolarda kısaltılarak anılan kanıtlar:
 | Bilgi güvenliği yönetimi, olay yönetimi | Alarm triage, vaka yönetimi, SLA izleme | K9 | Karşılanıyor (süreç kurumun) |
 | İz kayıtları ve bütünlüğü | Defter zinciri; ayar/vaka/onay kayıtları | K6–K9 | Kısmi — Planlı — `wp/w1.10-audit-chain`, `wp/w3.6-audit-export`, bu sürümde yok |
 | Kimlik doğrulama ve erişim yönetimi | Rol matrisi, MFA, kilitleme, oturum iptali | K4, K5 | Kısmi (MFA zorunlu kılınamaz) |
-| Görevler ayrılığı | Onay yetkisinin rolle sınırlanması | K4, K7 | Kısmi — dört göz Planlı — `wp/w3.2-sod`, bu sürümde yok |
-| Yedekleme ve iş sürekliliği | Şifreli yedek, test geri yükleme | K11 | Kısmi |
+| Görevler ayrılığı | Onay yetkisinin rolle sınırlanması; kimlik eylemlerinde iki onaylayıcı | K4, K7 | Kısmi — farklı rol koşulu Planlı — `wp/w3.2-sod`, bu sürümde yok |
+| Yedekleme ve iş sürekliliği | Şifreli yedek, test geri yükleme, Helm yedek CronJob'u, daemon sıcak yedeği | K11, K15 | Kısmi (R17) |
 | Dış hizmet alımı | Yerel model, egress kanıtı | K1, K2 | Karşılanıyor (air-gap profiliyle) |
 
 ## ISO/IEC 27001:2022 — Ek A kontrolleri
 
 | Kontrol | AutoSecOps özelliği (bu sürüm) | Kanıt | Durum |
 |---|---|---|---|
-| A.5.3 Görevler ayrılığı | Onay yetkisi rolle sınırlı | K4, K7 | Kısmi — Planlı — `wp/w3.2-sod`, bu sürümde yok |
+| A.5.3 Görevler ayrılığı | Onay yetkisi rolle sınırlı; kimlik eylemlerinde iki onaylayıcı | K4, K7 | Kısmi — farklı rol koşulu Planlı — `wp/w3.2-sod`, bu sürümde yok |
 | A.5.15 Erişim denetimi / A.5.18 Erişim hakları | Rol matrisi, rota başına izin, rol atama kısıtı | K4, K5 | Karşılanıyor |
 | A.5.16 Kimlik yönetimi | Yerel hesap yaşam döngüsü, hizmet hesabı Viewer'a kilitli | K5 | Kısmi — SSO Planlı — `wp/w1.9-oidc`, bu sürümde yok |
 | A.5.17 Kimlik doğrulama bilgisi / A.8.5 Güvenli kimlik doğrulama | Parola politikası, bcrypt, TOTP, kilitleme | K5 | Kısmi (MFA zorunlu değil) |
-| A.5.21 BİT tedarik zinciri | İmzalı paket, Trivy, Dependabot | K3 | Kısmi — SBOM Planlı — dal yok, W4.7, bu sürümde yok |
+| A.5.21 BİT tedarik zinciri | İmzalı paket, Trivy, Dependabot | K3 | Kısmi — SBOM Planlı — `wp/w4.7-release`, bu sürümde yok |
 | A.5.24–A.5.26 Olay yönetimi planlama, değerlendirme, müdahale | Triage, vaka, onaylı müdahale, eylem zaman çizelgesi | K7, K9 | Karşılanıyor |
 | A.5.28 Kanıt toplama | Gözetim zinciri dışa aktarımı, defter zinciri | K8, K13 | Kısmi — kanıt paketi Planlı — `wp/w3.7-evidence-pack`, bu sürümde yok |
 | A.5.33 Kayıtların korunması | Defter salt ekleme + hash zinciri | K8 | Kısmi — Planlı — `wp/w1.10-audit-chain`, bu sürümde yok |
-| A.5.34 Kişisel verilerin gizliliği | Yerel işleme, egress kanıtı | K1 | Kısmi — saklama/imha Planlı — `wp/w3.5-retention`, bu sürümde yok |
+| A.5.34 Kişisel verilerin gizliliği | Yerel işleme, egress kanıtı, saklama ve imha | K1, K14 | Kısmi — bulut sağlayıcı seçilirse yurt dışı aktarım (R15) |
 | A.8.2 Ayrıcalıklı erişim hakları | Admin/Manager izinleri, `DEV_MODE` uyarısı | K4 | Karşılanıyor |
-| A.8.10 Bilgi silme | Elle silme uçları | — | Planlı — `wp/w3.5-retention`, bu sürümde yok |
-| A.8.13 Bilgi yedekleme | Şifreli, doğrulanan yedek; test geri yükleme | K11 | Karşılanıyor (Compose/host); Kubernetes Planlı — `wp/w3.9-daemon-standby`, bu sürümde yok |
+| A.8.10 Bilgi silme | Saklama politikası, imha işi, yasal saklama, imha tutanağı | K14 | Karşılanıyor (politikalar kurumun) |
+| A.8.13 Bilgi yedekleme | Şifreli, doğrulanan yedek; test geri yükleme; Helm yedek CronJob'u | K11, K15 | Karşılanıyor (Compose/host); Kısmi (Kubernetes: CronJob açılmalı, döküm şifresiz) |
 | A.8.15 Kayıt tutma | Ayar, vaka, onay, defter kayıtları | K6–K9 | Kısmi — SIEM aktarımı Planlı — `wp/w3.6-audit-export`, bu sürümde yok |
 | A.8.16 İzleme faaliyetleri | Ürünün kendisi (alarm triage); kanarya ve QA ile ölçüm | K12 | Karşılanıyor |
 | A.8.20 Ağ güvenliği / A.8.22 Ağların ayrılması | NetworkPolicy, küme içi egress, daemon webhook CIDR kısıtı | K2 | Karşılanıyor (air-gap profiliyle) |
 | A.8.24 Kriptografi kullanımı | Kriptografi envanteri | — | Kısmi — FIPS Planlı — `wp/w3.10-fips`, bu sürümde yok |
-| A.8.25–A.8.29 Güvenli geliştirme ve test | Bağımsız doğrulayıcı, CI ratchet'leri, güvenlik testleri | CI kayıtları | Kısmi — dış pentest Planlı — dal yok, W4.4, bu sürümde yok |
+| A.8.25–A.8.29 Güvenli geliştirme ve test | Bağımsız doğrulayıcı, CI eşik testleri (ratchet), güvenlik testleri | CI kayıtları | Kısmi — dış pentest Planlı — dal yok, W4.4, bu sürümde yok |
 | A.8.32 Değişiklik yönetimi | Ayar değişikliği kaydı | K6 | Kısmi (rol izinlerinin veritabanında değişimi kaydedilmez) |
 
 ## Denetçiye sunum için öneri paketi (bu sürüm)
@@ -135,5 +137,7 @@ Tablolarda kısaltılarak anılan kanıtlar:
 2. K1 ve K3 çıktıları (kurulum günü).
 3. K4 ve K5 (rol matrisi, kullanıcı/MFA listesi).
 4. Seçilmiş bir vaka için K7, K9, K10, K13 ve ilgili koşular için K8 doğrulaması.
-5. Son K11 test geri yükleme çıktısı.
-6. [Tehdit modeli — açık riskler](tehdit-modeli.md#açık-riskler) ve her biri için kurumun telafi edici kontrolü.
+5. Son K11 test geri yükleme çıktısı ve (Kubernetes'te) K15.
+6. K14: saklama politikaları ve son periyodik imha tutanağı.
+7. [Tehdit modeli — açık riskler](tehdit-modeli.md#açık-riskler) ve her biri için kurumun telafi edici kontrolü.
+   Kritik R26 için düzeltme birleşene kadar uygulanan önlemi ayrıca gösterin.

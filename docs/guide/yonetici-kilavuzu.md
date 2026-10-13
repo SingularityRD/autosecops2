@@ -1,15 +1,18 @@
 # Yönetici kılavuzu
 
 > **English summary.** Day-to-day administration of AutoSecOps at `main` @
-> `b38f6fdb`: the five built-in roles and their permissions, local accounts with
+> `167f7b77`: the five built-in roles and their permissions, local accounts with
 > TOTP MFA, lockout and session revocation (SSO is planned, not in this
 > release), integrations and where their credentials are stored, the response
-> approval flow (single human approver; only Cloudflare actions execute in this
-> release; four-eyes and the executor registry are planned), the Assist/Act
-> autonomy switch and the recommended regulated-sector setting
-> `DAEMON_FORCE_APPROVAL=true`, what data is aged out today (retention policies
-> are planned), which audit records exist and how to read and verify them, and
-> encrypted restic backups with tested restore.
+> approval flow (human approval, response policy with protected assets and
+> hourly limits, executor registry for Cloudflare / Defender / Entra ID /
+> PAN-OS, TTL expiry and revert, two approvers for identity actions; approved
+> agent MCP tools bypass that policy, an open risk), the Assist/Act autonomy
+> switch and the recommended regulated-sector setting
+> `DAEMON_FORCE_APPROVAL=true`, retention policies, KVKK purge and legal hold,
+> which audit records exist and how to read and verify them, encrypted restic
+> backups with tested restore, and the Helm backup CronJob and daemon hot
+> standby.
 
 Bu kılavuz, kurulumdan sonra AutoSecOps'u işleten yöneticiye yöneliktir. Kurulum
 için [internetsiz kurulum kılavuzu](kurulum-internetsiz.md), neyin bu sürümde
@@ -69,9 +72,19 @@ bunu değişiklik yönetimi sürecinize alın.
 | Giden webhook uç noktaları (`/api/webhook-endpoints`) | `settings.write` |
 | Düzenleyici sayaç ayarları (`/api/compliance/regulatory-clocks/config`) | okuma `settings.read`, yazma `settings.write` |
 | Vakada düzenleyici an kaydı (`POST /api/cases/{case_id}/regulatory/events`) | `cases.write` |
+| Uygulanmış eylemi geri alma (`POST /api/response/actions/{action_id}/revert`, gerekçe zorunlu) | `ai_decisions.approve` |
+| Saklama politikası, yasal saklama, imha çalıştırma (`/api/compliance/retention/...`) | okuma `settings.read`, yazma ve imha `settings.write` |
 
-Bu matris `tests/security/test_route_permissions.py` ile CI'da sabitlenir: listedeki
-her rota, izni olmayan bir kullanıcıya işleyiciye ulaşmadan 403 döner.
+CI'daki `tests/security/test_route_permissions.py` iki şeyi sınar. Birincisi,
+testin rota listesindeki her rota, izni olmayan bir kullanıcıya 403 döner. Bu
+listede yukarıdaki tablonun onay, geri alma, iş akışı sürdürme, QA, kanarya, giden
+webhook, saklama, entegrasyon kaydetme ve tüm bulguları silme rotaları vardır.
+Kullanıcı yönetimi (`/api/users/`) ve düzenleyici sayaç rotaları bu listede
+**yoktur**. Bu rotaların izin denetimi kodda vardır ama bu testle sabitlenmez.
+İkincisi, API'deki her yazma rotası ya bir izin bağımlılığı taşır ya da
+gözden geçirilmiş `tests/security/auth_only_write_routes.txt` listesindedir. O
+listedeki rotalar yalnızca oturum ister; bazıları (ör. kural kaynakları) bugün
+Viewer'a açıktır (bkz. [tehdit modeli R26, R28](tehdit-modeli.md#açık-riskler)).
 
 ### Rol atama kuralları
 
@@ -124,8 +137,11 @@ düzenli olarak kullanıcıların `mfa_enabled` alanını denetleyin.
 kodu uçları dakikada 5; parola sıfırlama isteği saatte 3, sıfırlamanın tamamlanması
 saatte 5 ile sınırlıdır.
 
-**SSO.** OIDC ile tek oturum açma (Entra ID, Okta, Keycloak; grup → rol eşlemesi;
-yerel acil erişim hesabı) bu sürümde yoktur (Planlı — `wp/w1.9-oidc`, bu sürümde yok). SAML, OIDC aracı (Keycloak/Dex) üzerinden karşılanacaktır.
+**SSO.** Bu sürümde OIDC ile tek oturum açma yoktur. Entra ID, Okta ve Keycloak
+desteği, grup → rol eşlemesi ve yerel acil erişim hesabı birlikte gelecektir
+(Planlı — `wp/w1.9-oidc`, bu sürümde yok).
+SAML ihtiyacı o pakette bir OIDC aracı (Keycloak/Dex) üzerinden karşılanacaktır
+(Planlı — `wp/w1.9-oidc`, bu sürümde yok).
 
 ## Entegrasyonlar
 
@@ -149,6 +165,9 @@ yerel acil erişim hesabı) bu sürümde yoktur (Planlı — `wp/w1.9-oidc`, bu 
   kendi MCP yüzeyi `VIGIL_MCP_ENABLED=false` ile kapalı gelir.
 - Air-gap'te bir entegrasyonu açtığınızda hedefinin küme içinde ya da
   `networkPolicies.egress.extraCIDRs` listesinde olması gerekir.
+- Defender, Entra ID ve Palo Alto entegrasyonları açıkken müdahale yürütücüleri de
+  kayda alınır. Kayıt defteri API ve daemon açılışında bir kez kurulur; bu
+  entegrasyonları açtıktan ya da kapattıktan sonra iki servisi yeniden başlatın.
 
 **Giden webhook'lar ve bildirimler.** Uç noktalar `/api/webhook-endpoints` ile
 yönetilir (`settings.write`); imza anahtarı yalnızca oluştururken bir kez döner ve
@@ -163,56 +182,101 @@ link-local hedefler reddedilir, bulut metadata adresi her durumda reddedilir),
 
 ### Bir eylemin yaşam döngüsü (bu sürüm)
 
-1. **Öneri.** Daemon'un yanıtlayıcısı, orkestratör ya da bir iş akışı bir eylem
-   önerir; `approval_actions` tablosuna bir satır yazılır (eylem tipi, hedef, güven,
-   gerekçe, geri alınabilirlik, tekrar önleme anahtarı).
+1. **Öneri.** Daemon'un yanıtlayıcısı, orkestratör, bir iş akışı ya da MCP aracı
+   `create_approval_action` bir eylem önerir. Öneri, satır oluşmadan önce müdahale
+   politikasından geçer: korunan bir varlığa yönelen ya da saatlik sınırı aşan öneri
+   hiç oluşmaz. Geçen öneri `approval_actions` tablosuna yazılır (eylem tipi, hedef,
+   güven, gerekçe, geri alınabilirlik, tekrar önleme anahtarı).
 2. **Onay kapısı.** Satırın insan beklemesi gerekip gerekmediğine kod karar verir ve
    kararı veren kuralı satıra yazar (ör. `response.confidence_threshold=0.90 met (0.92)`):
    - `DAEMON_FORCE_APPROVAL=true` ya da konsolda Assist → her eylem insan bekler;
-   - geri alınamaz eylem → her zaman insan bekler;
+   - geri alınamaz eylem → her zaman insan bekler, hiçbir zaman otomatik onaylanmaz;
    - geri alınabilir eylem → güven `DAEMON_CONFIDENCE_THRESHOLD` (0.90) altındaysa
      insan bekler.
-3. **Karar.** `ai_decisions.approve` iznine sahip **tek bir kişi** onaylar ya da
-   gerekçeyle reddeder (konsolda onay kuyruğu / "Needs you"). Onaylayanın adı ve
-   zamanı satıra yazılır.
-4. **Uygulama.** Daemon'un yanıtlayıcı döngüsü onaylı satırları uygular. **Bir
-   kişinin onaylamadığı satır uygulanmaz**: yalnızca güven eşiğiyle "onaylı" sayılan
-   bir eylem loglanır ve atlanır. Bu sürümde gerçekten uygulanan eylemler Cloudflare
-   eylemleridir (`waf_block`, `gateway_block`, `access_revoke`). `isolate_host`
-   onaylansa bile "No EDR executor is configured" ile `failed` kaydedilir; hiçbir
-   eylem başarılı gibi gösterilmez.
-5. **İzleme.** Vaka sayfasındaki **Actions** sekmesi önerildi → onaylandı → uygulandı
+3. **Karar.** `ai_decisions.approve` iznine sahip bir kişi onaylar ya da gerekçeyle
+   reddeder (konsolda onay kuyruğu / "Needs you"). Onaylayanın adı ve zamanı satıra
+   yazılır. Kimlik eylemleri (`disable_user`, `revoke_sessions`) **iki farklı kişi**
+   ister: ilk onay satırı `pending` bırakır, ikinci onay farklı bir kullanıcıdan
+   gelmelidir (büyük/küçük harf duyarsız karşılaştırma). Aynı kişinin ikinci onayı
+   409 ile reddedilir.
+4. **Uygulama.** Daemon'un yanıtlayıcı döngüsü onaylı satırları uygular. Her satır
+   önce yeniden politikadan, sonra yürütücü kayıt defterinden geçer. **Bir kişinin
+   onaylamadığı satır uygulanmaz**: yalnızca güven eşiğiyle "onaylı" sayılan bir
+   eylem loglanır ve atlanır. Politika reddi satırı `failed` yapar
+   (`policy_refused: ...`). Kayıtlı yürütücüler: Cloudflare (`waf_block`,
+   `gateway_block`, `access_revoke`) her zaman; Defender (`isolate_host`), Entra ID
+   (`disable_user`, `revoke_sessions`) ve PAN-OS (`block_ip`) entegrasyon etkinse.
+   `isolate_host` için yürütücü yoksa satır "No EDR executor is configured" ile
+   `failed` kaydedilir; hiçbir eylem başarılı gibi gösterilmez.
+5. **Doğrulama ve süre dolumu.** Yürütücü eylemden sonra sonucu doğrular. Geri
+   alınabilir eylemin bir süresi vardır: öneriyle gelen `ttl_seconds` (30 güne
+   kadar; geçersiz değer öneriyi reddeder) ya da yürütücünün varsayılanı
+   (Cloudflare için 24 saat). Süresi dolan eylemi daemon geri alır, doğrular ve
+   geri alma satırını (`reverse_of`) `approval_actions`'a yazar.
+6. **Elle geri alma.** Actions sekmesindeki **Revert** düğmesi
+   `POST /api/response/actions/{action_id}/revert`'i çağırır (`ai_decisions.approve`,
+   gerekçe zorunlu). Geri alınamaz eylem, yürütülmemiş eylem ya da zaten geri
+   alınmış eylem 409 alır; geri alma ya da doğrulama başarısızsa 502 döner ve
+   ayrıntısı konsolda gösterilir.
+7. **İzleme.** Vaka sayfasındaki **Actions** sekmesi önerildi → onaylandı → uygulandı
    → doğrulandı → süresi doldu/geri alındı adımlarını ve kararı veren kuralı gösterir
    (`GET /api/cases/{case_id}/actions/timeline`).
-6. **Süre aşımı.** Yanıtlanmayan onay istekleri `DAEMON_APPROVAL_EXPIRY_DAYS` (7) gün
+8. **Süre aşımı.** Yanıtlanmayan onay istekleri `DAEMON_APPROVAL_EXPIRY_DAYS` (7) gün
    sonra daemon'un temizlik döngüsünde süresi dolmuş sayılır.
 
 Kuru çalıştırma için `DAEMON_DRY_RUN=true`: eylemler loglanır, uygulanmaz.
+
+### Müdahale politikasının ayarları
+
+Politika `system_config` tablosundaki `response.policy` satırından (JSON) okunur;
+konsolda bunun için bir ekran yoktur. Anahtarlar:
+
+| Anahtar | Anlamı | Varsayılan |
+|---|---|---|
+| `protected_targets` | Hiçbir eylemin hedef alamayacağı host, hesap, IP ya da aralıklar | boş |
+| `protected_tags` | Bu etiketi taşıyan varlık korunur (varsayılanlara eklenir) | `domain_controller`, `protected`, `break_glass`, `tier0`, `critical_infrastructure` |
+| `asset_tags` | Varlık → etiket listesi eşlemesi | boş |
+| `hourly_limits`, `default_hourly_limit` | Tür başına saatlik en çok eylem | `isolate_host`, `disable_user`, `revoke_sessions` için 10; diğerleri 20 |
+| `four_eyes_types` | İki onaylayıcı isteyen türler (varsayılanlara eklenir) | `disable_user`, `revoke_sessions` |
+
+Korunan varlık eşleşmesi host adlarında büyük/küçük harfe, sondaki noktaya ve
+`DOMAIN\` önekine duyarsızdır; tam ad da kısa ad da eşleşir. IP adresleri ve
+aralıklar örtüşmeyle eşleşir; IPv4'te /24'ten, IPv6'da /64'ten geniş bir aralık
+hedefi her durumda reddedilir. Satır okunamazsa politika "degraded" olur ve
+**her eylem reddedilir**. Yürütücülerin kendi güvenlik kuralları (korunan roller,
+yönetim IP'si, TTL üst sınırı, tek makineye çözümleme)
+[Defender](../../core/integrations/microsoft_defender/EXECUTOR.md),
+[Entra ID](../../core/integrations/azure_ad/EXECUTOR.md) ve
+[Palo Alto](../../core/integrations/palo_alto/EXECUTOR.md) belgelerinde yazılıdır.
 
 ### Araçların etki sınıfları
 
 Ajanların ve sohbetin kullanabildiği her araç `core/llm/tool_effects.py` tablosundan
 bir sınıf alır: `read_only`, `records`, `approval`, `decision`, `write`,
-`destructive`. `write` ve `destructive` araçlar her yüzeyde yalnızca onay hattından
-geçerek çalışır: sohbet bunları hiç sunmaz; iş akışları onay checkpoint'inde park
-eder; `/internal/tools/invoke` onaylanmış checkpoint olmadan reddeder. Tabloda
-olmayan bir araç en kısıtlayıcı sınıfa (`destructive`) düşer. Bu kural CI'da
-`tests/unit/_ratchets/test_no_ungated_write_tools.py` ile sayılır (kapısız yazma
-aracı = 0).
+`destructive`. `write` ve `destructive` araçlar ("onay gerektiren araçlar") her
+yüzeyde yalnızca bir kişinin yanıtladığı onay noktasından sonra çalışır. Sohbet bu
+araçları hiç sunmaz. İş akışları onay noktasında bekler. `/internal/tools/invoke`
+onaylanmış bir onay noktası olmadan çağrıyı reddeder. Tabloda olmayan bir araç,
+adı açıkça okuma fiiliyle başlamıyorsa en kısıtlayıcı sınıfa (`destructive`) düşer.
+Bu kural CI'da `tests/unit/_ratchets/test_no_ungated_write_tools.py` ile sayılır
+(onaysız yazma aracı = 0).
+
+**Dikkat — açık risk.** Onay noktası onaylandıktan sonra bir MCP aracı (ör.
+`mde_isolate`, `aad_disable_user`, `pan_block_ip`, `cb_quarantine`,
+`cf_waf_block_ip`) satıcı API'sini doğrudan çağırır. Bu yol yukarıdaki müdahale
+politikasından ve yürütücülerden geçmez. Korunan varlık listesi, saatlik sınır,
+süre dolumu, geri alma ve iki onaylayıcı kuralı burada uygulanmaz; onay tek
+kişiliktir ve araç argümanlarına bağlı değildir. Telafi: bu entegrasyonları iş
+akışlarında kullanmayın ya da bu araçları içeren iş akışı onaylarını yalnızca
+kıdemli kişilere verin (bkz. [tehdit modeli R2](tehdit-modeli.md#açık-riskler)).
 
 ### Bu sürümde olmayanlar
 
-- Yürütücü kayıt defteri, tipli eylem politikası, korunan varlık listesi, saatlik etki
-  sınırı, süre dolumunda otomatik geri alma ve Defender / Entra ID / Palo Alto
-  yürütücülerinin onay hattına bağlanması (Planlı — `wp/w2.4-executors-policy`, bu sürümde yok).
-- Dört göz onayı: aynı kişinin iki kez onaylayamaması (Planlı — `wp/w2.4-executors-policy`, bu sürümde yok) ve ikinci onaylayanın farklı rolde olması, görevler ayrılığı raporu (Planlı — `wp/w3.2-sod`, bu sürümde yok). `approval_actions` tablosunda `second_approver` sütunu vardır ama bu sürümde hiçbir kod onu doldurmaz.
-- Actions sekmesindeki **Revert** düğmesinin çağırdığı sunucu ucu (Planlı — `wp/w2.4-executors-policy`, bu sürümde yok); bugün düğme "Revert is not available on this AutoSecOps server yet." bilgisini gösterir.
-
-Yürütücülerin kendi güvenlik kuralları (korunan roller, yönetim IP'si, TTL üst
-sınırı, tek makineye çözümleme) bağlandıklarında geçerli olacaktır ve
-[Defender](../../core/integrations/microsoft_defender/EXECUTOR.md),
-[Entra ID](../../core/integrations/azure_ad/EXECUTOR.md),
-[Palo Alto](../../core/integrations/palo_alto/EXECUTOR.md) belgelerinde yazılıdır.
+- İkinci onaylayanın farklı rolde olması ve görevler ayrılığı raporu
+  (Planlı — `wp/w3.2-sod`, bu sürümde yok).
+  Bugün iki onaylayıcı kuralı yalnızca kişileri ayırır, rolleri değil.
+- Kategori × eylem sınıfı başına otonomi katmanları
+  (Planlı — `wp/w3.1-autonomy`, bu sürümde yok).
 
 ## Otonomi
 
@@ -228,10 +292,10 @@ Bu sürümde otonomi iki anahtarla belirlenir; konsolun üst çubuğundaki çip 
 
 **Düzenlenmiş sektör için önerilen ayar:** `DAEMON_FORCE_APPROVAL=true` (Helm:
 `config.DAEMON_FORCE_APPROVAL`) ve `DAEMON_AUTO_RESPONSE=true` (aksi halde onaylanan
-eylemler de uygulanmaz). Böylece "ortam kazanır" ve konsoldan Act'e
-geçilemez. Kodun varsayılanı Act görünse de, yukarıda anlatıldığı gibi bu sürümde
-bir kişinin onaylamadığı eylem uygulanmaz; ayar, bu davranışı yapılandırma
-düzeyinde de sabitler ve denetçiye gösterilebilir kılar.
+eylemler de uygulanmaz). Böylece "ortam kazanır" ve konsoldan Act'e geçilemez.
+Kodun varsayılanı Act görünür. Yine de yukarıda anlatıldığı gibi bir kişinin
+onaylamadığı eylem uygulanmaz. Ayar bu davranışı yapılandırma düzeyinde de sabitler
+ve denetçiye gösterilebilir kılar.
 
 Diğer otonomi düğmeleri:
 
@@ -242,11 +306,17 @@ Diğer otonomi düğmeleri:
 - **Alarm şeritleri**: `ALERT_LANES_ENABLED=false` varsayılan; açıkken eşikler
   `INTENT.md`'nin `alert_lanes:` bölümünden okunur ve uygulanır, kural şeridi
   `suppression_rules` tablosunu okur. Bütçe baskısında hiçbir alarm düşürülmez.
+- **Verdict run** (tek alarm için kısa, eleştirmenli soruşturma; sonucu karar
+  şemasına uyar): `VERDICT_RUN_ENABLED=false` varsayılan. Bütçe:
+  `VERDICT_RUN_MAX_ITERATIONS` (4), `VERDICT_RUN_MAX_COST_USD` (1.0),
+  `VERDICT_RUN_MAX_WALL_MS` (300000). Bu sürümde daemon verdict run başlatmaz:
+  alarm şeritlerinin verdict şeridine bir kuyruklayıcı bağlı değildir. Bayrak açık
+  olsa bile koşu yalnızca `alert-verdict` iş akışı elle çalıştırılınca oluşur.
 - **Beyan edilen niyet (`INTENT.md`)**: diğer anahtarlar için yalnızca gözlem
   modundadır; daemon açılışta beyan ile etkin değer arasındaki farkı loglar, hiçbir
   şeyi uygulamaz. Elle kontrol: `python -m services.daemon.intent`.
 - Kategori × eylem sınıfı başına otonomi katmanları, devre kesici ve "yalnızca insan
-  yükseltir" kuralı bu sürümde yoktur (Planlı — `wp/w3.1-autonomy`, bu sürümde yok).
+  yükseltir" kuralı (Planlı — `wp/w3.1-autonomy`, bu sürümde yok).
 
 ### Kalite ölçümü: kanarya ve QA
 
@@ -264,22 +334,51 @@ Diğer otonomi düğmeleri:
 
 ## Saklama ve imha
 
-Bu sürümde **otomatik saklama politikası yoktur**. Bugünkü davranış:
+Saklama ve imha veri sınıfı başınadır. Ayrıntılı başvuru:
+[core/compliance/RETENTION.md](../../core/compliance/RETENTION.md) (hukuki görüş
+değildir).
+
+- **Veri sınıfları:** `findings`, `raw_events`, `cases`, `case_evidence`,
+  `chat_conversations`, `llm_logs`, `agent_ledger`, `audit_logs`, `uploads`
+  (`GET /api/compliance/retention/classes`).
+- **Politika:** sınıf başına saklama süresi ve yöntem (`delete` ya da `anonymise`),
+  `PUT /api/compliance/retention/policies/{data_class}` (`settings.write`).
+  **Politikası olmayan sınıf hiçbir zaman işlenmez.** Kurulumda politika yoktur.
+- **Yasal saklama:** `PUT /api/compliance/retention/legal-holds/cases/{case_id}`
+  (gerekçe zorunlu). Vaka ve ona bağlı bulgu, kanıt, sohbet, LLM ve denetim kayıtları
+  her sınıfta imhadan dışlanır. Açık (çözülmemiş) bir vaka da bağlı kayıtlarını korur.
+- **İmha işi:** `POST /api/compliance/retention/purge`; gövdede `dry_run`
+  varsayılanı `true`'dur. Zamanlanmış çalıştırma için `RETENTION_PURGE_ENABLED=true`
+  (varsayılan kapalı); açıldığında da `RETENTION_PURGE_DRY_RUN=true` varsayılandır.
+  Gerçekten silmek için bunu bilinçli olarak `false` yapın. Diğer ayarlar:
+  `RETENTION_PURGE_INTERVAL` (86400 sn), `RETENTION_PURGE_BATCH_SIZE` (500),
+  `RETENTION_PURGE_MAX_BATCHES` (20). Sıcak yedekli kurulumda iş yalnızca lider
+  daemon'da çalışır.
+- **İmha tutanağı:** her gerçek çalıştırma, politika ve yasal saklama değişikliği
+  `config_audit_log`'a yazılır. KVKK periyodik imha tutanağı bu kayıtlardan üretilir:
+  `GET /api/compliance/retention/reports` (`format=json` ya da `markdown`).
+- **Ajan defteri** (`agent_ledger`, hash zincirli) otomatik imha edilmez. Zincir
+  doğrulamalı arşiv `GET /api/compliance/retention/agent-ledger/archive` ile alınır;
+  arşivden sonra kesme, belgelenmiş elle yapılan bir veritabanı sahibi işlemidir.
+
+Sınırlar: imha geri alınamaz; bu yüzden önce kuru çalıştırma çıktısını inceleyin ve
+gerçek çalıştırmadan önce yedek alın. Politikalar yalnızca `default` kiracısı için
+geçerlidir ve bu sürümde yalnız API ile yönetilir (konsol ekranı yoktur).
+`config_audit_log` hash zincirinde değildir (bkz. [tehdit modeli R6](tehdit-modeli.md#açık-riskler)).
+
+Saklama politikası dışındaki otomatik davranışlar:
 
 | Veri | Ne olur |
 |---|---|
-| Bulgular, vakalar, soruşturmalar, ajan defteri | Otomatik silinmez |
 | Yanıtlanmayan onay istekleri | `DAEMON_APPROVAL_EXPIRY_DAYS` (7) gün sonra süresi dolar (satır kalır) |
 | Epizodik bellek okuma günlüğü | `DAEMON_CLEANUP_RETENTION_DAYS` (90) gün sonra silinir |
-| Bifrost istek günlüğü (`logs.db`) | Bifrost veri dizininde durur; yedeklere girmez |
+| Bifrost istek günlüğü (`logs.db`) | Bifrost veri dizininde durur; yedeklere ve imha işine girmez |
 
-Elle silme yolları: tek vaka silme (`cases.delete`), tüm bulguları silme
-(`DELETE /api/findings/all`, `findings.delete`), tüm soruşturmaları temizleme
-(`POST /api/orchestrator/investigations/purge`, `settings.write`). Bu silmeler
-geri alınamaz ve bu sürümde zincirli bir imha kaydı üretmez.
-
-Veri sınıfı başına saklama süresi, KVKK periyodik imhası, vakada yasal saklama
-bayrağı ve imha raporu (Planlı — `wp/w3.5-retention`, bu sürümde yok). `retention_policies` tablosu şemada vardır ama bu sürümde okunmaz.
+Elle silme yolları da vardır: tek vaka silme (`cases.delete`), tüm bulguları silme
+(`DELETE /api/findings/all`, `findings.delete`) ve tüm soruşturmaları temizleme
+(`POST /api/orchestrator/investigations/purge`, `settings.write`). Bu silmeler geri
+alınamaz, yasal saklamaya bakmaz ve imha tutanağına girmez. Düzenlenmiş kurulumda
+imhayı yalnızca imha işiyle yapın.
 
 ## Denetim kayıtları ve dışa aktarım
 
@@ -302,20 +401,26 @@ cd services/agent && npm run ledger:verify -- --run-id <uuid>
 Çıktı ilk kırılan satırı (`run_id`, `seq`, neden: `prev_hash` ya da `payload`) ya da
 toplam olay/koşu sayısını verir.
 
-Bu sürümde **olmayanlar**: denetim ve defter olaylarının syslog (RFC 5424/TLS) ya da
-HTTPS ile müşterinin SIEM'ine akışı (Planlı — `wp/w3.6-audit-export`, bu sürümde yok); onay ve vaka denetim kayıtlarının hash zincirine alınması ve zincir başlarının Ed25519 imzalı kontrol noktası (Planlı — `wp/w1.10-audit-chain`, bu sürümde yok); vaka başına imzalı kanıt paketi (Planlı — `wp/w3.7-evidence-pack`, bu sürümde yok).
+Bu sürümde **olmayanlar**:
+
+- Denetim ve defter olaylarının syslog (RFC 5424/TLS) ya da HTTPS ile SIEM'e akışı
+  (Planlı — `wp/w3.6-audit-export`, bu sürümde yok).
+- Onay ve vaka denetim kayıtlarının hash zincirine alınması, Ed25519 imzalı kontrol
+  noktası (Planlı — `wp/w1.10-audit-chain`, bu sürümde yok).
+- Vaka başına imzalı kanıt paketi (Planlı — `wp/w3.7-evidence-pack`, bu sürümde yok).
+
 Geçiş döneminde SIEM'e aktarım için yukarıdaki tabloları salt okuma yetkili bir
 veritabanı rolüyle periyodik okumanızı öneririz.
 
 ## Yedekleme ve geri yükleme
 
-`python -m core.backup` PostgreSQL'in tutarlı bir dökümünü (`pg_dump -Fc`), durum
-dizinini (`secrets.enc` ve `master.key` dahil), soruşturma çalışma dizinini,
-`INTENT.md`'yi, depo kökündeki `.env`'i (varsa) ve isteğe bağlı olarak Bifrost veri
-dizinini **şifreli bir restic deposuna** yazar ve dönmeden önce anlık görüntüyü
-doğrular; doğrulanamayan anlık görüntü silinir. Sır deposu ile anahtarı aynı
-yedektedir: yedeğin gizliliği restic parolasına bağlıdır, parolayı yedekten ayrı
-saklayın.
+`python -m core.backup` şunları **şifreli bir restic deposuna** yazar:
+PostgreSQL'in tutarlı bir dökümü (`pg_dump -Fc`), durum dizini (`secrets.enc` ve
+`master.key` dahil), soruşturma çalışma dizini, `INTENT.md`, depo kökündeki `.env`
+(varsa) ve isteğe bağlı olarak Bifrost veri dizini. Komut dönmeden önce anlık
+görüntüyü doğrular; doğrulanamayan anlık görüntü silinir. Sır deposu ile anahtarı
+aynı yedektedir. Bu yüzden yedeğin gizliliği restic parolasına bağlıdır; parolayı
+yedekten ayrı saklayın.
 
 ### Docker Compose / tek sunucu
 
@@ -336,17 +441,41 @@ Zamanlanmış yedek için Compose'daki `backup` servisi durum dizinindeki
 (14), `default`, `must_be_mount`, `env`. Dosya yoksa servis bekler. Sürüm yükseltmeden
 önce `backup-pre-upgrade` servisi varsayılan hedefe otomatik anlık görüntü alır.
 
-Geri yükleme (`--test` olmadan) değiştirme sonrası şunları yapar: JWT anahtarını
-döndürür (tüm oturumlar düşer), MFA sırlarını yeni anahtarla yeniden şifreler,
-bekleyen onayları reddeder ve bir denetim satırı yazar. Bu sayede eski bir anlık
-görüntüden "geri dönen" bir onay istemi uygulanamaz.
+Geri yükleme (`--test` olmadan) veritabanını değiştirdikten sonra bekleyen onayları
+reddeder ve `config_audit_log`'a bir satır yazar. Eski JWT anahtarını bulabildiğinde
+MFA sırlarını yeni anahtarla yeniden şifreler. Bu sayede eski bir anlık görüntüden "geri dönen" bir onay istemi
+uygulanamaz. JWT anahtarının döndürülmesi anahtarın nerede tutulduğuna bağlıdır:
+
+| `JWT_SECRET_KEY` nerede | Geri yüklemenin yaptığı | Sizin yapmanız gereken |
+|---|---|---|
+| `secrets.enc`, depo kökündeki `.env` ya da durum dizinindeki `jwt_secret` | Yeni anahtarı oraya yazar; yeniden başlatmadan sonra tüm oturumlar düşer | Servisleri yeniden başlatın |
+| Yalnızca ortam değişkeni (ör. Compose'a verilen ortam) | Yeni anahtarı `secrets.enc`'e yazar ve bunu çıktıda söyler. Ortam değeri `secrets.enc`'ten önce okunduğu için eski anahtar geçerli kalır | Compose'un okuduğu ortamdaki `JWT_SECRET_KEY`'i silin ya da değiştirin, sonra `up`; yapmazsanız **eski oturumlar geçerli kalır** |
+| Bu kurulumun dışında (ör. Kubernetes Secret) ve sürece verilmemiş | Anahtarı döndürmez; onayları reddeder, denetim satırını yazar ve hata ile çıkar | Anahtarı tanımlandığı yerde (Secret/kasa) döndürün ve pod'ları yeniden başlatın |
 
 Doğrudan kullanım: `python -m core.backup create --repo ... --passphrase-file ...`,
 `python -m core.backup restore ... --test`, `python -m core.backup run`.
 
 ### Kubernetes
 
-Helm grafiğinde bu sürümde zamanlanmış yedek CronJob'u yoktur (Planlı — `wp/w3.9-daemon-standby`, bu sürümde yok). Postgres PVC'sinin depolama düzeyinde anlık görüntüsünü ya da kurumunuzun PostgreSQL yedek aracını kullanın; kimlik bilgilerini Secret/ExternalSecrets ile verdiyseniz durum dizini yeniden üretilebilir.
+Helm grafiğinde `backup.enabled=true` ile bir yedek CronJob'u açılır (varsayılan
+**kapalı**). İş `pg_dump -Fc` ile döküm alır, dökümün tamamını okuyarak doğrular,
+PVC'ye yazar, sayı (`backup.keepLast`, 14) ve gün (`backup.retentionDays`, 30) ile
+saklama uygular. İsteğe bağlı olarak dökümü S3 uyumlu bir nesne deposuna yükler
+(`backup.objectStore`). Varsayılan zamanlama günlüktür (`backup.schedule`); RPO bu
+aralıktır. CronJob dökümü kendisi şifrelemez; PVC'nin ve nesne deposunun
+şifrelemesini kurum tarafında sağlayın. CronJob yalnızca veritabanını yedekler.
+Kimlik bilgilerini Secret/ExternalSecrets ile verdiyseniz durum dizini yeniden
+üretilebilir.
 
-RPO/RTO hedefleri (15 dk / 4 saat) ve otomatik geri yükleme testi plan hedefidir; bu
-sürümde ölçülmüş bir değer yoktur (Planlı — `wp/w3.9-daemon-standby`, bu sürümde yok).
+**Daemon sıcak yedeği.** Helm'de `daemon.leaderElection.enabled=true`
+varsayılandır ve daemon iki kopya çalışır. Postgres danışma kilidini alan kopya
+liderdir ve tüm döngüleri çalıştırır; diğeri bekler (`/health` → `"role": "standby"`).
+Lider düşerse diğeri birkaç saniyede, düğüm kaybında `leaseSeconds` + `retrySeconds`
+(varsayılan 15 + 2 sn) içinde devralır. Eski liderin veritabanı bağlantıları
+çitlenir. Compose ve tek sunucuda seçim kapalıdır (`DAEMON_LEADER_ELECTION_ENABLED`).
+
+RPO/RTO hedefleri, ölçüm yöntemi, geri yükleme prosedürü ve kalan riskler
+(veritabanı dışı yan etkiler çitlenmez):
+[docs/operations/rpo-rto.md](../operations/rpo-rto.md). Bu belgedeki süreler
+hedeftir. Devralma ve döküm/geri yükleme testlerle sınanır, ancak bir müşteri
+ortamında ölçülmüş RTO değeri yoktur; tatbikatı yapıp süreyi kaydedin.

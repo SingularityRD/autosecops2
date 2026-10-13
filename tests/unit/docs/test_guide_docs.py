@@ -8,9 +8,14 @@ Two checks, both over every ``docs/guide/*.md``:
   the code"): in inline code and fenced blocks, every environment variable,
   repository path, ``/api/...`` route, ``python -m`` module, ``npm run`` script
   and flag of ``install.sh`` / ``build-bundle.sh`` / ``start.sh`` /
-  ``python -m core.backup`` must exist in the tree at this commit. A line that
-  carrying the marker ``Planlı —`` documents an unmerged work package (and must
-  name its branch, ``wp/...``, or say ``dal yok``); it is skipped.
+  ``python -m core.backup`` must exist in the tree at this commit, and so must
+  every environment variable written in plain prose (``JWT_SECRET_KEY`` without
+  backticks). The marker ``Planlı —`` documents an unmerged work package (and
+  its line must name the branch, ``wp/...``, or say ``dal yok``). Only the
+  *segment* the marker governs is skipped: the parenthesis it sits in, else its
+  table cell, else its sentence. The rest of the line is checked, so a
+  present-tense claim cannot hide behind a marker on the same line, and a prose
+  line carrying the marker stays short (``PLANNED_LINE_MAX``).
 
 The ``detects_*`` tests feed a deliberately wrong document through the same
 checks so a checker that silently passes everything fails here.
@@ -33,6 +38,7 @@ pytestmark = pytest.mark.unit
 REPO = Path(__file__).resolve().parents[3]
 GUIDE = REPO / "docs" / "guide"
 PLANNED = re.compile(r"Planlı\s+—")
+PLANNED_LINE_MAX = 200
 
 # Where a documented name must be found. Docs and tests are excluded so a page
 # cannot vouch for itself; tests/airgap is the egress-proof tooling the install
@@ -133,6 +139,7 @@ FILE_SUFFIXES = (
 LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 INLINE_CODE = re.compile(r"`([^`\n]+)`")
 ENV = re.compile(r"^\$?([A-Z][A-Z0-9]*_[A-Z0-9_]*[A-Z0-9])(=.*)?$")
+PROSE_ENV = re.compile(r"(?<![\w/.\-$])([A-Z][A-Z0-9]*_[A-Z0-9_]*[A-Z0-9])(?![\w/.\-])")
 ENV_ASSIGN = re.compile(r"(?:^|\s|export\s+)([A-Z][A-Z0-9]*_[A-Z0-9_]*[A-Z0-9])=")
 API = re.compile(r"(/api/[A-Za-z0-9_\-/{}.]*)")
 PY_MODULE = re.compile(r"python3?\s+-m\s+([A-Za-z_][\w.]*)")
@@ -384,6 +391,53 @@ def _logical_lines(text: str) -> list[tuple[int, str]]:
     return out
 
 
+def _planned_span(line: str, at: int) -> tuple[int, int]:
+    """The segment a ``Planlı —`` marker at ``at`` governs: [start, end)."""
+    depth = 0
+    for i in range(at - 1, -1, -1):  # the parenthesis the marker sits in
+        if line[i] == ")":
+            depth += 1
+        elif line[i] == "(":
+            if depth == 0:
+                close, inner = len(line), 0
+                for j in range(i + 1, len(line)):
+                    if line[j] == "(":
+                        inner += 1
+                    elif line[j] == ")":
+                        if inner == 0:
+                            close = j + 1
+                            break
+                        inner -= 1
+                return i, close
+            depth -= 1
+    if line.lstrip().startswith("|"):  # its table cell
+        start = line.rfind("|", 0, at) + 1
+        end = line.find("|", at)
+        return start, len(line) if end < 0 else end
+    starts = [m.end() for m in re.finditer(r"[.;]\s", line[:at])]
+    end = re.search(r"[.;](?:\s|$)", line[at:])
+    return (starts[-1] if starts else 0), (at + end.end() if end else len(line))
+
+
+def unplanned(line: str) -> str:
+    """The line with every segment a ``Planlı —`` marker governs blanked."""
+    while True:
+        m = PLANNED.search(line)
+        if not m:
+            return line
+        start, end = _planned_span(line, m.start())
+        end = max(end, m.end())
+        line = line[:start] + " " * (end - start) + line[end:]
+
+
+def _check_prose_env(line: str, where: str, problems: list[str]) -> None:
+    prose = LINK.sub(" ", INLINE_CODE.sub(" ", line))
+    ids, _ = _corpus()
+    for name in PROSE_ENV.findall(prose):
+        if name not in ids and name not in _settings_fields():
+            problems.append(f"{where}: env {name} (prose) not in code")
+
+
 def reconciliation_problems(docs: list[Path]) -> list[str]:
     problems: list[str] = []
     for doc in docs:
@@ -392,9 +446,10 @@ def reconciliation_problems(docs: list[Path]) -> list[str]:
             if line.lstrip().startswith("```"):
                 fenced = not fenced
                 continue
-            if PLANNED.search(line):
-                continue
+            line = unplanned(line)
             where = f"{doc.name}:{no}"
+            if not fenced:
+                _check_prose_env(line, where, problems)
             for tok in _code_tokens(line, fenced):
                 if fenced:
                     _check_command(tok, where, problems)
@@ -455,6 +510,19 @@ def test_planned_lines_name_their_branch():
     assert not bad, bad
 
 
+def test_planned_prose_lines_are_short():
+    bad = []
+    for doc in _guide_docs():
+        for no, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
+            if (
+                PLANNED.search(line)
+                and not line.lstrip().startswith("|")
+                and len(line) > PLANNED_LINE_MAX
+            ):
+                bad.append(f"{doc.name}:{no} ({len(line)})")
+    assert not bad, bad
+
+
 BAD_DOC = """# Başlık
 
 [kırık](yok-boyle-bir-dosya.md) ve [çapa](#olmayan-baslik) ve [iyi](#başlık)
@@ -475,6 +543,13 @@ pytest tests/uydurma/test_yok.py
 `UydurmaSinifAdi` ve `uydurma-servis-adi`.
 
 Planlı — `wp/w9.9-ornek`: `PLANLI_AYAR_YOK` burada atlanır.
+
+`UYDURMA_PARANTEZ_DISI=1` bugün vardır (Planlı — `wp/w9.9-ornek`, `PLANLI_PARANTEZ`).
+Planlı — `wp/w9.9-ornek`, `PLANLI_CUMLE` yok; ama `UYDURMA_CUMLE_SONRASI` var.
+
+| `UYDURMA_TABLO_HUCRESI` | Planlı — `wp/w9.9-ornek` `PLANLI_HUCRE` |
+
+Düz metinde UYDURMA_DUZ_METIN_AYARI açık gelir; JWT_SECRET_KEY gerçektir.
 """
 
 
@@ -504,9 +579,15 @@ def test_reconciliation_detects_invented_settings_and_commands(tmp_path):
         "--uydurma-ikinci-satir",
         "UydurmaSinifAdi",
         "uydurma-servis-adi",
+        "UYDURMA_PARANTEZ_DISI",
+        "UYDURMA_CUMLE_SONRASI",
+        "UYDURMA_TABLO_HUCRESI",
+        "UYDURMA_DUZ_METIN_AYARI",
     ):
         assert needle in problems, (needle, problems)
-    assert "PLANLI_AYAR_YOK" not in problems
+    for skipped in ("PLANLI_AYAR_YOK", "PLANLI_PARANTEZ", "PLANLI_CUMLE", "PLANLI_HUCRE"):
+        assert skipped not in problems, (skipped, problems)
+    assert "JWT_SECRET_KEY" not in problems
 
 
 def test_reconciliation_detects_nothing_wrong_in_real_names(tmp_path):

@@ -29,9 +29,12 @@ müşteri ortamında izlenecek sıra, kararlar ve kurulum sonrası sertleştirme
 | Kurulum | müşteri kurulum mühendisi | hedef ortam | ~10 dk |
 | Kurulum sonrası ayarlar | müşteri yöneticisi | konsol + küme | ~5–15 dk |
 
-Paket elde olduğunda hedef süre **30 dakikanın altıdır**. Bu süre bu sürümde
-betiklerin çevrimdışı testleriyle (`tests/unit/airgap/test_airgap_bundle.py`)
-doğrulanır; temiz bir sanal makinede uçtan uca ölçüm CI'da yoktur (Planlı — `wp/w0.6-staging`, bu sürümde yok).
+Paket elde olduğunda hedef süre **30 dakikanın altıdır**. Bu bir hedeftir, ölçülmüş
+bir değer değildir. `tests/unit/airgap/test_airgap_bundle.py` betiklerin doğru
+davrandığını çevrimdışı sınar, süreyi ölçmez. Gecelik staging ortamı
+(`infra/staging/`) `main`'i her gece k3s'e kurup duman testi yapar. Ancak internetsiz
+paket yolunu kullanmaz ve kurulum süresini ölçmez. Kurulum gününde adımların
+sürelerini kaydetmenizi öneririz.
 
 ## 2. Ön koşullar
 
@@ -117,11 +120,16 @@ hazırlık dizinine (`mktemp -d`, 0700) kopyalar ve tüm denetimleri **bu kopya
 üzerinde** yapar; kurulum da yalnızca bu kopyadan yapılır. Böylece "bundle verified"
 iletisinden sonra paket dizininde yapılan bir değişiklik kuruluma yansımaz.
 Aşağıdakilerden herhangi biri olursa `REFUSED: ...` ile durur ve hiçbir
-`docker`/`ctr`/`kubectl`/`helm` komutu çalıştırmaz: imza yok/geçersiz; özet tutmuyor
-ya da dosya eksik; güvensiz yol; `SHA256SUMS`'ta olmayan dosya, bağ, FIFO, soket,
-aygıt ya da dizin; `manifest.json`/`images.tsv` ile çelişki; kural/model arşivinde
-normal dosya ve dizin dışında üye. Paketin içinde bir açık anahtar olsa bile
-kullanılmaz; yalnızca `--pubkey` ile verdiğiniz anahtar geçerlidir.
+`docker`/`ctr`/`kubectl`/`helm` komutu çalıştırmaz:
+
+- imza yok ya da geçersiz;
+- özet tutmuyor ya da dosya eksik; güvensiz yol;
+- `SHA256SUMS`'ta olmayan dosya, bağ, FIFO, soket, aygıt ya da dizin;
+- `manifest.json`/`images.tsv` ile çelişki;
+- kural/model arşivinde normal dosya ve dizin dışında üye.
+
+Paketin içinde bir açık anahtar olsa bile kullanılmaz; yalnızca `--pubkey` ile
+verdiğiniz anahtar geçerlidir.
 
 ## 5. Kurulum (Kubernetes)
 
@@ -156,6 +164,10 @@ kullanılmaz; yalnızca `--pubkey` ile verdiğiniz anahtar geçerlidir.
 | `networkPolicies.egress.extraCIDRs` | Kümenin dışındaki şirket içi hedefler (SIEM, EDR, güvenlik duvarı yönetim arayüzü, NodeLocal DNS `169.254.20.10/32`) |
 | `networkPolicies.daemon.webhookAllowFrom` | Daemon'un webhook portuna alarm itebilecek kaynak CIDR'leri; boşsa yalnız küme içi |
 | `caBundle.existingSecret` | TLS denetleyen bir vekil sunucu ya da kurum içi CA varsa |
+| `backup.enabled` ve `backup.persistence` / `backup.objectStore` | Veritabanı yedek CronJob'u varsayılan kapalıdır; dökümü şifrelemez, şifreli bir birim ya da nesne deposu verin (bkz. [yönetici kılavuzu](yonetici-kilavuzu.md#kubernetes)) |
+
+Daemon Helm'de varsayılan olarak iki kopya çalışır (`daemon.leaderElection.enabled`);
+yalnızca biri liderdir. Ayrıntı: [docs/operations/rpo-rto.md](../operations/rpo-rto.md).
 
 `values-airgap.yaml`'ın kapattıkları (yerel kayıt defteri, uzak MCP ve kendi MCP
 yüzeyi, OTEL, Slack/PagerDuty, bulut sandbox'ları, Kafka, Darktrace, Medic,
@@ -258,7 +270,8 @@ Profil uygulandığında bile operatör eylemiyle dışarı çıkabilecek noktal
 - Compose/host kurulumlarında, veritabanının sürümü yeni imajdan geride ise
   `backup-pre-upgrade` servisi kurulumdan önce otomatik bir anlık görüntü alır
   (`python -m core.backup pre-upgrade`; atlamak için `VIGIL_SKIP_PREUPGRADE_BACKUP`).
-- 0.7.1'den 2.0'a yükseltme yolunun CI testi bu sürümde yoktur (Planlı — dal yok, W4.5, bu sürümde yok).
+- 0.7.1'den 2.0'a yükseltme yolunun CI testi
+  (Planlı — `wp/w4.5-upgrade-path`, bu sürümde yok).
 
 ## 10. Sorun giderme
 

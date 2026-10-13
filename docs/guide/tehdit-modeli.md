@@ -1,14 +1,15 @@
 # Tehdit modeli (STRIDE)
 
 > **English summary.** STRIDE threat model per component of AutoSecOps at
-> `main` @ `b38f6fdb`. For each threat it lists the mitigation that is actually
+> `main` @ `167f7b77`. For each threat it lists the mitigation that is actually
 > implemented in this release and points to the open risk when there is one.
 > The open-risk register at the end combines the non-blocking follow-ups the
-> independent verifiers recorded for merged work packages
-> (`docs/wp/FIXES.md`, `docs/wp/STATUS.md`) with the risks that remain because
-> planned work packages are not merged (SSO, four-eyes, live provenance,
-> retention, audit export, extended audit chain, FIPS). No internal red-team or
-> external pentest has been run on this release yet.
+> independent verifiers recorded for merged work packages, findings of the
+> internal reviews (the critical detection-rule source RCE, R26, has a planned
+> hotfix that is not merged), and the risks that remain because planned work
+> packages are not merged (SSO, separation of duties, audit export, extended
+> audit chain, FIPS). Risks closed by W0.10 stay listed as closed. No external
+> pentest has been run on this release yet.
 
 Yöntem: her bileşen için Spoofing (kimlik sahteciliği), Tampering (kurcalama),
 Repudiation (inkâr), Information disclosure (bilgi ifşası), Denial of service
@@ -35,18 +36,20 @@ sağlayıcısı ya da model çıktısını yönlendiren taraf.
 | D | Giriş uçlarına yük | Hız sınırları; ilk hesap ucu ilk kullanıcıdan sonra kapalı | Yük testi yapılmadı (R20) |
 | E | Rol atamasıyla yetki yükseltme | Yalnızca sahip olunan tüm izinleri veren rol atanabilir; hizmet hesabı Viewer'a kilitli; rota × izin matrisi CI'da | Rol izinlerinin veritabanında değiştirilmesi denetlenmez (R13) |
 | E | `DEV_MODE=true` ile tüm kimlik doğrulamanın kapanması | Varsayılan `false`; açılışta ve ağdan erişilebilir adreste yüksek sesli uyarı | Açılışı engellemez (R14) |
+| E | Kural kaynağı ekleme ucuyla (`POST /api/detection-rules/sources`) backend'de komut çalıştırma, SSRF | Yok: uç yalnızca oturum ister ve git adresini denetlemez | **Kritik** (R26) |
+| E | Viewer'ın yalnızca oturumla erişebildiği durum değiştiren uçlar | Her yazma rotası ya izin ister ya da gözden geçirilmiş listededir (CI) | Listede yanlış kalanlar var (R28) |
 
 ## 2. Alarm alımı ve AI triage
 
 | STRIDE | Tehdit | Önlem (bu sürüm) | Kalan |
 |---|---|---|---|
 | S | Sahte kaynaktan alarm itme | Daemon webhook portu NetworkPolicy ile izinli CIDR'lere sınırlı; federation kaynakları yalnızca yönetici tanımlı | Webhook içeriği kaynağa kriptografik bağlı değil |
-| T | Alarm alanına prompt injection yazarak "zararsız" kararı | Model çıktısı doğrudan eyleme dönüşmez; araç etki sınıfları; insan onayı olmadan eylem yok; QA örneklemesi ve kanaryalar kaçırmayı ölçer | Köken kuralı canlı yolda değil, injection oranı sürüm kapısı değil (R1) |
-| T | Bayrak kapalıyken payload'daki `alert_lane` ile triage'ı atlatma | Bayrak kapalıyken kanca bulguya dokunmaz; açıkken gelen alan atılır, yalnızca bu çalıştırmanın kararı kullanılır; tenant payload'dan alınmaz; şiddeti bilinmeyen alarm bastırılmaz | — |
-| R | Hangi kuralın/modelin karar verdiğinin bilinmemesi | Şerit kararı `alert_lane_decisions` tablosuna; onay satırına kararı veren kural | Model ve istem sürümünün her karara yazılması planlı (R1) |
+| T | Alarm alanına prompt injection yazarak "zararsız" kararı | JSON şemalı triage, katı ayrıştırma; köken kodla atanır; sensöre dayanmayan `benign` → `inconclusive`; model çıktısı doğrudan eyleme dönüşmez; insan onayı ve müdahale politikası; QA örneklemesi ve kanaryalar kaçırmayı ölçer | Yalnız saldırgan alanlarına dayanan `malicious` geçerli; `data_source` gönderenin seçimi; injection oranı sürüm kapısı değil (R1) |
+| T | Bayrak kapalıyken yükteki `alert_lane` alanıyla triage'ı atlatma | Bayrak kapalıyken kanca bulguya dokunmaz; açıkken gelen alan atılır, yalnızca bu çalıştırmanın kararı kullanılır; kiracı yükten alınmaz; şiddeti bilinmeyen alarm bastırılmaz | — |
+| R | Hangi kuralın/modelin karar verdiğinin bilinmemesi | Şerit kararı `alert_lane_decisions` tablosuna; triage kararında `model` ve `prompt_version`; onay satırına kararı veren kural | — |
 | I | Alarm içeriğinin modele/dışarı gitmesi | Air-gap profili: yalnızca yerel model, bulut anahtarları boş, egress kapalı; kanarya alarmları dış zenginleştirmeye gitmez | Bulut sağlayıcı seçilirse alarm içeriği sağlayıcıya gider (R15) |
 | D | Alarm seli, bütçe tükenmesi | Bütçe baskısında alarm düşürülmez, sıraya alınır; orkestratör bütçeleri | Yük/kaos testi yapılmadı (R20) |
-| E | Alarmın otonom soruşturmayı tetikleyip yetkili araç çağırması | Gated araçlar onay checkpoint'i olmadan reddedilir; kanarya otonom soruşturmaya giremez | Onay araç argümanlarına bağlı değil (R5) |
+| E | Alarmın otonom soruşturmayı tetikleyip yetkili araç çağırması | Onay gerektiren araçlar onay noktası olmadan reddedilir; kanarya otonom soruşturmaya giremez | Onaydan sonra politika yok (R2); onay argümana bağlı değil (R5) |
 
 ## 3. Ajan katmanı ve araçlar (MCP)
 
@@ -56,17 +59,18 @@ sağlayıcısı ya da model çıktısını yönlendiren taraf.
 | T | Defter olaylarını değiştirme | `agent_events` hash zinciri; `vigil_app` rolünün UPDATE/DELETE yetkisi yok | Son olayların silinmesi ve sahip rolüyle yeniden yazım tespit edilmez (R6) |
 | R | Ajanın yaptığını inkâr | Her koşunun olayları zincirli defterde; koşu başına doğrulama ucu | — |
 | I | Araç çıktısıyla sır sızması | Kimlik bilgileri ajanlarda değil sır deposunda; log ve telemetri maskeleme | — |
-| D | Sonsuz döngü/maliyet | Koşu ve saatlik bütçe tavanları, kill-switch (`POST /api/orchestrator/kill`) | — |
-| E | Yıkıcı aracın onaysız çağrılması | Tek tablo (`core/llm/tool_effects.py`), bilinmeyen araç en kısıtlayıcı sınıfa; sohbet gated araç sunmaz; TS harness ve `/internal/tools/invoke` iki ayrı kapı; ratchet: kapısız yazma aracı = 0 | Ad sezgiseli bazı adları okuma sayabilir; onay argümana bağlı değil (R5) |
+| D | Sonsuz döngü/maliyet | Koşu ve saatlik bütçe tavanları, acil durdurma (`POST /api/orchestrator/kill`) | — |
+| E | Yıkıcı aracın onaysız çağrılması | Tek tablo (`core/llm/tool_effects.py`); tabloda olmayan ad, açıkça okuma fiiliyle başlamıyorsa en kısıtlayıcı sınıfa; sohbet onay gerektiren araç sunmaz; TS çalıştırıcısı ve `/internal/tools/invoke` iki ayrı kapı; onay sorunun başındaki araç adına bağlı; ratchet: onaysız yazma aracı = 0 | Onay argümana bağlı değil (R5) |
+| E | Onaylanmış yıkıcı aracın korunan varlığa uygulanması | Bir kişinin onay noktasını onaylaması | Bu yolda müdahale politikası, korunan varlık listesi, saatlik sınır, süre dolumu ve dört göz yok (R2) |
 
 ## 4. LLM ağ geçidi ve model
 
 | STRIDE | Tehdit | Önlem (bu sürüm) | Kalan |
 |---|---|---|---|
 | S | Sahte model uç noktası | Sağlayıcı URL'leri için SSRF koruması; air-gap'te yalnız küme içi Bifrost/Ollama | — |
-| T | Modelin önerilen eylemi değiştirmesi | Öneri insan onayından geçer; uygulanan tek yürütücü (Cloudflare) | Politika katmanı (parametre izin listesi) planlı (R2) |
+| T | Modelin önerilen eylemi değiştirmesi | Öneri insan onayından ve müdahale politikasından geçer; Cloudflare'de hedef otoriter, parametre izin listesi; `ttl_seconds` sınırlı | MCP araç yolu politikasız (R2) |
 | I | İstek günlüğünde hassas veri | Bifrost günlüğü kurulum içinde kalır | Bifrost istek günlüğünün saklama süresi AutoSecOps tarafından yönetilmez (R7) |
-| D | Sağlayıcı kesintisi | — | Kural/yerel şeride otomatik iniş planlı (R20) |
+| D | Sağlayıcı kesintisi | — | Yerel model şeridine otomatik iniş Planlı — `wp/w2.3-local-model-lane`; kesinti testi yapılmadı (R20) |
 
 ## 5. Müdahale hattı (onaylar ve yürütücüler)
 
@@ -74,25 +78,27 @@ sağlayıcısı ya da model çıktısını yönlendiren taraf.
 |---|---|---|---|
 | S | Onaylayanın kimliğine bürünme | Onaylayan oturumdan alınır; `ai_decisions.approve` gerekir | — |
 | T | Güven puanını şişirerek onaysız eylem | Kişi onaylamadıkça yanıtlayıcı uygulamaz; [0,1] dışı güven insan bekletir; geri alınamaz eylem her zaman bekler | Varsayılan ortam Act görünür (R11) |
-| T | Korunan varlığa (DC, yönetim IP'si) eylem | Yürütücüler bağlı değil; Cloudflare dışında hiçbir eylem uygulanmaz | Politika ve korunan varlık listesi planlı (R2) |
-| R | "Ben onaylamadım" | Onaylayan, zaman ve karar kuralı satırda; vaka zaman çizelgesinde | Onay kayıtları zincirsiz (R6) |
-| E | Tek kişinin kritik eylemi tek başına onaylaması | `ai_decisions.approve` yalnız Senior Analyst ve üstünde | Dört göz yok (R3) |
-| D | Onay kuyruğunun tıkanması | Yanıtlanmayan onaylar 7 günde süresi doluyor | — |
+| T | Korunan varlığa (DC, yönetim IP'si) eylem | Müdahale politikası: korunan hedef ve etiketler, normalize eşleşme, geniş aralık reddi; öneride ve uygulamada iki kez; yürütücülerin kendi kuralları | MCP araç yolu politikasız (R2) |
+| T | Eylemin kalıcı kalması | Geri alınabilir eylemde süre; süresi dolunca daemon geri alır ve doğrular; gerekçeli elle geri alma | — |
+| R | "Ben onaylamadım" | Onaylayan(lar), zaman ve karar kuralı satırda; her geri alma ayrı satır; vaka zaman çizelgesinde | Onay kayıtları zincirsiz (R6) |
+| E | Tek kişinin kritik eylemi tek başına onaylaması | `ai_decisions.approve` yalnız Senior Analyst ve üstünde; kimlik eylemlerinde iki farklı kişi | Diğer türlerde tek kişi; farklı rol koşulu yok (R3) |
+| D | Onay kuyruğunun tıkanması; toplu eylem | Yanıtlanmayan onaylar 7 günde süresi doluyor; tür başına saatlik sınır; bir satırın hatası kuyruğu durdurmaz | — |
 
 ## 6. Veri depoları ve denetim kayıtları
 
 | STRIDE | Tehdit | Önlem (bu sürüm) | Kalan |
 |---|---|---|---|
 | T | Defter/denetim kaydı kurcalama | Defter ve düzenleyici an zinciri; uygulama rolü defterde salt ekleme | Zincir başı imzasız; diğer denetim tabloları zincirsiz (R6) |
-| R | Düzenleyici bildirim anlarının sonradan değiştirilmesi | `regulatory_clock_events` salt ekleme, güncelleme tetikleyiciyle reddedilir, değişiklik gerekçe ister | Son olayın silinmesi ve anların sırası denetlenmez (R4) |
-| I | Veritabanı dökümüyle kişisel veri sızması | Uygulama sahip olmayan rolle bağlanır; yedekler şifreli | Saklama/imha politikası yok (R8) |
-| D | Veri kaybı | Doğrulanan şifreli yedek, test geri yükleme | Kubernetes'te zamanlanmış yedek ve sıcak yedek yok (R17) |
+| R | Düzenleyici bildirim anlarının sonradan değiştirilmesi | `regulatory_clock_events` salt ekleme, güncelleme tetikleyiciyle reddedilir, değişiklik gerekçe ister; zincir başı çapası son olay silinmesini gösterir; anların sırası denetlenir | `TRUNCATE` reddedilmez; tablo sahibi iki tabloyu birlikte yeniden yazabilir (R27) |
+| I | Veritabanı dökümüyle ya da süresi geçmiş veriyle kişisel veri sızması | Uygulama sahip olmayan rolle bağlanır; restic yedekleri şifreli; sınıf başına saklama, yasal saklama, kuru çalıştırmalı imha işi | İmha varsayılan kapalı ve politikasız; Helm dökümü şifresiz (R8, R17) |
+| D | Veri kaybı, daemon kesintisi | Doğrulanan şifreli yedek, test geri yükleme; Helm yedek CronJob'u; daemon sıcak yedeği ve çitleme | CronJob varsayılan kapalı; gömülü Postgres tek kopya; RTO müşteri ortamında ölçülmedi (R17) |
 
 ## 7. Sırlar ve yapılandırma
 
 | STRIDE | Tehdit | Önlem (bu sürüm) | Kalan |
 |---|---|---|---|
 | I | Entegrasyon kimlik bilgisinin sızması | Şifreli `secrets.enc`; veritabanına/JSON'a yazılmaz; API'de maskeli; Secret/ExternalSecrets | `master.key` aynı dizinde ve aynı yedekte; döndürme komutu yok (R18) |
+| S | Geri yüklemeden sonra eski oturum belirteçlerinin geçerli kalması | Geri yükleme JWT anahtarını döndürür ve bekleyen onayları reddeder | Anahtar ortamdan ya da kurulum dışından geliyorsa operatör döndürmeli (R29) |
 | T | Air-gap profilinin sessizce gevşetilmesi | `values-airgap.yaml` ve `airgap.env` eşitliği testli; egress envanteri ratchet | — |
 | E | Konsoldan yapılandırma ile yetki | `settings.write`/`integrations.write` izinleri; değişiklik `config_audit_log`'a | — |
 
@@ -100,10 +106,10 @@ sağlayıcısı ya da model çıktısını yönlendiren taraf.
 
 | STRIDE | Tehdit | Önlem (bu sürüm) | Kalan |
 |---|---|---|---|
-| S | Alıcının sahte bildirim alması | HMAC-SHA256 imza, zaman damgası, alıcı doğrulama belgesi | Belgede tekilleştirmenin imzalı gövde `id`'sine dayanması önerilmeli (R19) |
+| S | Alıcının sahte bildirim alması | HMAC-SHA256 imza, zaman damgası; alıcı belgesi tekrar oynatmaya karşı imzalı gövdenin `id`'siyle tekilleştirmeyi söyler | — |
 | I | SSRF ile iç servislere/metadata'ya istek | Çözümlenen adres denetimi, adres sabitleme, yönlendirme yok, vekil yok, metadata adresi her zaman reddedilir | CGNAT aralığı izinli (R19) |
 | I | Kanarya varlığının dışarı sızması | Kanarya vakaları dış kanala gitmez | — |
-| D | Alıcı çökünce kuyruk büyümesi | Üstel geri çekilme, `WEBHOOK_MAX_ATTEMPTS` sonra `dead` | — |
+| D | Alıcı çökünce kuyruk büyümesi | Üstel geri çekilme, `WEBHOOK_MAX_ATTEMPTS` sonra `dead`; süresi dolmuş eski bir teslim talebinin geç sonucu yenisini ezmez | — |
 
 ## 9. Kurulum paketi ve tedarik zinciri
 
@@ -113,7 +119,7 @@ sağlayıcısı ya da model çıktısını yönlendiren taraf.
 | T | Doğrulamadan sonra paketin değiştirilmesi | Paket özel hazırlık dizinine kopyalanır, kopya doğrulanır ve yalnızca kopyadan kurulur | — |
 | T | Arşivde sembolik bağ / yol geçişi | Listelenmemiş dosya, bağ, FIFO, aygıt reddi; kural/model arşivlerinde üye denetimi | — |
 | I | İmza anahtarının sızması | Anahtar yalnızca imzalama makinesinde; sızma prosedürü belgeli | — |
-| E | Bağımlılık/imaj zinciri | CI'da Trivy imaj taraması (düzeltilebilir CRITICAL'da başarısız), Bandit, Dependabot | SBOM ve imzalı imajlar planlı (R21) |
+| E | Bağımlılık/imaj zinciri | CI'da Trivy imaj taraması (düzeltilebilir CRITICAL'da başarısız), Bandit, Dependabot | SBOM ve imzalı imajlar Planlı — `wp/w4.7-release` (R21) |
 
 ## 10. Egress kanıtının sınırları
 
@@ -125,20 +131,21 @@ olduğu için test `--loop asyncio` kullanır. Ağ düzeyindeki önlem NetworkPo
 ## Açık riskler
 
 Kaynak: birleşmiş paketler için bağımsız doğrulayıcının "engelleyici değil" takip
-maddeleri (`docs/wp/FIXES.md` son bölümü, `docs/wp/STATUS.md` §1) — bu commit'te
-kodda hâlâ açık oldukları kontrol edildi —; diğerleri birleşmemiş paketlerin
-yokluğundan doğan risklerdir. Önem: bu sürümde, düzenlenmiş sektör kurulumu için.
+maddeleri (`docs/wp/FIXES.md` son bölümü), iç incelemelerin bulguları ve birleşmemiş
+paketlerin yokluğundan doğan riskler. Her madde bu commit'te kodda kontrol edildi.
+W0.10 ile kapanan maddeler "Kapatıldı" olarak tabloda kalır. Önem: bu sürümde,
+düzenlenmiş sektör kurulumu için.
 
 | # | Risk | Önem | Kaynak | Telafi edici önlem (bugün) |
 |---|---|---|---|---|
-| R1 | Köken (provenance) kuralı canlı triage yolunda uygulanmıyor; injection oranı sürüm kapısı değil; kararlara model/istem sürümü yazılmıyor | Yüksek | Planlı — `wp/w1.2-triage-provenance`, `wp/w1.4-injection-set` | İnsan onayı olmadan eylem yok; gated araçlar; QA/kanarya ile ölçüm; `evalkit` ile injection setini çevrimdışı ölçün |
-| R2 | Tipli eylem politikası, korunan varlık listesi, parametre izin listesi, saatlik etki sınırı yok; Defender/Entra/PAN-OS yürütücüleri bağlı değil | Orta | Planlı — `wp/w2.4-executors-policy` | Bu sürümde yalnız Cloudflare eylemleri uygulanır ve her biri insan onaylıdır |
-| R3 | Dört göz onayı ve görevler ayrılığı yok (tek onaylayıcı) | Yüksek | Planlı — `wp/w2.4-executors-policy`, `wp/w3.2-sod` | `ai_decisions.approve`'u az sayıda kişiye verin; onayları `approval_actions`'tan periyodik gözden geçirin |
-| R4 | Düzenleyici an zincirinde zincir başı çapası yok (son olay silinmesi tespit edilmez); anların sıra kontrolü yok; DORA ilk bildirim başlamadan `met` gösterebilir; taslaktaki `[evidence:N]` referansları doğrulanmıyor | Orta | FIXES.md, W3.8 takip | Taslakları insan gözden geçirir; an kayıtları `case_audit_logs`'a da yazılır |
-| R5 | Gated araç onayı araç argümanlarına bağlı değil; ad sezgiseli bazı adları (ör. get_blockIp gibi bir ad) okuma sayabilir; sohbette onay aracı açık | Orta | FIXES.md, W1.7 takip | Tablodaki tüm yerleşik araçlar açık sınıflı; bilinmeyen MCP araçları sohbetten düşer |
-| R6 | Defter zincirinin başı imzalı kontrol noktasına bağlı değil; onay, vaka ve ayar denetim kayıtları zincirsiz; SIEM'e akış yok | Yüksek | Planlı — `wp/w1.10-audit-chain`, `wp/w3.6-audit-export` | `vigil_app` rolü defterde salt ekleme; denetim tablolarını salt okuma rolüyle düzenli olarak dışarı alın |
+| R1 | Köken kuralı canlı triage'da uygulanır ama yalnız `benign` için: saldırganın yazdığı alanlara dayanan `malicious` geçerlidir ve bulguyu yükseltebilir; `data_source`'u gönderen seçer; injection oranı sürüm kapısı değil | Orta | W1.2 bilinen sınırlar; Planlı — `wp/w1.4-injection-set` | İnsan onayı ve müdahale politikası; `DAEMON_FORCE_APPROVAL=true`; webhook/Kafka göndericilerinin kimlik doğrulaması; QA/kanarya; `evalkit` ile injection setini çevrimdışı ölçün |
+| R2 | Onaylanmış MCP araçları (`mde_isolate`, `aad_disable_user`, `pan_block_ip`, `cb_quarantine`, `cf_*`) `/internal/tools/invoke` üzerinden müdahale politikası, korunan varlık listesi, saatlik sınır, yürütücü kuralları, süre dolumu ve dört göz olmadan çalışır | Yüksek | W4.6 doğrulayıcı incelemesi; dal yok | Bu satıcıların MCP sunucularını iş akışlarına açmayın (varsayılan kapalı); açıksa iş akışı onaylarını az sayıda kıdemli kişiye verin ve onay sorusundaki hedefi elle doğrulayın |
+| R3 | Dört göz yalnız kimlik eylemlerinde (`disable_user`, `revoke_sessions`); ikinci onaylayanın farklı rolde olması ve görevler ayrılığı raporu yok | Orta | Planlı — `wp/w3.2-sod` | `four_eyes_types`'a kritik türleri ekleyin; `ai_decisions.approve`'u az sayıda kişiye verin; `approval_actions`'ı periyodik gözden geçirin |
+| R4 | Kapatıldı (W0.10): düzenleyici an zincirine baş çapası, anların sıra kontrolü, başlamamış saatin `not_started` gösterilmesi, taslak metnindeki referansların doğrulanması. Kalan kısım R27'de | — | W0.10 | — |
+| R5 | Onay araç adına bağlıdır, araç argümanlarına bağlı değil (ad sezgiseli ve onay sorusu eşlemesi W0.10'da düzeltildi) | Orta | FIXES.md, W1.7 takip | Onay sorusunda argümanlar gösterilir; onaylayıcı okumalı; R2 önlemleri |
+| R6 | Defter zincirinin başı imzalı kontrol noktasına bağlı değil; onay, vaka ve ayar denetim kayıtları (imha tutanağı dahil) zincirsiz; SIEM'e akış yok | Yüksek | Planlı — `wp/w1.10-audit-chain`, `wp/w3.6-audit-export` | `vigil_app` rolü defterde salt ekleme; denetim tablolarını salt okuma rolüyle düzenli olarak dışarı alın |
 | R7 | Bifrost istek günlüğü (`logs.db`) AutoSecOps saklama kurallarının dışında | Düşük | Kod incelemesi | Bifrost veri dizinini kurum politikasıyla temizleyin |
-| R8 | Veri sınıfı başına saklama, KVKK periyodik imha, yasal saklama ve imha raporu yok; bulgular/vakalar otomatik silinmez | Yüksek (KVKK) | Planlı — `wp/w3.5-retention` | Elle silme uçları (yönetici kılavuzu); imhayı kurum prosedürüyle kayıt altına alın |
+| R8 | İmha işi var ama varsayılan kapalı ve politikasız; elle silme uçları yasal saklamaya bakmaz ve tutanağa girmez; politikalar yalnız `default` kiracısında; konsol ekranı yok | Orta (KVKK) | W3.5 kapsamı | Politikaları API ile tanımlayın, kuru çalıştırmayı inceleyin, sonra `RETENTION_PURGE_DRY_RUN=false`; elle silmeyi süreçle yasaklayın |
 | R9 | MFA bir rol için zorunlu kılınamaz | Orta | Kod incelemesi | Yönetici/onaylayıcı hesaplarında MFA'yı süreçle zorunlu tutun, `mfa_enabled` alanını denetleyin |
 | R10 | SSO (OIDC) ve merkezi hesap yaşam döngüsü yok | Orta | Planlı — `wp/w1.9-oidc` | Yerel hesaplar; işten ayrılmada hesabı devre dışı bırakma prosedürü |
 | R11 | Kodun varsayılanı `DAEMON_AUTO_RESPONSE=true`, `DAEMON_FORCE_APPROVAL=false` (Act görünümü) | Düşük | Kod incelemesi | Kişi onayı olmadan eylem yok; `DAEMON_FORCE_APPROVAL=true` önerilir |
@@ -147,12 +154,16 @@ yokluğundan doğan risklerdir. Önem: bu sürümde, düzenlenmiş sektör kurul
 | R14 | `DEV_MODE=true` açılışı engellemez | Orta | `core/auth/dev_mode.py` (bilinçli tasarım) | Helm/`env.example` varsayılanı `false`; yapılandırma denetimi |
 | R15 | Bulut model sağlayıcı seçilirse alarm içeriği sağlayıcıya gider (yurt dışı aktarım) | Yüksek (KVKK) | Mimari | Air-gap profili / yerel model; sağlayıcıyı müşteri seçer |
 | R16 | Temel Helm grafiğinde `networkPolicies.enabled=false`; NetworkPolicy uygulamayan CNI'da egress kısıtı etkisiz | Orta | `infra/helm/vigil/values.yaml` | `values-airgap.yaml` açar; NetworkPolicy uygulayan CNI şart |
-| R17 | Kubernetes'te zamanlanmış yedek CronJob'u, daemon sıcak yedeği, ölçülmüş RPO/RTO yok | Orta | Planlı — `wp/w3.9-daemon-standby` | Depolama düzeyinde anlık görüntü; Compose'da `core.backup` |
+| R17 | Helm yedek CronJob'u varsayılan kapalı ve dökümü şifrelemez; gömülü Postgres tek kopya; RTO müşteri ortamında ölçülmedi; sıcak yedekte veritabanı dışı yan etkiler (satıcı API çağrıları, agent-worker işleri) çitlenmez | Orta | W3.9, `docs/operations/rpo-rto.md` | `backup.enabled=true`, şifreli PVC/nesne deposu; harici HA Postgres; geri yükleme tatbikatı ve süre kaydı |
 | R18 | `master.key` sır deposuyla aynı dizinde ve aynı yedekte; yerleşik döndürme yok | Orta | Kod incelemesi | Kubernetes'te sırları Secret/ExternalSecrets ile verin; restic parolasını ayrı saklayın |
-| R19 | `url_safety` CGNAT 100.64.0.0/10'u (ör. 100.100.100.200 metadata) reddetmiyor; alıcı belgesi tekilleştirmeyi imzalı gövdedeki `id` yerine imzasız `X-AutoSecOps-Event-Id` başlığına dayandırıyor; SLA tekilleştirmesinde benzersizlik kısıtı yok | Orta | FIXES.md, W1.8 takip | `WEBHOOK_ALLOWED_CIDRS`'i boş bırakın; egress NetworkPolicy |
-| R20 | Yük, kaos, sağlayıcı kesintisi testleri; iç kırmızı takım ve dış pentest yapılmadı | Yüksek | Planlı — dal yok, W4.1–W4.4 | — |
-| R21 | SBOM ve imzalı imajlar yok | Orta | Planlı — dal yok, W4.7 | Air-gap paketi SHA-256 + imzalı |
-| R22 | Entra ID yürütücüsünde yalnızca kimliği olan (adı/şablonu boş) rol kaydı korunan rol denetiminden geçiyor | Orta (bağlanınca) | FIXES.md, W2.6 takip | Yürütücü bu sürümde bağlı değil |
+| R19 | `url_safety` CGNAT 100.64.0.0/10'u (ör. 100.100.100.200 metadata) reddetmiyor. Alıcı belgesi ve SLA tekilleştirmesi W0.10'da düzeltildi | Orta | FIXES.md, W1.8 takip; düzeltme Planlı — `wp/w3.6-audit-export` | `WEBHOOK_ALLOWED_CIDRS`'i boş bırakın; egress NetworkPolicy |
+| R20 | Yük, kaos, sağlayıcı kesintisi testleri ve dış pentest yapılmadı | Yüksek | Planlı — `wp/w4.1-load-chaos`; dış pentest için dal yok (W4.4) | — |
+| R21 | SBOM ve imzalı imajlar yok | Orta | Planlı — `wp/w4.7-release` | Air-gap paketi SHA-256 + imzalı |
+| R22 | Kapatıldı (W0.10): Entra ID yürütücüsü yalnızca kimliği olan rol kaydını reddeder | — | W0.10 | — |
 | R23 | Egress tarayıcısında kural boşlukları (ör. asyncio.open_connection, ftplib, grpc tanınmıyor), `scripts/` taranmıyor; CI eylemleri SHA'ya sabitli değil | Düşük | FIXES.md, W3.4 takip | Çalışma zamanı testi ve NetworkPolicy |
-| R24 | QA örneklemede çağıranın verdiği `seed` üretimde de kabul ediliyor (örnek seçimi yönlendirilebilir) | Düşük | FIXES.md, W1.6 takip | `ai_decisions.approve` gerekir; örneklem satırları kayıtlı |
-| R25 | Konsolda iki yerde eski "Vigil" metni; Revert 502 ayrıntısı gösterilmiyor | Düşük | FIXES.md, W0.9/W2.8 takip | — |
+| R24 | Kapatıldı (W0.10): QA `seed` yalnızca test modunda kabul edilir | — | W0.10 | — |
+| R25 | Kapatıldı (W0.10): konsoldaki eski "Vigil" metinleri; Revert 502 ayrıntısı gösterilir | — | W0.10 | — |
+| R26 | Kural kaynağı ekleme ucu (`POST /api/detection-rules/sources`) yalnızca oturum ister ve git adresini denetlemez: oturum açmış her kullanıcı (Viewer dahil) backend'de komut çalıştırabilir ve iç adreslere istek yaptırabilir | **Kritik** | İç inceleme (W4.3 F-1); acil düzeltme Planlı — `wp/w0.11-security-hotfix` | Düzeltme birleşene kadar ters vekil/ingress'te `/api/detection-rules/...` altındaki yazma isteklerini engelleyin; hesapları yalnız güvenilir personele açın; kural kaynaklarını air-gap paketinden yükleyin |
+| R27 | Düzenleyici an tabloları (`regulatory_clock_events`, `regulatory_clock_heads`) `TRUNCATE` ile boşaltılabilir; tablo sahibi ya da süper kullanıcı zinciri ve çapayı birlikte yeniden yazabilir | Orta | W0.10 doğrulayıcı; düzeltme Planlı — `wp/w0.11-security-hotfix` | Uygulamayı sahip olmayan `vigil_app` rolüyle çalıştırın; sahip rolün kullanımını kısıtlayıp kayda alın |
+| R28 | Yalnızca oturum isteyen bazı durum değiştiren uçlar Viewer'a açık (`tests/security/auth_only_write_routes.txt`) | Orta | İç inceleme (W4.3 F-2); düzeltme Planlı — `wp/w0.11-security-hotfix` | Viewer hesaplarını az tutun; ters vekilde gereksiz uçları kapatın |
+| R29 | Geri yüklemede `JWT_SECRET_KEY` yalnızca ortamdan geliyorsa yeni anahtar `secrets.enc`'e yazılır ama ortam değeri önce okunur: operatör ortamı değiştirmedikçe eski oturumlar geçerli kalır. Anahtar kurulum dışındaysa geri yükleme döndüremez ve hata ile biter | Orta | W4.6 doğrulayıcı incelemesi; `core/backup/restore.py` | Geri yüklemeden sonra anahtarı tanımlandığı yerde döndürün (bkz. [yönetici kılavuzu](yonetici-kilavuzu.md#docker-compose--tek-sunucu)) |
