@@ -272,6 +272,9 @@ class Settings(BaseSettings):
     daemon_leader_election_enabled: bool = False
     daemon_leader_lease_seconds: float = 15.0
     daemon_leader_retry_seconds: float = 2.0
+    # Direct Postgres DSN for the lock session only (empty: the platform DB).
+    # Required when the platform DB goes through PgBouncer in transaction mode.
+    daemon_leader_database_url: str = ""
     daemon_webhook_enabled: bool = True
     daemon_webhook_port: int = 8081
     daemon_auto_triage: bool = True

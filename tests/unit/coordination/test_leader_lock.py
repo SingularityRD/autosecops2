@@ -111,6 +111,135 @@ def test_fence_ignores_non_postgres_connections():
         remove()
 
 
+# -- pooler detection (Round 5) ---------------------------------------------------
+
+
+class _Backend:
+    def __init__(self, pid):
+        self.pid = pid
+        self.gucs = {}
+
+
+class _Pool:
+    """A PgBouncer stand-in: ``session`` pins one backend per client;
+    ``transaction`` hands each autocommit statement the most recently
+    released idle backend (PgBouncer's LIFO default)."""
+
+    def __init__(self, mode, size=4):
+        self.mode = mode
+        self.idle = [_Backend(1000 + i) for i in range(size)]
+        self.connections = []
+
+    def connect(self, **_):
+        conn = _PoolConn(self)
+        self.connections.append(conn)
+        return conn
+
+
+class _PoolConn:
+    autocommit = False
+
+    def __init__(self, pool):
+        self.pool = pool
+        self.closed = False
+        self.pinned = pool.idle.pop() if pool.mode == "session" else None
+        self._row = None
+
+    def _run(self, sql, params):
+        backend = self.pinned or self.pool.idle.pop()
+        try:
+            if "server_version_num" in sql:
+                return (160000,)
+            if "set_config('vigil.leader_probe'" in sql:
+                value = params[0] if params else "other"
+                backend.gucs["vigil.leader_probe"] = value
+                return (backend.pid, value)
+            if "current_setting('vigil.leader_probe'" in sql:
+                return (backend.pid, backend.gucs.get("vigil.leader_probe"))
+            return (None,)
+        finally:
+            if self.pinned is None:
+                self.pool.idle.append(backend)
+
+    def cursor(self):
+        conn = self
+
+        class Cur:
+            def execute(self, sql, params=None):
+                conn._row = conn._run(sql, params)
+
+            def fetchone(self):
+                return conn._row
+
+            def close(self):
+                pass
+
+        return Cur()
+
+    def close(self):
+        self.closed = True
+        if self.pinned is not None:
+            self.pool.idle.append(self.pinned)
+            self.pinned = None
+
+
+def test_transaction_pooler_is_refused():
+    from core.coordination.leader import PooledConnectionError
+
+    pool = _Pool("transaction")
+    lock = PgLeaderLock(
+        pool.connect, key=KEY, group=GROUP, instance_id="i", lease_seconds=5
+    )
+    with pytest.raises(PooledConnectionError, match="DAEMON_LEADER_DATABASE_URL"):
+        lock.try_acquire()
+    assert not lock.held
+    assert all(c.closed for c in pool.connections)
+
+
+def test_transaction_pooler_with_one_server_connection_is_refused():
+    from core.coordination.leader import PooledConnectionError
+
+    pool = _Pool("transaction", size=1)
+    lock = PgLeaderLock(
+        pool.connect, key=KEY, group=GROUP, instance_id="i", lease_seconds=5
+    )
+    with pytest.raises(PooledConnectionError):
+        lock.try_acquire()
+
+
+def test_session_pool_passes_the_probe():
+    pool = _Pool("session")
+    lock = PgLeaderLock(
+        pool.connect, key=KEY, group=GROUP, instance_id="i", lease_seconds=5
+    )
+    conn = pool.connect()
+    lock._refuse_pooled(conn, conn.cursor())  # no exception
+
+
+def test_leader_dsn_setting_and_pgbouncer_refusal():
+    from types import SimpleNamespace
+
+    from core.coordination.leader import UnsupportedServerError
+    from services.daemon.leadership import leader_connect_factory
+
+    pgbouncer = SimpleNamespace(proxy=SimpleNamespace(proxy_type="pgbouncer"))
+    direct = SimpleNamespace(proxy=SimpleNamespace(proxy_type="none"))
+    no_dsn = SimpleNamespace(daemon_leader_database_url="")
+    with pytest.raises(UnsupportedServerError, match="DAEMON_LEADER_DATABASE_URL"):
+        leader_connect_factory(no_dsn, manager_config=pgbouncer)
+    assert leader_connect_factory(no_dsn, manager_config=direct) is None
+    with_dsn = SimpleNamespace(
+        daemon_leader_database_url="postgresql+psycopg2://u:p@db:5432/vigil"
+    )
+    assert callable(leader_connect_factory(with_dsn, manager_config=pgbouncer))
+
+
+def test_leader_dsn_setting_defaults_empty():
+    from core.config import Settings
+
+    assert Settings.model_fields["daemon_leader_database_url"].default == ""
+
+
 # -- against Postgres -----------------------------------------------------------
 
 
@@ -247,6 +376,34 @@ class TestAgainstPostgres:
                     conn.close()
                 except Exception:
                     pass
+
+    def test_direct_connection_passes_the_pooler_probe(self, engine):
+        lock = _lock(engine)
+        conn = _raw(engine)
+        try:
+            lock._refuse_pooled(conn, conn.cursor())
+        finally:
+            conn.close()
+
+    def test_leader_dsn_connects_directly(self, engine):
+        from types import SimpleNamespace
+
+        from services.daemon.leadership import leader_connect_factory
+
+        settings = SimpleNamespace(daemon_leader_database_url=_url(SCRATCH_DB))
+        connect = leader_connect_factory(settings)
+        lock = PgLeaderLock(
+            connect,
+            key=KEY,
+            group=GROUP,
+            instance_id=uuid.uuid4().hex[:12],
+            lease_seconds=5,
+        )
+        try:
+            assert lock.try_acquire() is True
+            assert lock.heartbeat() is True
+        finally:
+            lock.release()
 
     def test_check_holder_reports_the_lock_session(self, engine):
         a = _lock(engine)

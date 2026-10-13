@@ -8,6 +8,9 @@ one leads (its writer inserts rows), the other waits as standby. Then:
 * pause    — SIGSTOP the leader past the lease; the server ends its lock
              session, the standby leads, and after SIGCONT the old leader
              commits nothing more and exits 75.
+* slow init — the new leader's init blocks its event loop for longer than
+             the lease; it keeps the lock (heartbeat thread), the standby
+             never leads, and its components start once init returns.
 * partition — end the leader's lock session server-side while the process
              keeps running (what idle_session_timeout does when the network
              is cut); the standby leads, the old leader's writes are fenced,
@@ -97,7 +100,7 @@ def db():
 
 
 class Replica:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, **extra_env: str) -> None:
         p = _parts()
         env = {
             **os.environ,
@@ -112,6 +115,7 @@ class Replica:
             "DAEMON_LEADER_RETRY_SECONDS": str(RETRY),
             "VIGIL_OTEL_ENABLED": "false",
             "PYTHONUNBUFFERED": "1",
+            **extra_env,
         }
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         self.log = open(LOG_DIR / f"{name}-{os.getpid()}.log", "w")
@@ -319,3 +323,36 @@ def test_partitioned_leader_is_fenced_and_exits(pair):
     # The old process notices on its next heartbeat (lease / 3) and exits.
     assert a.proc.wait(timeout=LEASE + SLACK) == 75
     _assert_fenced(db, a.instance_id, b.instance_id)
+
+
+def test_slow_init_keeps_the_lock(db):
+    """Round 5: init blocking the loop for 1.5 x lease does not lose the lock."""
+    init_sleep = LEASE * 1.5
+    a = Replica("slowinit-a", W39_INIT_SLEEP=str(init_sleep))
+    replicas = [a]
+    try:
+
+        def a_leads():
+            a.poll_lines()
+            return a.instance_id
+
+        _wait_for(a_leads, 60, "the first replica to lead")
+        b = Replica("slowinit-b")
+        replicas.append(b)
+        _wait_for(lambda: _lock_sessions(db) >= 2, 60, "the standby's lock session")
+        # a's init is still blocking; its writes start once it returns.
+        _wait_for(
+            lambda: _rows(db, a.instance_id), init_sleep + SLACK + 30, "a's writes"
+        )
+        # A full lease (and some) later a still leads and b never did.
+        time.sleep(LEASE + RETRY)
+        b.poll_lines()
+        assert b.instance_id is None, "the standby took over during a slow init"
+        assert a.proc.poll() is None, f"leader exited with {a.proc.returncode}"
+        assert _sessions(db, f"vigil-daemon-lock:{a.instance_id}") == 1
+        before = len(_rows(db, a.instance_id))
+        time.sleep(1)
+        assert len(_rows(db, a.instance_id)) > before
+    finally:
+        for r in replicas:
+            r.stop()

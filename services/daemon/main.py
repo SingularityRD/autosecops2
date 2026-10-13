@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from core.config import validate_settings_or_exit
+from services.daemon.leadership import LeadershipLost
 
 if TYPE_CHECKING:
     from services.daemon.config import DaemonConfig
@@ -205,10 +206,16 @@ class SOCDaemon:
             leading = await self._await_leadership(start)
 
         if leading:
-            await self._start_components(start)
             if self._leadership is not None:
+                # The heartbeat thread is already beating (started on
+                # acquisition); this only turns a lost lease into shutdown.
                 watch = asyncio.create_task(self._watch_leadership())
                 tasks.append(watch)
+            try:
+                await self._start_components(start)
+            except LeadershipLost as exc:
+                logger.critical("Not starting components: %s", exc)
+                self._shutdown_event.set()
 
         # Wait for shutdown signal (or loss of leadership)
         await self._shutdown_event.wait()
@@ -280,7 +287,20 @@ class SOCDaemon:
                 await standby.stop()
 
     async def _start_components(self, start) -> None:
+        leadership = self._leadership
+        if leadership is not None:
+            leadership.ensure_leader()
+            unguarded = start
+
+            def start(name: str, component, label: str):
+                # Init may have outlasted the lease: never start a component
+                # (vendor actions, Kafka, schedules) once it is gone.
+                leadership.ensure_leader()
+                unguarded(name, component, label)
+
         await self._init_components()
+        if leadership is not None:
+            leadership.ensure_leader()
 
         if self._poller:
             start("poller", self._poller, "Data poller")

@@ -12,8 +12,8 @@
 #                       many days; 0 deletes them at once (default 30)
 #
 # Output: <db>-<UTC timestamp>.dump (custom format) and <dump>.sha256, written
-# under a temporary name and renamed only after pg_restore --list reads the
-# dump back; LATEST holds the newest dump's file name.
+# under a temporary name and renamed only after pg_restore reads the whole
+# dump back (TOC and every data block); LATEST holds the newest dump's file name.
 set -eu
 
 : "${BACKUP_DIR:?BACKUP_DIR is required}"
@@ -36,9 +36,16 @@ echo "pg-backup: dumping ${PGDATABASE} on ${PGHOST:-local}:${PGPORT:-5432} to ${
 pg_dump --format=custom --compress=6 --file="$partial" --dbname="$PGDATABASE"
 
 # Read the archive back: a truncated or corrupt dump fails here, not at restore.
+# --list only reads the table of contents at the head of the file; the full
+# restore to /dev/null reads and decompresses every data block too, so a dump
+# cut short after its TOC (disk full, killed pg_dump) is caught as well.
 entries="$(pg_restore --list "$partial" | grep -vc '^;' || true)"
 if [ "${entries:-0}" -lt 1 ]; then
     echo "pg-backup: ${name} has no restorable entries" >&2
+    exit 1
+fi
+if ! pg_restore --exit-on-error --file=/dev/null "$partial"; then
+    echo "pg-backup: ${name} failed the full read-back (truncated or corrupt)" >&2
     exit 1
 fi
 sha256sum "$partial" | sed "s#  ${partial}\$#  ${name}#" > "${name}.sha256"

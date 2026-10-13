@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 
 import pytest
 
@@ -53,9 +55,11 @@ class FakeLock:
         self.released = True
 
 
-def _leadership(lock, *, lease=3.0, retry=0.01, clock=None):
+def _leadership(lock, *, lease=3.0, retry=0.01, clock=None, hard_exit=None):
     kwargs = {"clock": clock} if clock else {}
-    return DaemonLeadership(lock, retry_seconds=retry, lease_seconds=lease, **kwargs)
+    return DaemonLeadership(
+        lock, retry_seconds=retry, lease_seconds=lease, hard_exit=hard_exit, **kwargs
+    )
 
 
 # -- DaemonLeadership ---------------------------------------------------------------
@@ -113,16 +117,17 @@ async def test_failed_heartbeat_demotes():
 @pytest.mark.asyncio
 async def test_overdue_heartbeat_demotes_without_asking_the_db():
     """Woken after the deadline (the process was frozen): step down at once."""
-    now = [100.0]
+    reads = []
+
+    def clock():
+        # First read sets the deadline; every later one is a minute on
+        # (SIGSTOP for a minute).
+        reads.append(1)
+        return 100.0 if len(reads) == 1 else 160.0
+
     lock = FakeLock()
-    lead = _leadership(lock, lease=3.0, clock=lambda: now[0])
+    lead = _leadership(lock, lease=3.0, clock=clock)
     lead.heartbeat_seconds = 0.01
-
-    async def freeze():
-        await asyncio.sleep(0)
-        now[0] += 60  # SIGSTOP for a minute
-
-    asyncio.create_task(freeze())
     await asyncio.wait_for(lead.hold(asyncio.Event()), 5)
     assert lead.lost and "overdue" in lead.lost_reason
     assert lock.heartbeat_calls == 0
@@ -195,7 +200,9 @@ async def test_standby_webhook_answers_503_with_retry_after():
 # -- SOCDaemon --------------------------------------------------------------------
 
 
-def _daemon(monkeypatch, lock):
+def _daemon(
+    monkeypatch, lock, *, init_seconds=0.0, lease=3.0, heartbeat=0.01, hard_exit=None
+):
     daemon = SOCDaemon.__new__(SOCDaemon)
     daemon.config = DaemonConfig()
     daemon.config.metrics.enabled = False
@@ -227,10 +234,15 @@ def _daemon(monkeypatch, lock):
 
     async def init_components():
         daemon.inits += 1
+        if init_seconds:
+            # Synchronous on purpose: blocks the event loop, as a slow
+            # production init (imports, client construction) does.
+            time.sleep(init_seconds)
         daemon._scheduler = Component()
 
-    lead = _leadership(lock, lease=3.0)
-    lead.heartbeat_seconds = 0.01
+    lead = _leadership(lock, lease=lease, hard_exit=hard_exit)
+    if heartbeat is not None:
+        lead.heartbeat_seconds = heartbeat
     monkeypatch.setattr(daemon, "_init_components", init_components)
     monkeypatch.setattr(daemon, "_setup_signal_handlers", lambda: None)
     monkeypatch.setattr(
@@ -281,6 +293,130 @@ async def test_lost_leadership_exits_75(monkeypatch):
     assert exits == [DEMOTED_EXIT_CODE]
     assert daemon.inits == 1
     assert lock.released is False
+
+
+class ServerLikeLock(FakeLock):
+    """Behaves like the server's idle_session_timeout: a heartbeat that comes
+    more than ``lease`` after the previous contact finds the lock gone."""
+
+    def __init__(self, lease):
+        super().__init__()
+        self.lease = lease
+        self.last = None
+        self.beat_times = []
+
+    def try_acquire(self):
+        self.last = time.monotonic()
+        return super().try_acquire()
+
+    def heartbeat(self):
+        now = time.monotonic()
+        self.heartbeat_calls += 1
+        self.beat_times.append(now)
+        ok = self.last is not None and now - self.last <= self.lease
+        self.last = now if ok else None
+        return ok
+
+
+@pytest.mark.asyncio
+async def test_slow_blocking_init_keeps_leadership(monkeypatch):
+    """Round 5: init that blocks the loop for longer than the lease must not
+    cost the lock: the heartbeat runs on its own thread from acquisition."""
+    lease = 3.0
+    lock = ServerLikeLock(lease)
+    daemon, lead = _daemon(
+        monkeypatch, lock, init_seconds=lease + 1.0, lease=lease, heartbeat=None
+    )
+    run = asyncio.create_task(daemon.run())
+    await asyncio.wait_for(_until(lambda: daemon._scheduler is not None), 15)
+    await asyncio.wait_for(daemon._scheduler.started.wait(), 5)
+    # Beats kept coming while the loop was blocked in init.
+    assert lock.heartbeat_calls >= 3
+    assert not lead.lost and lead.role == "leader"
+    gaps = [b - a for a, b in zip(lock.beat_times, lock.beat_times[1:])]
+    assert max(gaps) < lease
+    daemon._shutdown_event.set()
+    await asyncio.wait_for(run, 5)
+    assert lock.released is True
+
+
+@pytest.mark.asyncio
+async def test_lease_lost_during_slow_init_starts_no_component(monkeypatch):
+    """Round 5: the lease is lost while init blocks the loop. The heartbeat
+    thread ends the process (hard exit) within the grace, and should the
+    loop still get control nothing is started and it exits 75."""
+    lock = FakeLock(acquire=[True], heartbeat=[False])
+    hard_exits = []
+    exited = threading.Event()
+
+    def hard_exit(code):
+        hard_exits.append((code, time.monotonic()))
+        exited.set()
+
+    daemon, lead = _daemon(
+        monkeypatch,
+        lock,
+        init_seconds=3.0,
+        lease=3.0,
+        heartbeat=None,  # 1 s: the first beat fails while init still blocks
+        hard_exit=hard_exit,
+    )
+    exits = []
+
+    def fake_exit(code):
+        exits.append(code)
+        raise SystemExit(code)
+
+    monkeypatch.setattr("services.daemon.main.os._exit", fake_exit)
+    started = time.monotonic()
+    with pytest.raises(SystemExit):
+        await asyncio.wait_for(daemon.run(), 15)
+    assert exits == [DEMOTED_EXIT_CODE]
+    assert daemon.inits == 1
+    # Init finished, but the component was never started.
+    assert daemon._scheduler is not None
+    assert not daemon._scheduler.started.is_set()
+    # The thread did not wait for the blocked loop: it exited inside init,
+    # one heartbeat + the grace after acquisition.
+    assert exited.is_set()
+    code, at = hard_exits[0]
+    assert code == DEMOTED_EXIT_CODE
+    assert at - started < lead.heartbeat_seconds + lead.exit_grace_seconds + 1.0
+    assert lead.lost and lock.released is False
+
+
+@pytest.mark.asyncio
+async def test_start_refuses_once_leadership_is_lost(monkeypatch):
+    """ensure_leader is checked before every component start."""
+    lock = FakeLock(acquire=[True])
+    daemon, lead = _daemon(monkeypatch, lock)
+
+    async def init_components():
+        daemon.inits += 1
+        lead._demote("lost during init")
+
+    monkeypatch.setattr(daemon, "_init_components", init_components)
+    monkeypatch.setattr(
+        "services.daemon.main.os._exit",
+        lambda code: (_ for _ in ()).throw(SystemExit(code)),
+    )
+    with pytest.raises(SystemExit) as exc:
+        await asyncio.wait_for(daemon.run(), 5)
+    assert exc.value.code == DEMOTED_EXIT_CODE
+    assert daemon._scheduler is None
+
+
+def test_ensure_leader():
+    from services.daemon.leadership import LeadershipLost
+
+    lead = _leadership(FakeLock())
+    with pytest.raises(LeadershipLost):
+        lead.ensure_leader()  # standby
+    lead.role = "leader"
+    lead.ensure_leader()
+    lead._demote("x")
+    with pytest.raises(LeadershipLost):
+        lead.ensure_leader()
 
 
 async def _until(predicate):

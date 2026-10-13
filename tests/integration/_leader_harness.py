@@ -7,13 +7,19 @@ the exit code on demotion. The writer inserts one row every 50 ms through the
 platform engine (fenced), tagged with this process's instance id.
 
 stdout protocol (one line each, flushed): ``LEADER <instance_id>`` when this
-process starts leading, ``WRITE_FAILED <error class>`` per refused write.
+process starts leading, ``WRITE_FAILED <error class>`` per refused write,
+``INIT_DONE`` when (the optionally slow) init returns.
+
+``W39_INIT_SLEEP`` (seconds): block the event loop that long inside
+``_init_components``, like a slow production init.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -48,8 +54,12 @@ class Writer:
 class HarnessDaemon(SOCDaemon):
     async def _init_components(self) -> None:
         # The scheduler slot is just a component the run loop starts.
-        self._scheduler = Writer(self._leadership.instance_id)
         print(f"LEADER {self._leadership.instance_id}", flush=True)
+        delay = float(os.getenv("W39_INIT_SLEEP", "0") or 0)
+        if delay:
+            time.sleep(delay)  # blocks the loop on purpose
+        self._scheduler = Writer(self._leadership.instance_id)
+        print("INIT_DONE", flush=True)
 
 
 def main() -> None:

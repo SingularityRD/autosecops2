@@ -29,7 +29,12 @@ connection opened afterwards fails step 1. Effects outside this database
 (Redis, vendor APIs) are not fenced; see docs/operations/rpo-rto.md.
 
 Requires PostgreSQL 14+ (``idle_session_timeout`` and the waiting form of
-``pg_terminate_backend``).
+``pg_terminate_backend``), reached directly or through a session-pooling
+proxy. A transaction- or statement-pooling proxy (PgBouncer's default
+``pool_mode = transaction``) hands each statement whatever server session is
+free, so a session advisory lock and ``SET idle_session_timeout`` stop
+meaning anything; :meth:`PgLeaderLock._open` probes for that and refuses
+(:class:`PooledConnectionError`).
 """
 
 from __future__ import annotations
@@ -73,6 +78,10 @@ WHERE datname = current_database()
 
 class UnsupportedServerError(RuntimeError):
     """The server cannot enforce the lease (PostgreSQL older than 14)."""
+
+
+class PooledConnectionError(UnsupportedServerError):
+    """The lock connection goes through a transaction/statement-pooling proxy."""
 
 
 class FencedError(RuntimeError):
@@ -167,6 +176,7 @@ class PgLeaderLock:
                 raise UnsupportedServerError(
                     f"leader election needs PostgreSQL 14+ (server is {version})"
                 )
+            self._refuse_pooled(conn, cur)
             # Server side: a frozen or partitioned holder loses the lock after
             # `lease` seconds without a heartbeat.
             cur.execute("SET idle_session_timeout = %s", (lease_ms,))
@@ -177,6 +187,54 @@ class PgLeaderLock:
             _close_quietly(conn)
             raise
         return conn
+
+    def _refuse_pooled(self, conn: Any, cur: Any) -> None:
+        """Raise :class:`PooledConnectionError` if ``conn`` is not one session.
+
+        A second client connection runs one statement (it does not hold a
+        transaction, so a pool of one cannot deadlock). Directly on Postgres
+        the two always have different backends and ``conn`` keeps its own
+        backend and session setting. Behind a transaction pooler the second
+        connection is usually handed the backend ``conn`` just released (LIFO),
+        and ``conn``'s next statement then sees a foreign backend pid or loses
+        its session setting.
+        """
+        token = uuid.uuid4().hex
+        cur.execute(
+            "SELECT pg_catalog.pg_backend_pid(), "
+            "pg_catalog.set_config('vigil.leader_probe', %s, false)",
+            (token,),
+        )
+        pid_before = int(cur.fetchone()[0])
+        other = self._connect(
+            application_name=self.lock_name,
+            connect_timeout=max(2, int(self.lease_seconds / 3)),
+        )
+        try:
+            other.autocommit = True
+            ocur = other.cursor()
+            ocur.execute(
+                "SELECT pg_catalog.pg_backend_pid(), "
+                "pg_catalog.set_config('vigil.leader_probe', 'other', false)"
+            )
+            pid_other = int(ocur.fetchone()[0])
+            ocur.close()
+        finally:
+            _close_quietly(other)
+        cur.execute(
+            "SELECT pg_catalog.pg_backend_pid(), "
+            "pg_catalog.current_setting('vigil.leader_probe', true)"
+        )
+        pid_after, seen = cur.fetchone()
+        if pid_other == pid_before or int(pid_after) != pid_before or seen != token:
+            raise PooledConnectionError(
+                "leader election needs a dedicated Postgres session, but this "
+                "connection is pooled per transaction or statement (PgBouncer "
+                "pool_mode=transaction?): session advisory locks and "
+                "idle_session_timeout do not work there. Point "
+                "DAEMON_LEADER_DATABASE_URL at Postgres directly (or at a "
+                "session-mode pool)."
+            )
 
     def _drop(self) -> None:
         conn, self._conn = self._conn, None

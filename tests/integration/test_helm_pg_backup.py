@@ -239,3 +239,57 @@ def test_bad_settings_are_refused(tmp_path):
     assert result.returncode == 2
     result = _run(tmp_path, BACKUP_RETENTION_DAYS="ten")
     assert result.returncode == 2
+
+
+def test_truncated_dump_is_rejected(admin, tmp_path):
+    """A dump cut short after its TOC passes --list; the full read-back must fail.
+
+    pg_dump is shimmed on PATH: the real one runs, then the tail of the file
+    (data blocks) is cut off, as when the disk fills or pg_dump is killed.
+    """
+    real = shutil.which("pg_dump")
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    shim = shim_dir / "pg_dump"
+    shim.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        f'"{real}" "$@"\n'
+        'for a in "$@"; do case "$a" in --file=*) f="${a#--file=}" ;; esac; done\n'
+        'size=$(wc -c < "$f")\n'
+        'truncate -s $((size - 2000)) "$f"\n'
+    )
+    shim.chmod(0o755)
+    backup_dir = tmp_path / "backups"
+
+    # The shim's output still lists: the old --list-only check would accept it.
+    listed = subprocess.run(
+        [
+            "sh",
+            "-c",
+            'pg_dump --format=custom --file="$1" && pg_restore --list "$1"',
+            "sh",
+            str(tmp_path / "probe.dump"),
+        ],
+        env={**_env(backup_dir), "PATH": f"{shim_dir}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert listed.returncode == 0, listed.stderr
+    assert "TABLE DATA" in listed.stdout
+
+    result = subprocess.run(
+        ["sh", str(SCRIPT)],
+        env={**_env(backup_dir), "PATH": f"{shim_dir}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode != 0
+    assert "failed the full read-back" in result.stderr
+    # Nothing was published: no dump, no checksum, no LATEST.
+    assert not list(backup_dir.glob("*.dump"))
+    assert not list(backup_dir.glob("*.sha256"))
+    assert not (backup_dir / "LATEST").exists()
+    assert not list(backup_dir.glob(".*.partial"))

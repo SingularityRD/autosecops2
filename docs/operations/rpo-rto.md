@@ -52,11 +52,20 @@ Kilit ayrı, havuz dışı bir bağlantıda tutulur ve bu oturuma
   kalp atışından `leaseSeconds` sonra oturumu sonlandırır → takipçi
   `leaseSeconds − leaseSeconds/3` ile `leaseSeconds + retrySeconds` arasında
   lider olur (varsayılanla 10–17 sn).
+- Kalp atışı, kilit alındığı anda başlayan ayrı bir iş parçacığında (thread)
+  çalışır; bileşenlerin açılışı (`_init_components`) ya da olay döngüsünü
+  bloklayan herhangi bir eşzamanlı çağrı onu geciktirmez. Açılış `leaseSeconds`'tan
+  uzun sürse bile kilit korunur. Her bileşen başlatılmadan hemen önce liderlik
+  yeniden doğrulanır (`ensure_leader`); açılış sırasında kilit kaybedildiyse hiçbir
+  bileşen başlamaz.
 - Lider kendi tarafında da bekler: son başarılı kalp atışından
   `leaseSeconds − leaseSeconds/3` geçtiyse ya da kalp atışı başarısızsa kendini
   indirir, bileşenleri durdurur ve **75** çıkış koduyla çıkar. Kubernetes podu
   yeniden başlatır; süreç takipçi olarak döner. Bellekteki durum asla yeniden
-  kullanılmaz.
+  kullanılmaz. Olay döngüsü bloklu olduğu için düzgün çıkış yapılamıyorsa kalp
+  atışı iş parçacığı, kayıptan `min(1 sn, leaseSeconds/6)` sonra süreci kendisi
+  sonlandırır (`os._exit(75)`) — yani takipçinin kilidi alabileceği en erken andan
+  önce; eski bileşenler yeni liderle aynı anda çalışmaz.
 
 Ölçülen değerler (`tests/integration/test_daemon_leader_election.py`, iki gerçek
 daemon süreci, `lease=6 sn`, `retry=1 sn`, yüklü 2 CPU'lu test makinesi):
@@ -93,6 +102,27 @@ yazımı işlenmez (testte satır kimlikleriyle doğrulanır).
 - Gereksinim: PostgreSQL ≥ 14. Daha eski sunucuda seçim açıkken daemon
   `UnsupportedServerError` ile çıkar (pod CrashLoopBackOff'ta görünür); seçimi
   kapatın ya da sunucuyu yükseltin.
+- **PgBouncer / bağlantı havuzlayıcı**: kilit oturumu Postgres'e doğrudan (ya da
+  `pool_mode = session` bir havuzdan) gitmelidir. İşlem (`transaction`) veya
+  ifade (`statement`) havuzlamasında her ifade başka bir sunucu oturumuna
+  düşebilir: oturum düzeyi danışma kilidi yanlış oturumda kalır (ve istemci
+  ölünce bırakılmaz), `SET idle_session_timeout` başka bir oturuma uygulanır;
+  kira (lease) ve devralma güvencesi kalmaz. Bu yüzden:
+  - Platform veritabanı PgBouncer vekili (`proxy_type = pgbouncer`) üzerinden
+    yapılandırılmışsa ve `DAEMON_LEADER_DATABASE_URL` boşsa, seçim açıkken daemon
+    `UnsupportedServerError` ile açılmayı reddeder.
+  - `DAEMON_LEADER_DATABASE_URL` (ör. `postgresql://user:pass@postgres:5432/deeptempo_soc`)
+    yalnızca kilit oturumu için doğrudan bir DSN verir; veri bağlantıları
+    olduğu gibi kalır.
+  - Yapılandırmada görünmeyen bir havuzlayıcı için kilit bağlantısı açılışta
+    sınanır: ikinci bir istemci bağlantısı tek bir ifade çalıştırır; aynı sunucu
+    sürecine (backend pid) düşerse ya da kilit bağlantısının pid'i / oturum
+    ayarı değişirse `PooledConnectionError` ile seçim reddedilir.
+  - Veri bağlantıları da işlem havuzlu bir PgBouncer'dan geçiyorsa çitlemenin 2.
+    adımı (eski liderin `vigil-daemon:*` oturumlarının sonlandırılması) güvenilir
+    değildir: `application_name` havuzdaki sunucu oturumuna yapışır, sonlandırma
+    başka istemcilerin işlemlerini de kesebilir. Daemon'u seçim açıkken
+    Postgres'e doğrudan bağlayın.
 - `leaseSeconds` küçültülürse donma/bölünmede devralma hızlanır ama kısa ağ
   kesintileri gereksiz devirlere yol açar; 10 sn'nin altı önerilmez.
   `retrySeconds < leaseSeconds` olmalıdır.
@@ -105,6 +135,25 @@ yazımı işlenmez (testte satır kimlikleriyle doğrulanır).
   tamamlanabilir. Etki sınırlıdır: süreç uyanır uyanmaz kalp atışı gecikmesini
   görüp kendini indirir ve yeni bir veritabanı okuması yapamaz (eylem kararları
   ve onaylar veritabanından okunur).
+- **agent-worker işleri (dolaylı yazımlar)**: orchestrator ajan çalıştırmalarını
+  Redis'teki BullMQ kuyruğuna (`bull:agent-runs:*`, `core/agents/queue.py`)
+  koyar; bunları ayrı `agent-worker` süreçleri yürütür ve veritabanına kendi
+  bağlantılarıyla yazar. Bu bağlantılar `vigil-daemon:*` değildir, çitlenmez:
+  eski liderin kuyruğa koyduğu bir iş, yeni lider başladıktan sonra da çalışıp
+  yazabilir (araştırma sonuçları, ajan olayları, `workflow_runs`). Kuyruğa
+  koyma Redis'e doğrudan yazar ve çitlenmez; orchestrator `workflow_runs`
+  satırı yazılamasa bile işi kuyruğa koyar. Pencere: eski lider kilidi
+  kaybettiği andan süreç bitene kadar (olay döngüsü çalışıyorsa milisaniyeler,
+  bloklu ise en fazla kalp atışı iş parçacığının `min(1 sn, leaseSeconds/6)`
+  bekleme süresi) ve donma anında yolda olan çağrılar. Bu pencerede gereken
+  veritabanı okumaları (araştırma kaydı vb.) çitlendiği için pratikte yalnızca
+  hazırlığı bitmiş bir `enqueue` kaçabilir. Etkisi: aynı araştırma için iki
+  çalıştırma görülebilir; agent tarafındaki `leases.claim` koşullu UPDATE'i ve
+  `advance()`'in terminal kontrolü aynı çalıştırma kimliğinin iki kez
+  ilerlemesini engeller, ama farklı kimlikli iki iş ikisi de tamamlanır.
+  Operatör çift çalıştırmayı konsoldan iptal edebilir. Kalıcı çözüm (iş
+  yükünde liderlik dönemini taşıyıp agent-worker'da doğrulamak) bu WP'nin
+  kapsamı dışındadır.
 - **Bellekteki kuyruklar**: processor/responder kuyruklarındaki henüz
   saklanmamış bulgular lider değişiminde kaybolur. Federation imleçleri
   veritabanında olduğundan kaynaklar yeniden okunur; webhook gönderenler 503 ya
@@ -122,7 +171,9 @@ yazımı işlenmez (testte satır kimlikleriyle doğrulanır).
 `backup.enabled=true` ile (varsayılan kapalı) grafik bir CronJob kurar:
 
 - `pg_dump -Fc` (özel biçim, sıkıştırılmış) geçici bir adla yazılır,
-  `pg_restore --list` ile geri okunarak doğrulanır, `.sha256` dosyası üretilir ve
+  `pg_restore --list` (içindekiler) ve ardından `pg_restore -f /dev/null` (tüm
+  veri bloklarının okunup açılması; içindekilerden sonra kesilmiş bir döküm
+  burada yakalanır) ile geri okunarak doğrulanır, `.sha256` dosyası üretilir ve
   ancak bundan sonra kalıcı adına (`<db>-<UTC zaman>.dump`) taşınır; `LATEST`
   en yeni dökümün adını tutar. Betik: `infra/helm/vigil/files/backup/pg-backup.sh`.
 - **Saklama**: en yeni `backup.keepLast` (varsayılan 14) döküm her zaman kalır;
