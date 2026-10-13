@@ -208,6 +208,16 @@ export interface HuntState {
   // Why the hunt ended, when the ending was not a Hunt Lead decision: a predicate
   // that passed, an operator's directive, a park that expired.
   termination_reason: string | null;
+  // The CONCLUDE decision the controller accepted -- its termination predicate passed
+  // on it, directly or past an approved verdict review. Journaled as a hunt patch
+  // before the terminal, so the verdict run records the lead's proposal only when the
+  // controller stood behind it, never because a CONCLUDE happened to be the last
+  // decision. Absent on ledgers written before it, and on every run that ended any
+  // other way.
+  accepted_conclude?: string | null;
+  // An operator's conclude directive ended the hunt on what it had, without the
+  // termination predicate: an ending, not an acceptance of any CONCLUDE.
+  operator_concluded?: boolean;
 }
 
 export interface Hypothesis {

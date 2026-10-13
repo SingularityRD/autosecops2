@@ -61,6 +61,12 @@ GATED_ROUTES = [
     ("PATCH", "/api/v1/findings/f-1", {"severity": "low"}, "findings.write"),
     ("POST", "/api/v1/approvals/a-1/approve", {}, "ai_decisions.approve"),
     ("POST", "/api/v1/approvals/a-1/reject", {"reason": "no"}, "ai_decisions.approve"),
+    (
+        "POST",
+        "/api/response/actions/a-1/revert",
+        {"reason": "false positive"},
+        "ai_decisions.approve",
+    ),
     ("POST", "/api/workflows/runs/r-1/resume", {}, "ai_decisions.approve"),
     (
         "POST",
@@ -82,6 +88,20 @@ GATED_ROUTES = [
     ),
     ("POST", "/api/workflows/w-1/execute", {}, "ai_chat.use"),
     ("POST", "/api/claude/chat/stream", {"messages": []}, "ai_chat.use"),
+    ("POST", "/api/compliance/retention/purge", {}, "settings.write"),
+    (
+        "PUT",
+        "/api/compliance/retention/policies/findings",
+        {"retain_days": 30},
+        "settings.write",
+    ),
+    (
+        "PUT",
+        "/api/compliance/retention/legal-holds/cases/c-1",
+        {"reason": "x"},
+        "settings.write",
+    ),
+    ("GET", "/api/compliance/retention/policies", None, "settings.read"),
     ("POST", "/api/qa/samples/draw", {}, "ai_decisions.approve"),
     ("POST", "/api/qa/samples/1/review", {"agrees": True}, "findings.write"),
     (

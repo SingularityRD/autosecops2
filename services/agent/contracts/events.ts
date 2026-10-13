@@ -15,7 +15,9 @@ export const EVENT_SCHEMA_VERSION = 1;
 // one to how it got there. Same machinery, its own kind so it is never mislabelled.
 // adjudicate is the same loop again, framed as a shadow second opinion on a finding
 // intake already admitted: it proposes a workflow and executes nothing.
-export const RUN_KINDS = ["hunt", "root_cause", "adjudicate", "investigate", "compose", "chat", "tally"] as const;
+// verdict is the same loop at triage scale: one uncertain alert, a small budget,
+// and one contract verdict (contracts/verdict.ts) journaled at the end.
+export const RUN_KINDS = ["hunt", "root_cause", "adjudicate", "verdict", "investigate", "compose", "chat", "tally"] as const;
 export type RunKind = (typeof RUN_KINDS)[number];
 
 // Domain-free, so the harness never imports a workflow's vocabulary.

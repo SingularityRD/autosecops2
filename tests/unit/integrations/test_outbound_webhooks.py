@@ -94,6 +94,30 @@ def test_any_of_several_v1_signatures_may_match_for_secret_rotation():
     assert hooks.verify_signature(SECRET, header, body, now=1_700_000_000)
 
 
+def test_replay_dedup_guidance_names_the_signed_body_id_not_the_header():
+    """The event-id header is outside the signature; only the body id is bound.
+
+    A replayed request keeps a valid signature whatever its headers say, so a
+    receiver de-duplicating on the header can be fooled. The receiver guide must
+    send people to the body ``id``.
+    """
+    from pathlib import Path
+
+    body = hooks.encode_body(hooks.build_payload("case.sla_warning", "evt-1", {}))
+    header = hooks.signature_header("whsec_x", body, 1_000)
+    # Same signature verifies no matter what event-id header travels with it.
+    assert hooks.verify_signature("whsec_x", header, body, now=1_000)
+    tampered = body.replace(b'"id":"evt-1"', b'"id":"evt-2"')
+    assert not hooks.verify_signature("whsec_x", header, tampered, now=1_000)
+
+    doc = (Path(__file__).resolve().parents[3] / "docs" / "outbound-webhooks.md").read_text(
+        encoding="utf-8"
+    )
+    replay = doc.split("## Replay protection", 1)[1].split("\n## ", 1)[0]
+    assert "de-duplicate on the `id` field of the\n**verified body**" in replay
+    assert "Do not de-duplicate on the\n`X-AutoSecOps-Event-Id` header" in replay
+
+
 def test_body_encoding_is_deterministic():
     a = hooks.encode_body({"b": 1, "a": {"y": 2, "x": 1}})
     b = hooks.encode_body({"a": {"x": 1, "y": 2}, "b": 1})

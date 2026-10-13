@@ -1,0 +1,18 @@
+[Unit]
+Description=AutoSecOps staging: nightly install from main (build, helm upgrade, smoke, demo seed)
+Documentation=file://@STAGING_SRC_DIR@/infra/staging/README.md
+Wants=network-online.target
+After=network-online.target k3s.service docker.service
+Requires=k3s.service
+
+[Service]
+Type=oneshot
+Environment=KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+# Placeholders are filled in by bootstrap.sh when it installs the unit.
+Environment=STAGING_SRC_DIR=@STAGING_SRC_DIR@
+Environment=STAGING_ETC_DIR=@STAGING_ETC_DIR@
+Environment=STAGING_STATE_DIR=@STAGING_STATE_DIR@
+ExecStart=@STAGING_SRC_DIR@/infra/staging/nightly.sh
+# Image builds on a small VM are slow; helm itself waits up to 20 min.
+TimeoutStartSec=3h
+Nice=10

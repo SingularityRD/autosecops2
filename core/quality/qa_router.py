@@ -12,6 +12,7 @@ a verdict, so it takes ``findings.write``.
 
 from __future__ import annotations
 
+import logging
 import random
 from datetime import datetime
 from typing import Any, Literal, Optional
@@ -20,10 +21,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from core.auth.permissions import permission_gate, require_permission
+from core.config import get_settings
 from core.quality import sampling
 from core.quality.bounds import DEFAULT_CONFIDENCE, DEFAULT_TARGET
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
 from core.storage.models import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -52,7 +56,14 @@ class QADrawRequest(BaseModel):
         le=1000,
         description="Expected number of risk-weighted extras. Never enter the bound.",
     )
-    seed: Optional[int] = Field(None, description="Seed, for a reproducible draw.")
+    seed: Optional[int] = Field(
+        None,
+        description=(
+            "Seed, for a reproducible draw in tests. Ignored (and logged) unless "
+            "the server runs with TESTING=true: a caller who chooses the seed "
+            "chooses the sample, and the bound is only valid for a random one."
+        ),
+    )
 
 
 class QACategoryDraw(BaseModel):
@@ -164,6 +175,25 @@ def _sample(row: dict[str, Any]) -> QASample:
 # ---------------------------------------------------------------- routes
 
 
+def _honoured_seed(seed: Optional[int]) -> Optional[int]:
+    """The seed to draw with: the caller's only under TESTING, else none.
+
+    The false-negative bound assumes every unsampled decision was equally
+    likely to be drawn. A seed lets the caller try seeds offline until the
+    sample avoids the decisions they would rather nobody reviewed, so outside
+    tests it is dropped and the draw is seeded from the OS.
+    """
+    if seed is None:
+        return None
+    if get_settings().testing:
+        return seed
+    logger.warning(
+        "QA draw: ignoring caller-supplied seed %s; draws are random outside tests",
+        seed,
+    )
+    return None
+
+
 @router.post(
     "/samples/draw",
     response_model=QADrawResponse,
@@ -171,7 +201,7 @@ def _sample(row: dict[str, Any]) -> QASample:
 )
 def draw_samples(body: QADrawRequest, session: UnitOfWorkSession) -> QADrawResponse:
     """Draw per-category simple random samples (and optional risk-weighted extras)."""
-    rng = random.Random(body.seed) if body.seed is not None else random.Random()
+    rng = random.Random(_honoured_seed(body.seed))
     result = sampling.draw_samples(
         session,
         days=body.days,
