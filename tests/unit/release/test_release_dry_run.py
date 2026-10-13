@@ -550,6 +550,7 @@ def _merge(repo: Path, branch: str, subject: Optional[str] = None) -> None:
     [
         ("wp/w0.10-merged-followups", "W0.10"),
         ("wp/w0.11-more", "W0.11"),
+        ("wp/w0.13-review-round5", "W0.13"),
         ("wp/w0.4b-gates-fix", "W0.4b"),
         ("wp/w12.3-x", "W12.3"),
         ("wp/w0.1-upstream-sync", "W0.1"),
@@ -565,6 +566,7 @@ def test_check_notes_strict_rejects_merged_wp_without_a_row(
     tmp_path: Path, history: Path
 ) -> None:
     _merge(history, "wp/w0.10-merged-followups")
+    _merge(history, "wp/w0.13-review-round5")
     notes = _notes(
         tmp_path, w22="Dahil", w22b="`wp/w2.2-alert-lanes`", w19="Dahil değil", w19b="—"
     )
@@ -573,6 +575,7 @@ def test_check_notes_strict_rejects_merged_wp_without_a_row(
         rt.check_notes(notes, history, strict=True)
     msg = str(exc.value)
     assert "W0.10: wp/w0.10-merged-followups is merged" in msg
+    assert "W0.13: wp/w0.13-review-round5 is merged" in msg
     assert "has no row" in msg
     # W0.1 is not confused with W0.10 (prefix wp/w0.1- vs wp/w0.10-).
     assert "W0.1:" not in msg
