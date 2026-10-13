@@ -10887,7 +10887,7 @@ export interface components {
             risk_weighted_extra: number;
             /**
              * Seed
-             * @description Seed, for a reproducible draw.
+             * @description Seed, for a reproducible draw in tests. Ignored (and logged) unless the server runs with TESTING=true: a caller who chooses the seed chooses the sample, and the bound is only valid for a random one.
              */
             seed?: number | null;
         };
