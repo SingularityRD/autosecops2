@@ -25,6 +25,19 @@
       "note": "Case notifications to Slack; sent only when the 'slack' integration is enabled with credentials. The air-gap profile enables none."
     },
     {
+      "site": "core/compliance/audit_export.py",
+      "category": "operator-action",
+      "kinds": {
+        "dns": 1,
+        "socket": 1,
+        "httpx": 1
+      },
+      "gates": [
+        "operator-action:audit export enabled with a SIEM destination"
+      ],
+      "note": "Audit stream export (WP w3.6) to the customer's SIEM over syslog (TLS/TCP/UDP) or HTTPS. Off by default (system_config compliance.audit_export absent or enabled: false): no resolution, no connection. Only to destinations an admin configures via PUT /api/compliance/audit-export/config; each name is resolved once, checked by url_safety (metadata/link-local refused) and dialled by IP. Air-gap: point it at an in-network SIEM or leave it off."
+    },
+    {
       "site": "core/detections/detection_rules_service.py",
       "category": "operator-action",
       "kinds": {
