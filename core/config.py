@@ -337,6 +337,13 @@ class Settings(BaseSettings):
     # episodic read log, while an unanswered containment proposal goes stale
     # in days (#675).
     daemon_approval_expiry_days: int = 7
+    # KVKK retention purge (core/compliance/retention.py). Off by default, and
+    # a dry run when first switched on: a purge destroys data irreversibly.
+    retention_purge_enabled: bool = False
+    retention_purge_dry_run: bool = True
+    retention_purge_interval: int = 86400
+    retention_purge_batch_size: int = 500
+    retention_purge_max_batches: int = 20
     daemon_metrics_enabled: bool = True
     daemon_metrics_port: int = 9090
     daemon_health_host: str = "localhost"

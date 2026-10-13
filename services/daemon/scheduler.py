@@ -103,6 +103,19 @@ class TaskScheduler:
                 )
             )
 
+        # KVKK retention purge: off unless RETENTION_PURGE_ENABLED, and a dry
+        # run unless RETENTION_PURGE_DRY_RUN is also turned off.
+        if get_settings().retention_purge_enabled:
+            self._tasks.append(
+                ScheduledTask(
+                    name="retention_purge",
+                    func=self._run_retention_purge,
+                    interval=max(3600, get_settings().retention_purge_interval),
+                    enabled=True,
+                    run_on_start=False,
+                )
+            )
+
         # Hourly tick; the day-scoped finding_id makes the injection once a day.
         if self.config.probes_enabled:
             self._tasks.append(
@@ -423,6 +436,23 @@ class TaskScheduler:
             "approvals_expired": expired,
             "read_log_removed": reads,
         }
+
+    async def _run_retention_purge(self):
+        """Apply the retention policies once (batched; audited when not a dry run).
+
+        Off-thread: each batch is its own transaction and a run can be long.
+        """
+        from core.compliance.retention import run_scheduled_purge
+
+        report = await asyncio.to_thread(run_scheduled_purge)
+        if report:
+            logger.info(
+                "Retention purge %s: %d item(s)%s",
+                report["run_id"],
+                report["total_processed"],
+                " would be processed (dry run)" if report["dry_run"] else "",
+            )
+        return report
 
     async def _run_probe_sweep(self):
         """Score the probes past their hour (#924), then queue today's (#923)."""
