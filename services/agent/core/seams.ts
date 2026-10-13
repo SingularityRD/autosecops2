@@ -1,6 +1,6 @@
 import type { AgentEvent, NewEvent, TerminalPayload } from "../contracts/events.js";
 import type { RecallResult } from "../contracts/memory.js";
-import type { RegisteredTool, ToolResult } from "../contracts/tool.js";
+import type { RegisteredTool, ToolApproval, ToolResult } from "../contracts/tool.js";
 
 // The four seams as ports the harness receives rather than builds. Budget is
 // already a contract, re-exported so a caller wires all four from one module.
@@ -55,5 +55,13 @@ export interface State<Kinds extends Record<string, unknown> = Record<never, nev
 // How a call reaches its adapter, nothing more; it never scans or renders. The
 // signal is the run's: a worker that lost its lease drops the calls in flight.
 export interface ToolDispatch {
-  invoke(tool: RegisteredTool, args: Record<string, unknown>, signal?: AbortSignal, agentId?: string): Promise<ToolResult>;
+  // approval is set only for a gated call a person approved: the run and the
+  // checkpoint they answered, which the far side checks before it runs the tool.
+  invoke(
+    tool: RegisteredTool,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+    agentId?: string,
+    approval?: ToolApproval,
+  ): Promise<ToolResult>;
 }

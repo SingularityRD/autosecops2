@@ -59,7 +59,7 @@ class VStrikeEnrichment(BaseModel):
 class VStrikeFinding(BaseModel):
     """A single finding pushed from VStrike.
 
-    `finding_id` must match a DeepTempo LogLM finding already known to Vigil
+    `finding_id` must match a DeepTempo LogLM finding already known to AutoSecOps
     (update path). If it does not exist and `timestamp` + `anomaly_score` are
     supplied, a new finding is created with `data_source="vstrike"`.
     """

@@ -8,6 +8,8 @@ import { approvalsApi, casesApi, orchestratorApi, streamFetch, workflowApi, type
 
 const testState = vi.hoisted(() => ({
   canDelete: true,
+  canRevert: true,
+  actions: [] as Array<Record<string, unknown>>,
   cases: [] as Array<Record<string, unknown>>,
   getByIdError: false,
   runs: {} as Record<string, unknown>,
@@ -17,7 +19,7 @@ const testState = vi.hoisted(() => ({
 }))
 
 vi.mock('../../contexts/AuthContext', () => ({
-  useAuth: () => ({ hasPermission: (p: string) => p !== 'cases.delete' || testState.canDelete }),
+  useAuth: () => ({ hasPermission: (p: string) => (p === 'ai_decisions.approve' ? testState.canRevert : p !== 'cases.delete' || testState.canDelete) }),
 }))
 
 vi.mock('../../services/api', () => ({
@@ -39,7 +41,9 @@ vi.mock('../../services/api', () => ({
     getEvidence: vi.fn(() => Promise.resolve({ data: { evidence: [] } })),
     getIOCs: vi.fn(() => Promise.resolve({ data: { iocs: [] } })),
     getEscalations: vi.fn(() => Promise.resolve({ data: { escalations: [] } })),
+    getActionTimeline: vi.fn((id: string) => Promise.resolve({ data: { case_id: id, count: testState.actions.length, truncated: false, actions: testState.actions } })),
   },
+  responseActionsApi: { revert: vi.fn() },
   workflowApi: {
     listAll: vi.fn(() => Promise.resolve({ data: { workflows: [{ id: 'incident-response', name: 'Incident response' }] } })),
     getRun: vi.fn((id: string) => Promise.resolve({ data: { run_id: id, ...(testState.runs[id] as object) } })),
@@ -173,6 +177,8 @@ function openCase(id: string) {
 
 beforeEach(() => {
   testState.canDelete = true
+  testState.canRevert = true
+  testState.actions = []
   testState.getByIdError = false
   testState.cases = []
   testState.runs = {}
@@ -496,6 +502,33 @@ describe('case page', () => {
     expect(screen.getByText(/tool down/)).toBeInTheDocument()
   })
 
+  it.each([true, false])('lists the case actions on the Actions tab, Revert only with ai_decisions.approve (%s)', async (canRevert) => {
+    testState.canRevert = canRevert
+    testState.cases = [openCase('case-act')]
+    testState.actions = [{
+      action_id: 'act-9',
+      action_type: 'block_ip',
+      title: 'Block 198.51.100.7',
+      target: '198.51.100.7',
+      status: 'executed',
+      reversibility: 'reversible',
+      can_revert: true,
+      proposed_by: 'responder',
+      confidence: null,
+      reason: '',
+      policy: { requires_approval: false, decision_rule: null },
+      events: [{ kind: 'proposed', at: '2026-06-15T09:00:00Z', actor: 'responder', detail: null }],
+    }]
+    renderCase('case-act')
+    expect(await screen.findByRole('heading', { name: 'Open case' })).toBeInTheDocument()
+    const tab = screen.getByRole('tab', { name: /Actions/ })
+    await waitFor(() => expect(tab).toHaveTextContent('1'))
+    fireEvent.click(tab)
+    expect(await screen.findByText('Block 198.51.100.7')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Revert' }) !== null).toBe(canRevert)
+    expect(casesApi.getActionTimeline).toHaveBeenCalledWith('case-act')
+  })
+
   it('keeps empty tabs in the strip', async () => {
     testState.cases = [{
       case_id: 'case-empty',
@@ -509,7 +542,7 @@ describe('case page', () => {
     }]
     renderCase('case-empty')
     expect(await screen.findByRole('heading', { name: 'Empty case' })).toBeInTheDocument()
-    for (const name of ['Summary', 'Explanations', 'Evidence', 'Checked', 'Memory and blind spots', 'Record']) {
+    for (const name of ['Summary', 'Explanations', 'Evidence', 'Checked', 'Memory and blind spots', 'Actions', 'Record']) {
       expect(screen.getByRole('tab', { name: new RegExp(name) })).toBeInTheDocument()
     }
     fireEvent.click(screen.getByRole('tab', { name: /Evidence/ }))

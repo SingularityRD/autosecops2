@@ -20,6 +20,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def build_case_automation():
+    """The case automation component, or None when switched off.
+
+    SLA monitor, stale-case detector, digest, notification dispatcher and the
+    outbound webhook sender run here, in the daemon, and nowhere else: the API
+    may run several workers, and each would start its own copy of every loop.
+    """
+    from core.config import get_settings
+
+    if not get_settings().case_automation_enabled:
+        logger.info("Case automation is disabled (CASE_AUTOMATION_ENABLED=false)")
+        return None
+    from core.cases.case_automation_service import CaseAutomationService
+
+    return CaseAutomationService()
+
+
 class SOCDaemon:
     """Main daemon orchestrator for autonomous SOC operations."""
 
@@ -59,6 +76,7 @@ class SOCDaemon:
         self._orchestrator = None
         self._metrics_server = None
         self._mcp_client = None
+        self._case_automation = None
 
         logger.info("SOC Daemon initialized")
 
@@ -144,6 +162,8 @@ class SOCDaemon:
         if self.config.metrics.enabled:
             self._metrics_server = MetricsServer(self.config.metrics)
 
+        self._case_automation = build_case_automation()
+
         # Connect components via queues
         self._poller.set_output_queue(self._processor.input_queue)
         self._kafka_ingestor.set_output_queue(self._processor.input_queue)
@@ -204,6 +224,9 @@ class SOCDaemon:
             start("orchestrator", self._orchestrator, "Autonomous orchestrator")
             if not self.config.orchestrator.enabled:
                 logger.info("Autonomous orchestrator is disabled")
+
+        if self._case_automation:
+            start("case_automation", self._case_automation, "Case automation")
 
         if self._metrics_server:
             start("metrics", self._metrics_server, "Metrics server")

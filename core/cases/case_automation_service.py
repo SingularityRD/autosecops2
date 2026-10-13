@@ -7,44 +7,92 @@ Handles SLA monitoring, auto-assignment, escalation, and periodic tasks.
 import asyncio
 import logging
 from datetime import timedelta
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from core.cases.case_metrics_service import CaseMetricsService
-from core.cases.case_notification_service import CaseNotificationService
+from core.cases.case_notification_service import (
+    CaseNotificationService,
+    sla_event_key,
+)
 from core.cases.case_sla_service import CaseSLAService
 from core.cases.case_workflow_service import CaseWorkflowService
+from core.cases.notification_dispatcher import CaseNotificationDispatcher, is_canary
+from core.integrations.outbound_webhooks import WebhookSender
 from core.storage.models import Case, CaseSLA
 from core.storage.unit_of_work import unit_of_work
 from core.time import utcnow
 
 logger = logging.getLogger(__name__)
 
+SLA_THRESHOLDS = (75, 90, 100)
+SLA_INTERVAL_SECONDS = 60
+DISPATCH_INTERVAL_SECONDS = 15
+WEBHOOK_INTERVAL_SECONDS = 5
+
+
+def highest_crossed(percent_elapsed: float) -> Optional[int]:
+    crossed = [t for t in SLA_THRESHOLDS if percent_elapsed >= t]
+    return max(crossed) if crossed else None
+
 
 class CaseAutomationService:
-    """Service for automated case workflows and scheduled tasks."""
+    """Service for automated case workflows and scheduled tasks.
 
-    def __init__(self):
+    Lifecycle: the daemon owns it (``services/daemon/main.py`` starts
+    ``run(shutdown_event)`` as a component when ``CASE_AUTOMATION_ENABLED``).
+    The API process never starts it, so each loop runs once per install.
+    Sending stays safe even if two daemons ever run: webhook deliveries and
+    notifications are claimed with ``SKIP LOCKED``.
+    """
+
+    def __init__(
+        self,
+        *,
+        dispatcher: Optional[CaseNotificationDispatcher] = None,
+        webhook_sender: Optional[WebhookSender] = None,
+    ):
         """Initialize the automation service."""
         self.sla_service = CaseSLAService()
         self.workflow_service = CaseWorkflowService()
         self.notification_service = CaseNotificationService()
         self.metrics_service = CaseMetricsService()
+        self.dispatcher = dispatcher
+        self.webhook_sender = webhook_sender
         self.running = False
 
-    async def start(self):
-        """Start all automation tasks."""
-        self.running = True
-        logger.info("Starting case automation service")
-
-        # Start all scheduled tasks
-        tasks = [
+    def _loops(self):
+        if self.dispatcher is None:
+            self.dispatcher = CaseNotificationDispatcher()
+        if self.webhook_sender is None:
+            self.webhook_sender = WebhookSender()
+        return [
             self.sla_monitor_task(),
             self.metrics_update_task(),
             self.stale_case_detector_task(),
             self.digest_generator_task(),
+            self.notification_dispatch_task(),
+            self.webhook_delivery_task(),
         ]
 
-        await asyncio.gather(*tasks, return_exceptions=True)
+    async def run(self, shutdown_event: asyncio.Event):
+        """Run every loop until ``shutdown_event`` is set (daemon component)."""
+        self.running = True
+        logger.info("Starting case automation service")
+        tasks = [asyncio.create_task(loop) for loop in self._loops()]
+        try:
+            await shutdown_event.wait()
+        finally:
+            self.running = False
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            logger.info("Case automation service stopped")
+
+    async def start(self):
+        """Start all automation tasks (until ``stop``)."""
+        self.running = True
+        logger.info("Starting case automation service")
+        await asyncio.gather(*self._loops(), return_exceptions=True)
 
     async def stop(self):
         """Stop automation service."""
@@ -56,138 +104,164 @@ class CaseAutomationService:
         while self.running:
             try:
                 logger.debug("Running SLA monitor")
-                await self._check_sla_deadlines()
-                await asyncio.sleep(60)  # Check every minute
+                await asyncio.to_thread(self.check_sla_deadlines)
             except Exception as e:
                 logger.error(f"Error in SLA monitor task: {e}")
-                await asyncio.sleep(60)
+            await asyncio.sleep(SLA_INTERVAL_SECONDS)
 
-    async def _check_sla_deadlines(self):
-        """Check SLA deadlines and send notifications."""
+    async def notification_dispatch_task(self):
+        """Send pending case notifications (email, Slack, webhook queue)."""
+        while self.running:
+            try:
+                counts = await asyncio.to_thread(self.dispatcher.dispatch_pending)
+                if counts:
+                    logger.info("Dispatched case notifications: %s", counts)
+            except Exception as e:
+                logger.error("Error in notification dispatcher: %s", e)
+            await asyncio.sleep(DISPATCH_INTERVAL_SECONDS)
+
+    async def webhook_delivery_task(self):
+        """Send due outbound webhook deliveries."""
+        while self.running:
+            try:
+                counts = await self.webhook_sender.deliver_due()
+                if counts:
+                    logger.info("Webhook deliveries: %s", counts)
+            except Exception as e:
+                logger.error("Error in webhook sender: %s", e)
+            await asyncio.sleep(WEBHOOK_INTERVAL_SECONDS)
+
+    def check_sla_deadlines(self) -> int:
         try:
-            with unit_of_work() as session:
-                # Get all active SLAs
-                active_slas = (
-                    session.query(CaseSLA)
-                    .filter(
-                        CaseSLA.resolution_completed_at.is_(None),
-                        CaseSLA.is_paused.is_(False),
-                    )
-                    .all()
-                )
-
-                current_time = utcnow()
-
-                for sla in active_slas:
-                    # Get SLA status
-                    status = self.sla_service.get_sla_status(sla.case_id, session)
-                    if not status:
-                        continue
-
-                    # Check if we need to send notifications
-                    response_pct = status.get("response_percent_elapsed", 0)
-                    resolution_pct = status.get("resolution_percent_elapsed", 0)
-
-                    # Send notifications at 75%, 90%, 100% thresholds
-                    thresholds = [75, 90, 100]
-                    for threshold in thresholds:
-                        if response_pct >= threshold and not sla.response_completed_at:
-                            self.notification_service.notify_sla_warning(
-                                sla.case_id, threshold, "response", session
-                            )
-
-                        if (
-                            resolution_pct >= threshold
-                            and not sla.resolution_completed_at
-                        ):
-                            self.notification_service.notify_sla_warning(
-                                sla.case_id, threshold, "resolution", session
-                            )
-
-                    # Mark as breached if over 100%
-                    if (
-                        resolution_pct >= 100 or response_pct >= 100
-                    ) and not sla.breached:
-                        sla.breached = True
-                        sla.breach_time = current_time
-                        sla.breach_reason = "SLA deadline exceeded"
-
+            return self._raise_sla_warnings()
         except Exception as e:
             logger.error(f"Error checking SLA deadlines: {e}")
+            return 0
+
+    def _raise_sla_warnings(self) -> int:
+        """Raise each crossed SLA threshold once; mark breaches. Returns raised."""
+        raised = 0
+        with unit_of_work() as session:
+            active_slas = (
+                session.query(CaseSLA)
+                .filter(
+                    CaseSLA.resolution_completed_at.is_(None),
+                    CaseSLA.is_paused.is_(False),
+                )
+                .all()
+            )
+
+            current_time = utcnow()
+
+            for sla in active_slas:
+                case = session.query(Case).filter(Case.case_id == sla.case_id).first()
+                if case is None or is_canary(case):
+                    continue
+                status = self.sla_service.get_sla_status(sla.case_id, session)
+                if not status:
+                    continue
+
+                response_pct = status.get("response_percent_elapsed", 0) or 0
+                resolution_pct = status.get("resolution_percent_elapsed", 0) or 0
+
+                # Only the highest threshold crossed is raised: a case first
+                # seen at 95% gets the 90% warning, not 75% and 90% at once.
+                pending = []
+                if not sla.response_completed_at:
+                    pending.append(("response", highest_crossed(response_pct)))
+                if not sla.resolution_completed_at:
+                    pending.append(("resolution", highest_crossed(resolution_pct)))
+                for sla_type, threshold in pending:
+                    if threshold is None:
+                        continue
+                    key = sla_event_key(sla.case_id, sla_type, threshold)
+                    if self.notification_service.event_already_raised(key, session):
+                        continue
+                    if self.notification_service.notify_sla_warning(
+                        sla.case_id, threshold, sla_type, session
+                    ):
+                        raised += 1
+
+                # Mark as breached if over 100%
+                if (resolution_pct >= 100 or response_pct >= 100) and not sla.breached:
+                    sla.breached = True
+                    sla.breach_time = current_time
+                    sla.breach_reason = "SLA deadline exceeded"
+        return raised
 
     async def metrics_update_task(self):
         """Update case metrics periodically."""
         while self.running:
             try:
                 logger.debug("Running metrics update")
-                await self._update_case_metrics()
-                await asyncio.sleep(3600)  # Update every hour
+                await asyncio.to_thread(self._update_case_metrics)
             except Exception as e:
                 logger.error(f"Error in metrics update task: {e}")
-                await asyncio.sleep(3600)
+            await asyncio.sleep(3600)  # Update every hour
 
-    async def _update_case_metrics(self):
-        """Update metrics for all open cases."""
+    def _update_case_metrics(self):
         try:
-            with unit_of_work() as session:
-                # Get all open cases
-                open_cases = (
-                    session.query(Case)
-                    .filter(Case.status.in_(["open", "in-progress", "investigating"]))
-                    .all()
-                )
-
-                for case in open_cases:
-                    self.metrics_service.calculate_case_metrics(case.case_id, session)
-
-                logger.info(f"Updated metrics for {len(open_cases)} cases")
+            return self._update_open_case_metrics()
         except Exception as e:
             logger.error(f"Error updating case metrics: {e}")
+            return None
+
+    def _update_open_case_metrics(self):
+        """Update metrics for all open cases."""
+        with unit_of_work() as session:
+            open_cases = (
+                session.query(Case)
+                .filter(Case.status.in_(["open", "in-progress", "investigating"]))
+                .all()
+            )
+
+            for case in open_cases:
+                self.metrics_service.calculate_case_metrics(case.case_id, session)
+
+            logger.info("Updated metrics for %d cases", len(open_cases))
 
     async def stale_case_detector_task(self):
         """Detect and flag stale cases."""
         while self.running:
             try:
                 logger.debug("Running stale case detector")
-                await self._detect_stale_cases()
-                await asyncio.sleep(86400)  # Check daily
+                await asyncio.to_thread(self.detect_stale_cases)
             except Exception as e:
                 logger.error(f"Error in stale case detector: {e}")
-                await asyncio.sleep(86400)
+            await asyncio.sleep(86400)  # Check daily
 
-    async def _detect_stale_cases(self):
-        """Detect cases with no activity for extended periods."""
+    def detect_stale_cases(self) -> int:
         try:
-            with unit_of_work() as session:
-                # Define stale threshold (7 days)
-                stale_threshold = utcnow() - timedelta(days=7)
-
-                # Find cases not updated recently
-                stale_cases = (
-                    session.query(Case)
-                    .filter(
-                        Case.status.in_(["open", "in-progress", "investigating"]),
-                        Case.updated_at < stale_threshold,
-                    )
-                    .all()
-                )
-
-                for case in stale_cases:
-                    # Notify assignee
-                    if case.assignee:
-                        self.notification_service.create_notification(
-                            user_id=case.assignee,
-                            notification_type="stale_case",
-                            title="Stale Case Alert",
-                            message=f'Case "{case.title}" has had no activity for 7+ days',
-                            case_id=case.case_id,
-                            priority="normal",
-                            session=session,
-                        )
-
-                logger.info(f"Detected {len(stale_cases)} stale cases")
+            return self._raise_stale_cases()
         except Exception as e:
             logger.error(f"Error detecting stale cases: {e}")
+            return 0
+
+    def _raise_stale_cases(self) -> int:
+        """Raise the stale-case event (once a day) for idle open cases."""
+        now = utcnow()
+        stale_threshold = now - timedelta(days=7)
+        raised = 0
+        with unit_of_work() as session:
+            stale_cases = (
+                session.query(Case)
+                .filter(
+                    Case.status.in_(["open", "in-progress", "investigating"]),
+                    Case.updated_at < stale_threshold,
+                )
+                .all()
+            )
+            day = now.date().isoformat()
+            for case in stale_cases:
+                if is_canary(case):
+                    continue
+                if self.notification_service.notify_stale_case(case, day, session):
+                    raised += 1
+
+            logger.info(
+                "Detected %d stale cases (%d newly raised)", len(stale_cases), raised
+            )
+        return raised
 
     async def digest_generator_task(self):
         """Generate daily digest emails."""
@@ -200,36 +274,40 @@ class CaseAutomationService:
                     next_run += timedelta(days=1)
 
                 wait_seconds = (next_run - now).total_seconds()
-                logger.info(f"Next digest in {wait_seconds/3600:.1f} hours")
+                logger.info("Next digest in %.1f hours", wait_seconds / 3600)
 
                 await asyncio.sleep(wait_seconds)
 
                 logger.info("Generating daily digest")
-                await self._generate_daily_digest()
+                await asyncio.to_thread(self._generate_daily_digest)
             except Exception as e:
                 logger.error(f"Error in digest generator: {e}")
                 await asyncio.sleep(3600)
 
-    async def _generate_daily_digest(self):
-        """Generate and send daily digest."""
+    def _generate_daily_digest(self):
         try:
-            with unit_of_work() as session:
-                # Get metrics for last 24 hours
-                yesterday = utcnow() - timedelta(days=1)
-                metrics = self.metrics_service.get_dashboard_metrics(
-                    start_date=yesterday, session=session
-                )
-
-                # Get breached cases
-                breached = self.sla_service.get_breached_cases(session)
-
-                # In a real implementation, would send digest emails here
-                logger.info(
-                    f"Daily digest: {metrics.get('total_cases', 0)} total cases, "
-                    f"{len(breached)} breached"
-                )
+            return self._log_daily_digest()
         except Exception as e:
             logger.error(f"Error generating digest: {e}")
+            return None
+
+    def _log_daily_digest(self):
+        """Generate and send daily digest."""
+        with unit_of_work() as session:
+            # Get metrics for last 24 hours
+            yesterday = utcnow() - timedelta(days=1)
+            metrics = self.metrics_service.get_dashboard_metrics(
+                start_date=yesterday, session=session
+            )
+
+            # Get breached cases
+            breached = self.sla_service.get_breached_cases(session)
+
+            logger.info(
+                "Daily digest: %s total cases, %d breached",
+                metrics.get("total_cases", 0),
+                len(breached),
+            )
 
 
 # Singleton instance
