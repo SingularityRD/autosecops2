@@ -13,12 +13,12 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-import bcrypt
 import jwt
 import pyotp
 from cryptography.fernet import Fernet
 from sqlalchemy.orm import Session
 
+from core.auth import passwords
 from core.config import get_settings
 from core.exceptions import default_on_error
 from core.secrets import get_secret
@@ -92,19 +92,8 @@ class AccountLockedError(Exception):
 
 
 def password_matches_any(plaintext: str, hashes) -> bool:
-    """Return True if `plaintext` matches any bcrypt hash in the iterable."""
-    if not hashes:
-        return False
-    encoded = plaintext.encode("utf-8")
-    for h in hashes:
-        if not h:
-            continue
-        try:
-            if bcrypt.checkpw(encoded, h.encode("utf-8")):
-                return True
-        except Exception as exc:
-            logger.warning("Password history compare failed for one entry: %s", exc)
-    return False
+    """Return True if `plaintext` matches any stored hash (bcrypt or PBKDF2)."""
+    return passwords.matches_any(plaintext, hashes)
 
 
 class AuthService:
@@ -112,33 +101,14 @@ class AuthService:
 
     @staticmethod
     def hash_password(password: str) -> str:
-        """
-        Hash a password using bcrypt.
-
-        Args:
-            password: Plain text password
-
-        Returns:
-            Hashed password
-        """
-        salt = bcrypt.gensalt()
-        hashed = bcrypt.hashpw(password.encode("utf-8"), salt)
-        return hashed.decode("utf-8")
+        """Hash a password in the active scheme (bcrypt; PBKDF2 under FIPS_MODE)."""
+        return passwords.hash_secret(password)
 
     @staticmethod
     @default_on_error(False)
     def verify_password(password: str, password_hash: str) -> bool:
-        """
-        Verify a password against its hash.
-
-        Args:
-            password: Plain text password
-            password_hash: Hashed password
-
-        Returns:
-            True if password matches
-        """
-        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+        """Verify a password against a bcrypt or PBKDF2-HMAC-SHA256 hash."""
+        return passwords.verify_secret(password, password_hash)
 
     @staticmethod
     def _session_fingerprint(user_agent: Optional[str]) -> str:
@@ -270,6 +240,18 @@ class AuthService:
                     AuthService._record_failed_attempt(user.user_id, now)
                     logger.warning("Invalid password for user: %s", user.username)
                     return None
+
+                # Transparent migration: the plaintext is in hand only now, so
+                # this is where a hash in a retired scheme (bcrypt under
+                # FIPS_MODE) or with too few iterations is rewritten. Same
+                # password, so password_changed_at and history stay as they are.
+                if passwords.needs_rehash(user.password_hash):
+                    user.password_hash = passwords.hash_secret(password)
+                    logger.info(
+                        "Password hash for %s rewritten in scheme %s",
+                        user.username,
+                        passwords.active_scheme(),
+                    )
 
                 # Success — reset lockout state and update session tracking
                 user.failed_login_count = 0
@@ -410,7 +392,7 @@ class AuthService:
                 return False
 
             # Try TOTP first. An undecryptable secret must not block recovery
-            # codes: they are bcrypt hashes and do not depend on the key.
+            # codes: they are password hashes and do not depend on the key.
             try:
                 if AuthService._verify_totp(user.mfa_secret, code):
                     return True
@@ -419,10 +401,10 @@ class AuthService:
 
             # Try recovery codes (one-time use)
             recovery_codes = list(user.mfa_recovery_codes or [])
-            code_bytes = code.strip().upper().encode()
+            normalized = code.strip().upper()
             for i, hashed in enumerate(recovery_codes):
                 try:
-                    if bcrypt.checkpw(code_bytes, hashed.encode()):
+                    if passwords.verify_secret(normalized, hashed):
                         recovery_codes.pop(i)
                         user.mfa_recovery_codes = recovery_codes
                         logger.info(
@@ -438,9 +420,9 @@ class AuthService:
 
     @staticmethod
     def _generate_recovery_codes() -> tuple[list[str], list[str]]:
-        """Return (plaintext, bcrypt-hashed) lists of 10 one-time recovery codes."""
+        """Return (plaintext, hashed) lists of 10 one-time recovery codes."""
         codes = [secrets.token_hex(4).upper() for _ in range(10)]
-        hashed = [bcrypt.hashpw(c.encode(), bcrypt.gensalt()).decode() for c in codes]
+        hashed = [passwords.hash_secret(c) for c in codes]
         return codes, hashed
 
     @staticmethod

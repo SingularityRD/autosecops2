@@ -64,6 +64,13 @@ RUN pip install --no-cache-dir --prefix=/install/deps -r requirements.lock
 # ---------------------------------------------------------------------------
 # Stage 3: runtime image
 # ---------------------------------------------------------------------------
+# FIPS 140-3 modu (FIPS_MODE=true) bu taban imajla ÇALIŞMAZ: python:slim'in
+# OpenSSL'i FIPS sağlayıcısı içermez ve pip'in cryptography tekerleği kendi
+# OpenSSL'ini gömer, bu yüzden başlangıç denetimi 78 ile çıkar. FIPS imajı için
+# taban olarak doğrulanmış OpenSSL 3 FIPS sağlayıcılı bir imaj (ör. UBI 9) seçin,
+# cryptography'yi `pip install --no-binary cryptography` ile o OpenSSL'e karşı
+# derleyin ve OPENSSL_CONF ile `default_properties = fips=yes` verin.
+# Ayrıntılar: docs/fips.md
 FROM python:${PYTHON_VERSION}-slim AS runtime
 
 ARG VIGIL_VERSION=
