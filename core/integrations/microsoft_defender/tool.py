@@ -12,15 +12,18 @@ import asyncio
 import json
 import logging
 
-import httpx
 import mcp.server.stdio
 import mcp.types as types
 from mcp.server import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 
-from core.integrations._base.aad_token import TokenError, fetch_client_credentials_token
+from core.integrations._base.aad_token import TokenError
 from core.integrations._base.config import resolve
 from core.integrations._base.tool_result import run_tool
+from core.integrations.microsoft_defender.client import (
+    MDEClient,
+    acquire_token,
+)
 from core.integrations.microsoft_defender.descriptor import MICROSOFT_DEFENDER
 
 logger = logging.getLogger(__name__)
@@ -35,19 +38,7 @@ def get_token():
 
     Raises ``TokenError`` when they are configured but the exchange fails.
     """
-    config = resolve(MICROSOFT_DEFENDER)
-    tenant = config.get("tenant_id")
-    client_id = config.get("client_id")
-    client_secret = config.get("client_secret")
-    if not all([tenant, client_id, client_secret]):
-        return None
-    return fetch_client_credentials_token(
-        "Microsoft Defender",
-        tenant,
-        client_id,
-        client_secret,
-        "https://api.securitycenter.microsoft.com/.default",
-    )
+    return acquire_token(resolve(MICROSOFT_DEFENDER))
 
 
 async def handle_list_tools():
@@ -94,54 +85,41 @@ async def handle_call_tool(name: str, arguments: dict | None):
         return result({"error": "Microsoft Defender not configured"})
 
     args = arguments or {}
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    base = "https://api.securitycenter.microsoft.com/api"
+    # The token is already in hand; a 401 re-asks the same provider, which is
+    # what the one-shot tool call did before the client was shared.
+    with MDEClient(lambda: token, max_retries=2) as client:
+        try:
+            if name == "mde_get_alerts":
+                alerts = [
+                    {
+                        "id": a.get("id"),
+                        "title": a.get("title"),
+                        "severity": a.get("severity"),
+                        "status": a.get("status"),
+                    }
+                    for a in client.list_alerts(top=args.get("limit", 20))
+                ]
+                return result({"count": len(alerts), "alerts": alerts})
 
-    try:
-        if name == "mde_get_alerts":
-            resp = httpx.get(
-                f"{base}/alerts",
-                headers=headers,
-                params={"$top": args.get("limit", 20)},
-                timeout=30,
-            )
-            resp.raise_for_status()
-            alerts = [
-                {
-                    "id": a.get("id"),
-                    "title": a.get("title"),
-                    "severity": a.get("severity"),
-                    "status": a.get("status"),
-                }
-                for a in resp.json().get("value", [])
-            ]
-            return result({"count": len(alerts), "alerts": alerts})
+            elif name == "mde_get_machine":
+                mid = args.get("machine_id")
+                if not mid:
+                    return result({"error": "machine_id required"})
+                return result({"machine": client.get_machine(mid)})
 
-        elif name == "mde_get_machine":
-            mid = args.get("machine_id")
-            if not mid:
-                return result({"error": "machine_id required"})
-            resp = httpx.get(f"{base}/machines/{mid}", headers=headers, timeout=30)
-            resp.raise_for_status()
-            return result({"machine": resp.json()})
+            elif name == "mde_isolate":
+                mid = args.get("machine_id")
+                comment = args.get("comment")
+                if not mid or not comment:
+                    return result({"error": "machine_id and comment required"})
+                client.isolate(mid, comment, "Full")
+                return result(
+                    {"success": True, "machine_id": mid, "action": "isolated"}
+                )
 
-        elif name == "mde_isolate":
-            mid = args.get("machine_id")
-            comment = args.get("comment")
-            if not mid or not comment:
-                return result({"error": "machine_id and comment required"})
-            resp = httpx.post(
-                f"{base}/machines/{mid}/isolate",
-                headers=headers,
-                json={"Comment": comment, "IsolationType": "Full"},
-                timeout=30,
-            )
-            resp.raise_for_status()
-            return result({"success": True, "machine_id": mid, "action": "isolated"})
-
-        return result({"error": f"Unknown tool: {name}"})
-    except Exception as e:
-        return result({"error": str(e)})
+            return result({"error": f"Unknown tool: {name}"})
+        except Exception as e:
+            return result({"error": str(e)})
 
 
 async def _on_list_tools(_ctx, _params):
