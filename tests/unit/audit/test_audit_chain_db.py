@@ -387,6 +387,98 @@ def test_source_rows_outside_the_chain_are_detected(audit_db, statement, reason)
         conn.close()
 
 
+def _untamper(conn):
+    conn.execute(text("SET LOCAL session_replication_role = origin"))
+
+
+@pytest.mark.parametrize(
+    "follow_up",
+    [
+        "UPDATE approval_actions SET status = 'executed' WHERE action_id = :id",
+        "UPDATE approval_actions SET approved_by = 'alice' WHERE action_id = :id",
+        "DELETE FROM approval_actions WHERE action_id = :id",
+    ],
+    ids=["update-other-column", "update-same-column", "delete"],
+)
+def test_bypassed_change_hidden_by_a_later_chained_change_is_detected(
+    audit_db, follow_up
+):
+    """The verifier's scenario: an edit under replica role, then a normal one.
+
+    The normal UPDATE/DELETE moves the latest chain row past the bypassed
+    edit, so the source check alone sees nothing; the history check does.
+    """
+    conn, tx = _rolled_back(audit_db.engine)
+    try:
+        insert_action(conn, "action-audit-hidden")
+        _tamper(conn)
+        conn.execute(
+            text(
+                "UPDATE approval_actions SET approved_by = 'mallory' "
+                "WHERE action_id = 'action-audit-hidden'"
+            )
+        )
+        _untamper(conn)
+        conn.execute(text(follow_up), {"id": "action-audit-hidden"})
+        assert walk_audit_chain(conn).ok
+        [found] = check_sources(conn).breaks
+        assert found.reason == "history_modified"
+        assert "action-audit-hidden" in found.scope
+        assert found.seq is not None
+    finally:
+        tx.rollback()
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "follow_up",
+    [
+        "UPDATE approval_actions SET status = 'executed' WHERE action_id = :id",
+        "DELETE FROM approval_actions WHERE action_id = :id",
+    ],
+    ids=["update", "delete"],
+)
+def test_bypassed_insert_hidden_by_a_later_chained_change_is_detected(
+    audit_db, follow_up
+):
+    conn, tx = _rolled_back(audit_db.engine)
+    try:
+        _tamper(conn)
+        insert_action(conn, "action-audit-ghost-insert")
+        _untamper(conn)
+        conn.execute(text(follow_up), {"id": "action-audit-ghost-insert"})
+        [found] = check_sources(conn).breaks
+        assert found.reason == "history_unchained"
+    finally:
+        tx.rollback()
+        conn.close()
+
+
+def test_chained_history_alone_is_clean(audit_db):
+    conn, tx = _rolled_back(audit_db.engine)
+    try:
+        insert_action(conn, "action-audit-clean")
+        for status in ("approved", "executed"):
+            conn.execute(
+                text(
+                    "UPDATE approval_actions SET status = :s "
+                    "WHERE action_id = 'action-audit-clean'"
+                ),
+                {"s": status},
+            )
+        conn.execute(
+            text("DELETE FROM approval_actions WHERE action_id = 'action-audit-clean'")
+        )
+        insert_action(conn, "action-audit-clean")
+        conn.execute(
+            text("DELETE FROM approval_actions WHERE action_id = 'action-audit-clean'")
+        )
+        assert check_sources(conn).ok
+    finally:
+        tx.rollback()
+        conn.close()
+
+
 def test_dropped_triggers_are_reported_and_reattached(audit_db):
     conn, tx = _rolled_back(audit_db.engine)
     try:

@@ -17,6 +17,14 @@ Break reasons:
                     were missing, or re-inserted under a deleted key)
 ``source_modified`` a source row differs from its latest chain row
 ``source_deleted``  the chain says the row exists and the table does not have it
+``history_modified`` an update or delete chain row's pre-image (the row as the
+                    trigger saw it just before the change) differs from the
+                    previous chain row for the same key: the row was changed
+                    outside the chain in between, and the later, chained
+                    change would otherwise hide it
+``history_unchained`` an update or delete chain row has no live earlier chain
+                    row for its key (no insert/snapshot, or only one before a
+                    delete or TRUNCATE): the row was written outside the chain
 """
 
 from __future__ import annotations
@@ -232,10 +240,66 @@ SELECT source_id, reason, count(*) OVER () AS total
  LIMIT 1
 """
 
+# Every chain row's history, for each update or delete: the pre-image the
+# trigger saw (the row with the changed columns' old values laid over it on an
+# update; the row itself on a delete) must equal the previous chain row for the
+# same key. Otherwise the row was changed outside the chain between the two,
+# and the source check alone would miss it once a later, chained UPDATE or
+# DELETE moved the latest chain row past the bypassed change. A previous chain
+# row that is a delete, or that a TRUNCATE came after, is no predecessor. As in
+# _SOURCE_CHECK, only columns both sides have are compared.
+_HISTORY_CHECK = """
+WITH ev AS (
+    SELECT c.seq, c.source_id, c.event, c.payload,
+           lag(c.seq) OVER w AS prev_seq,
+           lag(c.event) OVER w AS prev_event,
+           lag(c.payload -> 'row') OVER w AS prev_row
+      FROM audit_chain AS c
+     WHERE c.source_table = :table AND c.event IN :events
+    WINDOW w AS (PARTITION BY c.source_id ORDER BY c.seq)
+), pre AS (
+    SELECT ev.*,
+           CASE WHEN ev.event = 'update'
+                THEN (ev.payload -> 'row') || coalesce(ev.payload -> 'old', '{}'::jsonb)
+                ELSE ev.payload -> 'row'
+           END AS pre_row
+      FROM ev
+     WHERE ev.event IN ('update', 'delete')
+), checked AS (
+    SELECT pre.source_id, pre.seq,
+           CASE
+             WHEN pre.prev_seq IS NULL
+               OR pre.prev_event = 'delete'
+               OR EXISTS (
+                    SELECT 1 FROM audit_chain AS t
+                     WHERE t.source_table = :table AND t.source_id = ''
+                       AND t.event = 'truncate'
+                       AND t.seq > pre.prev_seq AND t.seq < pre.seq)
+               THEN 'history_unchained'
+             WHEN (SELECT coalesce(jsonb_object_agg(k.key, k.value), '{}'::jsonb)
+                     FROM jsonb_each(pre.pre_row) AS k WHERE pre.prev_row ? k.key)
+                  IS DISTINCT FROM
+                  (SELECT coalesce(jsonb_object_agg(k.key, k.value), '{}'::jsonb)
+                     FROM jsonb_each(pre.prev_row) AS k WHERE pre.pre_row ? k.key)
+               THEN 'history_modified'
+           END AS reason
+      FROM pre
+)
+SELECT source_id, seq, reason, count(*) OVER () AS total
+  FROM checked
+ WHERE reason IS NOT NULL
+ ORDER BY seq
+ LIMIT 1
+"""
+
 _SOURCE_DETAIL = {
     "unchained": "row has no chain entry (written while the capture triggers were off)",
     "source_modified": "row differs from its latest chain entry",
     "source_deleted": "row is gone but the chain has no delete for it",
+    "history_modified": "row was changed outside the chain before this "
+    "chained update/delete (its pre-image differs from the previous chain row)",
+    "history_unchained": "chained update/delete of a row that has no live "
+    "earlier chain row (it was written outside the chain)",
 }
 
 
@@ -295,6 +359,23 @@ def check_sources(conn: Connection) -> ChainReport:
                     None,
                     reason,
                     f"{_SOURCE_DETAIL[reason]} ({total} row(s) affected)",
+                )
+            )
+        history = text(_HISTORY_CHECK).bindparams(
+            bindparam("events", expanding=True)
+        )
+        row = conn.execute(
+            history, {"table": table, "events": list(SOURCE_EVENTS)}
+        ).first()
+        if row is not None:
+            source_id, seq, reason, total = row
+            report.breaks.append(
+                Break(
+                    f"source:{table}",
+                    f"{scope} {key}={source_id}",
+                    int(seq),
+                    reason,
+                    f"{_SOURCE_DETAIL[reason]} ({total} chain row(s) affected)",
                 )
             )
     return report
