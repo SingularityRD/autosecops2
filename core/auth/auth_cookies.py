@@ -115,3 +115,34 @@ def clear_auth_cookies(response: Response) -> None:
         secure=secure,
         samesite=samesite,
     )
+
+
+def issue_session_cookies(
+    response: Response, user, user_agent: Optional[str]
+) -> tuple[str, str]:
+    """Mint an access + refresh token pair for ``user`` and set both cookies.
+
+    The one way a session starts, whether by password (``/api/auth/login``),
+    rotation (``/api/auth/refresh``) or single sign-on: every path issues the
+    same tokens with the same cookie attributes. Returns ``(access, refresh)``
+    for callers that also hand them back in the body.
+    """
+    # Imported here: auth_service resolves JWT_SECRET_KEY at import time, and
+    # this module is imported by middleware that must load without it.
+    from core.auth.auth_service import AuthService
+
+    access_token = AuthService.generate_jwt_token(user, "access", user_agent=user_agent)
+    refresh_token = AuthService.generate_jwt_token(
+        user, "refresh", user_agent=user_agent
+    )
+    # Extract exp claims so the cookie Max-Age matches the JWT lifetime.
+    access_payload = AuthService.verify_jwt_token(access_token) or {}
+    refresh_payload = AuthService.verify_jwt_token(refresh_token) or {}
+    set_auth_cookies(
+        response,
+        access_token,
+        refresh_token,
+        access_exp=access_payload.get("exp"),
+        refresh_exp=refresh_payload.get("exp"),
+    )
+    return access_token, refresh_token

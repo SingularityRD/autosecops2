@@ -22,6 +22,21 @@ vi.mock('../../services/api', () => ({
     status: () => Promise.resolve({ data: { required: false } }),
     create: () => Promise.resolve({ data: {} }),
   },
+  ssoApi: {
+    providers: () => ssoProviders(),
+    loginUrl: (id: string) => `/api/auth/sso/${id}/login`,
+  },
+}))
+
+// Default: no single sign-on configured. Hoisted so the vi.mock factory sees it.
+type SsoList = {
+  data: { providers: { id: string; display_name: string }[]; local_login_enabled: boolean }
+}
+const { ssoProviders } = vi.hoisted(() => ({
+  ssoProviders: vi.fn(
+    (): Promise<SsoList> =>
+      Promise.resolve({ data: { providers: [], local_login_enabled: true } }),
+  ),
 }))
 
 vi.mock('react-router-dom', async () => {
@@ -29,10 +44,10 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useNavigate: () => navigate }
 })
 
-function renderLogin() {
+function renderLogin(path = '/login') {
   return render(
     <ColorSchemeProvider>
-      <MemoryRouter initialEntries={['/login']}>
+      <MemoryRouter initialEntries={[path]}>
         <LoginScreen />
       </MemoryRouter>
     </ColorSchemeProvider>,
@@ -42,6 +57,7 @@ function renderLogin() {
 beforeEach(() => {
   login.mockReset()
   navigate.mockReset()
+  ssoProviders.mockClear()
 })
 
 describe('LoginScreen', () => {
@@ -112,5 +128,69 @@ describe('LoginScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /switch to light mode/i }))
     await waitFor(() => expect(root.getAttribute('data-theme')).toBe('light'))
     expect(root).toHaveClass('vg-light')
+  })
+
+  describe('single sign-on', () => {
+    it('shows no SSO button when no provider is configured', async () => {
+      renderLogin()
+      await waitFor(() => expect(ssoProviders).toHaveBeenCalled())
+      expect(screen.queryByRole('link', { name: /sign in with/i })).not.toBeInTheDocument()
+    })
+
+    it('shows a "Sign in with" button per provider that starts the flow', async () => {
+      ssoProviders.mockResolvedValueOnce({
+        data: {
+          providers: [
+            { id: 'entra', display_name: 'Microsoft Entra ID' },
+            { id: 'okta', display_name: 'Okta' },
+          ],
+          local_login_enabled: true,
+        },
+      })
+      renderLogin()
+      const entra = await screen.findByRole('link', { name: 'Sign in with Microsoft Entra ID' })
+      expect(entra).toHaveAttribute('href', '/api/auth/sso/entra/login')
+      expect(screen.getByRole('link', { name: 'Sign in with Okta' })).toHaveAttribute(
+        'href',
+        '/api/auth/sso/okta/login',
+      )
+      // the password form stays for break-glass accounts
+      expect(screen.getByLabelText('Password')).toBeInTheDocument()
+      expect(screen.queryByText(/break-glass/i)).not.toBeInTheDocument()
+    })
+
+    it('says password sign-in is limited when local login is off', async () => {
+      ssoProviders.mockResolvedValueOnce({
+        data: {
+          providers: [{ id: 'kc', display_name: 'Keycloak' }],
+          local_login_enabled: false,
+        },
+      })
+      renderLogin()
+      await screen.findByRole('link', { name: 'Sign in with Keycloak' })
+      expect(screen.getByText(/limited to break-glass accounts/i)).toHaveTextContent('AutoSecOps')
+    })
+
+    it('explains a failed SSO sign-in from the callback redirect', async () => {
+      renderLogin('/login?sso_error=account')
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'No AutoSecOps account is linked to that identity',
+      )
+    })
+
+    it('falls back to a generic message for an unknown SSO error code', async () => {
+      renderLogin('/login?sso_error=whatever')
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'Single sign-on is unavailable right now',
+      )
+    })
+
+    it('keeps sign-in working when the provider list cannot be loaded', async () => {
+      ssoProviders.mockRejectedValueOnce(new Error('Network Error'))
+      renderLogin()
+      await waitFor(() => expect(ssoProviders).toHaveBeenCalled())
+      expect(screen.getByRole('button', { name: /^sign in$/i })).toBeInTheDocument()
+      expect(screen.queryByRole('link', { name: /sign in with/i })).not.toBeInTheDocument()
+    })
   })
 })

@@ -1160,6 +1160,127 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/sso/admin/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Sso Config
+         * @description Providers (never their secrets) and the local sign-in policy.
+         */
+        get: operations["get_api_auth_sso_admin_config"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/sso/admin/login-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Update Login Policy
+         * @description Turn local sign-in on or off, and name the break-glass accounts.
+         */
+        put: operations["put_api_auth_sso_admin_login-policy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/sso/admin/providers/{provider_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Upsert Provider
+         * @description Add or replace one provider. The client secret is stored write-only.
+         */
+        put: operations["put_api_auth_sso_admin_providers_provider_id"];
+        post?: never;
+        /** Delete Provider */
+        delete: operations["delete_api_auth_sso_admin_providers_provider_id"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/sso/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Public Providers
+         * @description Enabled providers for the sign-in screen. Names only; nothing secret.
+         */
+        get: operations["get_api_auth_sso_providers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/sso/{provider_id}/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Sso Callback
+         * @description Finish a login: validate everything, then issue the session cookies.
+         */
+        get: operations["get_api_auth_sso_provider_id_callback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/sso/{provider_id}/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Sso Login
+         * @description Start an Authorization Code + PKCE login at ``provider_id``.
+         */
+        get: operations["get_api_auth_sso_provider_id_login"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/autonomy/audit": {
         parameters: {
             query?: never;
@@ -10882,6 +11003,16 @@ export interface components {
             /** Reason */
             reason: string;
         };
+        /** LoginPolicy */
+        LoginPolicy: {
+            /** Break Glass User Ids */
+            break_glass_user_ids?: string[];
+            /**
+             * Local Login Enabled
+             * @default true
+             */
+            local_login_enabled: boolean;
+        };
         /**
          * LoginRequest
          * @description Login request.
@@ -11366,6 +11497,119 @@ export interface components {
             /** Priority */
             priority: string;
         };
+        /** ProviderOut */
+        ProviderOut: {
+            /** Allow Admin Mapping */
+            allow_admin_mapping: boolean;
+            /** Client Id */
+            client_id: string;
+            /** Clock Skew Seconds */
+            clock_skew_seconds: number;
+            /** Default Role Id */
+            default_role_id: string;
+            /** Display Name */
+            display_name: string;
+            /** Effective Redirect Uri */
+            effective_redirect_uri: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Has Client Secret */
+            has_client_secret: boolean;
+            /** Id */
+            id: string;
+            /** Issuer */
+            issuer: string;
+            /** Jit Provisioning */
+            jit_provisioning: boolean;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "entra" | "okta" | "keycloak" | "generic";
+            /** Link By Verified Email */
+            link_by_verified_email: boolean;
+            /** Redirect Uri */
+            redirect_uri: string;
+            /** Role Mappings */
+            role_mappings: components["schemas"]["RoleMapping"][];
+            /** Scopes */
+            scopes: string[];
+        };
+        /** ProviderUpsert */
+        ProviderUpsert: {
+            /**
+             * Allow Admin Mapping
+             * @default false
+             */
+            allow_admin_mapping: boolean;
+            /**
+             * Clear Client Secret
+             * @default false
+             */
+            clear_client_secret: boolean;
+            /** Client Id */
+            client_id: string;
+            /** Client Secret */
+            client_secret?: string | null;
+            /**
+             * Clock Skew Seconds
+             * @default 60
+             */
+            clock_skew_seconds: number;
+            /**
+             * Default Role Id
+             * @default role-viewer
+             */
+            default_role_id: string;
+            /** Display Name */
+            display_name: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Issuer */
+            issuer: string;
+            /**
+             * Jit Provisioning
+             * @default true
+             */
+            jit_provisioning: boolean;
+            /**
+             * Kind
+             * @default generic
+             * @enum {string}
+             */
+            kind: "entra" | "okta" | "keycloak" | "generic";
+            /**
+             * Link By Verified Email
+             * @default false
+             */
+            link_by_verified_email: boolean;
+            /**
+             * Redirect Uri
+             * @default
+             */
+            redirect_uri: string;
+            /** Role Mappings */
+            role_mappings?: components["schemas"]["RoleMapping"][];
+            /** Scopes */
+            scopes?: string[];
+        };
+        /** PublicProvider */
+        PublicProvider: {
+            /** Display Name */
+            display_name: string;
+            /** Id */
+            id: string;
+        };
+        /** PublicProvidersResponse */
+        PublicProvidersResponse: {
+            /** Local Login Enabled */
+            local_login_enabled: boolean;
+            /** Providers */
+            providers: components["schemas"]["PublicProvider"][];
+        };
         /** PurgeBody */
         PurgeBody: {
             /**
@@ -11771,6 +12015,21 @@ export interface components {
             action: string;
             /** Notes */
             notes?: string | null;
+        };
+        /**
+         * RoleMapping
+         * @description One rule: when ``claim`` holds ``value``, the user gets ``role_id``.
+         */
+        RoleMapping: {
+            /**
+             * Claim
+             * @default groups
+             */
+            claim: string;
+            /** Role Id */
+            role_id: string;
+            /** Value */
+            value: string;
         };
         /**
          * Routability
@@ -12246,6 +12505,12 @@ export interface components {
              * @constant
              */
             version: 1;
+        };
+        /** SsoAdminConfig */
+        SsoAdminConfig: {
+            login_policy: components["schemas"]["LoginPolicy"];
+            /** Providers */
+            providers: components["schemas"]["ProviderOut"][];
         };
         /** StartRunRequest */
         StartRunRequest: {
@@ -14935,6 +15200,226 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["LoginResponse"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_auth_sso_admin_config: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SsoAdminConfig"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "put_api_auth_sso_admin_login-policy": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginPolicy"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SsoAdminConfig"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_api_auth_sso_admin_providers_provider_id: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                provider_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderUpsert"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SsoAdminConfig"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_api_auth_sso_admin_providers_provider_id: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                provider_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SsoAdminConfig"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_auth_sso_providers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicProvidersResponse"];
+                };
+            };
+        };
+    };
+    get_api_auth_sso_provider_id_callback: {
+        parameters: {
+            query?: {
+                code?: string | null;
+                state?: string | null;
+                error?: string | null;
+            };
+            header?: never;
+            path: {
+                provider_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_auth_sso_provider_id_login: {
+        parameters: {
+            query?: {
+                next?: string | null;
+            };
+            header?: never;
+            path: {
+                provider_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

@@ -40,6 +40,8 @@ def _allow():
     with (
         patch.object(users.AuthService, "check_permission", return_value=True),
         patch.object(users, "_can_assign_role", return_value=True),
+        patch.object(users, "_refuse_unless_may_manage", return_value=None),
+        patch.object(users, "_refuse_losing_admin_access", return_value=None),
         patch.object(users.UserSchema, "dump", return_value={}),
     ):
         yield
@@ -53,17 +55,17 @@ def _apply(user, **req):
 
 
 def test_role_change_makes_tokens_stale():
-    _, reason, _ = _apply(_user(), role_id="role-viewer")
+    _, reason, *_ = _apply(_user(), role_id="role-viewer")
     assert reason == "Role changed"
 
 
 def test_same_role_does_not():
-    _, reason, _ = _apply(_user(), role_id="role-analyst")
+    _, reason, *_ = _apply(_user(), role_id="role-analyst")
     assert reason is None
 
 
 def test_name_change_does_not():
-    _, reason, _ = _apply(_user(), full_name="B")
+    _, reason, *_ = _apply(_user(), full_name="B")
     assert reason is None
 
 
@@ -71,7 +73,7 @@ def test_update_user_revokes_on_role_change():
     target = _user()
     with (
         patch.object(
-            users, "_apply_user_update", return_value=(target, "Role changed", {})
+            users, "_apply_user_update", return_value=(target, "Role changed", {}, None)
         ),
         patch.object(users, "revoke_all_for_user", new=AsyncMock()) as revoke,
     ):
@@ -89,7 +91,9 @@ def test_update_user_revokes_on_role_change():
 def test_update_user_leaves_tokens_alone_otherwise():
     target = _user()
     with (
-        patch.object(users, "_apply_user_update", return_value=(target, None, {})),
+        patch.object(
+            users, "_apply_user_update", return_value=(target, None, {}, None)
+        ),
         patch.object(users, "revoke_all_for_user", new=AsyncMock()) as revoke,
     ):
         asyncio.run(

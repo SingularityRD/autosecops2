@@ -9,6 +9,7 @@ import SystemSection from './SystemSection'
 import FederationSection from './FederationSection'
 import UsersSection from './UsersSection'
 import SegregationSection from './SegregationSection'
+import SsoSection from './SsoSection'
 import AutoInvestigateSection from './AutoInvestigateSection'
 import DeveloperSection from './DeveloperSection'
 import AiConfigSection from './AiConfigSection'
@@ -32,7 +33,7 @@ type NavKey =
   | 'data'
   | 'system'
 
-type SystemTabKey = 'services' | 'system' | 'general' | 'dev' | 'users' | 'segregation'
+type SystemTabKey = 'services' | 'system' | 'general' | 'dev' | 'users' | 'segregation' | 'sso'
 
 interface NavDef {
   key: NavKey
@@ -58,6 +59,7 @@ const SYSTEM_TAB_DEFS: SystemTabDef[] = [
   { key: 'dev', label: 'Developer', devOnly: true, Component: DeveloperSection },
   { key: 'users', label: 'Users', Component: UsersSection },
   { key: 'segregation', label: 'Segregation of duties', Component: SegregationSection },
+  { key: 'sso', label: 'Single sign-on', Component: SsoSection },
 ]
 const SYSTEM_TABS = SYSTEM_TAB_DEFS.filter((tab) => !tab.devOnly || IS_DEV_MODE)
 
@@ -96,7 +98,7 @@ const NAV: NavDef[] = [
   { key: 'sla', label: 'SLA policies', desc: SLA_DESC, icon: 'clock', Component: SlaPoliciesSection, ownsHead: true },
   { key: 'autoinvestigate', label: 'Limits & autonomy', desc: 'How much AutoSecOps may do without you: whether agents start on their own, how many run at once, what they may spend, and which tools may act alone.', icon: 'bolt', Component: AutoInvestigateSection },
   { key: 'data', label: 'Data & uploads', desc: 'Bring data in without a live connector, and manage the detection rules applied to it.', icon: 'upload', Component: DataUploadsSection },
-  { key: 'system', label: 'System', desc: 'Service health, system information, general options and users.', icon: 'wrench', Component: SystemTabs },
+  { key: 'system', label: 'System', desc: 'Service health, system information, general options, users and single sign-on.', icon: 'wrench', Component: SystemTabs },
 ]
 
 const NAV_KEYS = new Set<string>(NAV.map((item) => item.key))

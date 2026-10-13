@@ -1,6 +1,8 @@
 """W0.13 auth/API review: regression tests for the findings fixed on this branch.
 
-R1  PUT /api/users/{id} must not reach an account that holds more than the editor.
+R1  PUT /api/users/{id} must not let users.write take over or strip an account
+    at or above the editor (now enforced by W1.9's _may_change_identity_of;
+    these tests pin that it still holds after the merge).
 R2  A service account's email can't be changed through PUT /api/auth/me, and
     it never gets a password-reset email or confirm.
 R3  MFA can't be switched off, re-set-up or given new recovery codes with a
@@ -94,6 +96,7 @@ def as_manager():
             users.AuthService, "get_user_permissions", return_value=MANAGER_PERMS
         ),
         patch.object(users.UserSchema, "dump", return_value={}),
+        patch.object(users, "email_owner", return_value=None),
     ):
         yield manager
 
@@ -104,7 +107,6 @@ def as_manager():
         {"email": "mgr-inbox@example.com"},
         {"role_id": "role-analyst"},
         {"is_active": False},
-        {"full_name": "x"},
     ],
 )
 def test_manager_cannot_edit_an_admin(as_manager, change):
@@ -121,7 +123,7 @@ def test_manager_cannot_edit_an_admin(as_manager, change):
 
 def test_manager_can_still_edit_an_analyst(as_manager):
     analyst = _user("ana", "role-analyst")
-    _, reason, _ = users._apply_user_update(
+    _, reason, _, old_email = users._apply_user_update(
         _session(analyst),
         as_manager,
         "ana",
@@ -129,10 +131,11 @@ def test_manager_can_still_edit_an_analyst(as_manager):
     )
     assert analyst.email == "new@example.com"
     assert reason == "Email changed"
+    assert old_email == "ana@example.com"
 
 
 def test_manager_can_edit_themselves(as_manager):
-    _, reason, _ = users._apply_user_update(
+    _, reason, _, _ = users._apply_user_update(
         _session(as_manager), as_manager, "mgr", users.UpdateUserRequest(full_name="M")
     )
     assert as_manager.full_name == "M"
@@ -326,3 +329,62 @@ def test_ingest_with_bearer_and_no_cookie_stays_exempt():
         "/api/ingest/ingest-string", headers={"Authorization": "Bearer x"}
     )
     assert response.status_code == 200
+
+
+# --- Round 5: merged with W1.9 (password_reset_request keeps both rules) ------
+
+
+def test_person_reset_uses_the_email_bound_token():
+    person = _user("ana", "role-analyst", password_hash="h", sso_subject=None)
+    body = auth_router.PasswordResetRequest(email="ana@example.com")
+    with (
+        patch.object(auth_router, "send_email") as send,
+        patch.object(auth_router, "is_sso_only", return_value=False),
+        patch.object(auth_router, "generate_reset_token", return_value="t") as gen,
+    ):
+        auth_router.password_reset_request.__wrapped__(
+            MagicMock(), body, _plain_session(person)
+        )
+    gen.assert_called_once_with("ana", "ana@example.com")
+    send.assert_called_once()
+
+
+def test_sso_only_account_gets_no_reset_email():
+    person = _user("ana", "role-analyst")
+    body = auth_router.PasswordResetRequest(email="ana@example.com")
+    with (
+        patch.object(auth_router, "send_email") as send,
+        patch.object(auth_router, "is_sso_only", return_value=True),
+        patch.object(auth_router, "generate_reset_token") as gen,
+    ):
+        auth_router.password_reset_request.__wrapped__(
+            MagicMock(), body, _plain_session(person)
+        )
+    send.assert_not_called()
+    gen.assert_not_called()
+
+
+def test_service_account_without_sso_still_gets_no_reset_email():
+    sa = _user("medic-abc", "role-viewer", service_account=True)
+    body = auth_router.PasswordResetRequest(email="medic-abc@example.com")
+    with (
+        patch.object(auth_router, "send_email") as send,
+        patch.object(auth_router, "is_sso_only", return_value=False),
+        patch.object(auth_router, "generate_reset_token") as gen,
+    ):
+        auth_router.password_reset_request.__wrapped__(
+            MagicMock(), body, _plain_session(sa)
+        )
+    send.assert_not_called()
+    gen.assert_not_called()
+
+
+def test_manager_may_rename_an_admin_under_w19_model(as_manager):
+    """W1.9's model wins: only identity changes (email, role, status, delete)
+    are guarded; a display-name edit is not a takeover path."""
+    admin = _user("adm", "role-admin")
+    _, reason, _, old = users._apply_user_update(
+        _session(admin), as_manager, "adm", users.UpdateUserRequest(full_name="A")
+    )
+    assert admin.full_name == "A"
+    assert reason is None and old is None

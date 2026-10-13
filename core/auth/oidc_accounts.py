@@ -1,0 +1,591 @@
+"""Single sign-on, AutoSecOps side: provider storage, accounts and roles.
+
+Three kinds of ``system_config`` row, so single sign-on needs no schema change:
+
+* ``auth.oidc.providers`` — every configured provider (no secrets; a client
+  secret lives in the secrets manager under ``oidc.client_secret_key``).
+* ``auth.oidc.identity.<sha256(iss, sub)>`` — one per linked identity: which
+  user an identity provider's subject is. Keyed by the hash so lookup is a
+  primary-key read and the key length is fixed.
+* ``auth.login_policy`` — see ``core.auth.login_policy``.
+
+An identity is matched on ``iss`` + ``sub`` only. The email claim is never an
+identifier: it is used to *link* to an existing account only when an
+administrator turned that on for the provider and the provider asserts
+``email_verified: true``.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import unicodedata
+import uuid
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
+import idna
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from core.auth.oidc import (
+    ADMIN_ROLE_ID,
+    VIEWER_ROLE_ID,
+    OidcError,
+    ProviderConfig,
+    digest,
+)
+from core.storage.models import ConfigAuditLog, Role, SystemConfig, User
+from core.storage.unit_of_work import unit_of_work
+from core.time import utcnow
+
+logger = logging.getLogger(__name__)
+
+PROVIDERS_KEY = "auth.oidc.providers"
+IDENTITY_KEY_PREFIX = "auth.oidc.identity."
+AUTH_CONFIG_TYPE = "auth"
+IDENTITY_CONFIG_TYPE = "auth_identity"
+AUDIT_CONFIG_TYPE = "auth_event"
+AUDIT_KEY = "sso.login"
+
+#: ``password_hash`` of an account created by single sign-on. Not a bcrypt
+#: hash, so ``AuthService.verify_password`` fails for every password.
+SSO_ONLY_PASSWORD_HASH = "!sso-only"
+
+#: Usernames made by JIT never contain "@": a username that looks like an
+#: e-mail address could shadow another account's address at the
+#: username-or-email password login.
+_USERNAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+#: C0/C1 controls and the Unicode line/paragraph separators.
+_UNPRINTABLE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def printable(value: Any, limit: int = 200) -> str:
+    """``value`` made safe for one log line or audit field.
+
+    Control characters (CR/LF, ESC, NEL, U+2028/9, ...) become ``?`` so text
+    an identity provider or a browser chose cannot forge log lines.
+    """
+    return _UNPRINTABLE.sub("?", str(value))[:limit]
+
+
+# ---------------------------------------------------------------------------
+# Provider storage
+# ---------------------------------------------------------------------------
+
+
+def load_providers(session: Session) -> List[ProviderConfig]:
+    row = session.query(SystemConfig).filter(SystemConfig.key == PROVIDERS_KEY).first()
+    if row is None or not isinstance(row.value, dict):
+        return []
+    providers = []
+    for raw in row.value.get("providers") or []:
+        try:
+            providers.append(ProviderConfig.model_validate(raw))
+        except Exception as exc:  # one bad row must not hide the others
+            logger.error("Ignoring an invalid stored SSO provider: %s", exc)
+    return providers
+
+
+def get_provider(session: Session, provider_id: str) -> Optional[ProviderConfig]:
+    for provider in load_providers(session):
+        if provider.id == provider_id:
+            return provider
+    return None
+
+
+def save_providers(
+    session: Session, providers: List[ProviderConfig], *, changed_by: str, action: str
+) -> None:
+    """Replace the stored provider list, with an audit row in the same transaction."""
+    row = session.query(SystemConfig).filter(SystemConfig.key == PROVIDERS_KEY).first()
+    new_value = {"providers": [p.model_dump() for p in providers]}
+    old_value = row.value if row is not None else None
+    if row is None:
+        session.add(
+            SystemConfig(
+                key=PROVIDERS_KEY,
+                value=new_value,
+                description="OIDC single sign-on providers",
+                config_type=AUTH_CONFIG_TYPE,
+                updated_by=changed_by,
+            )
+        )
+    else:
+        row.value = new_value
+        row.updated_by = changed_by
+    session.add(
+        ConfigAuditLog(
+            config_type=AUTH_CONFIG_TYPE,
+            config_key=PROVIDERS_KEY,
+            action=action,
+            old_value=old_value,
+            new_value=new_value,
+            changed_by=changed_by,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# Identity links
+# ---------------------------------------------------------------------------
+
+
+def identity_key(issuer: str, subject: str) -> str:
+    return IDENTITY_KEY_PREFIX + digest(f"{issuer}\n{subject}")
+
+
+def _get_link(session: Session, key: str) -> Optional[SystemConfig]:
+    return session.query(SystemConfig).filter(SystemConfig.key == key).first()
+
+
+# ---------------------------------------------------------------------------
+# Roles
+# ---------------------------------------------------------------------------
+
+
+def _claim_values(claims: Dict[str, Any], claim: str) -> List[str]:
+    value = claims.get(claim)
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, str)]
+    return []
+
+
+def map_role(
+    provider: ProviderConfig, claims: Dict[str, Any], known_role_ids: set[str]
+) -> str:
+    """The role the claims earn: the first matching mapping, else the default.
+
+    Never Admin unless the provider allows Admin mappings *and* an explicit
+    mapping matched. Never a role that no longer exists; never Admin as a
+    default, even if a stored configuration somehow says so.
+    """
+    for mapping in provider.role_mappings:
+        if mapping.value not in _claim_values(claims, mapping.claim):
+            continue
+        if mapping.role_id not in known_role_ids:
+            logger.warning(
+                "SSO mapping names unknown role %s; skipped", mapping.role_id
+            )
+            continue
+        if mapping.role_id == ADMIN_ROLE_ID and not provider.allow_admin_mapping:
+            logger.warning("SSO mapping to Admin skipped: provider does not allow it")
+            continue
+        return mapping.role_id
+    default = provider.default_role_id
+    if default == ADMIN_ROLE_ID or default not in known_role_ids:
+        return VIEWER_ROLE_ID
+    return default
+
+
+def known_role_ids(session: Session) -> set[str]:
+    return {r for (r,) in session.query(Role.role_id).all()}
+
+
+def mappable_role_ids(provider: ProviderConfig) -> set[str]:
+    """Every role ``map_role`` could ever give a user of ``provider``."""
+    roles = {VIEWER_ROLE_ID}
+    if provider.default_role_id != ADMIN_ROLE_ID:
+        roles.add(provider.default_role_id)
+    for mapping in provider.role_mappings:
+        if mapping.role_id != ADMIN_ROLE_ID or provider.allow_admin_mapping:
+            roles.add(mapping.role_id)
+    return roles
+
+
+def _granted(role: Optional[Role]) -> set[str]:
+    if role is None:
+        return set()
+    return {p for p, on in (role.permissions or {}).items() if on}
+
+
+def within_provider_reach(
+    session: Session, provider: ProviderConfig, user: User
+) -> bool:
+    """May ``provider`` link to ``user`` by e-mail?
+
+    Only if the account holds no more than some role the provider could map
+    a user to anyway. Linking must never be a way into an account more
+    powerful than the provider itself may grant; above all, never into an
+    Admin unless the provider is allowed to map to Admin (which only someone
+    holding every permission can turn on).
+    """
+    allowed = mappable_role_ids(provider)
+    if user.role_id == ADMIN_ROLE_ID and ADMIN_ROLE_ID not in allowed:
+        return False
+    if user.role_id in allowed:
+        return True
+    roles = {
+        r.role_id: r
+        for r in session.query(Role)
+        .filter(Role.role_id.in_(allowed | {user.role_id}))
+        .all()
+    }
+    held = _granted(roles.get(user.role_id))
+    return any(held <= _granted(roles.get(r)) for r in allowed if r in roles)
+
+
+# ---------------------------------------------------------------------------
+# Resolving the account
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SsoLogin:
+    user: User
+    created: bool
+    linked: bool
+    role_changed: bool
+
+
+#: Letters from these scripts never share a local part with a Latin letter
+#: (or with each other): "раураl" in Cyrillic beside Latin is a spoof.
+_CONFUSABLE_SCRIPTS = {"LATIN", "CYRILLIC", "GREEK", "ARMENIAN", "CHEROKEE", "COPTIC"}
+
+
+def _scripts(text: str) -> set[str]:
+    return {unicodedata.name(ch, "?").split(" ", 1)[0] for ch in text if ch.isalpha()}
+
+
+def _clean_address(value: Any) -> Optional[tuple[str, str]]:
+    """``(local, domain)`` of an acceptable address, or None.
+
+    Refused rather than repaired: control, format and separator characters
+    (zero-width space, bidi marks, a trailing newline, ...), whitespace,
+    compatibility characters (fullwidth letters, ligatures, the Kelvin sign:
+    anything NFKC would change), and a local part mixing confusable scripts.
+    """
+    if not isinstance(value, str) or not value or len(value) > 254:
+        return None
+    text = unicodedata.normalize("NFC", value)
+    if (
+        _UNPRINTABLE.search(text)
+        or any(ch.isspace() or unicodedata.category(ch)[0] in "CZ" for ch in text)
+        or unicodedata.normalize("NFKC", text) != text
+        or text.count("@") != 1
+    ):
+        return None
+    local, domain = text.split("@")
+    if not local or len(local) > 64 or "." not in domain:
+        return None
+    scripts = _scripts(local) & _CONFUSABLE_SCRIPTS
+    if len(scripts) > 1:
+        return None
+    try:
+        ascii_domain = idna.encode(
+            domain, uts46=True, transitional=False, std3_rules=True
+        ).decode("ascii")
+    except (idna.IDNAError, UnicodeError, ValueError):
+        return None
+    ascii_domain = ascii_domain.lower()
+    if "." not in ascii_domain.strip("."):
+        return None
+    return local, ascii_domain
+
+
+def normalize_email(value: Any) -> Optional[str]:
+    """``value`` as a comparison key, or None if it is not an acceptable address.
+
+    The key is the NFC local part, lower-cased (``str.lower``, not
+    ``casefold``: "ß" stays "ß", so alice@straße.de never matches
+    alice@strasse.de), ``@``, and the domain as IDNA ASCII (punycode, IDNA
+    2008 non-transitional). Use it only to compare; store the address as
+    given (:func:`valid_email`).
+    """
+    parts = _clean_address(value)
+    if parts is None:
+        return None
+    local, ascii_domain = parts
+    return f"{local.lower()}@{ascii_domain}"
+
+
+def valid_email(value: Any) -> Optional[str]:
+    """``value`` unchanged if it is an acceptable address, else None."""
+    return value if normalize_email(value) is not None else None
+
+
+def email_owner(
+    session: Session, key: str, exclude_user_id: Optional[str] = None
+) -> Optional[User]:
+    """The account whose email *or* address-shaped username has key ``key``.
+
+    Compared in Python with :func:`normalize_email`: SQL ``lower`` folds
+    neither Unicode nor IDNA, so it cannot be the match. The user table is
+    small; every row carrying an "@" is checked.
+    """
+    query = session.query(User).filter(
+        User.email.contains("@") | User.username.contains("@")
+    )
+    if exclude_user_id is not None:
+        query = query.filter(User.user_id != exclude_user_id)
+    for row in query.order_by(User.user_id).all():
+        if normalize_email(row.email) == key or normalize_email(row.username) == key:
+            return row
+    return None
+
+
+def _email_from_claims(claims: Dict[str, Any]) -> Optional[str]:
+    """The first acceptable address among the claims, as the provider sent it."""
+    for name in ("email", "preferred_username", "upn"):
+        email = valid_email(claims.get(name))
+        if email:
+            return email
+    return None
+
+
+def _unique_username(session: Session, claims: Dict[str, Any], email: str) -> str:
+    raw = claims.get("preferred_username")
+    if not isinstance(raw, str) or not raw.strip():
+        raw = email
+    # "alice@example.com" -> "alice": never an address-shaped username.
+    raw = raw.strip().split("@", 1)[0]
+    base = _USERNAME_SAFE.sub("-", raw)[:80].strip("-.") or "sso-user"
+    candidate = base
+    for _ in range(20):
+        taken = (
+            session.query(User.user_id)
+            .filter(
+                (func.lower(User.username) == candidate.lower())
+                | (func.lower(User.email) == candidate.lower())
+            )
+            .first()
+        )
+        if not taken:
+            return candidate
+        candidate = f"{base}-{uuid.uuid4().hex[:6]}"
+    raise OidcError("account", "could not choose a unique username")
+
+
+def _find_by_email(session: Session, email: str) -> Optional[User]:
+    """The account whose stored email compares equal to ``email``."""
+    key = normalize_email(email)
+    if key is None:
+        return None
+    query = session.query(User).filter(User.email.contains("@"))
+    for row in query.order_by(User.user_id).all():
+        if normalize_email(row.email) == key:
+            return row
+    return None
+
+
+def _username_taken_by_address(session: Session, email: str) -> bool:
+    """Whether some account's *username* compares equal to ``email``."""
+    key = normalize_email(email)
+    rows = session.query(User.username).filter(User.username.contains("@")).all()
+    return any(normalize_email(r.username) == key for r in rows)
+
+
+def resolve_user(
+    session: Session, provider: ProviderConfig, claims: Dict[str, Any]
+) -> SsoLogin:
+    """Find, link or create the account for validated ``claims``.
+
+    Every refusal is checked before anything is written, so a refused login
+    leaves no partial account or link behind.
+
+    Raises:
+        OidcError: ``account`` (no account and none may be made/linked),
+            ``machine_account`` (a service account), ``inactive``.
+    """
+    issuer = claims["iss"]
+    subject = claims["sub"]
+    key = identity_key(issuer, subject)
+    roles = known_role_ids(session)
+    now = utcnow()
+
+    link = _get_link(session, key)
+    user: Optional[User] = None
+    provisioned = False
+    if link is not None and isinstance(link.value, dict):
+        user = (
+            session.query(User)
+            .filter(User.user_id == link.value.get("user_id"))
+            .first()
+        )
+        provisioned = bool(link.value.get("provisioned"))
+        if user is None:
+            # The account was deleted; the link is stale. Treat as first login.
+            session.delete(link)
+            session.flush()
+            link = None
+
+    created = linked = False
+    if user is None:
+        email = _email_from_claims(claims)
+        existing = _find_by_email(session, email) if email else None
+        if existing is not None:
+            if not provider.link_by_verified_email:
+                raise OidcError(
+                    "account",
+                    "an account with this email exists and linking by email is off",
+                )
+            if claims.get("email_verified") is not True:
+                raise OidcError(
+                    "account", "provider did not assert email_verified for linking"
+                )
+            claimed = normalize_email(claims.get("email"))
+            if claimed is None or claimed != normalize_email(existing.email):
+                # Linking trusts only the verified "email" claim, never
+                # preferred_username/upn.
+                raise OidcError("account", "verified email claim does not match")
+            if not within_provider_reach(session, provider, existing):
+                raise OidcError(
+                    "account",
+                    f"linking refused: role {existing.role_id} exceeds what "
+                    f"provider {provider.id} may grant",
+                )
+            user = existing
+            linked = True
+        else:
+            if not provider.jit_provisioning:
+                raise OidcError("account", "no linked account and JIT is off")
+            if not email:
+                raise OidcError("account", "ID token carries no usable email")
+            if _username_taken_by_address(session, email):
+                # Sign-in accepts a username or an email; an account whose
+                # email is someone else's username would make that ambiguous.
+                raise OidcError(
+                    "account", "an existing account uses this email as its username"
+                )
+            provisioned = True
+            created = True
+
+    if user is not None:
+        if user.service_account is True:
+            raise OidcError("machine_account", "service accounts cannot use SSO")
+        if not user.is_active:
+            raise OidcError("inactive", "account is inactive")
+
+    role_id = map_role(provider, claims, roles)
+    role_changed = False
+    if created:
+        email = _email_from_claims(claims) or ""
+        name = claims.get("name")
+        user = User(
+            user_id=f"user-{uuid.uuid4().hex[:12]}",
+            username=_unique_username(session, claims, email),
+            email=email,
+            password_hash=SSO_ONLY_PASSWORD_HASH,
+            full_name=(
+                name.strip()[:200] if isinstance(name, str) and name.strip() else email
+            ),
+            role_id=role_id,
+            is_active=True,
+            is_verified=claims.get("email_verified") is True,
+            mfa_enabled=False,
+            login_count=0,
+        )
+        session.add(user)
+        session.flush()
+    elif provisioned and user.role_id != role_id:
+        # The identity provider is the source of truth for accounts it made;
+        # an account linked by email keeps the role an administrator gave it.
+        logger.info(
+            "SSO role for %s changes %s -> %s", user.username, user.role_id, role_id
+        )
+        user.role_id = role_id
+        role_changed = True
+
+    assert user is not None
+    user.last_login = now
+    user.login_count = (user.login_count or 0) + 1
+    user.failed_login_count = 0
+
+    link_value = {
+        "user_id": user.user_id,
+        "provider_id": provider.id,
+        "issuer": issuer,
+        "subject_sha256": digest(subject),
+        "provisioned": provisioned,
+        "last_login_at": now.isoformat(),
+    }
+    if link is None:
+        link_value["linked_at"] = now.isoformat()
+        session.add(
+            SystemConfig(
+                key=key,
+                value=link_value,
+                description=f"SSO identity ({provider.id})",
+                config_type=IDENTITY_CONFIG_TYPE,
+                updated_by="sso",
+            )
+        )
+    else:
+        link.value = {**link.value, **link_value}
+    session.flush()
+    return SsoLogin(
+        user=user, created=created, linked=linked, role_changed=role_changed
+    )
+
+
+def is_sso_only(user: User) -> bool:
+    # getattr: callers may hold a user-like object without the hash column.
+    return getattr(user, "password_hash", None) == SSO_ONLY_PASSWORD_HASH
+
+
+def has_usable_password(user: User) -> bool:
+    """Can ``user`` sign in with a password at all (e.g. as break-glass)?"""
+    value = getattr(user, "password_hash", None)
+    return bool(value) and value != SSO_ONLY_PASSWORD_HASH and not value.startswith("!")
+
+
+# ---------------------------------------------------------------------------
+# Audit
+# ---------------------------------------------------------------------------
+
+
+def audit_success(
+    session: Session, provider_id: str, login: SsoLogin, client_ip: Optional[str]
+) -> None:
+    """Record a completed SSO login in the request's own transaction."""
+    session.add(
+        ConfigAuditLog(
+            config_type=AUDIT_CONFIG_TYPE,
+            config_key=AUDIT_KEY,
+            action="sso_login",
+            old_value=None,
+            new_value={
+                "provider_id": provider_id,
+                "user_id": login.user.user_id,
+                "role_id": login.user.role_id,
+                "created": login.created,
+                "linked": login.linked,
+                "role_changed": login.role_changed,
+                "client_ip": client_ip,
+            },
+            changed_by=login.user.username[:100],
+        )
+    )
+
+
+def audit_failure(
+    provider_id: str, code: str, detail: str, client_ip: Optional[str]
+) -> None:
+    """Record a refused SSO login in a transaction of its own.
+
+    Its own transaction so the record survives whatever happens to the
+    request's. Never raises: failing to audit must not turn a refused login
+    into a server error, but it is logged at ERROR.
+    """
+    try:
+        with unit_of_work() as session:
+            session.add(
+                ConfigAuditLog(
+                    config_type=AUDIT_CONFIG_TYPE,
+                    config_key=AUDIT_KEY,
+                    action="sso_failure",
+                    old_value=None,
+                    new_value={
+                        "provider_id": printable(provider_id, 64),
+                        "reason": printable(code, 64),
+                        "detail": printable(detail, 500),
+                        "client_ip": client_ip,
+                    },
+                    changed_by="sso",
+                )
+            )
+    except Exception as exc:
+        logger.error("Could not audit an SSO failure (%s): %s", code, exc)
