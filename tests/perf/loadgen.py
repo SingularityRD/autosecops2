@@ -473,9 +473,19 @@ def build_report(
     min_samples: int = 20,
     notes: Optional[List[str]] = None,
     extra: Optional[Dict[str, Any]] = None,
+    first_triage: Optional[measure.FirstTriage] = None,
 ) -> measure.Report:
+    """Wait for the run to settle and measure it.
+
+    Pass the ``first_triage`` of a ``measure.Sampler`` that ran during the
+    load so a re-triage during the run does not move a finding's verdict time.
+    """
     rows = measure.wait_settled(
-        engine, run_prefix(run_id), log.accepted_ids(), timeout=settle_timeout
+        engine,
+        run_prefix(run_id),
+        log.accepted_ids(),
+        timeout=settle_timeout,
+        first_triage=first_triage,
     )
     stats = measure.lane_stats(rows)
     acc = measure.account(log.accepted_ids(), log.sent_ids(), rows)
@@ -594,17 +604,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         seed_rules_lane(engine, run_id)
     alerts = load_corpus(args.corpus)
     print(f"run {run_id}: {len(schedule(profile))} findings scheduled", flush=True)
-    log = asyncio.run(
-        run_load(
-            profile,
-            target,
-            alerts,
-            run_id,
-            max_retry=args.max_retry_seconds,
-            max_inflight=args.max_inflight,
-            api_read_rps=args.api_read_rps,
+    sampler = measure.Sampler(engine, run_prefix(run_id))
+    sampler.start()
+    try:
+        log = asyncio.run(
+            run_load(
+                profile,
+                target,
+                alerts,
+                run_id,
+                max_retry=args.max_retry_seconds,
+                max_inflight=args.max_inflight,
+                api_read_rps=args.api_read_rps,
+            )
         )
-    )
+    finally:
+        sampler.stop_evt.set()
     report = build_report(
         engine,
         run_id,
@@ -613,6 +628,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         log,
         settle_timeout=args.settle_timeout,
         min_samples=args.min_samples,
+        first_triage=sampler.first_triage,
     )
     write_report(report, args.out)
     print(measure.render_markdown(report))

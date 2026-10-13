@@ -427,3 +427,290 @@ def test_render_table():
     r = chaos.ScenarioResult("pg_restart", "local", "PASS", recovery_bound=240)
     r.accounting = {"sent": 3, "accepted": 3, "stored": 3, "lost": 0}
     assert "| pg_restart | local | PASS | 3/3/3 | 0 |" in chaos.render([r])
+
+
+# -- Round 5 fixes (verifier findings) ---------------------------------------
+
+
+def test_double_processing_is_a_decision_after_the_verdict():
+    # Settled by triage at 120, routed again at 150: processed twice.
+    twice = _row("a", 100, lane="small_model", decided=101, triage=120, decisions=2)
+    twice.last_decided_epoch = 150.0
+    # Re-routed while the first triage was in flight (at-least-once): not double.
+    inflight = _row("b", 100, lane="small_model", decided=101, triage=120, decisions=2)
+    inflight.last_decided_epoch = 110.0
+    # A rules finding decided by a rule twice, 30 s apart.
+    rules = _row("c", 100, lane="rules", decided=101, decisions=2)
+    rules.last_decided_epoch = 131.0
+    # Within the clock slack.
+    close = _row("d", 100, lane="rules", decided=101, decisions=2)
+    close.last_decided_epoch = 102.0
+    acc = measure.account(
+        ["a", "b", "c", "d"], ["a", "b", "c", "d"], [twice, inflight, rules, close]
+    )
+    assert acc.double_processed == ["a", "c"]
+    assert acc.re_decided == 4
+    assert acc.duplicate_rows == 0  # the PK check alone cannot see this
+
+
+def test_first_triage_time_survives_a_retriage():
+    ft = measure.FirstTriage()
+    first = ft.apply([_row("a", 100, lane="small_model", decided=101, triage=120)])
+    assert first[0].triage_epoch == 120 and not first[0].retriaged
+    # The backfill re-triaged it: the stored timestamp moved to 300.
+    later = ft.apply([_row("a", 100, lane="small_model", decided=101, triage=300)])
+    assert later[0].triage_epoch == 120 and later[0].retriaged
+    assert measure.verdict_epoch(later[0]) == 120
+    acc = measure.account(["a"], ["a"], later)
+    assert acc.retriaged == 1
+
+
+def test_wait_settled_keeps_first_triage_across_polls():
+    seq = iter([120.0, 300.0])
+
+    def fetch(_engine, _prefix):
+        return [_row("a", 100, lane="small_model", decided=101, triage=next(seq))]
+
+    ft = measure.FirstTriage()
+    rows = measure.wait_settled(
+        None, "p", ["x"], timeout=0.05, poll=0.01, fetch=fetch, first_triage=ft
+    )
+    assert rows[0].triage_epoch == 120.0 and rows[0].retriaged
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, d):
+        self.t += d
+
+
+def test_wait_takeover_measures_the_change_of_holder():
+    clock = _Clock()
+    holders = iter(["lock:A", None, None, "lock:B"])
+    took, who = chaos.wait_takeover(
+        None,
+        "lock:A",
+        10,
+        holder=lambda _e: next(holders),
+        poll=0.5,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    assert (took, who) == (1.5, "lock:B")
+
+
+def test_wait_takeover_times_out_and_needs_health_confirmation():
+    clock = _Clock()
+    took, who = chaos.wait_takeover(
+        None,
+        "lock:A",
+        2,
+        holder=lambda _e: "lock:A",
+        poll=0.5,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    assert took is None and who == "lock:A"
+    clock = _Clock()
+    confirms = iter([None, None, "daemon1"])
+    took, who = chaos.wait_takeover(
+        None,
+        "lock:A",
+        10,
+        holder=lambda _e: "lock:B",
+        confirm=lambda: next(confirms),
+        poll=1,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    assert (took, who) == (2.0, "lock:B")
+
+
+class _FakeEngine:
+    def connect(self):
+        raise RuntimeError("no database in unit tests")
+
+    def dispose(self):
+        pass
+
+
+class _FakeTarget:
+    name = "fake"
+
+    def __init__(self, holders, rows_after_heal=None):
+        self.info = chaos.TargetInfo(
+            webhooks=["http://x"], webhook_token="t", db_url="x"
+        )
+        self.calls = []
+        self.holders = holders
+
+    def supports(self, action):
+        return None
+
+    def do(self, action):
+        self.calls.append((action, self.holders.current))
+        if action == "leader_kill":
+            self.holders.killed = True
+        if action == "leader_restart":
+            self.holders.restarted = True
+
+
+class _Holders:
+    def __init__(self, new_leader):
+        self.new_leader = new_leader
+        self.killed = self.restarted = False
+
+    @property
+    def current(self):
+        if not self.killed:
+            return "lock:A"
+        return self.new_leader
+
+    def __call__(self, _engine):
+        return self.current
+
+
+def _fake_run(monkeypatch, scenario, target, rows):
+    async def fake_load(profile, tgt, alerts, run_id, *, max_retry, log):
+        rec = loadgen.SendRecord(
+            ids=[r.finding_id for r in rows],
+            path="webhook",
+            scheduled=0,
+            first_try=time.time(),
+        )
+        rec.accepted_at = rec.first_try
+        rec.accepted_ids = list(rec.ids)
+        log.sends.append(rec)
+        return log
+
+    monkeypatch.setattr(loadgen, "make_engine", lambda url: _FakeEngine())
+    monkeypatch.setattr(loadgen, "load_corpus", lambda path: [])
+    monkeypatch.setattr(loadgen, "run_load", fake_load)
+    monkeypatch.setattr(measure, "wait_settled", lambda *a, **k: rows)
+    return chaos.run_scenario(
+        target,
+        scenario,
+        pre=0.0,
+        fault=0.05,
+        post=0.0,
+        seed_rules=False,
+        run_id="unit",
+        log_event=lambda m: None,
+    )
+
+
+def _settled_rows():
+    now = time.time()
+    return [_row("lt-unit-1", now, lane="rules", decided=now + 0.1)]
+
+
+def test_standby_scenario_fails_without_takeover_before_restart(monkeypatch):
+    monkeypatch.setenv("CHAOS_TAKEOVER_BOUND", "0.3")
+    holders = _Holders(new_leader=None)  # nobody takes the lock
+    monkeypatch.setattr(chaos, "leader_holder", holders)
+    target = _FakeTarget(holders)
+    res = _fake_run(
+        monkeypatch, chaos.scenarios()["daemon_kill_standby"], target, _settled_rows()
+    )
+    assert res.status == "FAIL"
+    assert any("no standby took over" in r for r in res.reasons)
+    assert res.takeover_seconds is None and res.leader_before == "lock:A"
+    # The killed leader was restarted only after the takeover wait gave up.
+    assert [a for a, _ in target.calls] == ["leader_kill", "leader_restart"]
+
+
+def test_standby_scenario_reports_takeover_time(monkeypatch):
+    monkeypatch.setenv("CHAOS_TAKEOVER_BOUND", "5")
+    holders = _Holders(new_leader="lock:B")
+    monkeypatch.setattr(chaos, "leader_holder", holders)
+    target = _FakeTarget(holders)
+    res = _fake_run(
+        monkeypatch, chaos.scenarios()["daemon_kill_standby"], target, _settled_rows()
+    )
+    assert res.status == "PASS", res.reasons
+    assert res.leader_after == "lock:B" and res.takeover_seconds is not None
+    assert res.takeover_seconds <= res.takeover_bound == 5
+    # The standby held the lock before the old leader came back.
+    assert target.calls[-1] == ("leader_restart", "lock:B")
+    assert f"{res.takeover_seconds} / 5" in chaos.render([res])
+
+
+def test_double_processing_fails_the_scenario(monkeypatch):
+    now = time.time()
+    row = _row("lt-unit-1", now, lane="rules", decided=now + 0.1, decisions=2)
+    row.last_decided_epoch = now + 30
+    target = _FakeTarget(_Holders("lock:B"))
+    res = _fake_run(monkeypatch, chaos.scenarios()["daemon_kill"], target, [row])
+    assert res.status == "FAIL"
+    assert any("double processing: 1" in r for r in res.reasons)
+    assert res.accounting["double_processed"] == 1
+    monkeypatch.setenv("CHAOS_MAX_DOUBLE_DAEMON_KILL", "1")
+    res = _fake_run(monkeypatch, chaos.scenarios()["daemon_kill"], target, [row])
+    assert res.status == "PASS", res.reasons
+
+
+def test_pg_restart_known_issue_tracks_w012(monkeypatch):
+    sc = chaos.scenarios()["pg_restart"]
+    assert "W0.12" in sc.known_issue and "lost == 0" in sc.known_issue
+    monkeypatch.setattr(chaos, "ingest_durability_merged", lambda: False)
+    sc = chaos.scenarios()["pg_restart"]
+    assert sc.known_open()
+    # The assertion is kept: a loss still FAILs, the result is only labelled.
+    now = time.time()
+    target = _FakeTarget(_Holders("lock:B"))
+    target.info = chaos.TargetInfo(webhooks=["http://x"], webhook_token="t", db_url="x")
+
+    async def lossy(profile, tgt, alerts, run_id, *, max_retry, log):
+        rec = loadgen.SendRecord(
+            ids=["lt-unit-1", "lt-unit-2"], path="webhook", scheduled=0, first_try=now
+        )
+        rec.accepted_at, rec.accepted_ids = now, ["lt-unit-1", "lt-unit-2"]
+        log.sends.append(rec)
+
+    monkeypatch.setattr(loadgen, "make_engine", lambda url: _FakeEngine())
+    monkeypatch.setattr(loadgen, "load_corpus", lambda path: [])
+    monkeypatch.setattr(loadgen, "run_load", lossy)
+    monkeypatch.setattr(
+        measure,
+        "wait_settled",
+        lambda *a, **k: [_row("lt-unit-1", now, lane="rules", decided=now + 0.1)],
+    )
+    res = chaos.run_scenario(
+        target,
+        sc,
+        pre=0,
+        fault=0.01,
+        post=0,
+        seed_rules=False,
+        log_event=lambda m: None,
+    )
+    assert res.status == "FAIL" and res.accounting["lost"] == 1
+    assert res.known_issue and "KNOWN" in chaos.render([res])
+    monkeypatch.setattr(chaos, "ingest_durability_merged", lambda: True)
+    assert not chaos.scenarios()["pg_restart"].known_open()
+
+
+def test_scenario_all_runs_standby_on_its_own_stack_when_supported():
+    names = list(chaos.scenarios())
+    plan = chaos.plan_local(names, standby=False, no_standby=False, supported=True)
+    assert plan == [
+        (False, [n for n in names if n != "daemon_kill_standby"]),
+        (True, ["daemon_kill_standby"]),
+    ]
+    assert chaos.plan_local(
+        names, standby=False, no_standby=False, supported=False
+    ) == [(False, names)]
+    assert chaos.plan_local(names, standby=False, no_standby=True, supported=True) == [
+        (False, names)
+    ]
+    assert chaos.plan_local(names, standby=True, no_standby=False, supported=True) == [
+        (True, names)
+    ]
+    assert chaos.plan_local(
+        ["pg_restart"], standby=False, no_standby=False, supported=True
+    ) == [(False, ["pg_restart"])]

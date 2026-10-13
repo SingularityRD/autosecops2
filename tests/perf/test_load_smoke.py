@@ -16,7 +16,7 @@ import os
 
 import pytest
 
-from tests.perf import loadgen
+from tests.perf import loadgen, measure
 from tests.perf.conftest import perf_out_dir
 
 pytestmark = [pytest.mark.load, pytest.mark.external_service, pytest.mark.integration]
@@ -41,6 +41,8 @@ def test_load_smoke(local_stack):
     engine = loadgen.make_engine(ep.db_url)
     loadgen.seed_rules_lane(engine, run_id)
     profile = _profile()
+    sampler = measure.Sampler(engine, loadgen.run_prefix(run_id))
+    sampler.start()
     log = asyncio.run(
         loadgen.run_load(
             profile,
@@ -55,6 +57,7 @@ def test_load_smoke(local_stack):
             api_read_rps=0.5,
         )
     )
+    sampler.stop_evt.set()
     report = loadgen.build_report(
         engine,
         run_id,
@@ -62,6 +65,7 @@ def test_load_smoke(local_stack):
         profile,
         log,
         settle_timeout=float(os.environ.get("LOAD_SETTLE_TIMEOUT", "600")),
+        first_triage=sampler.first_triage,
         notes=[
             "Local smoke on a shared 2-CPU machine with a stub model; "
             "not a capacity measurement.",
