@@ -442,6 +442,7 @@ dbInit:
     - 48_autonomy_lessons_suppression_retention.sql
     - 49_approval_action_lifecycle.sql
     - 50_regulatory_clocks.sql
+    - 58_broadcast_unique_and_clock_heads.sql
   resources:
     requests:
       cpu: 50m
