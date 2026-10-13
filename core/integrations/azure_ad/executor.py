@@ -252,9 +252,16 @@ class EntraIdExecutor:
         )
         for role in roles:
             keys = {
-                str(role.get("roleTemplateId") or "").lower(),
-                str(role.get("displayName") or "").lower(),
-            }
+                str(role.get("roleTemplateId") or "").strip().lower(),
+                str(role.get("displayName") or "").strip().lower(),
+            } - {""}
+            if not keys:
+                # An id-only stub (Graph omits what the app may not read) could
+                # be any role, a protected one included: fail closed.
+                return (
+                    f"user holds directory role {role.get('id')!r} whose name and "
+                    "template id cannot be read, so it cannot be ruled out as protected"
+                )
             if keys & self.protected_roles:
                 return (
                     f"user holds protected directory role {role.get('displayName')!r}"
