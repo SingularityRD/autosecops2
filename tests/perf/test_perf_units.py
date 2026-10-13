@@ -29,6 +29,7 @@ def _row(fid, created, *, lane=None, decided=None, triage=None, verdict=None, **
         verdict_finished_epoch=verdict,
         decisions=kw.get("decisions", 1 if lane else 0),
         has_enrichment=kw.get("has_enrichment", True),
+        rules_epoch=kw.get("rules_epoch"),
     )
 
 
@@ -61,6 +62,16 @@ def test_verdict_time_depends_on_lane():
     assert not measure.is_settled(verdict_pending)
     assert measure.lane_of(unrouted) == "unrouted"
     assert measure.verdict_epoch(unrouted) == 104.0
+    # First routed to the model, re-routed to a rule by the backfill before any
+    # triage answered: settled by the rule, counted in the rules lane.
+    rerouted = _row("g", 100.0, lane="small_model", decided=100.1, rules_epoch=150.0)
+    assert measure.settlement(rerouted) == (150.0, "rules")
+    # A triage that answered first wins over a later rule.
+    triaged = _row(
+        "h", 100.0, lane="small_model", decided=100.1, triage=120, rules_epoch=150.0
+    )
+    assert measure.settlement(triaged) == (120, "small_model")
+    assert measure.settlement(small_pending) == (None, "small_model")
 
 
 def test_lane_stats_and_slo_comparison():

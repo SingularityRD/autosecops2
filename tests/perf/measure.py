@@ -45,7 +45,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 # --------------------------------------------------------------------------
 # SLO table (docs/wp/NORTHSTAR_PLAN.md, "SLO'lar"); seconds.
@@ -92,20 +92,44 @@ class FindingRow:
     verdict_finished_epoch: Optional[float]
     decisions: int
     has_enrichment: bool
+    # Earliest rules-lane decision, when a later re-decision (backfill) chose
+    # rules after a first non-rules one, e.g. a suppression rule younger than
+    # the daemon's rule cache.
+    rules_epoch: Optional[float] = None
+
+
+def settlement(row: FindingRow) -> Tuple[Optional[float], str]:
+    """``(when, lane)`` of the finding's verdict; ``when`` is None while unsettled.
+
+    The lane is the one that settled the finding: the first decision's lane,
+    unless a rules decision settled it earlier than that lane did (a finding
+    first routed to the model and re-routed to a rule by the backfill counts as
+    a rules-lane finding settled at the rule's decision).
+    """
+    first = row.lane or "unrouted"
+    options: List[Tuple[float, str]] = []
+    rules_at = row.rules_epoch
+    if rules_at is None and first == "rules":
+        rules_at = row.decided_epoch
+    if rules_at is not None:
+        options.append((rules_at, "rules"))
+    if first == "verdict":
+        if row.verdict_finished_epoch is not None:
+            options.append((row.verdict_finished_epoch, "verdict"))
+    elif first != "rules" and row.triage_epoch is not None:
+        options.append((row.triage_epoch, first))
+    if not options:
+        return None, first
+    return min(options)
 
 
 def lane_of(row: FindingRow) -> str:
-    return row.lane or "unrouted"
+    return settlement(row)[1]
 
 
 def verdict_epoch(row: FindingRow) -> Optional[float]:
     """When the finding got its verdict, by lane; None while unsettled."""
-    lane = lane_of(row)
-    if lane == "rules":
-        return row.decided_epoch
-    if lane == "verdict":
-        return row.verdict_finished_epoch
-    return row.triage_epoch
+    return settlement(row)[0]
 
 
 def is_settled(row: FindingRow) -> bool:
@@ -249,7 +273,8 @@ WITH d AS (
            (array_agg(decided_at ORDER BY decided_at, id))[1] AS decided_at,
            (array_agg(degraded_from ORDER BY decided_at, id))[1] AS degraded_from,
            bool_or(deferred_verdict) AS deferred_verdict,
-           (array_agg(verdict_run_id ORDER BY decided_at, id))[1] AS verdict_run_id
+           (array_agg(verdict_run_id ORDER BY decided_at, id))[1] AS verdict_run_id,
+           min(decided_at) FILTER (WHERE lane = 'rules') AS rules_decided_at
     FROM alert_lane_decisions
     WHERE finding_id LIKE :prefix
     GROUP BY finding_id
@@ -267,7 +292,8 @@ SELECT f.finding_id,
        f.ai_enrichment->>'ai_triage_error' AS triage_error,
        EXTRACT(EPOCH FROM (w.finished_at AT TIME ZONE 'UTC')) AS verdict_epoch,
        COALESCE(d.n, 0) AS decisions,
-       f.ai_enrichment IS NOT NULL AS has_enrichment
+       f.ai_enrichment IS NOT NULL AS has_enrichment,
+       EXTRACT(EPOCH FROM d.rules_decided_at) AS rules_epoch
 FROM findings f
 LEFT JOIN d ON d.finding_id = f.finding_id
 LEFT JOIN workflow_runs w ON w.run_id = d.verdict_run_id
@@ -298,6 +324,7 @@ def fetch_rows(engine, id_prefix: str) -> List[FindingRow]:
                 verdict_finished_epoch=_f(r.verdict_epoch),
                 decisions=int(r.decisions),
                 has_enrichment=bool(r.has_enrichment),
+                rules_epoch=_f(r.rules_epoch),
             )
             for r in result
         ]

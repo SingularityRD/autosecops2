@@ -406,12 +406,31 @@ async def run_load(
 # --------------------------------------------------------------------------
 
 
-def seed_rules_lane(engine, run_id: str, tenant: str = "default") -> str:
-    """Insert (or re-enable) a suppression rule matching ``RULES_SOURCE``."""
+# core/lanes/suppression_store.py caches a tenant's rules for 30 s: a rule
+# created or re-enabled now is seen by the daemon only after that.
+RULES_CACHE_SECONDS = 31.0
+
+
+def seed_rules_lane(
+    engine, run_id: str, tenant: str = "default", *, wait: bool = True
+) -> bool:
+    """Insert (or re-enable) a suppression rule matching ``RULES_SOURCE``.
+
+    Returns True when the rule was created or re-enabled, and then (with
+    ``wait``) sleeps out the daemon's rule cache so the run's first findings
+    see it.
+    """
     from sqlalchemy import text
 
     name = f"loadtest-{RULES_SOURCE}"
     with engine.begin() as conn:
+        was = conn.execute(
+            text(
+                "SELECT enabled FROM suppression_rules "
+                "WHERE tenant_id = :t AND name = :n"
+            ),
+            {"t": tenant, "n": name},
+        ).scalar()
         conn.execute(
             text("""
                 INSERT INTO suppression_rules
@@ -423,10 +442,13 @@ def seed_rules_lane(engine, run_id: str, tenant: str = "default") -> str:
                 "t": tenant,
                 "n": name,
                 "m": json.dumps({"data_source": RULES_SOURCE}),
-                "r": f"W4.1 load test rules lane (run {run_id})",
+                "r": f"W4.1 load test rules lane (seeded by run {run_id})",
             },
         )
-    return name
+    changed = was is not True
+    if changed and wait:
+        time.sleep(RULES_CACHE_SECONDS)
+    return changed
 
 
 def make_engine(db_url: str):
