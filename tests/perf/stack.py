@@ -31,10 +31,11 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import httpx
 
@@ -248,6 +249,13 @@ class LocalStack:
         self.env: Dict[str, str] = {}
         self.endpoints: Optional[Endpoints] = None
         self._restarts = 0
+        # Supervision, as a Kubernetes restartPolicy would do: a process that
+        # exits on its own is started again and the restart is recorded.
+        self.events: List[Tuple[float, str]] = []
+        self._down_on_purpose: set = set()
+        self._lock = threading.RLock()
+        self._supervisor: Optional[threading.Thread] = None
+        self._stopping = threading.Event()
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -349,12 +357,7 @@ class LocalStack:
         # The model is registered before the daemon starts: a daemon whose
         # start-up probes find no model trips its enrichment breaker for 120 s.
         token = self._bootstrap(base)
-        self.worker = Proc(
-            "worker",
-            [py, "-m", "services.worker"],
-            self.env,
-            self.workdir / "worker.log",
-        )
+        self._start_worker()
         self.daemon_ports = [
             {"health": _free_port(), "webhook": _free_port(), "metrics": _free_port()}
             for _ in range(self.n_daemons)
@@ -364,6 +367,8 @@ class LocalStack:
             self.start_daemon(i)
         for i in range(self.n_daemons):
             self.wait_daemon_ready(i)
+        self._supervisor = threading.Thread(target=self._supervise, daemon=True)
+        self._supervisor.start()
         self.endpoints = Endpoints(
             api_base=base,
             webhooks=[
@@ -397,20 +402,64 @@ class LocalStack:
         return env
 
     def start_daemon(self, i: int = 0) -> None:
-        self._restarts += 1
-        self.daemons[i] = Proc(
-            f"daemon{i}",
-            [sys.executable, "services/daemon/main.py"],
-            self._daemon_env(i),
-            self.workdir / f"daemon{i}-{self._restarts}.log",
-        )
+        with self._lock:
+            self._restarts += 1
+            self.daemons[i] = Proc(
+                f"daemon{i}",
+                [sys.executable, "services/daemon/main.py"],
+                self._daemon_env(i),
+                self.workdir / f"daemon{i}-{self._restarts}.log",
+            )
+            self._down_on_purpose.discard(f"daemon{i}")
 
     def kill_daemon(self, i: int = 0, sig: int = signal.SIGKILL) -> None:
-        proc = self.daemons[i]
-        if proc and proc.alive():
-            os.killpg(proc.p.pid, sig)
-            proc.p.wait(timeout=30)
-            proc._fh.close()
+        """Kill daemon ``i``; it stays down (unsupervised) until start_daemon."""
+        with self._lock:
+            self._down_on_purpose.add(f"daemon{i}")
+            proc = self.daemons[i]
+            if proc and proc.alive():
+                os.killpg(proc.p.pid, sig)
+                proc.p.wait(timeout=30)
+                proc._fh.close()
+
+    def _start_worker(self) -> None:
+        self._restarts += 1
+        self.worker = Proc(
+            "worker",
+            [sys.executable, "-m", "services.worker"],
+            self.env,
+            self.workdir / f"worker-{self._restarts}.log",
+        )
+
+    def _supervise(self) -> None:
+        while not self._stopping.wait(2.0):
+            with self._lock:
+                if self.worker is not None and not self.worker.alive():
+                    code = self.worker.p.returncode
+                    self.events.append(
+                        (time.time(), f"worker exited ({code}); restarted")
+                    )
+                    self.worker.stop()
+                    self._start_worker()
+                for i, proc in enumerate(self.daemons):
+                    name = f"daemon{i}"
+                    if proc is None or name in self._down_on_purpose or proc.alive():
+                        continue
+                    code = proc.p.returncode
+                    self.events.append(
+                        (time.time(), f"{name} exited ({code}); restarted")
+                    )
+                    proc.stop()
+                    self.start_daemon(i)
+                if self.api is not None and not self.api.alive():
+                    # The API is not restarted (its port must stay fixed for the
+                    # daemon URLs); its exit is recorded and fails the scenario.
+                    self.events.append((time.time(), "api exited"))
+                    self.api = None
+
+    def events_since(self, t: float) -> List[str]:
+        with self._lock:
+            return [f"+{at - t:.1f}s {msg}" for at, msg in self.events if at >= t]
 
     def daemon_role(self, i: int) -> Optional[str]:
         try:
@@ -430,6 +479,9 @@ class LocalStack:
         )
 
     def stop(self) -> None:
+        self._stopping.set()
+        if self._supervisor is not None:
+            self._supervisor.join(timeout=10)
         for proc in [self.api, self.worker, *self.daemons]:
             if proc:
                 try:

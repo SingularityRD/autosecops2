@@ -113,6 +113,10 @@ class LocalTarget:
         )
         self._killed_leader: Optional[int] = None
 
+    def events(self, since: float) -> List[str]:
+        """Process exits the stack's supervisor saw (and restarted) since ``since``."""
+        return self.stack.events_since(since)
+
     def supports(self, action: str) -> Optional[str]:
         if action in ("leader_kill", "leader_restart"):
             if not self.stack.leader_election:
@@ -391,6 +395,8 @@ class ScenarioResult:
     lanes: Dict[str, Any] = field(default_factory=dict)
     backlog_peak: Optional[int] = None
     timeline: List[Dict[str, Any]] = field(default_factory=list)
+    # Unplanned process exits during the scenario (local target's supervisor).
+    target_events: List[str] = field(default_factory=list)
 
 
 class _Sampler(threading.Thread):
@@ -429,7 +435,7 @@ def run_scenario(
     res.recovery_bound = scenario.recovery_bound
     for action in scenario.needs():
         why = target.supports(action)
-        if why:
+        if why and why not in res.reasons:
             res.reasons.append(why)
     if res.reasons:
         return res
@@ -560,6 +566,10 @@ def run_scenario(
         msg = check(obs)
         if msg:
             fails.append(msg)
+    events = getattr(target, "events", None)
+    res.target_events = events(t_start) if events else []
+    if any("api exited" in e for e in res.target_events):
+        fails.append("the API process exited")
     res.status = "FAIL" if fails else "PASS"
     res.reasons = fails
     engine.dispose()
@@ -569,8 +579,9 @@ def run_scenario(
 def render(results: Sequence[ScenarioResult]) -> str:
     lines = [
         "| Scenario | Target | Status | Sent/accepted/stored | Lost | Dup | "
-        "Unsettled | Recovery (s) / bound | Backlog peak | Reasons |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "Unsettled | Recovery (s) / bound | Backlog peak | Reasons | "
+        "Process exits |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
         a = r.accounting
@@ -580,7 +591,7 @@ def render(results: Sequence[ScenarioResult]) -> str:
             f"{a.get('lost', '-')} | {a.get('duplicate_rows', '-')} | "
             f"{a.get('unsettled', '-')} | {r.recovery_seconds} / "
             f"{r.recovery_bound:.0f} | {r.backlog_peak} | "
-            f"{'; '.join(r.reasons) or '-'} |"
+            f"{'; '.join(r.reasons) or '-'} | {'; '.join(r.target_events) or '-'} |"
         )
     return "\n".join(lines) + "\n"
 
