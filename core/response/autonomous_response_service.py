@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import ValidationError
 
 from core.agents.builtins import AgentId
+from core.autonomy import AutonomyWatchOnly
 from core.response.approval_service import (
     ActionStatus,
     ActionType,
@@ -205,6 +206,8 @@ class AutonomousResponseService:
         reverse carries no ttl: undoing a change does not expire.
         """
         params = dict(action.parameters or {})
+        # The autonomy record is the approval row's, not the executor's input.
+        params.pop("autonomy", None)
         params.setdefault("reason", action.reason)
         ttl: Optional[timedelta] = (
             None if reverse_of is not None else ttl_from_parameters(params)
@@ -254,6 +257,43 @@ class AutonomousResponseService:
         self.approval_service.mark_failed(action.action_id, error)
         return {"success": False, "error": error, "status": "failed"}
 
+    def _autonomy_recheck(self, action: PendingAction) -> Optional[Dict[str, Any]]:
+        """Hold a row released with no person's name if autonomy no longer holds.
+
+        The tier is decided again at dispatch, with the registry's
+        reversibility rather than the row's: a demotion, a broken bound or an
+        executor that cannot undo the type puts the row back in the approval
+        queue. None: the row may proceed (to the policy, which always runs).
+        """
+        record = (action.parameters or {}).get("autonomy") or {}
+        reversibility = (
+            self.executors.reversibility_of(action.action_type)
+            if self.executors.get(action.action_type) is not None
+            else action.reversibility
+        )
+        decision = self.approval_service.autonomy_decision(
+            action.action_type,
+            record.get("category") if isinstance(record, dict) else None,
+            reversibility,
+            action.confidence,
+        )
+        if decision is None or decision.autonomous:
+            return None
+        rule = decision.rule
+        self.approval_service.hold_for_person(action.action_id, rule)
+        logger.warning(
+            "Action %s held for a person at dispatch: %s (%s)",
+            action.action_id,
+            rule,
+            "; ".join(decision.reasons),
+        )
+        return {
+            "success": False,
+            "status": ActionStatus.PENDING.value,
+            "error": f"autonomy_held: {rule}",
+            "reasons": list(decision.reasons),
+        }
+
     def _dispatch(self, action: PendingAction) -> Optional[Dict[str, Any]]:
         """Run one approved row through the policy and its executor.
 
@@ -265,6 +305,10 @@ class AutonomousResponseService:
         if executor is None:
             if action.action_type != ActionType.ISOLATE_HOST.value:
                 return None
+            if not action.approved_by and not action.reverse_of:
+                held = self._autonomy_recheck(action)
+                if held is not None:
+                    return held
             params = action.parameters or {}
             result = self._execute_isolation(
                 ip_address=action.target,
@@ -301,6 +345,13 @@ class AutonomousResponseService:
                     action,
                     f"{action.action_type} needs a second approver distinct from the first",
                 )
+        # Released with no person's name on it: the autonomy tier (W3.1) is
+        # decided again, after the policy allowed the action and before the
+        # executor sees it.
+        if not action.approved_by and not action.reverse_of:
+            held = self._autonomy_recheck(action)
+            if held is not None:
+                return held
 
         # Everything recorded about the run is computed before it runs: a
         # failure here must stop the action, not strand an executed change on
@@ -411,19 +462,22 @@ class AutonomousResponseService:
                 "; ".join(verdict.reasons),
             )
             return {"status": "refused", "reasons": list(verdict.reasons)}
-        action = self.approval_service.create_action(
-            action_type=atype,
-            title=title,
-            description=description,
-            target=target,
-            confidence=confidence,
-            reason=reason,
-            evidence=evidence,
-            created_by=proposed_by,
-            parameters=dict(parameters or {}),
-            reversibility=Reversibility(typed.reversibility),
-            human_only=True,
-        )
+        try:
+            action = self.approval_service.create_action(
+                action_type=atype,
+                title=title,
+                description=description,
+                target=target,
+                confidence=confidence,
+                reason=reason,
+                evidence=evidence,
+                created_by=proposed_by,
+                parameters=dict(parameters or {}),
+                reversibility=Reversibility(typed.reversibility),
+                human_only=True,
+            )
+        except AutonomyWatchOnly as e:
+            return {"status": "watch", "reasons": [str(e)]}
         return {
             "status": action.status,
             "action_id": action.action_id,
@@ -438,6 +492,7 @@ class AutonomousResponseService:
         reason: str,
         evidence: List[str],
         correlation_data: Dict,
+        category: Optional[str] = None,
     ) -> Optional[Dict]:
         """
         Create an isolation action (auto-executes when the approval gate
@@ -453,6 +508,9 @@ class AutonomousResponseService:
             reason: Reason for isolation
             evidence: List of evidence IDs
             correlation_data: Data from correlation analysis
+            category: the alert category the autonomy tier is looked up by
+                (W3.1); under ``watch`` nothing is recorded and the result's
+                status is ``watch``
 
         Returns:
             Action result
@@ -489,23 +547,34 @@ class AutonomousResponseService:
                     "reasons": list(verdict.reasons),
                 }
 
-            action, inserted = self.approval_service._put_action(
-                action_type=ActionType.ISOLATE_HOST,
-                title=f"Isolate Host: {hostname or ip_address}",
-                description=f"Network isolation of compromised host based on correlated detections.\n\n"
-                f"Indicators: {', '.join(correlation_data.get('indicators', []))}\n"
-                f"Reasoning: {' | '.join(correlation_data.get('reasoning', []))}",
-                target=ip_address,
-                confidence=confidence,
-                reason=reason,
-                evidence=evidence,
-                created_by=AgentId.AUTO_RESPONDER.value,
-                parameters={"hostname": hostname, "correlation": correlation_data},
-                idempotency_key=f"{ActionType.ISOLATE_HOST.value}:{target_key}",
-                reversibility=Reversibility(screen.reversibility),
-                human_only=verdict.requires_approval
-                or verdict.requires_second_approver,
-            )
+            try:
+                action, inserted = self.approval_service._put_action(
+                    action_type=ActionType.ISOLATE_HOST,
+                    title=f"Isolate Host: {hostname or ip_address}",
+                    description=f"Network isolation of compromised host based on correlated detections.\n\n"
+                    f"Indicators: {', '.join(correlation_data.get('indicators', []))}\n"
+                    f"Reasoning: {' | '.join(correlation_data.get('reasoning', []))}",
+                    target=ip_address,
+                    confidence=confidence,
+                    reason=reason,
+                    evidence=evidence,
+                    created_by=AgentId.AUTO_RESPONDER.value,
+                    parameters={"hostname": hostname, "correlation": correlation_data},
+                    idempotency_key=f"{ActionType.ISOLATE_HOST.value}:{target_key}",
+                    reversibility=Reversibility(screen.reversibility),
+                    human_only=verdict.requires_approval
+                    or verdict.requires_second_approver,
+                    category=category,
+                )
+            except AutonomyWatchOnly as e:
+                logger.info(
+                    "Isolation of %s observed only: %s", hostname or ip_address, e
+                )
+                return {
+                    "status": "watch",
+                    "message": str(e),
+                    "confidence": confidence,
+                }
 
             if not inserted:
                 if action.status == ActionStatus.EXECUTED.value:
@@ -536,6 +605,15 @@ class AutonomousResponseService:
                     "success": False,
                     "error": "unsupported_action_type",
                 }
+
+                if execution_result.get("status") == ActionStatus.PENDING.value:
+                    return {
+                        "status": "pending_approval",
+                        "action_id": action.action_id,
+                        "message": "Isolation action held for analyst approval",
+                        "confidence": confidence,
+                        "requires_approval": True,
+                    }
 
                 if execution_result.get("success"):
                     return {
@@ -616,7 +694,18 @@ class AutonomousResponseService:
                     continue
                 # Released by a confidence figure and no person: whoever
                 # supplied that figure also chose the outcome.
-                if not action.requires_approval and not action.approved_by:
+                # An autonomous row (W3.1) is the exception: the tier released
+                # it, and _dispatch decides the tier again before it runs.
+                autonomy = (action.parameters or {}).get("autonomy") or {}
+                autonomous = (
+                    isinstance(autonomy, dict)
+                    and autonomy.get("effective") == "autonomous"
+                )
+                if (
+                    not action.requires_approval
+                    and not action.approved_by
+                    and not autonomous
+                ):
                     logger.warning(
                         "Action %s was never decided by a person; not executing",
                         action.action_id,

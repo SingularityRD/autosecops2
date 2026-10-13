@@ -23,6 +23,8 @@ from opentelemetry.metrics import Observation
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from core.autonomy import AutonomyController, AutonomyDecision, AutonomyWatchOnly
+from core.autonomy.tiers import WATCH
 from core.response.config import (
     ResponseConfig,
     approval_requirement,
@@ -190,6 +192,25 @@ def _row_to_pending(row: ApprovalActionRow) -> PendingAction:
     )
 
 
+def _cap_ttl(parameters: Dict[str, Any], ttl_seconds: Optional[int]) -> None:
+    """Hold an autonomous action's ttl to its tier's ``max_ttl_seconds``.
+
+    A ttl the caller set and that is shorter stays; a longer one, or none, is
+    replaced. One that is not a number is left for the dispatcher to refuse.
+    """
+    if not ttl_seconds:
+        return
+    raw = parameters.get("ttl_seconds")
+    if raw is not None and not isinstance(raw, bool):
+        try:
+            current = float(raw)
+        except (TypeError, ValueError):
+            return
+        if 0 < current <= ttl_seconds:
+            return
+    parameters["ttl_seconds"] = int(ttl_seconds)
+
+
 def _nonfailed_by_key(session, key: str) -> Optional[ApprovalActionRow]:
     """The live row for ``key``, if any. Failed rows are excluded so they can retry."""
     return session.execute(
@@ -207,6 +228,7 @@ class ApprovalService:
         self,
         config: Optional[ResponseConfig] = None,
         policy_config: Optional[PolicyConfig] = None,
+        autonomy: Optional[AutonomyController] = None,
     ):
         """
         Initialize approval service.
@@ -217,10 +239,39 @@ class ApprovalService:
             policy_config: the response policy (four-eyes types); read from
                 the ``response.policy`` system config at each decision when
                 omitted.
+            autonomy: the autonomy controller (W3.1); one reading
+                ``autonomy_tiers`` when omitted.
         """
         self.config = config or ResponseConfig.from_settings()
         self.force_manual_approval = False
         self._policy_config = policy_config
+        self._autonomy = autonomy
+
+    @property
+    def autonomy(self) -> AutonomyController:
+        if self._autonomy is None:
+            self._autonomy = AutonomyController()
+        return self._autonomy
+
+    def autonomy_decision(
+        self,
+        action_type: str,
+        category: Optional[str],
+        reversibility: str,
+        confidence: float,
+    ) -> Optional[AutonomyDecision]:
+        """The tier that governs this action (W3.1); None if tiers do not apply."""
+        try:
+            four_eyes = self.policy_config().needs_second_approver(action_type)
+        except Exception:  # noqa: BLE001
+            four_eyes = True
+        return self.autonomy.decide(
+            category=category,
+            action_type=action_type,
+            reversibility=reversibility,
+            confidence=confidence,
+            four_eyes=four_eyes,
+        )
 
     def policy_config(self) -> PolicyConfig:
         return (
@@ -276,6 +327,7 @@ class ApprovalService:
         idempotency_key: Optional[str] = None,
         human_only: bool = False,
         annotate_rule: bool = True,
+        category: Optional[str] = None,
     ) -> PendingAction:
         """Create a new pending action.
 
@@ -290,6 +342,10 @@ class ApprovalService:
         the same ``idempotency_key`` returns the existing non-failed row.
         ``annotate_rule=False`` keeps the deciding rule off ``reason`` for rows
         whose reason is read by an analyst and no confidence was ever compared.
+
+        ``category`` is the alert category the autonomy tier is looked up by
+        (W3.1); ``other`` when omitted. Under a ``watch`` tier nothing is
+        recorded and ``AutonomyWatchOnly`` is raised.
         """
         action, _inserted = self._put_action(
             action_type=action_type,
@@ -307,6 +363,7 @@ class ApprovalService:
             idempotency_key=idempotency_key,
             human_only=human_only,
             annotate_rule=annotate_rule,
+            category=category,
         )
         return action
 
@@ -327,6 +384,7 @@ class ApprovalService:
         idempotency_key: Optional[str] = None,
         human_only: bool = False,
         annotate_rule: bool = True,
+        category: Optional[str] = None,
     ) -> tuple[PendingAction, bool]:
         """Insert an approval row, or return the existing non-failed one.
 
@@ -351,6 +409,30 @@ class ApprovalService:
             # Two people decide these; a confidence figure is not one of them.
             requires_approval = True
             rule = decision_rule("policy.four_eyes", True)
+
+        # The autonomy tier (W3.1). Only it releases an action without a
+        # person: below ``autonomous`` every action waits for one, whatever its
+        # confidence. ``parameters["autonomy"]`` is the controller's alone.
+        parameters = dict(parameters or {})
+        parameters.pop("autonomy", None)
+        decision = self.autonomy_decision(
+            action_type.value, category, reversibility.value, confidence
+        )
+        if decision is not None:
+            if decision.effective == WATCH:
+                raise AutonomyWatchOnly(
+                    f"{action_type.value} on {decision.category} alerts is at "
+                    "the watch tier: observed, not recorded"
+                )
+            if not decision.autonomous:
+                if not requires_approval:
+                    requires_approval = True
+                    rule = decision_rule("autonomy.tier", decision.effective)
+            elif not requires_approval:
+                # Released by the tier; the confidence rule stays the one
+                # named, and the tier is on the row's autonomy record.
+                _cap_ttl(parameters, decision.ttl_seconds)
+            parameters["autonomy"] = decision.record()
         if annotate_rule:
             reason = f"{reason}; {rule}" if reason else rule
 
@@ -381,7 +463,7 @@ class ApprovalService:
                     created_by=created_by,
                     requires_approval=requires_approval,
                     status=status,
-                    parameters=dict(parameters or {}),
+                    parameters=parameters,
                     workflow_run_id=workflow_run_id,
                     workflow_phase_id=workflow_phase_id,
                     reversibility=reversibility.value,
@@ -621,6 +703,32 @@ class ApprovalService:
                 return _row_to_pending(row)
         except SQLAlchemyError as e:
             logger.error("DB error marking action %s executed: %s", action_id, e)
+            return None
+
+    def hold_for_person(self, action_id: str, rule: str) -> Optional[PendingAction]:
+        """Put an action released without a person back in the approval queue.
+
+        For the dispatcher (W3.1): a row approved with nobody's name on it whose
+        autonomy no longer holds (the tier was demoted, the bound broke) waits
+        for a person instead of running. Only such a row is touched.
+        """
+        try:
+            db = get_db_manager()
+            with db.session_scope() as session:
+                row = session.get(ApprovalActionRow, action_id, with_for_update=True)
+                if row is None:
+                    return None
+                if row.status != ActionStatus.APPROVED.value or row.approved_by:
+                    return _row_to_pending(row)
+                row.status = ActionStatus.PENDING.value
+                row.requires_approval = True
+                row.approved_at = None
+                row.reason = f"{row.reason}; {rule}" if row.reason else rule
+                session.flush()
+                logger.warning("Action %s held for a person: %s", action_id, rule)
+                return _row_to_pending(row)
+        except SQLAlchemyError as e:
+            logger.error("DB error holding action %s: %s", action_id, e)
             return None
 
     def mark_failed(
