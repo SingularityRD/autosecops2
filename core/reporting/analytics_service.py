@@ -12,6 +12,7 @@ from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
 from core.llm.providers.registry import get_registry, infer_provider_type
+from core.storage.canary_exclusion import not_canary_case, not_canary_finding
 from core.storage.models import (
     Case,
     CaseClosureInfo,
@@ -28,6 +29,17 @@ logger = logging.getLogger(__name__)
 # entity and heatmap breakdowns, so those add up to the total. Left in the
 # per-source breakdown, so they stay visible there as what they are.
 _NOT_PROBE = Finding.data_source != "probe"
+
+
+# Hidden canaries (W1.5) are replayed test alerts. Unlike probes they look like
+# any other alert, so they are out of every breakdown here, per-source included,
+# and a case made of canaries only is out of the case counts and times.
+def _real_findings(db: Session):
+    return and_(_NOT_PROBE, not_canary_finding(db, Finding.finding_id))
+
+
+def _real_cases(db: Session):
+    return not_canary_case(db, Case.case_id)
 
 
 async def collect_insights_inputs(
@@ -55,18 +67,20 @@ async def calculate_metrics(
     prev_end: datetime,
 ) -> Dict[str, Any]:
     """Calculate key SOC metrics and their period-over-period changes."""
+    real = _real_findings(db)
+    real_case = _real_cases(db)
 
     # Current period metrics
     total_findings = (
         db.query(func.count(Finding.finding_id))
-        .filter(Finding.created_at.between(start_time, end_time), _NOT_PROBE)
+        .filter(Finding.created_at.between(start_time, end_time), real)
         .scalar()
         or 0
     )
 
     total_cases = (
         db.query(func.count(Case.case_id))
-        .filter(Case.created_at.between(start_time, end_time))
+        .filter(Case.created_at.between(start_time, end_time), real_case)
         .scalar()
         or 0
     )
@@ -77,7 +91,11 @@ async def calculate_metrics(
             func.avg(func.extract("epoch", Case.updated_at - Case.created_at) / 60)
         )
         .filter(
-            and_(Case.created_at.between(start_time, end_time), Case.status != "new")
+            and_(
+                Case.created_at.between(start_time, end_time),
+                Case.status != "new",
+                real_case,
+            )
         )
         .scalar()
     )
@@ -88,7 +106,11 @@ async def calculate_metrics(
     total_closed = (
         db.query(func.count(Case.case_id))
         .filter(
-            and_(Case.created_at.between(start_time, end_time), Case.status == "closed")
+            and_(
+                Case.created_at.between(start_time, end_time),
+                Case.status == "closed",
+                real_case,
+            )
         )
         .scalar()
         or 0
@@ -101,6 +123,7 @@ async def calculate_metrics(
             and_(
                 Case.created_at.between(start_time, end_time),
                 CaseClosureInfo.closure_category == "false_positive",
+                real_case,
             )
         )
         .scalar()
@@ -114,14 +137,14 @@ async def calculate_metrics(
     # Previous period metrics for comparison
     prev_total_findings = (
         db.query(func.count(Finding.finding_id))
-        .filter(Finding.created_at.between(prev_start, prev_end), _NOT_PROBE)
+        .filter(Finding.created_at.between(prev_start, prev_end), real)
         .scalar()
         or 0
     )
 
     prev_total_cases = (
         db.query(func.count(Case.case_id))
-        .filter(Case.created_at.between(prev_start, prev_end))
+        .filter(Case.created_at.between(prev_start, prev_end), real_case)
         .scalar()
         or 0
     )
@@ -131,7 +154,11 @@ async def calculate_metrics(
             func.avg(func.extract("epoch", Case.updated_at - Case.created_at) / 60)
         )
         .filter(
-            and_(Case.created_at.between(prev_start, prev_end), Case.status != "new")
+            and_(
+                Case.created_at.between(prev_start, prev_end),
+                Case.status != "new",
+                real_case,
+            )
         )
         .scalar()
     )
@@ -145,7 +172,11 @@ async def calculate_metrics(
     prev_total_closed = (
         db.query(func.count(Case.case_id))
         .filter(
-            and_(Case.created_at.between(prev_start, prev_end), Case.status == "closed")
+            and_(
+                Case.created_at.between(prev_start, prev_end),
+                Case.status == "closed",
+                real_case,
+            )
         )
         .scalar()
         or 0
@@ -158,6 +189,7 @@ async def calculate_metrics(
             and_(
                 Case.created_at.between(prev_start, prev_end),
                 CaseClosureInfo.closure_category == "false_positive",
+                real_case,
             )
         )
         .scalar()
@@ -223,6 +255,8 @@ async def get_time_series_data(
     db: Session, start_time: datetime, end_time: datetime, time_range: str
 ) -> List[Dict[str, Any]]:
     """Get time series data for findings, cases, and alerts."""
+    real = _real_findings(db)
+    real_case = _real_cases(db)
 
     # Determine bucket size based on time range
     if time_range == "24h":
@@ -243,14 +277,14 @@ async def get_time_series_data(
 
         findings_count = (
             db.query(func.count(Finding.finding_id))
-            .filter(Finding.created_at.between(current_time, bucket_end), _NOT_PROBE)
+            .filter(Finding.created_at.between(current_time, bucket_end), real)
             .scalar()
             or 0
         )
 
         cases_count = (
             db.query(func.count(Case.case_id))
-            .filter(Case.created_at.between(current_time, bucket_end))
+            .filter(Case.created_at.between(current_time, bucket_end), real_case)
             .scalar()
             or 0
         )
@@ -262,7 +296,7 @@ async def get_time_series_data(
                 and_(
                     Finding.created_at.between(current_time, bucket_end),
                     Finding.severity.in_(["high", "critical"]),
-                    _NOT_PROBE,
+                    real,
                 )
             )
             .scalar()
@@ -298,7 +332,7 @@ async def get_severity_distribution(
 
     severity_counts = (
         db.query(Finding.severity, func.count(Finding.finding_id).label("count"))
-        .filter(Finding.created_at.between(start_time, end_time), _NOT_PROBE)
+        .filter(Finding.created_at.between(start_time, end_time), _real_findings(db))
         .group_by(Finding.severity)
         .all()
     )
@@ -320,7 +354,10 @@ async def get_top_alert_sources(
 
     top_sources = (
         db.query(Finding.data_source, func.count(Finding.finding_id).label("count"))
-        .filter(Finding.created_at.between(start_time, end_time))
+        .filter(
+            Finding.created_at.between(start_time, end_time),
+            not_canary_finding(db, Finding.finding_id),
+        )
         .group_by(Finding.data_source)
         .order_by(func.count(Finding.finding_id).desc())
         .limit(limit)
@@ -336,6 +373,7 @@ async def get_response_time_trend(
     db: Session, start_time: datetime, end_time: datetime, time_range: str
 ) -> List[Dict[str, Any]]:
     """Get response time trend over the period."""
+    real_case = _real_cases(db)
 
     # Determine periods based on time range
     if time_range == "24h":
@@ -363,6 +401,7 @@ async def get_response_time_trend(
                 and_(
                     Case.created_at.between(current_time, period_end),
                     Case.status != "new",
+                    real_case,
                 )
             )
             .scalar()
@@ -390,7 +429,7 @@ async def get_affected_entities(
 
     findings = (
         db.query(Finding)
-        .filter(Finding.created_at.between(start_time, end_time), _NOT_PROBE)
+        .filter(Finding.created_at.between(start_time, end_time), _real_findings(db))
         .all()
     )
 
@@ -496,7 +535,7 @@ async def get_attack_time_heatmap(
         .filter(
             Finding.created_at.between(start_time, end_time),
             Finding.timestamp.isnot(None),
-            _NOT_PROBE,
+            _real_findings(db),
         )
         .group_by(day_col, hour_col)
         .all()
@@ -560,7 +599,10 @@ async def get_mitre_technique_distribution(
             func.count(FindingMitrePrediction.finding_id),
         )
         .join(Finding, Finding.finding_id == FindingMitrePrediction.finding_id)
-        .filter(Finding.created_at.between(start_time, end_time))
+        .filter(
+            Finding.created_at.between(start_time, end_time),
+            not_canary_finding(db, Finding.finding_id),
+        )
         .group_by(FindingMitrePrediction.technique_id)
         .order_by(func.count(FindingMitrePrediction.finding_id).desc())
         .limit(limit)

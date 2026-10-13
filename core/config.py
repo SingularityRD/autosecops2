@@ -311,6 +311,17 @@ class Settings(BaseSettings):
     # Known-answer probes (#923): an hourly sweep, injected once a day by id.
     daemon_probes_enabled: bool = True
     daemon_probe_interval: int = 3600
+    # Hidden canary alerts (W1.5). A kill switch, not the on switch: canaries
+    # are injected only while an admin has enabled them (system_config
+    # quality.canary); this turns the daemon's sweep off whatever that says.
+    daemon_canaries_enabled: bool = True
+    daemon_canary_interval: int = 3600
+    # Comma-separated private IPv4 CIDRs canary addresses are drawn from (global
+    # ranges are refused). Point it at an unused internal subnet.
+    canary_address_pool: str = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+    # A domain the operator owns; when set, the corpus' reserved-TLD domains
+    # (.test, .example) are rewritten under it. Empty: left as they are.
+    canary_domain_suffix: str = ""
     daemon_cleanup_retention_days: int = 90
     # Alert lanes (W2.2, core/lanes/alert_lanes.py): rules / small model / verdict
     # run per finding, thresholds from INTENT.md alert_lanes. Off: no-op.
