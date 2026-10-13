@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from core.agents import internal_auth, mcp_tools, tools_router
 from core.agents.mcp_tools import MCPFailure, approved_call, execute_mcp_tool
 from core.integrations.mcp.registry import MCPRegistry
+from core.response.checkpoints import args_digest
 
 pytestmark = pytest.mark.unit
 
@@ -18,11 +19,21 @@ CHECKPOINT = "apr-0123456789ab"
 TOOL = "microsoft-defender_mde_isolate"
 
 
-def _action(checkpoint=CHECKPOINT, title=f"parked on approval for {TOOL}", **params):
+def _action(
+    checkpoint=CHECKPOINT,
+    title=f"parked on approval for {TOOL}",
+    args=None,
+    **params,
+):
+    # Bound to the arguments a person was shown (W1.7b); {} unless said.
     return SimpleNamespace(
         title=title,
         description=title,
-        parameters={"checkpoint_id": checkpoint, **params},
+        parameters={
+            "checkpoint_id": checkpoint,
+            "args_sha256": args_digest({} if args is None else args),
+            **params,
+        },
     )
 
 
@@ -57,8 +68,12 @@ def harness(monkeypatch):
     return TestClient(app), app.state, ran
 
 
-def _invoke(client, tool=TOOL, approval=None):
-    body = {"tool": tool, "args": {}, "bounds": {"max_rows": 5, "timeout_ms": 1000}}
+def _invoke(client, tool=TOOL, approval=None, args=None):
+    body = {
+        "tool": tool,
+        "args": {} if args is None else args,
+        "bounds": {"max_rows": 5, "timeout_ms": 1000},
+    }
     if approval is not None:
         body["approval"] = approval
     return client.post(
@@ -87,7 +102,9 @@ def test_an_approved_checkpoint_about_this_tool_lets_it_run(harness):
 def test_the_lead_question_form_names_the_tool(harness):
     client, state, ran = harness
     state.approvals.actions = [
-        _action(title=f'investigator wants to call {TOOL} with {{"id": "h1"}}. Approve?')
+        _action(
+            title=f'investigator wants to call {TOOL} with {{"id": "h1"}}. Approve?'
+        )
     ]
     assert _invoke(client, approval={"run_id": RUN, "checkpoint_id": CHECKPOINT})["ok"]
 
@@ -210,3 +227,71 @@ def test_the_executor_refuses_a_gated_tool_cleared_for_another():
     with approved_call("palo-alto_pan_block_ip"):
         with pytest.raises(MCPFailure):
             asyncio.run(execute_mcp_tool(TOOL, {}, 1.0, _Registry()))
+
+
+# --- W1.7b: an approval is of one call, with these arguments ------------------
+
+HOST_A = {"machine_id": "host-a", "comment": "contain"}
+HOST_B = {"machine_id": "host-b", "comment": "contain"}
+
+
+def test_an_approval_runs_the_call_with_the_arguments_a_person_saw(harness):
+    client, state, ran = harness
+    state.approvals.actions = [_action(tool=TOOL, args=HOST_A)]
+    approval = {"run_id": RUN, "checkpoint_id": CHECKPOINT}
+    # Key order and spacing are the sender's; the digest is of the arguments.
+    reordered = {"comment": "contain", "machine_id": "host-a"}
+    assert _invoke(client, approval=approval, args=reordered)["ok"] is True
+    assert ran == [(TOOL, TOOL)]
+
+
+def test_an_approval_of_host_a_cannot_be_replayed_for_host_b(harness):
+    client, state, ran = harness
+    state.approvals.actions = [_action(tool=TOOL, args=HOST_A)]
+    approval = {"run_id": RUN, "checkpoint_id": CHECKPOINT}
+    body = _invoke(client, approval=approval, args=HOST_B)
+    assert body["failure"]["kind"] == "refused"
+    assert ran == []
+
+
+def test_an_approval_that_binds_no_arguments_approves_nothing(harness):
+    client, state, ran = harness
+    action = _action(tool=TOOL)
+    del action.parameters["args_sha256"]
+    state.approvals.actions = [action]
+    body = _invoke(client, approval={"run_id": RUN, "checkpoint_id": CHECKPOINT})
+    assert body["failure"]["kind"] == "refused"
+    assert ran == []
+
+
+@pytest.mark.parametrize(
+    "tool", ["approve_action", "reject_action", "jira_approve_request"]
+)
+def test_a_decision_is_refused_whatever_approval_comes_with_it(harness, tool):
+    client, state, ran = harness
+    state.approvals.actions = [_action(tool=tool, args={"action_id": "a"})]
+    body = _invoke(
+        client,
+        tool=tool,
+        args={"action_id": "a"},
+        approval={"run_id": RUN, "checkpoint_id": CHECKPOINT},
+    )
+    assert body["failure"]["kind"] == "refused"
+    assert "only a person" in body["failure"]["detail"]
+    assert ran == []
+    # Refused before the queue is even read.
+    assert state.approvals.asked == []
+
+
+def test_the_executor_refuses_a_decision_even_when_cleared():
+    class _Reg:
+        def get_active_servers(self):
+            return ["jira"]
+
+        def get_tool_names(self):
+            return ["jira_approve_request"]
+
+    with approved_call("jira_approve_request"):
+        with pytest.raises(MCPFailure) as refused:
+            asyncio.run(execute_mcp_tool("jira_approve_request", {}, 1.0, _Reg()))
+    assert refused.value.kind == "refused"
