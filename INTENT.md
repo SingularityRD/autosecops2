@@ -2,7 +2,8 @@
 # Declared daemon intent: what the SOC daemon may do unattended.
 #
 # Every key here is an existing DaemonConfig knob; there is no key without a
-# reader. Observe mode: at startup the daemon logs each key whose declared
+# reader. The exception is the alert_lanes section at the end: core/lanes reads
+# and enforces it, and only while ALERT_LANES_ENABLED is on. Observe mode: at startup the daemon logs each key whose declared
 # value differs from the effective one (declared, effective, source, and
 # whether applying the declared value would tighten or loosen autonomy).
 # Nothing is enforced and nothing is written. Check from a shell with
@@ -58,6 +59,26 @@ investigate:
   max_cost_per_investigation: 5.0   # USD (ORCHESTRATOR_MAX_COST)
   max_total_hourly_cost: 20.0       # USD (ORCHESTRATOR_MAX_HOURLY_COST)
   max_runtime_per_investigation: 3600  # seconds (ORCHESTRATOR_MAX_RUNTIME)
+
+alert_lanes:
+  # Which lane a stored finding takes before any model call (W2.2):
+  # rules (suppression / known playbook), small_model, or a verdict run.
+  # Enforced only with ALERT_LANES_ENABLED=true; values are the code defaults.
+  # Risk score in [0, 1] at or above which a finding goes to a verdict run.
+  verdict_risk_threshold: 0.6
+  # Severities that always go to a verdict run.
+  verdict_severities: [critical]
+  # Highest severity a suppression rule may settle; above it rules are ignored.
+  suppress_max_severity: high
+  # Prior verdict / triage confidence below this adds risk; at or above
+  # high_confidence it lowers risk.
+  low_confidence: 0.7
+  high_confidence: 0.9
+  # data_source values that add risk.
+  high_risk_sources: []
+  # Deterministic outcomes: [{name, match, recommended_action, reason}], where
+  # match is a predicate document over the finding, as in suppression_rules.
+  known_playbooks: []
 ---
 
 # Daemon intent

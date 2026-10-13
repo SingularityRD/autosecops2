@@ -75,6 +75,9 @@ class SchedulerConfig:
     threat_hunt_interval: int = 86400  # Daily (24 hours)
     probes_enabled: bool = True  # known-answer probes (#923)
     probe_interval: int = 3600  # hourly tick; the day-scoped id makes it daily
+    # Hidden canaries (W1.5): kill switch; the admin setting is the on switch.
+    canaries_enabled: bool = True
+    canary_interval: int = 3600
     report_generation_enabled: bool = True
     report_interval: int = 604800  # Weekly (7 days)
     cleanup_enabled: bool = True
@@ -190,6 +193,8 @@ class DaemonConfig:
         config.scheduler.threat_hunt_interval = settings.daemon_threat_hunt_interval
         config.scheduler.probes_enabled = settings.daemon_probes_enabled
         config.scheduler.probe_interval = settings.daemon_probe_interval
+        config.scheduler.canaries_enabled = settings.daemon_canaries_enabled
+        config.scheduler.canary_interval = settings.daemon_canary_interval
         config.scheduler.cleanup_retention_days = settings.daemon_cleanup_retention_days
         config.scheduler.approval_expiry_days = settings.daemon_approval_expiry_days
 
