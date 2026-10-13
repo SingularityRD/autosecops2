@@ -33,6 +33,7 @@ from core.deps import provide_workflows
 from core.findings.source_link import resolve_source_link
 from core.response.approval_service import needs_you
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
+from core.storage.canary_exclusion import canary_finding_ids
 from core.storage.case_repository import PAGE_LIMIT, CaseRepository
 from core.storage.database_data_service import DatabaseDataService
 from core.storage.models import CaseClosureInfo, User
@@ -128,9 +129,15 @@ async def _sync_upstream_status(case_id: str, new_status: str) -> None:
         case = data_service.get_case(case_id)
         if not case:
             return
-        # Only sync findings that came from a SIEM with upstream support
+        # Only sync findings that came from a SIEM with upstream support.
+        # A hidden canary (W1.5) is a replay: its upstream alert id names an
+        # alert that is not this one, so its status is never written back. A
+        # failed lookup raises into the handler below and nothing is synced.
+        canaries = canary_finding_ids()
         finding_ids = case.get("finding_ids", [])
         for fid in finding_ids:
+            if fid in canaries:
+                continue
             finding = data_service.get_finding(fid)
             if not finding:
                 continue

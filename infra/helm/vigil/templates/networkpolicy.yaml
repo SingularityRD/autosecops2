@@ -5,8 +5,9 @@ NetworkPolicies for Vigil SOC.
 Each policy is default-deny on ingress with explicit allow-rules. Egress is
 permissive by default (DNS + HTTPS to 0.0.0.0/0) because the daemon and
 backend need to reach external APIs (Anthropic, SIEM/EDR, threat intel).
-Users can lock egress down further by adding custom policies in the same
-namespace.
+networkPolicies.egress.inClusterOnly replaces that with in-cluster
+destinations only (plus networkPolicies.egress.extraCIDRs); policies are
+additive, so a custom deny policy alone cannot narrow the allow-all rule.
 
 Component label selectors reuse the chart's standard labels, so these
 policies break cleanly if a pod isn't labeled — no silent misrouting.
@@ -26,9 +27,25 @@ spec:
   policyTypes:
     - Ingress
     - Egress
+  {{- if (.Values.networkPolicies.egress).inClusterOnly }}
+  # In-cluster only (air-gapped installs, infra/airgap/values-airgap.yaml): any
+  # pod in any namespace, kube-dns included, plus the CIDRs the operator lists.
+  # Nothing off-cluster.
+  egress:
+    - to:
+        - namespaceSelector: {}
+    {{- with (.Values.networkPolicies.egress).extraCIDRs }}
+    - to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+    {{- end }}
+  {{- else }}
   # Default: allow all egress (locked down per-component below).
   egress:
     - {}
+  {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

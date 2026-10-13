@@ -268,6 +268,28 @@
       "note": "MCP client; connects only to enabled servers, lazily. Each server's own egress is listed under mcp-config.json#<server>."
     },
     {
+      "site": "core/integrations/microsoft_defender/client.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 1,
+        "host:api.securitycenter.microsoft.com": 2,
+        "host:api-us.securitycenter.microsoft.com": 1,
+        "host:api-eu.securitycenter.microsoft.com": 1,
+        "host:api-uk.securitycenter.microsoft.com": 1,
+        "host:api-au.securitycenter.microsoft.com": 1,
+        "host:api.security.microsoft.com": 1,
+        "host:us.api.security.microsoft.com": 1,
+        "host:eu.api.security.microsoft.com": 1,
+        "host:uk.api.security.microsoft.com": 1,
+        "host:au.api.security.microsoft.com": 1
+      },
+      "gates": [
+        "integration:microsoft_defender",
+        "mcp-server:microsoft-defender"
+      ],
+      "note": "Vendor connector; runs only when the 'microsoft_defender' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none. Shared MDE client (tool + isolation executor); api_base restricted to the official commercial endpoints listed."
+    },
+    {
       "site": "core/integrations/microsoft_defender/ingestion.py",
       "category": "gated",
       "kinds": {
@@ -277,19 +299,6 @@
       },
       "gates": [
         "integration:microsoft_defender"
-      ],
-      "note": "Vendor connector; runs only when the 'microsoft_defender' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
-    },
-    {
-      "site": "core/integrations/microsoft_defender/tool.py",
-      "category": "gated",
-      "kinds": {
-        "httpx": 3,
-        "host:api.securitycenter.microsoft.com": 2
-      },
-      "gates": [
-        "integration:microsoft_defender",
-        "mcp-server:microsoft-defender"
       ],
       "note": "Vendor connector; runs only when the 'microsoft_defender' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
     },
@@ -342,7 +351,7 @@
       "note": "Outbound webhook delivery; only to endpoints an admin registers via /api/webhook-endpoints, SSRF-checked by url_safety. Air-gap: register only in-network receivers or none."
     },
     {
-      "site": "core/integrations/palo_alto/tool.py",
+      "site": "core/integrations/palo_alto/client.py",
       "category": "gated",
       "kinds": {
         "httpx": 2
@@ -351,7 +360,7 @@
         "integration:palo_alto",
         "mcp-server:palo-alto"
       ],
-      "note": "Vendor connector; runs only when the 'palo_alto' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+      "note": "Vendor connector; runs only when the 'palo_alto' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none. Shared PAN-OS client (tool + block_ip executor); only the operator-configured firewall host."
     },
     {
       "site": "core/integrations/slack/tool.py",

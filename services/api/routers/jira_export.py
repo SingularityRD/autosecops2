@@ -15,6 +15,7 @@ from core.auth.auth_service import AuthService
 from core.integrations._base.config import resolve
 from core.integrations.jira.descriptor import JIRA
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
+from core.storage.canary_exclusion import drop_canaries
 from core.storage.models import Case, User
 from services.api.errors import INTERNAL_ERROR_DETAIL
 from services.api.middleware.auth import get_current_user
@@ -126,7 +127,15 @@ def export_case_to_jira(
             description += f"*Description:*\n{case.description}\n\n"
 
         # Findings link through the case, not a case_id column on Finding.
-        findings = list(case.findings or [])
+        # Hidden canaries (W1.5) never reach Jira; a case of nothing else is
+        # not exported at all.
+        linked = list(case.findings or [])
+        findings = drop_canaries(linked, session=session)
+        if linked and not findings:
+            return JiraExportResponse(
+                success=False,
+                error="This case holds only quality-control test alerts and is not exported.",
+            )
         if findings:
             description += f"*Findings ({len(findings)}):*\n"
             for f in findings[:10]:  # Limit to 10
