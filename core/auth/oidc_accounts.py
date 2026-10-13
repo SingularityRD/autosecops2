@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -239,11 +240,37 @@ class SsoLogin:
     role_changed: bool
 
 
+_EMAIL_SHAPE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+
+
+def normalize_email(value: Any) -> Optional[str]:
+    """``value`` as a comparable address, or None if it is not one.
+
+    NFKC folds compatibility look-alikes (fullwidth letters, the Kelvin
+    sign, ...) and ``casefold`` folds case beyond ASCII, so two spellings a
+    person would read as the same address compare equal. Anything carrying a
+    control character, a line break (a trailing newline included) or other
+    whitespace is refused rather than trimmed.
+    """
+    if not isinstance(value, str):
+        return None
+    folded = unicodedata.normalize("NFKC", value).casefold()
+    if (
+        not folded
+        or len(folded) > 200
+        or _UNPRINTABLE.search(folded)
+        or any(ch.isspace() for ch in folded)
+        or not _EMAIL_SHAPE.fullmatch(folded)
+    ):
+        return None
+    return folded
+
+
 def _email_from_claims(claims: Dict[str, Any]) -> Optional[str]:
     for name in ("email", "preferred_username", "upn"):
-        value = claims.get(name)
-        if isinstance(value, str) and re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value):
-            return value.strip()[:200]
+        email = normalize_email(claims.get(name))
+        if email:
+            return email
     return None
 
 
@@ -270,8 +297,37 @@ def _unique_username(session: Session, claims: Dict[str, Any], email: str) -> st
     raise OidcError("account", "could not choose a unique username")
 
 
+def _at_domain(email: str) -> str:
+    return "@" + email.rsplit("@", 1)[1]
+
+
 def _find_by_email(session: Session, email: str) -> Optional[User]:
-    return session.query(User).filter(func.lower(User.email) == email.lower()).first()
+    """The account whose normalised email is ``email`` (already normalised).
+
+    SQL ``lower`` is only a prefilter: the match is confirmed with the same
+    normalisation as the claim, so a stored address is never matched by a
+    look-alike nor missed because of case folding the database lacks.
+    """
+    rows = (
+        session.query(User)
+        .filter(func.lower(User.email).endswith(_at_domain(email), autoescape=True))
+        .order_by(User.user_id)
+        .all()
+    )
+    for row in rows:
+        if normalize_email(row.email) == email:
+            return row
+    return None
+
+
+def _username_taken_by_address(session: Session, email: str) -> bool:
+    """Whether some account's *username* is ``email`` (normalised)."""
+    rows = (
+        session.query(User.username)
+        .filter(func.lower(User.username).endswith(_at_domain(email), autoescape=True))
+        .all()
+    )
+    return any(normalize_email(r.username) == email for r in rows)
 
 
 def resolve_user(
@@ -322,10 +378,8 @@ def resolve_user(
                 raise OidcError(
                     "account", "provider did not assert email_verified for linking"
                 )
-            claimed = claims.get("email")
-            if not isinstance(claimed, str) or (
-                claimed.strip().lower() != existing.email.lower()
-            ):
+            claimed = normalize_email(claims.get("email"))
+            if claimed is None or claimed != normalize_email(existing.email):
                 # Linking trusts only the verified "email" claim, never
                 # preferred_username/upn.
                 raise OidcError("account", "verified email claim does not match")
@@ -342,6 +396,12 @@ def resolve_user(
                 raise OidcError("account", "no linked account and JIT is off")
             if not email:
                 raise OidcError("account", "ID token carries no usable email")
+            if _username_taken_by_address(session, email):
+                # Sign-in accepts a username or an email; an account whose
+                # email is someone else's username would make that ambiguous.
+                raise OidcError(
+                    "account", "an existing account uses this email as its username"
+                )
             provisioned = True
             created = True
 

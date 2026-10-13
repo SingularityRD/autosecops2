@@ -969,7 +969,9 @@ def test_the_last_enabled_provider_cannot_be_disabled_while_local_is_off(world):
 def test_an_sso_account_gets_no_password_reset_email(world, monkeypatch):
     sent = []
     monkeypatch.setattr(auth_router, "send_email", lambda **kw: sent.append(kw))
-    monkeypatch.setattr(auth_router, "generate_reset_token", lambda user_id: "t")
+    monkeypatch.setattr(
+        auth_router, "generate_reset_token", lambda user_id, *a, **k: "t"
+    )
     world.set_provider()
     world.login()
     response = world.client.post(
@@ -998,3 +1000,140 @@ def _session_dep(world):
             session.close()
 
     return _request_session
+
+
+# --- Round 5 verifier fixes -------------------------------------------------
+
+
+def test_a_manager_cannot_repoint_a_provider_and_receive_its_secret(world):
+    """Regression (verifier W1.9 MEDIUM-HIGH): secret exfiltration by re-point.
+
+    An Admin configures a provider with a client secret. A Manager (who may
+    edit providers) changes only its issuer to a server they control and
+    omits client_secret. The stored secret must not survive the re-point, or
+    the next login would send it (HTTP Basic) to evil.test's token endpoint.
+    """
+    world.add_user("u-admin", "root", "role-admin")
+    world.add_user("u-mgr", "maria", "role-manager")
+    world.as_user("u-admin")
+    created = world.client.put(
+        "/api/auth/sso/admin/providers/okta", json=_provider_body()
+    )
+    assert created.status_code == 200, created.text
+
+    world.as_user("u-mgr")
+    for change in (
+        {"issuer": "https://evil.test/realms/x"},
+        {"client_id": "attacker-client"},
+        {"redirect_uri": "https://evil.test/cb"},
+        {"kind": "generic"},
+    ):
+        body = _provider_body(**change)
+        del body["client_secret"]
+        response = world.client.put("/api/auth/sso/admin/providers/okta", json=body)
+        assert response.status_code == 400, (change, response.text)
+        assert "client secret" in response.json()["detail"]
+    assert world.secrets == {"OIDC_CLIENT_SECRET_OKTA": "top-secret"}
+    with world.db() as s:
+        [stored] = s.get(SystemConfig, "auth.oidc.providers").value["providers"]
+    assert stored["issuer"] == ISSUER
+
+    # Re-pointing with a new secret (or clearing it) is fine: the Admin's
+    # secret is replaced, never sent elsewhere.
+    body = _provider_body(issuer="https://evil.test/realms/x", client_secret="mine")
+    response = world.client.put("/api/auth/sso/admin/providers/okta", json=body)
+    assert response.status_code == 200, response.text
+    assert world.secrets == {"OIDC_CLIENT_SECRET_OKTA": "mine"}
+
+    body = _provider_body(issuer=ISSUER, clear_client_secret=True)
+    del body["client_secret"]
+    response = world.client.put("/api/auth/sso/admin/providers/okta", json=body)
+    assert response.status_code == 200, response.text
+    assert world.secrets == {}
+
+    # Editing harmless fields still keeps the stored secret.
+    world.as_user("u-admin")
+    world.client.put("/api/auth/sso/admin/providers/okta", json=_provider_body())
+    body = _provider_body(display_name="Renamed", enabled=False)
+    del body["client_secret"]
+    assert (
+        world.client.put("/api/auth/sso/admin/providers/okta", json=body).status_code
+        == 200
+    )
+    assert world.secrets == {"OIDC_CLIENT_SECRET_OKTA": "top-secret"}
+
+
+@pytest.mark.parametrize(
+    "claimed",
+    [
+        "ＲＯＯＴ@corp.example",  # fullwidth letters (NFKC)
+        "ROOT@CORP.EXAMPLE",  # case
+    ],
+)
+def test_email_linking_compares_normalised_addresses(world, claimed):
+    world.add_user("u-alice", "alice-local", "role-viewer", email="root@corp.example")
+    world.set_provider(link_by_verified_email=True)
+    world.idp.claims = {"email": claimed}
+    response, _, _ = world.login()
+    payload = AuthService.verify_jwt_token(response.cookies["access_token"])
+    assert payload["user_id"] == "u-alice"
+    with world.db() as s:
+        assert s.query(User).count() == 1
+
+
+@pytest.mark.parametrize(
+    "claimed", ["root@corp.example\n", "ro​ot@corp.example", "root@corp.example\x00"]
+)
+def test_an_email_with_control_characters_is_not_an_email(claimed):
+    from core.auth.oidc_accounts import normalize_email
+
+    assert normalize_email(claimed) in (None, "ro​ot@corp.example")
+    assert normalize_email(claimed) != "root@corp.example"
+    assert normalize_email("Root@Corp.Example") == "root@corp.example"
+    assert normalize_email("ﬁ@corp.example") == "fi@corp.example"
+
+
+def test_a_trailing_newline_email_neither_links_nor_provisions(world):
+    world.add_user("u-root", "root", "role-viewer", email="root@corp.example")
+    world.set_provider(link_by_verified_email=True)
+    world.idp.claims = {
+        "email": "root@corp.example\n",
+        "preferred_username": "x",
+    }
+    response, _, _ = world.login()
+    assert world.sso_error(response) == "account"
+    with world.db() as s:
+        assert s.query(User).count() == 1
+        assert s.get(User, "u-root").login_count == 0
+
+
+def test_jit_refuses_an_email_that_is_someone_elses_username(world):
+    """Sign-in takes a username or an email: they must never collide."""
+    world.add_user("u-odd", "Carol@Example.com", "role-viewer", email="c@other.test")
+    world.set_provider()
+    world.idp.claims = {"email": "carol@example.com"}
+    response, _, _ = world.login()
+    assert world.sso_error(response) == "account"
+    assert "username" in world.audit("sso_failure")[-1]["detail"]
+    with world.db() as s:
+        assert s.query(User).count() == 1
+
+
+def test_an_unexpected_failure_log_sanitises_the_provider_id(
+    world, caplog, monkeypatch
+):
+    world.set_provider()
+    started = world.start()
+    code, state = world.idp.authorize(started.headers["location"])
+
+    async def boom(*a, **k):
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(oidc_router, "_take_flow", boom)
+    world.client.get(
+        "/api/auth/sso/kc%0aINFO%20forged/callback",
+        params={"code": code, "state": state},
+    )
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("failed unexpectedly" in m for m in messages)
+    assert all("\n" not in m for m in messages)

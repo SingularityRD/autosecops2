@@ -380,7 +380,9 @@ async def sso_callback(
     except OidcError as exc:
         return await _fail(provider_id, exc, request)
     except Exception as exc:
-        logger.exception("SSO callback via %s failed unexpectedly", provider_id)
+        logger.exception(
+            "SSO callback via %s failed unexpectedly", printable(provider_id, 64)
+        )
         return await _fail(provider_id, OidcError("unavailable", repr(exc)), request)
 
     response = RedirectResponse(
@@ -507,6 +509,39 @@ def _require_every_privilege(session, current_user: User, what: str) -> None:
                 )
 
 
+#: Fields that decide where the client secret is sent (the token endpoint is
+#: discovered from the issuer) or which client it authenticates.
+_SECRET_BOUND_FIELDS = ("issuer", "client_id", "redirect_uri", "kind")
+
+
+def _require_secret_on_repoint(
+    previous: Optional[ProviderConfig], provider: ProviderConfig, body
+) -> None:
+    """Refuse to re-point a provider at a new IdP while keeping its secret.
+
+    The stored client secret is sent (HTTP Basic) to the token endpoint the
+    issuer's discovery document names. Keeping it across an issuer or client
+    change would let anyone allowed to edit providers point an existing one
+    at a server they control and receive the secret an administrator
+    entered. So such a change needs the secret re-entered in the same
+    request, or explicitly cleared.
+    """
+    if previous is None or body.client_secret or body.clear_client_secret:
+        return
+    changed = [
+        f for f in _SECRET_BOUND_FIELDS if getattr(previous, f) != getattr(provider, f)
+    ]
+    if changed and get_secret(client_secret_key(previous.id)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Changing {', '.join(changed)} requires entering the client "
+                "secret again (or clearing it); the stored secret is never "
+                "sent to a different provider"
+            ),
+        )
+
+
 @router.get("/admin/config", response_model=SsoAdminConfig)
 def get_sso_config(
     request: Request,
@@ -545,7 +580,9 @@ def upsert_provider(
         _require_every_privilege(session, current_user, "mapping to Admin")
 
     providers = load_providers(session)
-    existed = any(p.id == provider_id for p in providers)
+    previous = next((p for p in providers if p.id == provider_id), None)
+    existed = previous is not None
+    _require_secret_on_repoint(previous, provider, body)
     providers = [p for p in providers if p.id != provider_id] + [provider]
     if not any(p.enabled for p in providers) and not (
         get_login_policy(session).local_login_enabled

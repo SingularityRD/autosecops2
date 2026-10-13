@@ -10,11 +10,13 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, EmailStr
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from core.auth.auth_service import AuthService
 from core.auth.password_validator import PasswordPolicyError, validate_password_strength
 from core.auth.token_blacklist import revoke_all_for_user
+from core.platform.email_service import send_email
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
 from core.storage.models import Role, User
 from core.storage.schemas import RoleSchema, UserSchema
@@ -75,6 +77,39 @@ def _can_assign_role(current_user: User, target_role: Role, session: Session) ->
         if granted and not current_perms.get(perm, False):
             return False
     return True
+
+
+ADMIN_ROLE_ID = "role-admin"
+
+
+def _may_change_identity_of(current_user: User, target: User, session: Session) -> bool:
+    """Whether ``current_user`` may change ``target``'s email (or username).
+
+    The email is where a password reset is sent, so changing it is a way
+    into the account. Without the Admin role, a caller may do it only for
+    themselves or for an account strictly below their own privileges: never
+    an administrator's, nor a peer's or a superior's.
+    """
+    if current_user.role_id == ADMIN_ROLE_ID:
+        return True
+    if target.user_id == current_user.user_id:
+        return True
+    if target.role_id == ADMIN_ROLE_ID:
+        return False
+    role = session.query(Role).filter(Role.role_id == target.role_id).first()
+    target_perms = {
+        p
+        for p, granted in ((role.permissions or {}) if role else {}).items()
+        if granted
+    }
+    actor_perms = {
+        p
+        for p, granted in (
+            AuthService.get_user_permissions(current_user.user_id, session) or {}
+        ).items()
+        if granted
+    }
+    return target_perms < actor_perms
 
 
 @router.get("/")
@@ -265,9 +300,10 @@ def create_user(
 
 def _apply_user_update(
     session: Session, current_user: User, user_id: str, request: UpdateUserRequest
-) -> tuple[User, Optional[str], dict]:
+) -> tuple[User, Optional[str], dict, Optional[str]]:
     """Sync half of update_user. Returns the user, what made its existing
-    tokens stale (an email or role change, else None), and the payload."""
+    tokens stale (an email or role change, else None), the payload, and the
+    previous address when the email changed (to be told of the change)."""
     if not AuthService.check_permission(current_user.user_id, "users.write"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -281,19 +317,32 @@ def _apply_user_update(
         )
 
     stale_reason = None
+    old_email: Optional[str] = None
     if request.full_name is not None:
         user.full_name = request.full_name
 
-    if request.email is not None:
+    if request.email is not None and request.email != user.email:
         if user.service_account is True:
             # A reachable address is the first step to a password reset.
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="A service account's email can't be changed",
             )
+        if not _may_change_identity_of(current_user, user, session):
+            # Change the address, then request a reset: account takeover.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Only an administrator can change the email of an account "
+                    "with privileges equal to or above your own"
+                ),
+            )
         existing = (
             session.query(User)
-            .filter(User.email == request.email, User.user_id != user_id)
+            .filter(
+                func.lower(User.email) == request.email.lower(),
+                User.user_id != user_id,
+            )
             .first()
         )
         if existing:
@@ -301,6 +350,7 @@ def _apply_user_update(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email already in use",
             )
+        old_email = user.email
         user.email = request.email
         user.is_verified = False
         stale_reason = "Email changed"
@@ -328,7 +378,23 @@ def _apply_user_update(
     # of work commits.
     session.flush()
     session.refresh(user)
-    return user, stale_reason, UserSchema.dump(user)
+    return user, stale_reason, UserSchema.dump(user), old_email
+
+
+def _notify_email_changed(old_email: str, user: User, changed_by: str) -> None:
+    """Tell the previous address its account's email changed (unsilenceable
+    by whoever changed it, and the only warning if it was not the owner)."""
+    send_email(
+        to=old_email,
+        subject="AutoSecOps — your account email was changed",
+        body=(
+            f"Hello {user.full_name or user.username},\n\n"
+            f"The email address of your account ({user.username}) was changed "
+            f"by {changed_by}. Password reset links sent before this change no "
+            "longer work.\n\n"
+            "If you did not expect this, contact your administrator at once."
+        ),
+    )
 
 
 @router.put("/{user_id}")
@@ -351,9 +417,13 @@ async def update_user(
         Updated user information
     """
     try:
-        user, stale_reason, payload = await asyncio.to_thread(
+        user, stale_reason, payload, old_email = await asyncio.to_thread(
             _apply_user_update, session, current_user, user_id, request
         )
+        if old_email:
+            await asyncio.to_thread(
+                _notify_email_changed, old_email, user, current_user.username
+            )
 
         # Sign the user out everywhere so their next session carries the new
         # email or role, not the claims and permissions cached at login.

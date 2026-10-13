@@ -30,6 +30,7 @@ from core.auth.login_policy import local_login_allowed
 from core.auth.oidc_accounts import is_sso_only
 from core.auth.password_reset import (
     generate_reset_token,
+    token_matches_email,
     verify_reset_token,
 )
 from core.auth.password_validator import (
@@ -821,7 +822,7 @@ def password_reset_request(
     # An account single sign-on created has no password to reset; giving it one
     # would let it outlive its removal at the identity provider.
     if user and user.is_active and not is_sso_only(user):
-        token = generate_reset_token(user.user_id)
+        token = generate_reset_token(user.user_id, user.email)
         frontend_base = get_settings().vigil_frontend_url.rstrip("/")
         if frontend_base:
             reset_link = f"{frontend_base}/reset-password?token={token}"
@@ -877,6 +878,12 @@ async def password_reset_confirm(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Account no longer eligible for reset",
+        )
+    if not token_matches_email(body.token, user.email):
+        # The account's email changed after this link was sent.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
         )
 
     try:
