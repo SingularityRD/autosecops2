@@ -85,10 +85,15 @@ implementation.
 
 The timestamp is inside the signed message, so an attacker who captured a
 request cannot re-date it; the 300-second window bounds how long a captured
-request stays valid. Within that window, de-duplicate on
-`X-AutoSecOps-Event-Id`: keep the ids you have processed for at least the
-tolerance window (longer is fine) and ignore repeats. The same id also arrives
-again legitimately when a delivery is retried after your endpoint timed out or
+request stays valid. Within that window, de-duplicate on the `id` field of the
+**verified body**: keep the ids you have processed for at least the tolerance
+window (longer is fine) and ignore repeats. Do not de-duplicate on the
+`X-AutoSecOps-Event-Id` header: headers are not covered by the signature, so an
+attacker replaying a captured request can change that header to any fresh
+value and slip past a header-based check, while the body `id` cannot be changed
+without breaking the signature. The header is only a convenience for routing
+and logging before the body is parsed. The same `id` also arrives again
+legitimately when a delivery is retried after your endpoint timed out or
 answered an error, so processing must be idempotent per event id anyway.
 
 ## Delivery and retries
