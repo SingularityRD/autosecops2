@@ -227,3 +227,32 @@ def test_verify_finds_tampering_end_to_end(conn):
     result = verify_cli.verify(conn, public_key=key.public_key())
     assert not result["ok"]
     assert result["breaks"][0]["reason"] == "hash"
+
+
+def test_require_signature_needs_a_trusted_key(conn, monkeypatch):
+    monkeypatch.setattr(verify_cli, "trusted_public_key", lambda explicit: None)
+    key = _key()
+    write_checkpoint(conn, key)
+    assert verify_cli.verify(conn, public_key=None)["ok"]
+    result = verify_cli.verify(conn, public_key=None, require_signature=True)
+    assert not result["ok"]
+    assert [b["reason"] for b in result["breaks"]] == ["signature_required"]
+    assert verify_cli.verify(
+        conn, public_key=key.public_key(), require_signature=True
+    )["ok"]
+
+
+def test_require_signature_needs_a_checkpoint(conn):
+    conn.execute(text("SET LOCAL session_replication_role = replica"))
+    conn.execute(text("DELETE FROM audit_checkpoints"))
+    conn.execute(text("SET LOCAL session_replication_role = origin"))
+    key = _key()
+    result = verify_cli.verify(conn, public_key=key.public_key(), require_signature=True)
+    assert [b["reason"] for b in result["breaks"]] == ["signature_required"]
+
+
+def test_require_signature_cli_exits_1_without_a_key(audit_db, monkeypatch, capsys):
+    monkeypatch.setattr(verify_cli, "trusted_public_key", lambda explicit: None)
+    assert verify_cli.main(["--checkpoint-file", ""]) == 0
+    assert verify_cli.main(["--checkpoint-file", "", "--require-signature"]) == 1
+    assert "signature_required" in capsys.readouterr().out

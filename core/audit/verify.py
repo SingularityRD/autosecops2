@@ -6,6 +6,13 @@ and the file copy of the checkpoints when there is one, and checks the audited
 source tables row for row against the chain. ``--agent-events`` also walks the
 agent ledger, as ``services/agent/ledger/verify.ts`` does.
 
+``--require-signature`` turns the signature from best effort into a
+requirement: the run is broken (``signature_required``) when no trusted public
+key is available (neither ``--public-key``, ``AUDIT_CHECKPOINT_PUBLIC_KEY`` nor
+the ``AUDIT_CHECKPOINT_SIGNING_KEY`` secret) or when no signed checkpoint has
+been written yet. Without it, checkpoints are checked against the key stored
+in their own rows and the output says UNTRUSTED.
+
 Prints one line per check and the first break of each; exits 0 when nothing is
 broken, 1 when something is, 2 when it could not run.
 """
@@ -52,6 +59,7 @@ def verify(
     checkpoint_file: Optional[str] = None,
     agent_events: bool = False,
     sources: bool = True,
+    require_signature: bool = False,
 ) -> Dict[str, Any]:
     """Run every check on ``conn``; a dict the CLI prints, ``ok`` overall."""
     result: Dict[str, Any] = {}
@@ -69,6 +77,29 @@ def verify(
         "file_lines": checkpoints.file_lines,
     }
     breaks += checkpoints.breaks
+    if require_signature:
+        if public_key is None:
+            breaks.append(
+                Break(
+                    "checkpoints",
+                    "signature",
+                    None,
+                    "signature_required",
+                    "no trusted public key: pass --public-key or set "
+                    "AUDIT_CHECKPOINT_PUBLIC_KEY (or the AUDIT_CHECKPOINT_SIGNING_KEY "
+                    "secret)",
+                )
+            )
+        elif not checkpoints.count:
+            breaks.append(
+                Break(
+                    "checkpoints",
+                    "signature",
+                    None,
+                    "signature_required",
+                    "no signed checkpoint has been written",
+                )
+            )
 
     if sources:
         source = check_sources(conn)
@@ -151,6 +182,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="skip the row-by-row check of the audited tables",
     )
+    parser.add_argument(
+        "--require-signature",
+        action="store_true",
+        help="fail unless a trusted public key is configured and at least one "
+        "signed checkpoint exists",
+    )
     parser.add_argument("--json", action="store_true", help="print JSON")
     args = parser.parse_args(argv)
 
@@ -182,6 +219,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 checkpoint_file=checkpoint_file,
                 agent_events=args.agent_events,
                 sources=not args.no_sources,
+                require_signature=args.require_signature,
             )
     except Exception as e:  # noqa: BLE001
         print(f"could not verify: {type(e).__name__}: {e}", file=sys.stderr)
