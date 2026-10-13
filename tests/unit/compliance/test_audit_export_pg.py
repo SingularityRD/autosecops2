@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
@@ -121,17 +122,26 @@ def _scope(engine):
     return scope
 
 
-def _drain(source, cursor, rounds: int = 5) -> tuple[list[str], dict]:
-    """Read until nothing new, advancing the cursor as the pipeline would."""
+def _drain(source, cursor, expect: int = 0, timeout: float = 180.0):
+    """Read as the pipeline would, advancing the cursor, until ``expect``
+    events arrived (or once through, for ``expect=0``).
+
+    The bound is cluster-wide: on a shared server another database's open
+    transaction can hold it back for a while. That delays, never loses, so
+    the test waits for what it expects instead of reading once.
+    """
     seen: list[str] = []
-    for _ in range(rounds):
+    deadline = time.monotonic() + timeout
+    while True:
         rows = source.fetch(cursor, 2)  # small pages: exercise the keyset
-        if not rows:
-            break
         for event, after in rows:
             seen.append(event.id)
             cursor = after
-    return seen, cursor
+        if rows:
+            continue
+        if len(seen) >= expect or time.monotonic() > deadline:
+            return seen, cursor
+        time.sleep(0.2)
 
 
 def _config_row(conn, key: str) -> None:
@@ -161,7 +171,7 @@ def test_the_verifier_scenario_loses_nothing(clean):
         tx1.commit()
     finally:
         t1.close()
-    seen, cursor = _drain(source, cursor)
+    seen, cursor = _drain(source, cursor, expect=2)
     assert sorted(seen) == ["config:1", "config:2"]
     assert _drain(source, cursor)[0] == []
 
@@ -181,13 +191,13 @@ def test_an_older_xid_with_a_higher_id_is_not_passed_either(clean):
         _config_row(t2, "held-open")  # id 1, T2 (younger xid), open
         _config_row(t1, "committed-first")  # id 2, T1
         tx1.commit()
-        seen, cursor = _drain(source, cursor)
+        seen, cursor = _drain(source, cursor, expect=1)
         assert seen == ["config:2"]
         tx2.commit()
     finally:
         t1.close()
         t2.close()
-    seen, cursor = _drain(source, cursor)
+    seen, cursor = _drain(source, cursor, expect=1)
     assert seen == ["config:1"]  # read after the cursor passed id 2
 
 
@@ -217,12 +227,23 @@ def test_case_audit_and_start_from_now(clean):
             )
         )
     try:
-        assert _drain(source, cursor)[0] == []
+        early, _ = _drain(source, cursor)
+        assert not {"case_audit:2", "case_audit:3"} & set(early)
         tx1.commit()
     finally:
         t1.close()
-    seen, _ = _drain(source, cursor)
-    assert sorted(seen) == ["case_audit:2", "case_audit:3"]  # not the old one
+    seen, _ = _drain(source, cursor, expect=2)
+    # "now" is the oldest running transaction: the old row is skipped unless a
+    # concurrent transaction elsewhere in the cluster held that bound back.
+    assert (
+        {"case_audit:2", "case_audit:3"}
+        <= set(seen)
+        <= {
+            "case_audit:1",
+            "case_audit:2",
+            "case_audit:3",
+        }
+    )
 
 
 def test_agent_events_with_an_old_timestamp_committed_late(clean):
@@ -246,7 +267,7 @@ def test_agent_events_with_an_old_timestamp_committed_late(clean):
         tx1.commit()
     finally:
         t1.close()
-    seen, cursor = _drain(source, cursor)
+    seen, cursor = _drain(source, cursor, expect=2)
     assert sorted(seen) == sorted(
         [f"agent_events:{run_a}:0", f"agent_events:{run_b}:0"]
     )
@@ -283,7 +304,7 @@ def test_an_approval_decided_in_a_long_transaction_is_exported(clean):
         tx1.commit()
     finally:
         t1.close()
-    seen, cursor = _drain(source, cursor)
+    seen, cursor = _drain(source, cursor, expect=2)
     assert sorted(seen) == ["approvals:a-1:decided", "approvals:a-2:decided"]
 
 
@@ -291,5 +312,5 @@ def test_a_cursor_ahead_of_the_database_rereads_instead_of_waiting_forever(clean
     source = ConfigAuditSource(_scope(clean), settle_s=0)
     with clean.begin() as conn:
         _config_row(conn, "after-restore")
-    seen, _ = _drain(source, {"xid": 2**40, "id": 10**6})
+    seen, _ = _drain(source, {"xid": 2**40, "id": 10**6}, expect=1)
     assert seen == ["config:1"]

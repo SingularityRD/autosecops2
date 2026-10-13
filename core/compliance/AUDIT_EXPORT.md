@@ -47,9 +47,12 @@ istemler ve araç çıktısı gibi iç içe içerik AutoSecOps'ta kalır.
   için `run_id`/`seq`, onaylar için `action_id`). `settle_s` Postgres'te
   kullanılmaz; yalnızca tek yazıcılı test veritabanlarında (SQLite) satırları
   `now - settle_s`'e kadar okur. Bedeli: uzun açık bir işlem, kendisinden sonra
-  commit edilenlerin aktarımını o işlem bitene kadar geciktirir (kaybettirmez);
-  `idle in transaction` oturumları için Postgres
-  `idle_in_transaction_session_timeout` ayarlayın.
+  commit edilenlerin aktarımını o işlem bitene kadar geciktirir (kaybettirmez).
+  İşlem kimlikleri küme (cluster) geneli olduğundan bu, aynı Postgres
+  sunucusundaki **başka bir veritabanında** açık kalan yazma işlemleri için de
+  geçerlidir. `idle in transaction` oturumları için Postgres
+  `idle_in_transaction_session_timeout` ayarlayın; gecikmeyi `status`
+  yanıtındaki `last_event_at_by_source` ile izleyin.
 - **Tek istisna:** HTTP alıcısı tek bir olayı bile `413` ile reddederse olay
   önce `details` kırpılarak yeniden denenir; yine reddedilirse atılır ve
   `events_dropped` sayacı artar (aksi halde arkasındaki tüm olaylar sonsuza

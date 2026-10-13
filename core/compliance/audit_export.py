@@ -1620,7 +1620,9 @@ class _DbSource(Source):
     key order up to ``now - settle_s``.
 
     Known limits (also in AUDIT_EXPORT.md): a long-running transaction delays
-    export of everything committed after it began (never loses it); the xid
+    export of everything committed after it began (never loses it) — and xids
+    are cluster-wide, so that includes a writer in another database on the
+    same server; the xid
     filter cannot use an index, so each poll scans the source table; a row
     that is UPDATEd gets a new ``xmin`` and is read again (``approval_actions``
     — at-least-once, the event ``id`` is stable); a logical restore into
