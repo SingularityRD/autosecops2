@@ -102,23 +102,44 @@ def test_a_proposed_undo_type_keeps_its_type(undo_type):
 @pytest.mark.unit
 def test_every_registered_executor_type_is_an_action_type():
     # A type an executor takes but ActionType lacks is stored as custom and
-    # can never run; keep the enum in step with the executors.
-    from core.integrations.azure_ad.executor import EntraIdExecutor
-    from core.integrations.cloudflare.executor import CloudflareExecutor
-    from core.integrations.microsoft_defender.executor import DefenderIsolationExecutor
-    from core.integrations.palo_alto.executor import PaloAltoExecutor
+    # can never run; keep the enum in step with the executors. Each executor
+    # is built from a configuration and registered, so a set of types fixed
+    # per instance (Palo Alto, Entra) is checked as the registry sees it.
+    from core.integrations.azure_ad.executor import (
+        build_executor as build_entra,
+    )
+    from core.integrations.cloudflare.executor import (
+        build_executor as build_cloudflare,
+    )
+    from core.integrations.microsoft_defender.executor import (
+        build_executor as build_defender,
+    )
+    from core.integrations.palo_alto.executor import (
+        build_executor as build_palo_alto,
+    )
 
+    executors = (
+        build_entra({"token_provider": lambda: "t"}, sleep=lambda _s: None),
+        build_cloudflare({}),
+        build_defender(
+            {"tenant_id": "tid", "client_id": "cid", "client_secret": "s"},
+            sleep=lambda _s: None,
+        ),
+        build_palo_alto(
+            {"hostname": "pan.test", "api_key": "k", "verify_ssl": True},
+            sleep=lambda _s: None,
+        ),
+    )
     known = {member.value for member in ActionType}
-    for cls in (
-        EntraIdExecutor,
-        CloudflareExecutor,
-        DefenderIsolationExecutor,
-        PaloAltoExecutor,
-    ):
-        types_ = getattr(cls, "action_types", None)
-        if not isinstance(types_, frozenset):  # set per instance
-            continue
-        assert types_ <= known, (cls.__name__, sorted(types_ - known))
+    registry = ExecutorRegistry()
+    for executor in executors:
+        types_ = frozenset(executor.action_types)
+        assert types_, type(executor).__name__
+        assert types_ <= known, (type(executor).__name__, sorted(types_ - known))
+        registry.register(executor)
+    assert registry.action_types() <= known
+    for undo in DEFAULT_UNDO_TYPES:
+        assert undo in registry.action_types(), undo
 
 
 @pytest.mark.external_service
@@ -265,3 +286,185 @@ class TestAbandonedReversalClaim:
         row = svc.approve_action(claim, approved_by="mallory")
         assert row.status == "pending" and row.approved_by == "bob"
         assert claim not in svc.list_stale_pending(utcnow())
+
+
+# --------------------------------------------------------------------------
+# Round 5 fixes (verifier findings on the W0.13 response review)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.external_service
+@pytest.mark.database
+def test_the_dispatcher_lists_tier_released_rows_and_no_other_unpersoned_row(
+    throwaway_database,
+):
+    # R5-1: the undispatched filter (requires_approval OR approved_by) dropped
+    # rows the autonomy tier released (W3.1): no approver, requires_approval
+    # False, autonomy.effective == autonomous. Those are listed; a row
+    # released without a person any other way still is not.
+    import uuid
+
+    from core.response.approval_service import ActionStatus, ApprovalService
+    from core.storage.models import ApprovalAction
+    from core.storage.unit_of_work import unit_of_work
+
+    tag = uuid.uuid4().hex[:8]
+    now = utcnow()
+    cases = {
+        f"auto-{tag}": {"autonomy": {"effective": "autonomous", "reasons": []}},
+        f"held-{tag}": {"autonomy": {"effective": "approve", "reasons": []}},
+        f"conf-{tag}": {},
+        f"odd-{tag}": {"autonomy": "autonomous"},
+    }
+    with unit_of_work() as session:
+        for i, (action_id, params) in enumerate(cases.items()):
+            session.add(
+                ApprovalAction(
+                    action_id=action_id,
+                    action_type="waf_block",
+                    title="t",
+                    description="d",
+                    target="203.0.113.8",
+                    confidence=0.99,
+                    reason="r",
+                    evidence=[],
+                    created_by="pytest",
+                    requires_approval=False,
+                    status="approved",
+                    approved_by=None,
+                    created_at=now - timedelta(seconds=10 - i),
+                    parameters=params,
+                )
+            )
+    listed = {
+        a.action_id
+        for a in ApprovalService().list_actions(
+            status=ActionStatus.APPROVED,
+            action_types={"waf_block"},
+            undispatched=True,
+        )
+    }
+    assert f"auto-{tag}" in listed
+    assert not ({f"held-{tag}", f"conf-{tag}", f"odd-{tag}"} & listed)
+
+
+@pytest.mark.unit
+def test_undo_types_are_governed_and_never_autonomous_eligible():
+    # R5-1: W3.1 pins ACTION_CLASSES to ActionType; the undo types joined
+    # ActionType here and are classes the tiers govern, never autonomous.
+    from core.autonomy.tiers import ACTION_CLASSES, AUTONOMOUS_ELIGIBLE
+
+    for undo in DEFAULT_UNDO_TYPES:
+        assert undo in ACTION_CLASSES
+        assert undo not in AUTONOMOUS_ELIGIBLE
+
+
+@pytest.mark.unit
+def test_defender_verify_timeout_is_capped_well_under_the_takeover_window():
+    # R5-2: a reverse's verify polls while its claim is held; a claim older
+    # than REVERSAL_CLAIM_STALE is taken over.
+    from core.integrations.microsoft_defender.executor import (
+        MAX_VERIFY_TIMEOUT_SECONDS,
+        DefenderExecutorSettings,
+        build_executor,
+    )
+    from core.response.approval_service import REVERSAL_CLAIM_STALE
+
+    assert MAX_VERIFY_TIMEOUT_SECONDS <= REVERSAL_CLAIM_STALE.total_seconds() / 2
+    with pytest.raises(ValueError):
+        DefenderExecutorSettings(verify_timeout_seconds=3600)
+    with pytest.raises(ValueError):
+        build_executor(
+            {
+                "tenant_id": "t",
+                "client_id": "c",
+                "client_secret": "s",
+                "verify_timeout_seconds": 3000,
+            }
+        )
+    DefenderExecutorSettings(verify_timeout_seconds=MAX_VERIFY_TIMEOUT_SECONDS)
+
+
+class _StateFake(_Fake):
+    """A waf_block executor whose current state the test sets."""
+
+    def __init__(self, still_in_effect: bool):
+        super().__init__(("waf_block",))
+        self.still_in_effect = still_in_effect
+        self.reversed: list = []
+
+    def verify(self, action, result):
+        if result.status == "noop" and action.reverse_of is None:
+            return VerifyResult(
+                status="verified" if self.still_in_effect else "failed"
+            )
+        return VerifyResult(status="verified")
+
+    def reverse(self, action, result):
+        self.reversed.append(action)
+        return ExecResult(status="executed")
+
+
+@pytest.mark.external_service
+@pytest.mark.database
+class TestStaleClaimTakeover:
+    """R5-2: the claimant behind a stale claim may still be alive."""
+
+    executed = TestAbandonedReversalClaim.executed
+    _claim = staticmethod(TestAbandonedReversalClaim._claim)
+
+    def test_a_superseded_claim_records_its_late_outcome(self, executed):
+        from core.response.approval_service import ApprovalService
+
+        svc = ApprovalService()
+        old = self._claim(executed, age=timedelta(hours=2))
+        new = svc.begin_reversal(executed, "carol", "again")
+        assert new is not None and new.parameters["supersedes"] == old
+
+        late = svc.finish_reversal(
+            old, succeeded=True, result={"success": True}, verify_status="verified"
+        )
+        assert late is not None, "a superseded claim's outcome must not be lost"
+        assert late.status == "failed"  # the key stays with the new claim
+        assert late.execution_result["late_outcome"]["succeeded"] is True
+        assert svc.get_action(executed).reversed_at is not None
+        assert svc.get_action(new.action_id).status == "pending"
+
+    def test_a_superseded_failure_is_recorded_without_stamping(self, executed):
+        from core.response.approval_service import ApprovalService
+
+        svc = ApprovalService()
+        old = self._claim(executed, age=timedelta(hours=2))
+        assert svc.begin_reversal(executed, "carol", "again") is not None
+        late = svc.finish_reversal(old, succeeded=False, result={"success": False})
+        assert late.execution_result["late_outcome"]["succeeded"] is False
+        assert svc.get_action(executed).reversed_at is None
+
+    @pytest.mark.parametrize("still_in_effect", [True, False])
+    def test_the_takeover_checks_state_before_reversing(
+        self, executed, still_in_effect
+    ):
+        from core.response.approval_service import ApprovalService
+
+        old = self._claim(executed, age=timedelta(hours=2))
+        executor = _StateFake(still_in_effect)
+        out = _service(ApprovalService(), executor).reverse_action(
+            executed, actor="ttl-sweep", reason="ttl"
+        )
+        assert out["outcome"] == "reversed"
+        assert len(executor.reversed) == (1 if still_in_effect else 0)
+        row = ApprovalService().get_action(out["reverse_action_id"])
+        assert row.status == "executed"
+        if not still_in_effect:
+            assert row.execution_result["superseded_claim"] == old
+        assert ApprovalService().get_action(executed).reversed_at is not None
+
+    def test_no_state_check_without_a_takeover(self, executed):
+        from core.response.approval_service import ApprovalService
+
+        executor = _StateFake(still_in_effect=False)
+        out = _service(ApprovalService(), executor).reverse_action(
+            executed, actor="alice", reason="undo"
+        )
+        assert out["outcome"] == "reversed"
+        assert len(executor.reversed) == 1

@@ -868,6 +868,28 @@ class AutonomousResponseService:
             after_state=action.after_state,
         )
 
+    def _original_no_longer_in_effect(
+        self, executor: Any, original: PendingAction
+    ) -> bool:
+        """Whether the original's change is observably gone (a takeover check).
+
+        Asks the executor's verify about the current state, the way it checks
+        a settled noop: no external_ref, so Defender reads the machine rather
+        than the old machine action. Only a definite ``failed`` (the change is
+        not in effect) counts; ``unknown`` or an error reverses as before.
+        """
+        try:
+            typed = self._typed(original)
+        except ValueError:
+            return False
+        probe = ExecResult(
+            status="noop",
+            message="takeover state check",
+            before_state=original.before_state,
+            after_state=original.after_state,
+        )
+        return self._verify(executor, typed, probe) == "failed"
+
     def reverse_action(
         self, action_id: str, *, actor: str, reason: str
     ) -> Dict[str, Any]:
@@ -931,18 +953,36 @@ class AutonomousResponseService:
             actor,
             reason,
         )
-        try:
-            outcome = executor.reverse(typed, self._original_result(original))
-        except Exception as e:  # noqa: BLE001
-            logger.exception("Reverse of %s raised", action_id)
+        already_undone = (
+            bool((claim.parameters or {}).get("supersedes"))
+            and self._original_no_longer_in_effect(executor, original)
+        )
+        if already_undone:
+            # The superseded claimant may have been slow, not dead: its
+            # reverse landed. Running it again would act on a state someone
+            # may have set since (W0.13 review).
             outcome = ExecResult(
-                status="failed", error=f"executor error: {type(e).__name__}"
+                status="noop",
+                message="original no longer in effect at takeover; not reversed again",
+                before_state=original.after_state,
+                after_state=original.after_state,
             )
+        else:
+            try:
+                outcome = executor.reverse(typed, self._original_result(original))
+            except Exception as e:  # noqa: BLE001
+                logger.exception("Reverse of %s raised", action_id)
+                outcome = ExecResult(
+                    status="failed", error=f"executor error: {type(e).__name__}"
+                )
 
         verify_status: Optional[str] = None
         succeeded = outcome.ok
         result = outcome.to_execution_result()
-        if succeeded:
+        if already_undone:
+            verify_status = "verified"
+            result = {**result, "superseded_claim": claim.parameters["supersedes"]}
+        elif succeeded:
             verify_status = self._verify(executor, typed, outcome)
             if verify_status == "failed":
                 succeeded = False
@@ -967,10 +1007,16 @@ class AutonomousResponseService:
             "reversed" if succeeded else "failed",
             verify_status,
         )
+        superseded = settled is not None and settled.status != (
+            ActionStatus.EXECUTED.value if succeeded else ActionStatus.FAILED.value
+        )
         return {
             "outcome": "reversed" if succeeded else "failed",
             "action_id": action_id,
             "reverse_action_id": claim.action_id,
+            # This claim was taken over while it ran; the outcome is recorded
+            # on it as late_outcome, and the takeover's row holds the key.
+            "superseded": superseded,
             "verify_status": verify_status,
             "message": outcome.message or (outcome.error or ""),
             "reversed_at": (

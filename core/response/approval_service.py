@@ -1115,6 +1115,7 @@ class ApprovalService:
                     return None
                 now = utcnow()
                 held = _nonfailed_by_key(session, key)
+                supersedes: Optional[str] = None
                 if held is not None:
                     abandoned = held.status == ActionStatus.REJECTED.value or (
                         held.status == ActionStatus.PENDING.value
@@ -1136,8 +1137,15 @@ class ApprovalService:
                         "success": False,
                         "error": "abandoned: the reversal was never settled; "
                         "superseded by a new claim",
+                        "superseded": True,
                     }
+                    supersedes = held.action_id
                     session.flush()
+                parameters = dict(original.parameters or {})
+                if supersedes is not None:
+                    # The takeover reads this: the earlier claimant may still
+                    # be alive, so the reverse checks state before acting.
+                    parameters["supersedes"] = supersedes
                 row = ApprovalActionRow(
                     action_id=f"action-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-rev",
                     action_type=original.action_type,
@@ -1153,7 +1161,7 @@ class ApprovalService:
                     status=ActionStatus.PENDING.value,
                     approved_at=now,
                     approved_by=actor,
-                    parameters=dict(original.parameters or {}),
+                    parameters=parameters,
                     reversibility=Reversibility.REVERSIBLE.value,
                     idempotency_key=key,
                     reverse_of=original_id,
@@ -1177,14 +1185,47 @@ class ApprovalService:
         before_state: Optional[Dict] = None,
         after_state: Optional[Dict] = None,
     ) -> Optional[PendingAction]:
-        """Settle a claimed reversal; on success stamp reversed_at on the original."""
+        """Settle a claimed reversal; on success stamp reversed_at on the original.
+
+        A claim superseded meanwhile (``begin_reversal`` took it over as
+        abandoned) keeps its failed status, so the key stays with the new
+        claim, but the late outcome is recorded on it (``late_outcome``) and a
+        reverse that did land still stamps ``reversed_at``: the change is
+        undone whoever settles last. The returned row's ``status`` says which.
+        """
         try:
             db = get_db_manager()
             with db.session_scope() as session:
-                row = session.get(ApprovalActionRow, reverse_id)
+                row = session.get(
+                    ApprovalActionRow, reverse_id, with_for_update=True
+                )
                 if row is None or row.reverse_of is None:
                     return None
                 now = utcnow()
+                if row.status != ActionStatus.PENDING.value:
+                    late = dict(row.execution_result or {})
+                    late["late_outcome"] = {
+                        "succeeded": bool(succeeded),
+                        "result": result,
+                        "verify_status": verify_status,
+                        "settled_at": now.isoformat(),
+                    }
+                    row.execution_result = late
+                    if row.before_state is None:
+                        row.before_state = before_state
+                    if row.after_state is None:
+                        row.after_state = after_state
+                    if succeeded:
+                        original = session.get(ApprovalActionRow, row.reverse_of)
+                        if original is not None and original.reversed_at is None:
+                            original.reversed_at = now
+                    logger.warning(
+                        "Reversal claim %s settled after it was superseded (%s)",
+                        reverse_id,
+                        "reversed" if succeeded else "failed",
+                    )
+                    session.flush()
+                    return _row_to_pending(row)
                 row.status = (
                     ActionStatus.EXECUTED.value
                     if succeeded
