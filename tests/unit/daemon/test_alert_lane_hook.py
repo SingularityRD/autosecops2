@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
@@ -181,6 +182,8 @@ async def _through_webhook(processor, payload):
     """POST /ingest → the processor queue item → store → background enrich."""
     from aiohttp.test_utils import TestClient, TestServer
 
+    from core.ingestion.handoff import envelope
+    from core.ingestion.spool import IngestSpool
     from services.daemon.config import PollingConfig
     from services.daemon.poller import DataPoller
 
@@ -193,21 +196,29 @@ async def _through_webhook(processor, payload):
 
     poller = DataPoller(PollingConfig(webhook_token="tok"))
     poller._webhook_dedup = _Dedup()
-    queue: asyncio.Queue = asyncio.Queue()
-    poller.set_output_queue(queue)
-    async with TestClient(TestServer(poller._webhook_app())) as client:
-        resp = await client.post(
-            "/ingest", json=payload, headers={"Authorization": "Bearer tok"}
-        )
-        assert resp.status == 200
+    # W0.12: the webhook acknowledges into the spool the processor drains.
+    with tempfile.TemporaryDirectory() as spool_dir:
+        spool = IngestSpool(spool_dir)
+        spool.open()
+        poller.set_spool(spool)
+        processor.attach_spool(spool)
+        async with TestClient(TestServer(poller._webhook_app())) as client:
+            resp = await client.post(
+                "/ingest", json=payload, headers={"Authorization": "Bearer tok"}
+            )
+            assert resp.status == 200
 
-    async def stored(_finding):
-        return True
+        async def stored(_finding):
+            return True
 
-    processor._store_with_retry = stored
-    while not queue.empty():
-        await processor._process_item(queue.get_nowait())
-    await asyncio.gather(*list(processor._enrich_tasks))
+        processor._store_with_retry = stored
+        for entry in spool.claim(100):
+            item = envelope(entry.finding, entry.source)
+            item["spool"] = entry
+            await processor._process_item(item)
+        await asyncio.gather(*list(processor._enrich_tasks))
+        assert len(spool) == 0
+        spool.close()
 
 
 @pytest.mark.asyncio
