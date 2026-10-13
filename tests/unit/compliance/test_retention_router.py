@@ -63,7 +63,9 @@ def test_reads_need_settings_read(client, monkeypatch, path):
 
 
 def test_classes_list_every_class_and_mark_the_ledger_chained(client):
-    classes = {c["data_class"]: c for c in client.get(PREFIX + "/classes").json()["classes"]}
+    classes = {
+        c["data_class"]: c for c in client.get(PREFIX + "/classes").json()["classes"]
+    }
     assert set(classes) == set(retention.DATA_CLASSES)
     assert classes["agent_ledger"]["chained"] is True
     assert classes["agent_ledger"]["methods"] == []
@@ -124,7 +126,10 @@ def test_policy_errors_are_400_and_the_actor_is_the_user(client, monkeypatch):
         PREFIX + "/policies/agent_ledger", json={"retain_days": 30, "method": "delete"}
     )
     assert bad.status_code == 400
-    assert client.put(PREFIX + "/policies/findings", json={"retain_days": 0}).status_code == 422
+    assert (
+        client.put(PREFIX + "/policies/findings", json={"retain_days": 0}).status_code
+        == 422
+    )
 
 
 def test_legal_hold_on_a_missing_case_is_404(client, monkeypatch):
@@ -152,3 +157,18 @@ def test_report_as_markdown(client, monkeypatch):
         PREFIX + "/reports?since=2026-02-01T00:00:00&until=2026-01-01T00:00:00"
     )
     assert bad.status_code == 400
+
+
+def test_purge_with_an_empty_class_list_is_400_not_all(client, monkeypatch):
+    # The real run_purge: it refuses before touching the database.
+    response = client.post(
+        PREFIX + "/purge", json={"data_classes": [], "dry_run": False}
+    )
+    assert response.status_code == 400
+    assert "at least one" in response.json()["detail"]
+
+
+def test_every_retention_audit_action_fits_the_column():
+    # config_audit_log.action is VARCHAR(20).
+    assert all(len(a) <= 20 for a in retention.AUDIT_ACTIONS)
+    assert retention.LEDGER_ARCHIVE_ACTION in retention.AUDIT_ACTIONS

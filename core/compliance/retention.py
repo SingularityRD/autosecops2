@@ -53,6 +53,16 @@ ANON = "[anonymised]"
 ANON_TAG = "retention-anonymised"
 CLOSED_CASE_STATUSES = ("resolved", "closed")
 SYSTEM_ACTOR = "system"
+# config_audit_log.action is VARCHAR(20); every action written here must fit.
+LEDGER_ARCHIVE_ACTION = "ledger_archive_exp"
+AUDIT_ACTIONS = (
+    "purge",
+    "policy_set",
+    "policy_delete",
+    "legal_hold_set",
+    "legal_hold_release",
+    LEDGER_ARCHIVE_ACTION,
+)
 
 DELETE = "delete"
 ANONYMISE = "anonymise"
@@ -64,6 +74,48 @@ CHAINED_TABLES = ("agent_events", "audit_chain", "audit_checkpoints")
 
 # pg_advisory_lock key for "a purge is running" (arbitrary, fixed).
 _RUN_LOCK_KEY = 0x5245_5445_4E54  # "RETENT"
+# Transaction-level advisory lock guarding "what is protected". Every purge
+# batch takes it shared and then reads the legal holds and its policy in the
+# same transaction; set_legal_hold / set_policy / delete_policy take it
+# exclusive. So a hold committed before a batch starts is always seen by it, and
+# a hold being set waits at most for the batch in flight, never a whole run.
+_HOLD_LOCK_KEY = 0x5245_5445_484C  # "RETEHL"
+
+# Tables a DELETE of a findings / cases row cascades into (ON DELETE CASCADE),
+# and the column on each that ties the child row to a case, or None. A finding
+# or case is only deleted when none of these ties reach a held or open case
+# (cases also keep regulatory records, see _cases_select). A cascading child
+# not listed here makes the class refuse to delete (status "error"), so a new
+# FK cannot silently widen what a purge destroys.
+FINDING_CASCADE_CHILDREN: Dict[str, Optional[str]] = {
+    "case_findings": "case_id",
+    "ai_decision_logs": "case_id",
+    "sketch_mappings": "case_id",
+    "finding_mitre_predictions": None,
+}
+CASE_CASCADE_CHILDREN = frozenset(
+    {
+        "ai_decision_logs",
+        "case_attachments",
+        "case_closure_info",
+        "case_comments",
+        "case_escalations",
+        "case_evidence",
+        "case_findings",
+        "case_iocs",
+        "case_metrics",
+        "case_notifications",
+        "case_relationships",
+        "case_slas",
+        "case_tasks",
+        "case_watchers",
+        "sketch_mappings",
+        # W3.8 regulatory records: cases that have any are never deleted here.
+        "regulatory_clock_events",
+        "regulatory_report_drafts",
+    }
+)
+REGULATORY_TABLES = ("regulatory_clock_events", "regulatory_report_drafts")
 
 MAX_BATCH_SIZE = 10_000
 MAX_BATCHES = 1_000
@@ -214,6 +266,8 @@ def _audit(
     new: Optional[dict] = None,
     reason: Optional[str] = None,
 ) -> None:
+    if action not in AUDIT_ACTIONS or len(action) > 20:
+        raise ValueError(f"not a retention audit action: {action}")
     session.add(
         ConfigAuditLog(
             config_type=AUDIT_CONFIG_TYPE,
@@ -306,6 +360,7 @@ def set_policy(
 ) -> Dict[str, Any]:
     """Create or replace one class's policy, and record the change."""
     dc = get_data_class(data_class)
+    _lock_holds(session, exclusive=True)
     if not isinstance(retain_days, int) or retain_days <= 0:
         raise RetentionError("retain_days must be a positive integer")
     if dc.chained:
@@ -348,6 +403,7 @@ def set_policy(
 
 def delete_policy(session: Session, data_class: str, *, actor: str) -> bool:
     """Remove a policy: the class is then never purged."""
+    _lock_holds(session, exclusive=True)
     old = _policy_row(session, data_class)
     if old is None:
         return False
@@ -374,6 +430,12 @@ def _policy_row(session: Session, data_class: str) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
+def _lock_holds(session: Session, *, exclusive: bool) -> None:
+    """Take the transaction-level hold lock (see ``_HOLD_LOCK_KEY``)."""
+    fn = "pg_advisory_xact_lock" if exclusive else "pg_advisory_xact_lock_shared"
+    session.execute(text(f"SELECT {fn}(:k)"), {"k": _HOLD_LOCK_KEY})
+
+
 def list_legal_holds(session: Session) -> Dict[str, Dict[str, Any]]:
     """Case id -> {reason, set_by, set_at} for every case under legal hold."""
     cases = _config_value(session, HOLDS_KEY).get("cases") or {}
@@ -387,7 +449,12 @@ def held_case_ids(session: Session) -> List[str]:
 def set_legal_hold(
     session: Session, case_id: str, *, reason: str, actor: str
 ) -> Dict[str, Any]:
-    """Put a case (and what hangs off it) under legal hold."""
+    """Put a case (and what hangs off it) under legal hold.
+
+    Takes the hold lock exclusive first, so it waits for a purge batch in
+    flight and every later batch sees the hold.
+    """
+    _lock_holds(session, exclusive=True)
     exists = session.execute(
         text("SELECT 1 FROM cases WHERE case_id = :c"), {"c": case_id}
     ).first()
@@ -445,16 +512,38 @@ def release_legal_hold(
 _HELD = "CAST(:held AS text[])"
 _SKIP = " FOR UPDATE SKIP LOCKED"
 
-# A finding is protected while any case it belongs to is held or still open.
+_OPEN = "c.status NOT IN ('resolved', 'closed')"
+
+
+def _case_id_protected(col: str) -> str:
+    """SQL: the case named by ``col`` is held, or exists and is still open.
+
+    ``col`` may name a case that no longer exists (conversations, audit rows
+    carry a bare id): then only a hold protects it. The subquery's own alias
+    (``pc``) keeps it from capturing an outer ``c``.
+    """
+    return (
+        f"({col} = ANY({_HELD}) OR EXISTS (SELECT 1 FROM cases pc "
+        f"WHERE pc.case_id = {col} "
+        "AND pc.status NOT IN ('resolved', 'closed')))"
+    )
+
+
+# A finding is protected while any case tied to it -- through case_findings or
+# through a row a DELETE of the finding would cascade into -- is held or open.
 _FINDING_PROTECTED = (
-    "EXISTS (SELECT 1 FROM case_findings cf JOIN cases c ON c.case_id = cf.case_id "
-    "WHERE cf.finding_id = f.finding_id AND (c.case_id = ANY(" + _HELD + ") "
-    "OR c.status NOT IN ('resolved', 'closed')))"
+    "EXISTS (SELECT 1 FROM ("
+    + " UNION ALL ".join(
+        f"SELECT k.{col} AS case_id FROM {table} k WHERE k.finding_id = f.finding_id"
+        for table, col in FINDING_CASCADE_CHILDREN.items()
+        if col
+    )
+    + ") linked WHERE "
+    + _case_id_protected("linked.case_id")
+    + ")"
 )
 # Rows owned by a case: protected while that case is held or still open.
-_CASE_PROTECTED = (
-    "(c.case_id = ANY(" + _HELD + ") OR c.status NOT IN ('resolved', 'closed'))"
-)
+_CASE_PROTECTED = "(c.case_id = ANY(" + _HELD + ") OR " + _OPEN + ")"
 
 
 @dataclass
@@ -542,6 +631,27 @@ def _cases_select(session, ctx, method, limit, lock):
             " AND NOT (CAST(:tag AS varchar) = ANY("
             "coalesce(c.tags, CAST(ARRAY[] AS varchar[]))))"
         )
+    else:
+        # A case's DELETE cascades into case_relationships rows on both ends:
+        # keep it while the case on the other end is held or open.
+        sql += (
+            " AND NOT EXISTS (SELECT 1 FROM case_relationships r "
+            "WHERE (r.case_id = c.case_id OR r.related_case_id = c.case_id) AND "
+            + _case_id_protected(
+                "CASE WHEN r.case_id = c.case_id "
+                "THEN r.related_case_id ELSE r.case_id END"
+            )
+            + ")"
+        )
+        # DORA/NIS2 clock history and report drafts are regulatory records
+        # that would cascade away with the case: such cases are never deleted
+        # by a purge (anonymising leaves those rows alone).
+        for table in REGULATORY_TABLES:
+            if _table_exists(session, table):
+                sql += (
+                    f" AND NOT EXISTS (SELECT 1 FROM {table} rg "
+                    "WHERE rg.case_id = c.case_id)"
+                )
     sql += " ORDER BY c.updated_at, c.case_id LIMIT :limit" + (_SKIP if lock else "")
     return [
         r[0] for r in session.execute(text(sql), ctx.params(limit=limit, tag=ANON_TAG))
@@ -688,7 +798,7 @@ def _chat_select(session, ctx, method, limit, lock):
     sql = (
         "SELECT cv.id FROM conversations cv "
         "WHERE coalesce(cv.last_message_at, cv.updated_at) < :cutoff "
-        "AND (cv.case_id IS NULL OR NOT (cv.case_id = ANY(" + _HELD + ")))"
+        "AND (cv.case_id IS NULL OR NOT " + _case_id_protected("cv.case_id") + ")"
     )
     if method == ANONYMISE:
         sql += " AND cv.title IS DISTINCT FROM :anon"
@@ -730,9 +840,14 @@ def _chat_apply(session, ctx, method, ids):
 def _llm_select(session, ctx, method, limit, lock):
     sql = (
         "SELECT l.id FROM llm_interaction_logs l WHERE l.created_at < :cutoff "
+        # Agent investigations of a held or open case...
         "AND NOT EXISTS (SELECT 1 FROM investigations i "
-        "WHERE i.investigation_id = l.investigation_id "
-        "AND i.case_id = ANY(" + _HELD + "))"
+        "WHERE i.investigation_id = l.investigation_id AND i.case_id IS NOT NULL "
+        "AND " + _case_id_protected("i.case_id") + ") "
+        # ...and chat turns: session_id is the conversation id.
+        "AND NOT EXISTS (SELECT 1 FROM conversations cv "
+        "WHERE cv.id = l.session_id AND cv.case_id IS NOT NULL "
+        "AND " + _case_id_protected("cv.case_id") + ")"
     )
     if method == ANONYMISE:
         sql += " AND l.response_content IS DISTINCT FROM :anon"
@@ -770,9 +885,9 @@ def _audit_select(session, ctx, method, limit, lock):
         (
             "c",
             "SELECT x.audit_id FROM case_audit_logs x WHERE x.timestamp < :cutoff "
-            "AND NOT (x.entity_type = 'case' AND x.entity_id = ANY("
-            + _HELD
-            + "))"
+            "AND NOT (x.entity_type = 'case' AND "
+            + _case_id_protected("x.entity_id")
+            + ")"
             + marker.format(t="x")
             + " ORDER BY x.timestamp, x.audit_id",
         ),
@@ -981,7 +1096,10 @@ def run_purge(
         raise RetentionError(f"batch_size must be 1..{MAX_BATCH_SIZE}")
     if not 1 <= max_batches <= MAX_BATCHES:
         raise RetentionError(f"max_batches must be 1..{MAX_BATCHES}")
-    wanted = list(data_classes) if data_classes else None
+    wanted = list(data_classes) if data_classes is not None else None
+    if wanted is not None and not wanted:
+        # Omit the field to run every class; an empty list is a mistake, not "all".
+        raise RetentionError("data_classes must name at least one class")
     for name in wanted or ():
         get_data_class(name)
 
@@ -990,8 +1108,9 @@ def run_purge(
     run_id = str(uuid.uuid4())
 
     with _run_lock():
+        # Only for the report: every class and every batch re-reads the holds
+        # and its policy under the hold lock (see _protection).
         with unit_of_work() as session:
-            policies = {p["data_class"]: p for p in list_policies(session)}
             held = held_case_ids(session)
 
         if "uploads" in (wanted or DATA_CLASSES) and evidence_root is None:
@@ -1004,8 +1123,6 @@ def run_purge(
             results.append(
                 _run_class(
                     dc,
-                    policies.get(name),
-                    held=held,
                     now=now,
                     dry_run=dry_run,
                     batch_size=batch_size,
@@ -1040,11 +1157,43 @@ def run_purge(
     return report
 
 
+def _protection(
+    session: Session, dc: DataClass
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    """Under the shared hold lock: this class's policy and the held case ids.
+
+    Called at the start of every batch transaction, so a legal hold or a policy
+    change committed before the batch began is always honoured by it.
+    """
+    _lock_holds(session, exclusive=False)
+    policy = next(
+        (p for p in list_policies(session) if p["data_class"] == dc.name), None
+    )
+    return policy, held_case_ids(session)
+
+
+def _unknown_cascades(session: Session, table: str, known) -> List[str]:
+    """Tables an ON DELETE CASCADE from ``table`` reaches that are not ``known``."""
+    rows = session.execute(
+        text(
+            "SELECT DISTINCT conrelid::regclass::text FROM pg_constraint "
+            "WHERE contype = 'f' AND confdeltype = 'c' "
+            "AND confrelid = to_regclass(:t) AND conrelid <> confrelid"
+        ),
+        {"t": table},
+    )
+    return sorted(r[0] for r in rows if r[0].split(".")[-1] not in known)
+
+
+_CASCADE_CHECK = {
+    "findings": ("findings", FINDING_CASCADE_CHILDREN),
+    "cases": ("cases", CASE_CASCADE_CHILDREN),
+}
+
+
 def _run_class(
     dc: DataClass,
-    policy: Optional[Dict[str, Any]],
     *,
-    held: List[str],
     now: datetime,
     dry_run: bool,
     batch_size: int,
@@ -1065,6 +1214,12 @@ def _run_class(
         "more_remaining": False,
         "files_removed": 0,
     }
+    with unit_of_work() as session:
+        policy, held = _protection(session, dc)
+        unknown: List[str] = []
+        check = _CASCADE_CHECK.get(dc.name)
+        if policy is not None and check and policy["method"] == DELETE:
+            unknown = _unknown_cascades(session, check[0], check[1])
     if policy is None:
         return result
     cutoff = now - timedelta(days=int(policy["retain_days"]))
@@ -1079,24 +1234,53 @@ def _run_class(
         with unit_of_work() as session:
             result["archive_candidates"] = _ledger_archive_candidates(session, cutoff)
         return result
+    if unknown:
+        # Fail closed: a DELETE here would cascade into tables nobody vetted.
+        logger.error(
+            "Retention refused to delete %s: unvetted ON DELETE CASCADE into %s",
+            dc.name,
+            ", ".join(unknown),
+        )
+        result["status"] = "error"
+        result["error"] = "UnvettedCascade"
+        result["unvetted_cascades"] = unknown
+        return result
 
     select, apply = HANDLERS[dc.name]
     method = policy["method"]
-    ctx = _Ctx(cutoff=cutoff, now=now, held=held, evidence_root=evidence_root)
     try:
         if dry_run:
             cap = batch_size * max_batches
             with unit_of_work() as session:
+                ctx = _Ctx(
+                    cutoff=cutoff, now=now, held=held, evidence_root=evidence_root
+                )
                 found = select(session, ctx, method, cap + 1, False)
                 session.rollback()
             result["processed"] = min(len(found), cap)
             result["more_remaining"] = len(found) > cap
             result["status"] = "dry_run"
             return result
+        stopped = None
         for _ in range(max_batches):
             with unit_of_work() as session:
-                ids = select(session, ctx, method, batch_size, True)
-                files = apply(session, ctx, method, ids) if ids else []
+                # Re-read under the hold lock in the batch's own transaction.
+                policy_now, held = _protection(session, dc)
+                if policy_now is None or policy_now["legal_hold"]:
+                    stopped = "no_policy" if policy_now is None else "legal_hold"
+                    ids, files = [], []
+                elif (
+                    policy_now["method"] != method
+                    or policy_now["retain_days"] != policy["retain_days"]
+                ):
+                    stopped = "policy_changed"
+                    ids, files = [], []
+                else:
+                    ctx = _Ctx(
+                        cutoff=cutoff, now=now, held=held, evidence_root=evidence_root
+                    )
+                    ids = select(session, ctx, method, batch_size, True)
+                    files = apply(session, ctx, method, ids) if ids else []
             # Files go only once their rows are committed away.
             result["files_removed"] += _unlink_all(evidence_root, files)
             if not ids:
@@ -1107,8 +1291,14 @@ def _run_class(
                 break
         else:
             with unit_of_work() as session:
+                _, held = _protection(session, dc)
+                ctx = _Ctx(
+                    cutoff=cutoff, now=now, held=held, evidence_root=evidence_root
+                )
                 result["more_remaining"] = bool(select(session, ctx, method, 1, False))
         result["status"] = "processed"
+        if stopped:
+            result["stopped"] = stopped
     except Exception as exc:  # noqa: BLE001 - one class failing must not stop the rest
         logger.exception("Retention purge of %s failed", dc.name)
         result["status"] = "error"
@@ -1406,7 +1596,7 @@ def export_agent_ledger_archive(
     }
     _audit(
         session,
-        "ledger_archive_export",
+        LEDGER_ARCHIVE_ACTION,
         f"ledger_archive:{manifest['sha256'][:16]}",
         actor,
         new=manifest,

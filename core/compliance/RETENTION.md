@@ -17,12 +17,12 @@ satır vardır: saklama süresi (`retain_days`) ve sınıf düzeyinde yasal sakl
 
 | Sınıf | Kapsam | Yaş ölçütü | Yöntemler | Not |
 |---|---|---|---|---|
-| `findings` | `findings` | `created_at` | delete / anonymise | Açık veya legal hold'daki vakaya bağlı bulgular atlanır |
+| `findings` | `findings` (+ `case_findings`, `ai_decision_logs`, `sketch_mappings`, `finding_mitre_predictions` FK ile) | `created_at` | delete / anonymise | Kendisi ya da silinince cascade ile gidecek bir alt satırı (`ai_decision_logs`, `sketch_mappings`) açık veya legal hold'daki bir vakaya bağlı bulgular atlanır |
 | `raw_events` | `findings.entity_context.source_evidence` | bulgunun `created_at`'i | delete | Bulgu kalır, yalnızca gömülü ham kayıt çıkarılır |
-| `cases` | `cases` (+ yorumlar, kanıt, ekler FK ile) | `updated_at` | delete / anonymise | Yalnızca `resolved`/`closed` vakalar; silme kanıt dosyalarını da siler |
+| `cases` | `cases` (+ yorumlar, kanıt, ekler FK ile) | `updated_at` | delete / anonymise | Yalnızca `resolved`/`closed` vakalar; silme kanıt dosyalarını da siler. DORA/NIS2 düzenleyici kaydı (`regulatory_clock_events`, `regulatory_report_drafts`) olan vakalar ve açık/legal hold'daki bir vakayla `case_relationships` ilişkisi olan vakalar silinmez |
 | `case_evidence` | `case_evidence`, `case_attachments` | `created_at` | delete / anonymise | Anonimleştirme dosyayı siler; hash ve gözetim zinciri kalır |
-| `chat_conversations` | `conversations`, `chat_messages` | son mesaj zamanı | delete / anonymise | |
-| `llm_logs` | `llm_interaction_logs` | `created_at` | delete / anonymise | Anonimleştirme içerikleri siler, token/maliyet kalır |
+| `chat_conversations` | `conversations`, `chat_messages` | son mesaj zamanı | delete / anonymise | Açık veya legal hold'daki vakaya bağlı sohbetler atlanır |
+| `llm_logs` | `llm_interaction_logs` | `created_at` | delete / anonymise | Anonimleştirme içerikleri siler, token/maliyet kalır. Soruşturması (`investigation_id`) ya da sohbeti (`session_id` = `conversations.id`) açık veya legal hold'daki bir vakaya bağlı kayıtlar atlanır |
 | `agent_ledger` | `agent_events` (hash zincirli) | çalıştırmanın son olayı | — (arşiv) | **Otomatik imha edilmez**, bkz. §5 |
 | `audit_logs` | `case_audit_logs`, `config_audit_log` | `timestamp` | delete / anonymise | İmha tutanağı kayıtları (`config_type='retention'`) hiç işlenmez |
 | `uploads` | kanıt deposundaki öksüz dosyalar | dosya mtime | delete | Hiçbir kanıt/ek satırının göstermediği dosyalar |
@@ -39,7 +39,20 @@ korur. Anonimleştirilmiş bir satır bir sonraki çalıştırmada tekrar seçil
   soruşturmalarına ait LLM kayıtları, vakanın denetim kayıtları ve
   `<case_id>/` altındaki yüklemeler her sınıfta imhadan dışlanır.
 - **Sınıf düzeyi:** politikada `legal_hold=true` o sınıfı tamamen durdurur.
-- Açık (çözülmemiş) bir vaka da kendisine bağlı bulgu ve kanıtları korur.
+- Açık (çözülmemiş) bir vaka da kendisine bağlı bulgu, kanıt, sohbet, LLM ve
+  denetim kayıtlarını korur.
+- **Çalışma sırasında konan hold:** imha işinin her partisi kendi
+  işleminde (transaction) önce paylaşımlı bir işlem-düzeyi advisory lock alır,
+  sonra legal hold listesini ve sınıfın politikasını yeniden okur.
+  `set_legal_hold`, `set_policy` ve `delete_policy` aynı kilidi özel (exclusive)
+  alır: bir hold en fazla o anda süren partiyi bekler ve sonraki her parti onu
+  görür. Politika parti arasında kaldırılır, sınıf hold'a alınır ya da
+  değiştirilirse sınıf durur (`stopped`).
+- **Cascade koruması:** bir bulgu/vaka `DELETE`'i `ON DELETE CASCADE` ile alt
+  tablolara yayılır. Kod bu alt tabloları açıkça listeler
+  (`FINDING_CASCADE_CHILDREN`, `CASE_CASCADE_CHILDREN`); çalışma anında
+  `pg_constraint`'te listede olmayan bir cascade bulunursa o sınıfın silmesi
+  reddedilir (`status=error`, `unvetted_cascades`).
 - Koyma ve kaldırma işlemleri `config_audit_log`'a (`legal_hold_set`,
   `legal_hold_release`) aktör ve gerekçeyle yazılır.
 
@@ -47,6 +60,7 @@ korur. Anonimleştirilmiş bir satır bir sonraki çalıştırmada tekrar seçil
 
 - Elle: `POST /api/compliance/retention/purge` — gövde varsayılanı
   `{"dry_run": true}`; gerçek imha için açıkça `false` verilmelidir.
+  `data_classes` verilmezse tüm sınıflar çalışır; boş liste (`[]`) `400` döner.
 - Zamanlanmış: daemon görevi `retention_purge`, yalnızca
   `RETENTION_PURGE_ENABLED=true` ise kaydedilir (varsayılan kapalı) ve
   `RETENTION_PURGE_DRY_RUN=true` (varsayılan) iken hiçbir şeyi değiştirmez.
@@ -87,7 +101,7 @@ değiştirmek zinciri bozar ve kanıt değerini yok eder. Bu yüzden:
 2. **Arşiv:** `GET /api/compliance/retention/agent-ledger/archive?before=<tarih>&limit_runs=N`
    son olayı `before`'dan eski olan *tüm* çalıştırmaları döndürür; her zincir
    yeniden hesaplanarak doğrulanır (`chain_verified`, `first_break_seq`) ve
-   manifest arşivin SHA-256 özetini taşır. Dışa aktarım `ledger_archive_export`
+   manifest arşivin SHA-256 özetini taşır. Dışa aktarım `ledger_archive_exp`
    olarak denetim kaydına yazılır (içerik değil, özet).
 3. Arşiv dosyası WORM/değiştirilemez bir depoya konur; manifestteki
    `sha256` ayrıca kaydedilir.

@@ -50,6 +50,7 @@ def sql_owned_tables(throwaway_database):
             "19_agent_ledger.sql",
             "31_agent_ledger_hash_chain.sql",
             "48_autonomy_lessons_suppression_retention.sql",
+            "50_regulatory_clocks.sql",
         ):
             conn.exec_driver_sql((INIT / name).read_text())
     return throwaway_database
@@ -65,6 +66,12 @@ def db(sql_owned_tables):
         "DELETE FROM conversations",
         "DELETE FROM llm_interaction_logs",
         "DELETE FROM case_audit_logs",
+        "DELETE FROM ai_decision_logs",
+        "DELETE FROM sketch_mappings",
+        "DELETE FROM case_relationships",
+        "DELETE FROM regulatory_clock_events",
+        "DELETE FROM regulatory_report_drafts",
+        "DELETE FROM investigations",
         "DELETE FROM config_audit_log",
         "DELETE FROM case_findings",
         "DELETE FROM case_comments",
@@ -599,7 +606,9 @@ def test_ledger_archive_verifies_each_chain_and_is_read_only(db):
     assert manifest["run_ids"] == [old_run]
     assert (manifest["events"], manifest["all_verified"]) == (3, True)
     assert _ledger_rows(db) == before
-    audit = db.query(ConfigAuditLog).filter_by(action="ledger_archive_export").one()
+    audit = (
+        db.query(ConfigAuditLog).filter_by(action=retention.LEDGER_ARCHIVE_ACTION).one()
+    )
     assert audit.new_value["sha256"] == manifest["sha256"]
     assert audit.changed_by == "dba"
 
@@ -739,3 +748,380 @@ def test_scheduled_run_is_off_by_default_and_a_dry_run_when_on(db, store, monkey
 
     assert report["dry_run"] is True and report["actor"] == "system"
     assert _count(db, "findings") == 1
+
+
+# --- regressions: legal-hold / open-case bypasses (verifier round 2) ----------
+
+
+def _conversation(db, cid, *, case_id=None, age=OLD):
+    db.add(
+        Conversation(
+            id=cid, title=f"chat {cid}", case_id=case_id, last_message_at=utcnow() - age
+        )
+    )
+    db.flush()
+
+
+def _llm_log(db, iid, *, session_id=None, investigation_id=None, age=OLD):
+    db.add(
+        LLMInteractionLog(
+            interaction_id=iid,
+            session_id=session_id,
+            investigation_id=investigation_id,
+            model="m",
+            request_messages=[{"content": "alice"}],
+            response_content="alice",
+            tool_calls=[],
+            tool_results=[],
+            created_at=utcnow() - age,
+        )
+    )
+    db.flush()
+
+
+def _hold(db, cid):
+    retention.set_legal_hold(db, cid, reason="litigation", actor="legal")
+    db.commit()
+
+
+def test_hold_set_between_batches_is_honoured(db, store, monkeypatch):
+    # Two old closed cases; the purge takes one per batch. A hold placed on the
+    # second after the first batch commits must stop the second batch.
+    _case(db, "c-a", age=timedelta(days=200))
+    _case(db, "c-b", age=timedelta(days=150))
+    db.commit()
+    _policy(db, "cases")
+
+    real_unlink = retention._unlink_all
+    calls = {"n": 0}
+
+    def unlink_then_hold(root, files):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            other = get_db_session()
+            try:
+                _hold(other, "c-b")
+            finally:
+                other.close()
+        return real_unlink(root, files)
+
+    monkeypatch.setattr(retention, "_unlink_all", unlink_then_hold)
+    report = _purge(store, batch_size=1, max_batches=5)
+
+    db.expire_all()
+    assert db.get(Case, "c-a") is None
+    assert db.get(Case, "c-b") is not None
+    assert _result(report, "cases")["processed"] == 1
+
+
+def test_hold_set_between_classes_is_honoured(db, store, monkeypatch):
+    # The hold is placed after the run started (after the findings class), so a
+    # held-case list read once at the start of the run would miss it.
+    _finding(db, "f-1")
+    _case(db, "c-1", findings=["f-1"])
+    db.commit()
+    _policy(db, "findings", method="anonymise")
+    _policy(db, "cases")
+
+    real_run_class = retention._run_class
+
+    def run_class(dc, **kw):
+        out = real_run_class(dc, **kw)
+        if dc.name == "findings":
+            other = get_db_session()
+            try:
+                _hold(other, "c-1")
+            finally:
+                other.close()
+        return out
+
+    monkeypatch.setattr(retention, "_run_class", run_class)
+    _purge(store)
+
+    db.expire_all()
+    assert db.get(Case, "c-1") is not None
+
+
+def test_set_legal_hold_waits_for_a_purge_batch_in_flight(db):
+    _case(db, "c-1")
+    db.commit()
+    batch = get_db_manager().engine.connect()
+    try:
+        batch.execute(
+            text("SELECT pg_advisory_xact_lock_shared(:k)"),
+            {"k": retention._HOLD_LOCK_KEY},
+        )
+        db.execute(text("SET LOCAL lock_timeout = '300ms'"))
+        with pytest.raises(Exception, match="lock timeout"):
+            retention.set_legal_hold(db, "c-1", reason="x", actor="legal")
+        db.rollback()
+    finally:
+        batch.rollback()
+        batch.close()
+    # Once the batch is done the hold goes through.
+    _hold(db, "c-1")
+    assert "c-1" in retention.held_case_ids(db)
+
+
+def test_chat_llm_logs_of_a_held_case_are_kept(db, store):
+    _case(db, "c-held")
+    _case(db, "c-gone-free")
+    _conversation(db, "conv-held", case_id="c-held")
+    _conversation(db, "conv-free", case_id="c-gone-free")
+    _llm_log(db, "i-held", session_id="conv-held")
+    _llm_log(db, "i-free", session_id="conv-free")
+    db.commit()
+    _hold(db, "c-held")
+    for cls in ("llm_logs", "chat_conversations"):
+        _policy(db, cls)
+
+    _purge(store)
+
+    db.expire_all()
+    left = {r.interaction_id for r in db.query(LLMInteractionLog)}
+    assert left == {"i-held"}
+    assert db.get(Conversation, "conv-held") is not None
+    assert db.get(Conversation, "conv-free") is None
+
+
+def test_chats_and_llm_logs_of_an_open_case_are_kept(db, store):
+    from core.storage.models import Investigation
+
+    _case(db, "c-open", status="investigating")
+    _case(db, "c-closed")
+    _conversation(db, "conv-open", case_id="c-open")
+    _conversation(db, "conv-closed", case_id="c-closed")
+    _conversation(db, "conv-orphan", case_id="c-deleted-long-ago")
+    db.add(
+        Investigation(
+            investigation_id="inv-open",
+            case_id="c-open",
+            workflow_id="w",
+            trigger_type="manual",
+            workdir="/tmp/x",
+        )
+    )
+    db.flush()
+    _llm_log(db, "i-chat-open", session_id="conv-open")
+    _llm_log(db, "i-inv-open", investigation_id="inv-open")
+    _llm_log(db, "i-chat-closed", session_id="conv-closed")
+    db.commit()
+    for cls in ("llm_logs", "chat_conversations"):
+        _policy(db, cls)
+
+    _purge(store)
+
+    db.expire_all()
+    left = {r.interaction_id for r in db.query(LLMInteractionLog)}
+    assert left == {"i-chat-open", "i-inv-open"}
+    assert {c.id for c in db.query(Conversation)} == {"conv-open"}
+
+
+def test_anonymise_also_skips_chats_and_llm_logs_of_held_cases(db, store):
+    _case(db, "c-held")
+    _conversation(db, "conv-held", case_id="c-held")
+    _llm_log(db, "i-held", session_id="conv-held")
+    db.commit()
+    _hold(db, "c-held")
+    for cls in ("llm_logs", "chat_conversations"):
+        _policy(db, cls, method="anonymise")
+
+    report = _purge(store)
+
+    assert report["total_processed"] == 0
+    db.expire_all()
+    assert db.get(Conversation, "conv-held").title == "chat conv-held"
+
+
+def _decision(db, did, finding_id, case_id):
+    db.execute(
+        text(
+            "INSERT INTO ai_decision_logs (decision_id, agent_id, finding_id, case_id, "
+            "decision_type, confidence_score, reasoning, recommended_action) "
+            "VALUES (:d, 'triage', :f, :c, 'triage', 0.9, 'r', 'a')"
+        ),
+        {"d": did, "f": finding_id, "c": case_id},
+    )
+
+
+def _sketch(db, finding_id, case_id):
+    db.execute(
+        text(
+            "INSERT INTO sketch_mappings (case_id, finding_id, sketch_id, sketch_name) "
+            "VALUES (:c, :f, 1, 's')"
+        ),
+        {"f": finding_id, "c": case_id},
+    )
+
+
+def test_findings_whose_cascade_children_reach_a_held_or_open_case_are_kept(db, store):
+    # None of these findings is in case_findings: the only tie to the case is a
+    # row the finding's DELETE would cascade into.
+    for fid in ("f-dec-held", "f-sketch-open", "f-dec-closed", "f-free"):
+        _finding(db, fid)
+    _case(db, "c-held")
+    _case(db, "c-open", status="investigating")
+    _case(db, "c-closed")
+    _decision(db, "d-1", "f-dec-held", "c-held")
+    _sketch(db, "f-sketch-open", "c-open")
+    _decision(db, "d-2", "f-dec-closed", "c-closed")
+    db.commit()
+    _hold(db, "c-held")
+    _policy(db, "findings")
+
+    report = _purge(store)
+
+    db.expire_all()
+    left = {f.finding_id for f in db.query(Finding)}
+    assert left == {"f-dec-held", "f-sketch-open"}
+    assert _count(db, "ai_decision_logs") == 1
+    assert _count(db, "sketch_mappings") == 1
+    assert _result(report, "findings")["processed"] == 2
+
+
+def test_every_cascade_from_findings_and_cases_is_vetted(db):
+    # The schema under test must not cascade a DELETE anywhere the purge has
+    # not been taught about; a new FK has to be added to these lists first.
+    assert (
+        retention._unknown_cascades(db, "findings", retention.FINDING_CASCADE_CHILDREN)
+        == []
+    )
+    assert (
+        retention._unknown_cascades(db, "cases", retention.CASE_CASCADE_CHILDREN) == []
+    )
+    children = {
+        r[0]
+        for r in db.execute(
+            text(
+                "SELECT conrelid::regclass::text FROM pg_constraint WHERE contype = 'f' "
+                "AND confdeltype = 'c' AND confrelid = 'findings'::regclass"
+            )
+        )
+    }
+    assert children == set(retention.FINDING_CASCADE_CHILDREN)
+
+
+def test_an_unvetted_cascade_makes_the_delete_refuse(db, store):
+    _finding(db, "f-1")
+    db.commit()
+    _policy(db, "findings")
+    db.execute(
+        text(
+            "CREATE TABLE w35_new_child (finding_id VARCHAR(50) "
+            "REFERENCES findings(finding_id) ON DELETE CASCADE)"
+        )
+    )
+    db.commit()
+    try:
+        report = _purge(store)
+    finally:
+        db.execute(text("DROP TABLE w35_new_child"))
+        db.commit()
+
+    result = _result(report, "findings")
+    assert result["status"] == "error"
+    assert result["unvetted_cascades"] == ["w35_new_child"]
+    assert _count(db, "findings") == 1
+
+
+def test_cases_with_regulatory_records_are_never_deleted(db, store):
+    _case(db, "c-dora")
+    _case(db, "c-nis2")
+    _case(db, "c-plain")
+    db.execute(
+        text(
+            "INSERT INTO regulatory_clock_events (case_id, seq, regime, instant, value, "
+            "actor, prev_hash, row_hash) VALUES ('c-dora', 1, 'dora', 'aware_at', "
+            "now(), 'analyst', '', 'h')"
+        )
+    )
+    db.execute(
+        text(
+            "INSERT INTO regulatory_report_drafts (case_id, regime, kind, generator, "
+            "body, pack_digest, created_by) VALUES ('c-nis2', 'nis2', 'final', "
+            "'template', CAST('{}' AS jsonb), 'd', 'analyst')"
+        )
+    )
+    db.commit()
+    _policy(db, "cases")
+
+    _purge(store)
+
+    db.expire_all()
+    assert {c.case_id for c in db.query(Case)} == {"c-dora", "c-nis2"}
+    assert _count(db, "regulatory_clock_events") == 1
+    assert _count(db, "regulatory_report_drafts") == 1
+
+
+def test_a_closed_case_related_to_a_held_or_open_case_is_kept(db, store):
+    _case(db, "c-held", age=timedelta(days=1))
+    _case(db, "c-open", status="investigating", age=timedelta(days=1))
+    _case(db, "c-old-a")
+    _case(db, "c-old-b")
+    _case(db, "c-old-c")
+    for a, b in (("c-held", "c-old-a"), ("c-old-b", "c-open"), ("c-old-c", "c-old-a")):
+        db.execute(
+            text(
+                "INSERT INTO case_relationships (case_id, related_case_id, "
+                "relationship_type, created_by) VALUES (:a, :b, 'related', 'x')"
+            ),
+            {"a": a, "b": b},
+        )
+    db.commit()
+    _hold(db, "c-held")
+    _policy(db, "cases")
+
+    _purge(store)
+
+    db.expire_all()
+    # c-old-c is only related to c-old-a, which is closed: it goes.
+    assert {c.case_id for c in db.query(Case)} == {
+        "c-held",
+        "c-open",
+        "c-old-a",
+        "c-old-b",
+    }
+    assert _count(db, "case_relationships") == 2
+
+
+def test_audit_logs_of_an_open_case_are_kept(db, store):
+    _case(db, "c-open", status="investigating")
+    for entity in ("c-open", "c-gone"):
+        db.add(
+            CaseAuditLog(
+                entity_type="case",
+                entity_id=entity,
+                action="update",
+                changed_by="bob",
+                timestamp=utcnow() - OLD,
+            )
+        )
+    db.commit()
+    _policy(db, "audit_logs")
+
+    _purge(store, data_classes=["audit_logs"])
+
+    db.expire_all()
+    assert {a.entity_id for a in db.query(CaseAuditLog)} == {"c-open"}
+
+
+def test_an_empty_class_list_is_refused_not_all(db, store):
+    _finding(db, "f-1")
+    db.commit()
+    _policy(db, "findings")
+
+    with pytest.raises(retention.RetentionError):
+        _purge(store, data_classes=[])
+
+    assert _count(db, "findings") == 1
+
+
+def test_ledger_archive_export_is_audited(db):
+    out = retention.export_agent_ledger_archive(
+        db, before=utcnow(), limit_runs=5, actor="dba"
+    )
+    db.commit()
+    row = (
+        db.query(ConfigAuditLog).filter_by(action=retention.LEDGER_ARCHIVE_ACTION).one()
+    )
+    assert row.new_value["sha256"] == out["manifest"]["sha256"]
