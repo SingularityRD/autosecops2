@@ -14,6 +14,14 @@ countersigned by an RFC 3161 timestamp authority (``AUDIT_TSA_URL``).
 
     python -m core.audit.checkpoint run      # write one checkpoint now
     python -m core.audit.checkpoint keygen   # print a new signing key pair
+    python -m core.audit.checkpoint rebaseline --table T --reason R
+        # after a deliberate DROP / RENAME COLUMN on an audited table
+
+A checkpoint only covers the chain up to the head it records: rows written
+after the newest checkpoint can be deleted or rewritten (and rehashed) by a
+superuser without a trace, and deleting checkpoints back to an earlier one is
+visible only against a copy kept outside the database (the file copy on other
+storage, or a TSA token). Keep the interval short and the file off-host.
 """
 
 from __future__ import annotations
@@ -41,7 +49,14 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 from core.audit import tsa
-from core.audit.chain import Break, audit_chain_present, head
+from core.audit.chain import (
+    Break,
+    audit_chain_present,
+    check_sources,
+    head,
+    walk_audit_chain,
+)
+from core.storage.audit_chain import AUDITED_TABLES
 from core.config import get_settings
 from core.secrets import get_secret
 from core.storage.connection import get_db_manager
@@ -210,8 +225,12 @@ def write_checkpoint(
     tsa_url: str = "",
     tsa_post: Optional[tsa.Poster] = None,
     now: Optional[datetime] = None,
+    schema_change: Optional[Dict[str, Any]] = None,
 ) -> Checkpoint:
     """Sign and insert one checkpoint on ``conn``; the caller commits.
+
+    ``schema_change`` (from :func:`rebaseline`) is signed into the body as
+    ``schema_change``: the re-baselined table, the marker's seq and the reason.
 
     Writers serialize on an advisory lock, so two daemons never link two
     checkpoints to the same predecessor.
@@ -242,6 +261,8 @@ def write_checkpoint(
         "audit_chain": {"head": head(conn)},
         "agent_events": _agent_events_state(conn, since),
     }
+    if schema_change is not None:
+        body_obj["schema_change"] = schema_change
     body = canonical_json(body_obj)
     body_bytes = body.encode("utf-8")
     body_hash = hashlib.sha256(body_bytes).hexdigest()
@@ -337,6 +358,124 @@ def run_checkpoint(
     return checkpoint
 
 
+class RebaselineRefused(RuntimeError):
+    """The table is not in a state a re-baseline may record."""
+
+
+def rebaseline_on(
+    conn: Connection,
+    table: str,
+    reason: str,
+    key: Ed25519PrivateKey,
+    *,
+    tsa_url: str = "",
+    tsa_post: Optional[tsa.Poster] = None,
+) -> Tuple[int, Checkpoint]:
+    """:func:`rebaseline` on ``conn``; the caller commits (or rolls back)."""
+    if table not in AUDITED_TABLES:
+        raise RebaselineRefused(f"{table} is not an audited table")
+    reason = (reason or "").strip()
+    if not reason:
+        raise RebaselineRefused("a reason is required")
+    column = AUDITED_TABLES[table]
+    # Identifiers come from AUDITED_TABLES, never from input.
+    conn.execute(text(f"LOCK TABLE {table} IN SHARE ROW EXCLUSIVE MODE"))
+    chain = walk_audit_chain(conn)
+    if chain.breaks:
+        raise RebaselineRefused(f"audit chain is broken: {chain.breaks[0].format()}")
+    strict = check_sources(conn, [table])
+    if not any(b.reason == "schema_column_missing" for b in strict.breaks):
+        raise RebaselineRefused(
+            f"{table} has no missing column to re-baseline"
+            + (f" ({strict.breaks[0].format()})" if strict.breaks else "")
+        )
+    lenient = check_sources(conn, [table], ignore_missing_columns=True)
+    if lenient.breaks:
+        raise RebaselineRefused(
+            f"{table} is not clean apart from the schema change: "
+            f"{lenient.breaks[0].format()}"
+        )
+    marker = int(
+        conn.execute(
+            text(
+                "SELECT audit_chain_record_rebaseline(:t, :k, :r, "
+                f"(SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY s.{column}), "
+                f"'[]'::jsonb) FROM {table} AS s))"  # nosec B608 - fixed names
+            ),
+            {"t": table, "k": column, "r": reason},
+        ).scalar_one()
+    )
+    after = check_sources(conn, [table])
+    if after.breaks:
+        raise RebaselineRefused(
+            f"re-baseline did not settle {table}: {after.breaks[0].format()}"
+        )
+    checkpoint = write_checkpoint(
+        conn,
+        key,
+        tsa_url=tsa_url,
+        tsa_post=tsa_post,
+        schema_change={"table": table, "seq": marker, "reason": reason},
+    )
+    return marker, checkpoint
+
+
+def rebaseline(
+    engine: Engine,
+    table: str,
+    reason: str,
+    *,
+    key: Optional[Ed25519PrivateKey] = None,
+    file_path: Optional[str] = None,
+    tsa_url: Optional[str] = None,
+    tsa_post: Optional[tsa.Poster] = None,
+) -> Tuple[int, Checkpoint]:
+    """Re-baseline ``table`` after a deliberate DROP / RENAME COLUMN.
+
+    The verifier reports such a change as ``schema_column_missing`` for as long
+    as the latest chain rows carry the old column. This writes, in one
+    transaction holding a SHARE ROW EXCLUSIVE lock on the table: a
+    ``rebaseline`` marker and a ``snapshot`` of every current row (through
+    ``audit_chain_record_rebaseline()``, which vigil_app may not call), and a
+    signed checkpoint whose body names the marker (``schema_change``). It
+    refuses unless a signing key is configured, the chain walks clean, and the
+    table is clean apart from the missing column(s), so it cannot launder a
+    row changed outside the chain. Returns (marker seq, checkpoint); any
+    refusal rolls everything back.
+    """
+    key = key if key is not None else signing_key_from_secrets()
+    if key is None:
+        raise RebaselineRefused(
+            f"no {SIGNING_KEY_SECRET} configured: a re-baseline must be signed"
+        )
+    settings = get_settings()
+    with engine.begin() as conn:
+        marker, checkpoint = rebaseline_on(
+            conn,
+            table,
+            reason,
+            key,
+            tsa_url=settings.audit_tsa_url if tsa_url is None else tsa_url,
+            tsa_post=tsa_post,
+        )
+    path = settings.audit_checkpoint_file if file_path is None else file_path
+    if path:
+        try:
+            append_to_file(path, checkpoint)
+        except OSError as e:
+            logger.error(
+                "Audit checkpoint %s not copied to %s: %s", checkpoint.id, path, e
+            )
+    logger.warning(
+        "audit_chain: %s re-baselined at seq %s (checkpoint %s): %s",
+        table,
+        marker,
+        checkpoint.id,
+        reason.strip(),
+    )
+    return marker, checkpoint
+
+
 # ---------------------------------------------------------------------------
 # Verification
 # ---------------------------------------------------------------------------
@@ -348,6 +487,8 @@ class CheckpointReport:
     key_id: Optional[str] = None
     trusted: bool = False
     file_lines: int = 0
+    # seq of each 'rebaseline' marker named by a checkpoint that verified.
+    signed_rebaselines: Dict[int, str] = field(default_factory=dict)
     breaks: List[Break] = field(default_factory=list)
 
     @property
@@ -448,11 +589,15 @@ def verify_checkpoints(
             signature,
             expected_prev,
         )
+        parsed = json.loads(body) if found is None else {}
         if found is None:
-            found = _head_break(conn, scope, json.loads(body))
+            found = _head_break(conn, scope, parsed)
         if found is not None:
             report.breaks.append(found)
             return report
+        change = parsed.get("schema_change")
+        if isinstance(change, dict) and isinstance(change.get("seq"), int):
+            report.signed_rebaselines[change["seq"]] = str(change.get("table", ""))
         if report.key_id is None:
             report.key_id = kid
         expected_prev = body_hash
@@ -607,6 +752,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         "keygen",
         help=f"print a new Ed25519 key pair; store the seed as {SIGNING_KEY_SECRET}",
     )
+    rebase = sub.add_parser(
+        "rebaseline",
+        help="after a deliberate DROP / RENAME COLUMN on an audited table: "
+        "re-snapshot it under a signed schema-change marker (run as the schema "
+        "owner, not vigil_app)",
+    )
+    rebase.add_argument("--table", required=True, choices=sorted(AUDITED_TABLES))
+    rebase.add_argument(
+        "--reason", required=True, help="why the schema changed (signed, kept)"
+    )
     args = parser.parse_args(argv)
     if args.command == "keygen":
         seed, public = generate_key()
@@ -620,6 +775,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     manager = get_db_manager()
     manager.initialize()
+    if args.command == "rebaseline":
+        try:
+            marker, checkpoint = rebaseline(manager.engine, args.table, args.reason)
+        except RebaselineRefused as e:
+            print(f"rebaseline refused: {e}", file=sys.stderr)
+            return 1
+        print(
+            f"rebaseline {args.table}  seq {marker}  checkpoint {checkpoint.id}  "
+            f"key {checkpoint.key_id}"
+        )
+        return 0
     checkpoint = run_checkpoint(manager.engine)
     if checkpoint is None:
         return 1

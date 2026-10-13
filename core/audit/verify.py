@@ -25,6 +25,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 from core.audit.chain import (
@@ -100,6 +101,27 @@ def verify(
                     "no signed checkpoint has been written",
                 )
             )
+
+    # A re-baseline marker must be named by a signed checkpoint (written in the
+    # same transaction by `checkpoint rebaseline`); otherwise someone with
+    # direct access re-snapshotted a table to launder its rows.
+    for seq, table in conn.execute(
+        text(
+            "SELECT seq, source_table FROM audit_chain "
+            "WHERE event = 'rebaseline' ORDER BY seq"
+        )
+    ).all():
+        if checkpoints.signed_rebaselines.get(int(seq)) != table:
+            breaks.append(
+                Break(
+                    f"source:{table}",
+                    f"table={table}",
+                    int(seq),
+                    "rebaseline_unsigned",
+                    "re-baseline marker is not named by a signed checkpoint",
+                )
+            )
+            break
 
     if sources:
         source = check_sources(conn)

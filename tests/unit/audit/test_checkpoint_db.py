@@ -12,13 +12,17 @@ import json
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
+from core.audit import checkpoint as checkpoint_module
 from core.audit import verify as verify_cli
 from core.audit.chain import walk_audit_chain
 from core.audit.checkpoint import (
+    RebaselineRefused,
     append_to_file,
     generate_key,
     load_private_key,
+    rebaseline_on,
     verify_checkpoints,
     write_checkpoint,
 )
@@ -38,6 +42,8 @@ def _key():
 def conn(audit_db):
     connection = audit_db.engine.connect()
     tx = connection.begin()
+    # The capture triggers are deferred to commit; see test_audit_chain_db.
+    connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
     try:
         yield connection
     finally:
@@ -256,3 +262,115 @@ def test_require_signature_cli_exits_1_without_a_key(audit_db, monkeypatch, caps
     assert verify_cli.main(["--checkpoint-file", ""]) == 0
     assert verify_cli.main(["--checkpoint-file", "", "--require-signature"]) == 1
     assert "signature_required" in capsys.readouterr().out
+
+
+# --- re-baseline after a schema change (Round 6) ------------------------------------
+
+REBASE_REASON = "drop approval_actions.reason (schema change 2026-10)"
+
+
+def _rebaseline_breaks(conn, key):
+    return [
+        b["reason"] for b in verify_cli.verify(conn, public_key=key.public_key())["breaks"]
+    ]
+
+
+def test_rebaseline_after_a_dropped_column_is_signed_and_clean(conn):
+    key = _key()
+    insert_action(conn, "action-cp-rebase")
+    write_checkpoint(conn, key)
+    conn.execute(text("ALTER TABLE approval_actions DROP COLUMN reason"))
+    assert _rebaseline_breaks(conn, key) == ["schema_column_missing"]
+
+    marker, cp = rebaseline_on(conn, "approval_actions", REBASE_REASON, key)
+
+    body = json.loads(cp.body)
+    assert body["schema_change"] == {
+        "table": "approval_actions",
+        "seq": marker,
+        "reason": REBASE_REASON,
+    }
+    row = conn.execute(
+        text("SELECT event, payload FROM audit_chain WHERE seq = :s"), {"s": marker}
+    ).one()
+    assert row.event == "rebaseline"
+    assert "reason" not in row.payload["columns"]
+    assert verify_cli.verify(conn, public_key=key.public_key())["ok"]
+    # Ordinary chained changes after the re-baseline stay clean.
+    conn.execute(
+        text(
+            "UPDATE approval_actions SET status = 'approved' "
+            "WHERE action_id = 'action-cp-rebase'"
+        )
+    )
+    assert verify_cli.verify(conn, public_key=key.public_key())["ok"]
+
+
+def test_rebaseline_refuses_without_a_schema_change(conn):
+    with pytest.raises(RebaselineRefused, match="no missing column"):
+        rebaseline_on(conn, "approval_actions", REBASE_REASON, _key())
+
+
+def test_rebaseline_refuses_an_empty_reason_or_other_table(conn):
+    with pytest.raises(RebaselineRefused, match="reason"):
+        rebaseline_on(conn, "approval_actions", "  ", _key())
+    with pytest.raises(RebaselineRefused, match="not an audited table"):
+        rebaseline_on(conn, "agent_events", REBASE_REASON, _key())
+
+
+def test_rebaseline_refuses_to_launder_a_bypassed_edit(conn):
+    insert_action(conn, "action-cp-launder")
+    _tamper(conn)
+    conn.execute(
+        text(
+            "UPDATE approval_actions SET approved_by = 'mallory' "
+            "WHERE action_id = 'action-cp-launder'"
+        )
+    )
+    conn.execute(text("SET LOCAL session_replication_role = origin"))
+    conn.execute(text("ALTER TABLE approval_actions DROP COLUMN reason"))
+    before = conn.execute(text("SELECT max(seq) FROM audit_chain")).scalar()
+    with pytest.raises(RebaselineRefused, match="source_modified"):
+        rebaseline_on(conn, "approval_actions", REBASE_REASON, _key())
+    assert conn.execute(text("SELECT max(seq) FROM audit_chain")).scalar() == before
+
+
+def test_unsigned_rebaseline_marker_is_reported(conn):
+    # A superuser calling the SQL function directly, without a signed checkpoint.
+    key = _key()
+    write_checkpoint(conn, key)
+    conn.execute(text("ALTER TABLE approval_actions DROP COLUMN reason"))
+    conn.execute(
+        text(
+            "SELECT audit_chain_record_rebaseline('approval_actions', 'action_id', "
+            "'quiet', (SELECT coalesce(jsonb_agg(to_jsonb(s)), '[]'::jsonb) "
+            "FROM approval_actions AS s))"
+        )
+    )
+    assert _rebaseline_breaks(conn, key) == ["rebaseline_unsigned"]
+
+
+def test_app_role_cannot_rebaseline(conn):
+    conn.execute(text("SET LOCAL ROLE vigil_app"))
+    with pytest.raises(DBAPIError, match="permission denied"):
+        conn.execute(
+            text(
+                "SELECT audit_chain_record_rebaseline('approval_actions', "
+                "'action_id', 'r', '[]'::jsonb)"
+            )
+        )
+
+
+def test_rebaseline_cli_refuses_without_a_signing_key(audit_db, monkeypatch, capsys):
+    monkeypatch.setattr(checkpoint_module, "signing_key_from_secrets", lambda: None)
+    argv = ["rebaseline", "--table", "approval_actions", "--reason", REBASE_REASON]
+    assert checkpoint_module.main(argv) == 1
+    assert "must be signed" in capsys.readouterr().err
+    # With a key, a table without a schema change is refused and nothing written.
+    monkeypatch.setattr(checkpoint_module, "signing_key_from_secrets", _key)
+    with audit_db.engine.connect() as c:
+        before = c.execute(text("SELECT count(*) FROM audit_checkpoints")).scalar()
+    assert checkpoint_module.main(argv) == 1
+    assert "no missing column" in capsys.readouterr().err
+    with audit_db.engine.connect() as c:
+        assert c.execute(text("SELECT count(*) FROM audit_checkpoints")).scalar() == before

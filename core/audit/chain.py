@@ -29,7 +29,20 @@ Break reasons:
                     key: the row was deleted (or the table truncated) outside
                     the chain and the key inserted again through the trigger
 ``schema_column_missing`` a column the latest chain rows carry is gone from the
-                    table (DROP or RENAME COLUMN): its values are unverifiable
+                    table (DROP or RENAME COLUMN): its values are unverifiable.
+                    After a deliberate change, ``python -m core.audit.checkpoint
+                    rebaseline`` re-snapshots the table under a signed marker
+``rebaseline_unsigned`` a 'rebaseline' chain marker has no signed checkpoint
+                    naming its seq (reported by core.audit.verify)
+
+What the chain cannot show: rows appended or rewritten after the newest
+checkpoint (a superuser can delete the chain's tail, or rewrite and rehash it,
+back to the last checkpointed head, and nothing records that the newer rows
+existed); and, if the checkpoints themselves are deleted back to some earlier
+one, only a copy outside the database (``AUDIT_CHECKPOINT_FILE`` kept on other
+storage, or the RFC 3161 token held elsewhere) shows it. A superuser can also
+append well-formed chain rows (the assign trigger hashes whatever is inserted);
+the chain proves order and integrity of what was appended, not who appended it.
 """
 
 from __future__ import annotations
@@ -228,6 +241,7 @@ WITH truncated AS (
            latest.source_id AS latest_id, latest.row AS latest_row,
            latest.event AS latest_event,
            CASE WHEN cur.source_id IS NOT NULL AND latest.event <> 'delete'
+                     AND NOT CAST(:ignore_missing AS boolean)
                      AND cur.row <> latest.row
                 THEN (SELECT min(k) FROM jsonb_object_keys(latest.row) AS k
                        WHERE NOT cur.row ? k)
@@ -344,10 +358,22 @@ _SOURCE_DETAIL = {
 }
 
 
-def check_sources(conn: Connection) -> ChainReport:
-    """Each audited table against the chain: attached, and row for row."""
+def check_sources(
+    conn: Connection,
+    tables: Optional[List[str]] = None,
+    *,
+    ignore_missing_columns: bool = False,
+) -> ChainReport:
+    """Each audited table against the chain: attached, and row for row.
+
+    ``ignore_missing_columns`` compares only the columns both sides still have
+    instead of reporting ``schema_column_missing``; the re-baseline uses it to
+    check that a table is clean apart from a deliberate column change.
+    """
     report = ChainReport()
     for table, key in AUDITED_TABLES.items():
+        if tables is not None and table not in tables:
+            continue
         exists = conn.execute(text("SELECT to_regclass(:t)"), {"t": table}).scalar()
         if exists is None:
             continue
@@ -386,7 +412,12 @@ def check_sources(conn: Connection) -> ChainReport:
             bindparam("events", expanding=True)
         )
         row = conn.execute(
-            statement, {"table": table, "events": list(SOURCE_EVENTS)}
+            statement,
+            {
+                "table": table,
+                "events": list(SOURCE_EVENTS),
+                "ignore_missing": ignore_missing_columns,
+            },
         ).first()
         report.rows += conn.execute(
             text(f"SELECT count(*) FROM {table}")  # nosec B608 - fixed table name

@@ -20,7 +20,7 @@ from sqlalchemy.exc import DBAPIError
 
 from core.audit.chain import check_sources, walk_agent_events, walk_audit_chain
 from core.storage import connection as connection_module
-from core.storage.audit_chain import attach_table, triggers_attached
+from core.storage.audit_chain import attach_table, triggers_attached, triggers_current
 from tests.unit.audit.conftest import (
     PRE_ACTION,
     insert_action,
@@ -48,8 +48,16 @@ def _chain_rows(conn, source_id):
 
 
 def _rolled_back(engine):
+    """A transaction the test rolls back, with the capture triggers immediate.
+
+    The capture triggers are deferred to commit, and these transactions never
+    commit: IMMEDIATE fires each one at the end of its statement so the test
+    can read the chain rows it wrote. The deferred behaviour itself is
+    covered by the "deferred to commit" tests below.
+    """
     conn = engine.connect()
     tx = conn.begin()
+    conn.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
     return conn, tx
 
 
@@ -723,6 +731,9 @@ def test_a_second_writer_waits_for_the_first(audit_db):
 
     try:
         insert_action(first, "action-audit-conc-a")
+        # Chains the row now (the trigger is deferred to commit otherwise) and
+        # so takes the chain lock until this transaction ends.
+        first.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
         worker = threading.Thread(target=second_writer)
         worker.start()
         deadline = time.monotonic() + 10
@@ -818,6 +829,249 @@ def test_tenants_share_the_one_chain(audit_db):
         assert rows[1].prev_hash == rows[0].event_hash
         assert rows[2].prev_hash == rows[1].event_hash
         assert walk_audit_chain(conn).ok
+    finally:
+        tx.rollback()
+        conn.close()
+
+
+# --- deferred to commit (Round 6) --------------------------------------------------
+
+
+def test_chain_rows_are_written_at_commit(audit_db):
+    engine = audit_db.engine
+    writer = engine.connect()
+    tx = writer.begin()
+    try:
+        insert_action(writer, "action-audit-deferred")
+        # Not yet chained, not even for the writer, and no chain lock held.
+        assert _chain_rows(writer, "action-audit-deferred") == []
+        with engine.connect() as other:
+            held = other.execute(
+                text(
+                    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
+                    "AND pid = :p"
+                ),
+                {"p": writer.execute(text("SELECT pg_backend_pid()")).scalar()},
+            ).scalar()
+        assert held == 0
+        tx.commit()
+    finally:
+        if tx.is_active:
+            tx.rollback()
+        writer.close()
+    with engine.connect() as conn:
+        assert [r.event for r in _chain_rows(conn, "action-audit-deferred")] == [
+            "insert"
+        ]
+        assert walk_audit_chain(conn).ok
+        assert check_sources(conn).ok
+
+
+@pytest.fixture
+def probe_row(audit_db):
+    """A committed row in a scratch table both transactions lock."""
+    with audit_db.engine.begin() as conn:
+        conn.execute(text("CREATE TABLE audit_lock_probe (id int PRIMARY KEY)"))
+        conn.execute(text("INSERT INTO audit_lock_probe VALUES (1)"))
+    yield
+    with audit_db.engine.begin() as conn:
+        conn.execute(text("DROP TABLE audit_lock_probe"))
+
+
+def _crossed_lock_orders(engine, tag: str, immediate: bool) -> list:
+    """T1: audited write, then SELECT FOR UPDATE; T2: the reverse order.
+
+    With the chain lock taken at the audited write (the triggers made
+    immediate), T1 holds the chain lock and waits for T2's row lock while T2
+    waits for the chain lock: Postgres' deadlock detector aborts one. With the
+    lock taken at commit nobody waits on the chain lock while holding a row
+    lock the other needs. Returns the errors either transaction raised.
+    """
+    errors: list = []
+    t1 = engine.connect()
+    t2 = engine.connect()
+    tx1, tx2 = t1.begin(), t2.begin()
+    for conn in (t1, t2):
+        conn.execute(text("SET LOCAL lock_timeout = '30s'"))
+        if immediate:
+            conn.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
+    t2_pid = t2.execute(text("SELECT pg_backend_pid()")).scalar()
+
+    def second():
+        try:
+            insert_action(t2, f"action-audit-{tag}-t2")
+            tx2.commit()
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+            tx2.rollback()
+
+    try:
+        insert_action(t1, f"action-audit-{tag}-t1")
+        t2.execute(text("SELECT id FROM audit_lock_probe WHERE id = 1 FOR UPDATE"))
+        worker = threading.Thread(target=second)
+        worker.start()
+        if immediate:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not _waiting_on_lock(engine, t2_pid):
+                time.sleep(0.05)
+        try:
+            t1.execute(text("SELECT id FROM audit_lock_probe WHERE id = 1 FOR UPDATE"))
+            tx1.commit()
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+        worker.join(timeout=60)
+    finally:
+        if tx1.is_active:
+            tx1.rollback()
+        if tx2.is_active:
+            tx2.rollback()
+        t1.close()
+        t2.close()
+    return errors
+
+
+def test_crossed_row_and_chain_locks_do_not_deadlock(audit_db, probe_row):
+    """Round 6 regression: the chain lock is taken at commit, after row locks."""
+    engine = audit_db.engine
+    errors = _crossed_lock_orders(engine, "xlock", immediate=False)
+    assert errors == []
+    with engine.connect() as conn:
+        assert _chain_rows(conn, "action-audit-xlock-t1")
+        assert _chain_rows(conn, "action-audit-xlock-t2")
+        assert walk_audit_chain(conn).ok
+        assert check_sources(conn).ok
+
+
+def test_crossed_locks_deadlock_when_chained_immediately(audit_db, probe_row):
+    """The hazard the deferral removes (and why app code must not SET
+    CONSTRAINTS ALL IMMEDIATE around audited writes)."""
+    errors = _crossed_lock_orders(audit_db.engine, "xlock-imm", immediate=True)
+    assert len(errors) == 1
+    assert "deadlock detected" in str(errors[0])
+
+
+def test_truncate_marker_is_queued_until_commit(audit_db):
+    conn = audit_db.engine.connect()
+    tx = conn.begin()
+    try:
+        before = conn.execute(text("SELECT max(seq) FROM audit_chain")).scalar()
+        conn.execute(text("TRUNCATE case_audit_logs"))
+        assert conn.execute(text("SELECT max(seq) FROM audit_chain")).scalar() == before
+        assert (
+            conn.execute(text("SELECT count(*) FROM audit_chain_pending")).scalar()
+            == 1
+        )
+        conn.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))  # what COMMIT runs
+        last = conn.execute(
+            text("SELECT source_table, event FROM audit_chain ORDER BY seq DESC LIMIT 1")
+        ).one()
+        assert tuple(last) == ("case_audit_logs", "truncate")
+        assert (
+            conn.execute(text("SELECT count(*) FROM audit_chain_pending")).scalar()
+            == 0
+        )
+        assert check_sources(conn).ok
+    finally:
+        tx.rollback()
+        conn.close()
+
+
+def test_truncate_after_a_write_in_the_same_transaction_is_refused(audit_db):
+    # Postgres refuses TRUNCATE of a table with pending (deferred) trigger
+    # events: the documented cost of chaining at commit.
+    conn = audit_db.engine.connect()
+    tx = conn.begin()
+    try:
+        insert_audit_log(conn, "case-audit-then-truncate")
+        with pytest.raises(DBAPIError, match="pending trigger events"):
+            conn.execute(text("TRUNCATE case_audit_logs"))
+    finally:
+        tx.rollback()
+        conn.close()
+
+
+def test_app_role_cannot_touch_the_pending_queue(audit_db):
+    conn, tx = _rolled_back(audit_db.engine)
+    try:
+        conn.execute(text("SET LOCAL ROLE vigil_app"))
+        with pytest.raises(DBAPIError, match="permission denied"):
+            conn.execute(
+                text(
+                    "INSERT INTO audit_chain_pending (source_table, event) "
+                    "VALUES ('approval_actions', 'truncate')"
+                )
+            )
+    finally:
+        tx.rollback()
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "mode, attached",
+    [("REPLICA", False), ("ALWAYS", True), ("", True)],
+    ids=["replica-only", "always", "origin"],
+)
+def test_replica_only_or_disabled_triggers_are_not_attached(audit_db, mode, attached):
+    conn, tx = _rolled_back(audit_db.engine)
+    try:
+        conn.execute(
+            text(f"ALTER TABLE approval_actions ENABLE {mode} TRIGGER audit_chain_capture")
+        )
+        assert triggers_attached(conn, "approval_actions") is attached
+        reasons = [b.reason for b in check_sources(conn).breaks]
+        assert ("triggers_missing" in reasons) is (not attached)
+        conn.execute(
+            text("ALTER TABLE approval_actions DISABLE TRIGGER audit_chain_capture")
+        )
+        assert not triggers_attached(conn, "approval_actions")
+        assert not triggers_current(conn, "approval_actions")
+    finally:
+        tx.rollback()
+        conn.close()
+
+
+def test_replica_only_trigger_is_reattached(audit_db):
+    # audit_chain_attach() used to accept 'R' as attached and skip the table.
+    conn, tx = _rolled_back(audit_db.engine)
+    try:
+        conn.execute(
+            text(
+                "ALTER TABLE approval_actions ENABLE REPLICA TRIGGER "
+                "audit_chain_capture_update"
+            )
+        )
+        assert attach_table(conn, "approval_actions") == "reinstall"
+        assert triggers_current(conn, "approval_actions")
+    finally:
+        tx.rollback()
+        conn.close()
+
+
+def test_immediate_triggers_of_an_earlier_version_are_upgraded(audit_db):
+    conn, tx = _rolled_back(audit_db.engine)
+    try:
+        for name in ("audit_chain_capture", "audit_chain_capture_update"):
+            conn.execute(text(f"DROP TRIGGER {name} ON approval_actions"))
+        conn.execute(
+            text(
+                "CREATE TRIGGER audit_chain_capture AFTER INSERT OR DELETE ON "
+                "approval_actions FOR EACH ROW "
+                "EXECUTE FUNCTION audit_chain_capture('action_id')"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE TRIGGER audit_chain_capture_update AFTER UPDATE ON "
+                "approval_actions FOR EACH ROW WHEN (OLD.* IS DISTINCT FROM NEW.*) "
+                "EXECUTE FUNCTION audit_chain_capture('action_id')"
+            )
+        )
+        assert triggers_attached(conn, "approval_actions")
+        assert not triggers_current(conn, "approval_actions")
+        assert attach_table(conn, "approval_actions") == "reinstall"
+        assert triggers_current(conn, "approval_actions")
+        assert attach_table(conn, "approval_actions") is None
+        assert check_sources(conn).ok
     finally:
         tx.rollback()
         conn.close()

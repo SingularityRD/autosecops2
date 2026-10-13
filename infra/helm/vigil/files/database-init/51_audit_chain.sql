@@ -19,6 +19,25 @@
 -- chain (under REPEATABLE READ the loser fails on the primary key instead of
 -- forking). tenant_id is a hashed attribute of each row, not a chain of its own.
 --
+-- When the lock is taken: the capture triggers on the source tables are
+-- DEFERRABLE INITIALLY DEFERRED constraint triggers, so a transaction's chain
+-- rows are written, and the lock taken, at COMMIT, after every statement of
+-- the transaction has run and every row lock it needs is already held. A
+-- holder of the lock then only inserts into audit_chain and commits; it never
+-- waits for a row lock, so the chain lock cannot close a deadlock cycle with
+-- application row locks (an immediate trigger could: "audited write, then
+-- SELECT ... FOR UPDATE" in one transaction against the reverse order in
+-- another). A TRUNCATE (statement trigger, which cannot be deferred) queues a
+-- row in audit_chain_pending whose deferred trigger chains the marker at
+-- commit, in queue order with the row events. Consequences: chain rows are
+-- invisible to the writing transaction until it commits (SET CONSTRAINTS ALL
+-- IMMEDIATE flushes them earlier, and from then on takes the lock early);
+-- seq follows commit order and created_at is clock_timestamp() at chaining;
+-- TRUNCATE of an audited table in a transaction that already changed it is
+-- refused by Postgres (pending trigger events). Install / reinstall /
+-- rebaseline markers are written immediately by admin paths that hold no
+-- application row locks.
+--
 -- Append-only: vigil_app may only SELECT audit_chain (the capture trigger
 -- inserts as the function owner), and a trigger refuses UPDATE, DELETE and
 -- TRUNCATE for every role. A superuser or the table owner can still disable
@@ -55,7 +74,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_chain_source
 COMMENT ON TABLE audit_chain IS
     'Append-only, single hash chain of approval_actions and case_audit_logs changes. Written only by triggers; verified by python -m core.audit.verify.';
 COMMENT ON COLUMN audit_chain.event IS
-    'insert / update / delete for a source row change; truncate for a TRUNCATE of the table; snapshot for a row that existed when the table was attached; install / reinstall when the capture triggers were (re)created.';
+    'insert / update / delete for a source row change; truncate for a TRUNCATE of the table; snapshot for a row that existed when the table was attached or re-baselined; install / reinstall when the capture triggers were (re)created; rebaseline for a signed re-baseline after a schema change.';
 COMMENT ON COLUMN audit_chain.payload IS
     '{"row": <source row as jsonb>} and, on update, "old": <the changed columns before the update>.';
 COMMENT ON COLUMN audit_chain.event_hash IS
@@ -71,6 +90,14 @@ CREATE TABLE IF NOT EXISTS audit_checkpoints (
     prev_body_hash  text        NOT NULL,
     signature       text        NOT NULL,
     tsa_token       text
+);
+
+-- Statement-level markers (TRUNCATE) waiting for commit; always empty between
+-- transactions. Written and drained only by SECURITY DEFINER functions.
+CREATE TABLE IF NOT EXISTS audit_chain_pending (
+    id            bigserial PRIMARY KEY,
+    source_table  text NOT NULL,
+    event         text NOT NULL
 );
 
 COMMENT ON TABLE audit_checkpoints IS
@@ -131,7 +158,7 @@ BEGIN
    LIMIT 1;
   NEW.seq := coalesce(head_seq, 0) + 1;
   NEW.prev_hash := coalesce(head_hash, '');
-  NEW.created_at := now();
+  NEW.created_at := clock_timestamp();
   NEW.event_hash := audit_chain_hash(
     NEW.prev_hash, NEW.tenant_id, NEW.seq, NEW.source_table, NEW.source_id,
     NEW.event, NEW.payload, NEW.created_at
@@ -240,10 +267,52 @@ BEGIN
     RAISE EXCEPTION 'audit_chain_capture_truncate: %.% is not an audited table',
       TG_TABLE_SCHEMA, TG_TABLE_NAME;
   END IF;
-  INSERT INTO audit_chain (source_table, source_id, event, payload, seq, prev_hash, event_hash)
-  VALUES (TG_TABLE_NAME, '', 'truncate', '{}'::jsonb, 0, '', '');
+  INSERT INTO audit_chain_pending (source_table, event) VALUES (TG_TABLE_NAME, 'truncate');
   RETURN NULL;
 END;
+$$;
+
+-- Fired at commit (deferred) for each queued marker: chains it, then drops it.
+CREATE OR REPLACE FUNCTION audit_chain_flush_pending()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  INSERT INTO audit_chain (source_table, source_id, event, payload, seq, prev_hash, event_hash)
+  VALUES (NEW.source_table, '', NEW.event, '{}'::jsonb, 0, '', '');
+  DELETE FROM audit_chain_pending WHERE id = NEW.id;
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS audit_chain_flush_pending ON audit_chain_pending;
+CREATE CONSTRAINT TRIGGER audit_chain_flush_pending
+  AFTER INSERT ON audit_chain_pending
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW
+  EXECUTE FUNCTION audit_chain_flush_pending();
+
+-- Whether p_table carries all three capture triggers, enabled for ordinary
+-- sessions ('O' origin or 'A' always; 'R' replica-only and 'D' disabled do
+-- not fire), and, with p_current, in the current form (row triggers deferred
+-- to commit). A table attached by an older version of this file is not
+-- current and is re-attached (a 'reinstall' marker).
+CREATE OR REPLACE FUNCTION audit_chain_triggers_ok(p_table regclass, p_current boolean)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SET search_path = public, pg_temp
+AS $$
+  SELECT count(*) = 3 FROM pg_trigger
+   WHERE tgrelid = p_table
+     AND tgname IN ('audit_chain_capture', 'audit_chain_capture_update',
+                    'audit_chain_capture_truncate')
+     AND tgenabled IN ('O', 'A')
+     AND (NOT p_current
+          OR tgname = 'audit_chain_capture_truncate'
+          OR (tgdeferrable AND tginitdeferred));
 $$;
 
 -- Records that the capture triggers on p_table were just (re)created. On the
@@ -265,11 +334,7 @@ BEGIN
   IF p_table NOT IN ('approval_actions', 'case_audit_logs') THEN
     RAISE EXCEPTION 'audit_chain_record_install: % is not an audited table', p_table;
   END IF;
-  IF (SELECT count(*) FROM pg_trigger
-       WHERE tgrelid = to_regclass(p_table)
-         AND tgname IN ('audit_chain_capture', 'audit_chain_capture_update',
-                        'audit_chain_capture_truncate')
-         AND tgenabled <> 'D') <> 3 THEN
+  IF NOT audit_chain_triggers_ok(to_regclass(p_table), true) THEN
     RAISE EXCEPTION 'audit_chain_record_install: capture triggers are not on %', p_table;
   END IF;
   IF EXISTS (SELECT 1 FROM audit_chain WHERE source_table = p_table) THEN
@@ -290,8 +355,8 @@ BEGIN
 END;
 $$;
 
--- Puts the capture triggers on p_table unless all three are already there and
--- enabled. Runs as the caller, who must own the table. Returns NULL when
+-- Puts the capture triggers on p_table unless all three are already there,
+-- enabled and current. Runs as the caller, who must own the table. Returns NULL when
 -- nothing was needed, else what audit_chain_record_install recorded.
 CREATE OR REPLACE FUNCTION audit_chain_attach(p_table regclass, p_key text)
 RETURNS text
@@ -303,11 +368,7 @@ DECLARE
   v_rows jsonb := '[]'::jsonb;
 BEGIN
   SELECT relname INTO v_name FROM pg_class WHERE oid = p_table;
-  IF (SELECT count(*) FROM pg_trigger
-       WHERE tgrelid = p_table
-         AND tgname IN ('audit_chain_capture', 'audit_chain_capture_update',
-                        'audit_chain_capture_truncate')
-         AND tgenabled <> 'D') = 3 THEN
+  IF audit_chain_triggers_ok(p_table, true) THEN
     RETURN NULL;
   END IF;
   -- No writes to the table between reading its rows and the triggers taking
@@ -317,10 +378,12 @@ BEGIN
   EXECUTE format('DROP TRIGGER IF EXISTS audit_chain_capture_update ON %s', p_table);
   EXECUTE format('DROP TRIGGER IF EXISTS audit_chain_capture_truncate ON %s', p_table);
   EXECUTE format(
-    'CREATE TRIGGER audit_chain_capture AFTER INSERT OR DELETE ON %s '
+    'CREATE CONSTRAINT TRIGGER audit_chain_capture AFTER INSERT OR DELETE ON %s '
+    'DEFERRABLE INITIALLY DEFERRED '
     'FOR EACH ROW EXECUTE FUNCTION audit_chain_capture(%L)', p_table, p_key);
   EXECUTE format(
-    'CREATE TRIGGER audit_chain_capture_update AFTER UPDATE ON %s '
+    'CREATE CONSTRAINT TRIGGER audit_chain_capture_update AFTER UPDATE ON %s '
+    'DEFERRABLE INITIALLY DEFERRED '
     'FOR EACH ROW WHEN (OLD.* IS DISTINCT FROM NEW.*) '
     'EXECUTE FUNCTION audit_chain_capture(%L)', p_table, p_key);
   EXECUTE format(
@@ -335,6 +398,56 @@ BEGIN
 END;
 $$;
 
+-- Re-baselines p_table after a deliberate schema change (DROP / RENAME COLUMN)
+-- that the verifier reports as schema_column_missing: writes a 'rebaseline'
+-- marker and every current row as a 'snapshot', so the latest chain row of
+-- each key carries the table's columns again. p_rows is read by the caller
+-- (python -m core.audit.checkpoint rebaseline), which first checks that the
+-- table is otherwise clean, holds a SHARE ROW EXCLUSIVE lock across both, and
+-- signs a checkpoint naming the marker's seq in the same transaction; the
+-- verifier reports a marker without such a checkpoint (rebaseline_unsigned).
+-- Not granted to vigil_app: it can launder source rows, so only the schema
+-- owner / an administrator may call it. Returns the marker's seq.
+CREATE OR REPLACE FUNCTION audit_chain_record_rebaseline(
+    p_table text, p_key text, p_reason text, p_rows jsonb)
+RETURNS bigint
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  r jsonb;
+  marker bigint;
+  cols jsonb;
+BEGIN
+  IF p_table NOT IN ('approval_actions', 'case_audit_logs') THEN
+    RAISE EXCEPTION 'audit_chain_record_rebaseline: % is not an audited table', p_table;
+  END IF;
+  IF NOT audit_chain_triggers_ok(to_regclass(p_table), false) THEN
+    RAISE EXCEPTION 'audit_chain_record_rebaseline: capture triggers are not on %', p_table;
+  END IF;
+  IF coalesce(btrim(p_reason), '') = '' THEN
+    RAISE EXCEPTION 'audit_chain_record_rebaseline: a reason is required';
+  END IF;
+  SELECT coalesce(jsonb_agg(a.attname ORDER BY a.attnum), '[]'::jsonb) INTO cols
+    FROM pg_attribute AS a
+   WHERE a.attrelid = to_regclass(p_table) AND a.attnum > 0 AND NOT a.attisdropped;
+  INSERT INTO audit_chain (source_table, source_id, event, payload, seq, prev_hash, event_hash)
+  VALUES (p_table, '', 'rebaseline',
+          jsonb_build_object('key', p_key, 'reason', p_reason, 'columns', cols,
+                             'rows', coalesce(jsonb_array_length(p_rows), 0)),
+          0, '', '')
+  RETURNING seq INTO marker;
+  FOR r IN SELECT value FROM jsonb_array_elements(coalesce(p_rows, '[]'::jsonb)) LOOP
+    INSERT INTO audit_chain (tenant_id, source_table, source_id, event, payload,
+                             seq, prev_hash, event_hash)
+    VALUES (coalesce(r ->> 'tenant_id', 'default'), p_table, coalesce(r ->> p_key, ''),
+            'snapshot', jsonb_build_object('row', r), 0, '', '');
+  END LOOP;
+  RETURN marker;
+END;
+$$;
+
 -- Privileges. Default privileges from 30_vigil_app_role.sql granted vigil_app
 -- SELECT, INSERT, UPDATE, DELETE on these new tables, and Compose re-runs 30's
 -- GRANT ... ON ALL TABLES on every up; this file runs after it each time and
@@ -342,12 +455,17 @@ $$;
 -- whatever the grants say.
 REVOKE ALL ON TABLE audit_chain FROM PUBLIC;
 REVOKE ALL ON TABLE audit_checkpoints FROM PUBLIC;
+REVOKE ALL ON TABLE audit_chain_pending FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION audit_chain_record_install(text, text, jsonb) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION audit_chain_record_rebaseline(text, text, text, jsonb) FROM PUBLIC;
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vigil_app') THEN
     REVOKE ALL ON TABLE audit_chain FROM vigil_app;
     GRANT SELECT ON TABLE audit_chain TO vigil_app;
+    REVOKE ALL ON TABLE audit_chain_pending FROM vigil_app;
+    REVOKE ALL ON SEQUENCE audit_chain_pending_id_seq FROM vigil_app;
+    REVOKE EXECUTE ON FUNCTION audit_chain_record_rebaseline(text, text, text, jsonb) FROM vigil_app;
     REVOKE ALL ON TABLE audit_checkpoints FROM vigil_app;
     GRANT SELECT, INSERT ON TABLE audit_checkpoints TO vigil_app;
     GRANT USAGE, SELECT ON SEQUENCE audit_checkpoints_id_seq TO vigil_app;

@@ -13,6 +13,17 @@
       "note": "Backend -> agent service (Node) read/write projections."
     },
     {
+      "site": "core/audit/tsa.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 1
+      },
+      "switches": {
+        "AUDIT_TSA_URL": "off"
+      },
+      "note": "RFC 3161 timestamp of each audit checkpoint (W1.10). Operator-configured: posted only when AUDIT_TSA_URL is set; empty by default and in the air-gap profile (use an internal TSA via the allowlist if one is required)."
+    },
+    {
       "site": "core/cases/notification_dispatcher.py",
       "category": "gated",
       "kinds": {

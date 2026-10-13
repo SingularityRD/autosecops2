@@ -481,6 +481,20 @@
       "nullable": false
     }
   },
+  "audit_chain_pending": {
+    "event": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "id": {
+      "data_type": "bigint",
+      "nullable": false
+    },
+    "source_table": {
+      "data_type": "text",
+      "nullable": false
+    }
+  },
   "audit_checkpoints": {
     "body": {
       "data_type": "text",
