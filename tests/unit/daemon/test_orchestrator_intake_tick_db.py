@@ -123,17 +123,17 @@ def _live_work():
 
 def _orchestrator(ours):
     """The real tick, with launching recorded rather than run."""
-    from core.storage.database_data_service import DatabaseDataService
+    from core.storage.service import DatabaseService
     from services.daemon.shared_intel import SharedIntelligence
 
     orch = object.__new__(Orchestrator)
     orch.config = OrchestratorConfig(intake_surge_depth=10**9)
     orch.config.max_concurrent_agents = _count_investigations_running() + FREE_SLOTS
     orch.shared_intel = SharedIntelligence()
-    orch._data_service = DatabaseDataService()
-    # It connects on first use (#1489); do that here, so a tick's round trips
-    # count the tick and not the one-time provisioning and schema check.
-    assert orch._data_service._db_available
+    # The tick reads findings through DatabaseService (#2236). Touch the
+    # connection here, so a tick's round trips count the tick and not the
+    # one-time provisioning and schema check.
+    assert DatabaseService().get_finding("w025-warm-up") is None
     orch.stats = {"dedup_prevented": 0, "investigations_created": 0}
     orch._intake_surge_active = False
     orch._hourly_budget_exhausted = MagicMock(return_value=False)
