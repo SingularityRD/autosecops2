@@ -1,0 +1,245 @@
+# In-cluster LLM stack for an air-gapped AutoSecOps install: Bifrost (the one
+# LLM egress, ADR 0011) and Ollama (the local model server it routes to).
+#
+# The Helm chart does not deploy either; it expects Services named "bifrost" and
+# "ollama" in the release namespace (config.BIFROST_URL / config.OLLAMA_URL).
+# install.sh applies this file into that namespace after rewriting every
+# "image:" to the local registry (same mapping as airgap_images.py localize), so
+# the references below are the UPSTREAM ones the bundle builder pulls.
+#
+# Bifrost's tag is a contract (see infra/docker/docker-compose.yml); keep it in
+# step with BIFROST_IMAGE_TAG there. tests/unit/airgap checks they agree.
+# Ollama's tag can be overridden at build time (build-bundle.sh --ollama-image).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bifrost-airgap-config
+  labels:
+    app.kubernetes.io/part-of: autosecops-airgap-llm
+    app.kubernetes.io/name: bifrost
+data:
+  # First-boot seed: Ollama is the only provider. No cloud provider keys exist
+  # in an air-gapped install, and the egress policy below would drop them anyway.
+  config.json: |
+    {
+      "client": {
+        "enable_logging": true,
+        "disable_content_logging": false
+      },
+      "logs_store": {
+        "enabled": true,
+        "type": "sqlite",
+        "config": {"path": "/app/data/logs.db"}
+      },
+      "providers": {
+        "ollama": {
+          "network_config": {
+            "default_request_timeout_in_seconds": 1800,
+            "allow_private_network": true,
+            "stream_idle_timeout_in_seconds": 300,
+            "max_retries": 0
+          },
+          "keys": [
+            {
+              "name": "default-ollama-url",
+              "weight": 1,
+              "ollama_key_config": {"url": "env.OLLAMA_URL"},
+              "models": ["*"]
+            }
+          ]
+        }
+      }
+    }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bifrost-data
+  labels:
+    app.kubernetes.io/part-of: autosecops-airgap-llm
+    app.kubernetes.io/name: bifrost
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-models
+  labels:
+    app.kubernetes.io/part-of: autosecops-airgap-llm
+    app.kubernetes.io/name: ollama
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 40Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bifrost
+  labels:
+    app.kubernetes.io/part-of: autosecops-airgap-llm
+    app.kubernetes.io/name: bifrost
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: autosecops-airgap-llm
+      app.kubernetes.io/name: bifrost
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: autosecops-airgap-llm
+        app.kubernetes.io/name: bifrost
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: bifrost
+          image: maximhq/bifrost:v2.2.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: OLLAMA_URL
+              value: "http://ollama:11434"
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: seed
+              mountPath: /app/data/config.json
+              subPath: config.json
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: bifrost-data
+        - name: seed
+          configMap:
+            name: bifrost-airgap-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bifrost
+  labels:
+    app.kubernetes.io/part-of: autosecops-airgap-llm
+    app.kubernetes.io/name: bifrost
+spec:
+  selector:
+    app.kubernetes.io/part-of: autosecops-airgap-llm
+    app.kubernetes.io/name: bifrost
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  labels:
+    app.kubernetes.io/part-of: autosecops-airgap-llm
+    app.kubernetes.io/name: ollama
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: autosecops-airgap-llm
+      app.kubernetes.io/name: ollama
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: autosecops-airgap-llm
+        app.kubernetes.io/name: ollama
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: ollama
+          image: ollama/ollama:0.6.5
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 11434
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0:11434"
+            # Models arrive from the bundle (install.sh copies them in); never
+            # let a request trigger a registry pull.
+            - name: OLLAMA_NOPRUNE
+              value: "1"
+          volumeMounts:
+            - name: models
+              mountPath: /root/.ollama
+          readinessProbe:
+            httpGet:
+              path: /api/version
+              port: http
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: ollama-models
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  labels:
+    app.kubernetes.io/part-of: autosecops-airgap-llm
+    app.kubernetes.io/name: ollama
+spec:
+  selector:
+    app.kubernetes.io/part-of: autosecops-airgap-llm
+    app.kubernetes.io/name: ollama
+  ports:
+    - name: http
+      port: 11434
+      targetPort: http
+---
+# Same rule the chart applies with networkPolicies.egress.inClusterOnly: these
+# pods talk to each other and to the AutoSecOps pods, and to nothing off-cluster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: airgap-llm-in-cluster-only
+  labels:
+    app.kubernetes.io/part-of: autosecops-airgap-llm
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: autosecops-airgap-llm
+  policyTypes: [Ingress, Egress]
+  # Same namespace only. Bifrost serves an unauthenticated config API on its
+  # inference port (see docker-compose.yml), so it is NOT opened to every
+  # namespace the way the chart opens the backend for kubelet probes. On a CNI
+  # that drops node-sourced probes (most do not: Calico and Cilium allow them),
+  # add the node CIDRs here rather than a namespaceSelector.
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+        - namespaceSelector: {}
