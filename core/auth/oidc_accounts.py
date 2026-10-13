@@ -249,8 +249,9 @@ def normalize_email(value: Any) -> Optional[str]:
     NFKC folds compatibility look-alikes (fullwidth letters, the Kelvin
     sign, ...) and ``casefold`` folds case beyond ASCII, so two spellings a
     person would read as the same address compare equal. Anything carrying a
-    control character, a line break (a trailing newline included) or other
-    whitespace is refused rather than trimmed.
+    control or format character (zero-width space, bidi marks, ...), a line
+    break (a trailing newline included) or other whitespace is refused
+    rather than trimmed.
     """
     if not isinstance(value, str):
         return None
@@ -259,7 +260,7 @@ def normalize_email(value: Any) -> Optional[str]:
         not folded
         or len(folded) > 200
         or _UNPRINTABLE.search(folded)
-        or any(ch.isspace() for ch in folded)
+        or any(ch.isspace() or unicodedata.category(ch)[0] in "CZ" for ch in folded)
         or not _EMAIL_SHAPE.fullmatch(folded)
     ):
         return None

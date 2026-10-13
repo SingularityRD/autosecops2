@@ -1082,13 +1082,18 @@ def test_email_linking_compares_normalised_addresses(world, claimed):
 
 
 @pytest.mark.parametrize(
-    "claimed", ["root@corp.example\n", "ro​ot@corp.example", "root@corp.example\x00"]
+    "claimed",
+    [
+        "root@corp.example\n",
+        "ro\u200bot@corp.example",
+        "root@corp.example\x00",
+        "root@corp.example\u202e",
+    ],
 )
 def test_an_email_with_control_characters_is_not_an_email(claimed):
     from core.auth.oidc_accounts import normalize_email
 
-    assert normalize_email(claimed) in (None, "ro​ot@corp.example")
-    assert normalize_email(claimed) != "root@corp.example"
+    assert normalize_email(claimed) is None
     assert normalize_email("Root@Corp.Example") == "root@corp.example"
     assert normalize_email("ﬁ@corp.example") == "fi@corp.example"
 
