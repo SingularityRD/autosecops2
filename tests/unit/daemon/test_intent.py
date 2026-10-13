@@ -315,3 +315,15 @@ def test_from_env_threads_the_handoff_size(offline_config, monkeypatch):
     monkeypatch.setenv("DAEMON_HANDOFF_QUEUE_MAXSIZE", "250")
     get_settings.cache_clear()
     assert DaemonConfig.from_env().processing.handoff_queue_maxsize == 250
+
+
+def test_alert_lanes_section_has_its_own_reader_and_no_warning(tmp_path, caplog):
+    # core/lanes reads INTENT.md alert_lanes; observe mode skips it silently.
+    path = _write(
+        tmp_path,
+        "triage:\n  auto_triage: true\nalert_lanes:\n  verdict_risk_threshold: 0.5\n",
+    )
+    with caplog.at_level(logging.WARNING):
+        declared = read_intent(path)
+    assert declared == {"triage.auto_triage": True}
+    assert "alert_lanes" not in caplog.text

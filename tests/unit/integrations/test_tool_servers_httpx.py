@@ -3,7 +3,8 @@
 Two halves:
 
 1. A source scan over ``core/integrations/*/tool.py``: no ``requests``
-   import, and every ``httpx`` call states its own ``timeout``. Nothing
+   import, and every ``httpx`` call (there and in a sibling ``client.py``)
+   states its own ``timeout``. Nothing
    else reaches all 39 call sites, and httpx's 5s default is short enough
    to break a sandbox report or a SIEM search.
 2. Round trips through each server's dispatcher over a respx-mocked
@@ -110,8 +111,26 @@ def _httpx_calls(tree: ast.AST) -> list[ast.Call]:
     ]
 
 
+def _http_modules() -> list[Path]:
+    """Every tool server and the sibling ``client.py`` it sends through.
+
+    A server may keep its HTTP calls in ``client.py`` (Cloudflare's helpers
+    moved there so the W2.4 executor shares them; Palo Alto's likewise): the
+    calls still run inside the MCP server, so they are scanned too.
+    """
+    modules = []
+    for server in _tool_servers():
+        modules.append(server)
+        client = server.with_name("client.py")
+        if client.exists():
+            modules.append(client)
+    return modules
+
+
 SERVERS = _tool_servers()
 SERVER_IDS = [str(p.relative_to(ROOT)) for p in SERVERS]
+HTTP_MODULES = _http_modules()
+HTTP_MODULE_IDS = [str(p.relative_to(ROOT)) for p in HTTP_MODULES]
 
 
 def test_tool_servers_are_discovered():
@@ -130,7 +149,7 @@ def test_tool_server_does_not_import_requests(path: Path):
             assert root != "requests", f"{path.name}:{node.lineno} imports requests"
 
 
-@pytest.mark.parametrize("path", SERVERS, ids=SERVER_IDS)
+@pytest.mark.parametrize("path", HTTP_MODULES, ids=HTTP_MODULE_IDS)
 def test_every_httpx_call_states_its_own_timeout(path: Path):
     for call in _httpx_calls(_parse(path)):
         passed = {kw.arg for kw in call.keywords}
@@ -146,10 +165,10 @@ def test_every_httpx_call_states_its_own_timeout(path: Path):
 
 
 def test_the_scan_actually_sees_the_call_sites():
-    total = sum(len(_httpx_calls(_parse(path))) for path in SERVERS)
+    total = sum(len(_httpx_calls(_parse(path))) for path in HTTP_MODULES)
     assert total >= MIN_TOTAL_CALL_SITES, (
-        f"only {total} httpx call sites found across {len(SERVERS)} tool "
-        "servers; the matcher above has probably stopped matching"
+        f"only {total} httpx call sites found across {len(HTTP_MODULES)} tool "
+        "server modules; the matcher above has probably stopped matching"
     )
 
 
@@ -327,6 +346,27 @@ async def test_palo_alto_xml_api_params_survive_encoding(monkeypatch):
     )
     # …and the wire form is quoted, not raw
     assert "<" not in str(route.calls.last.request.url)
+
+
+@respx.mock
+async def test_palo_alto_block_refuses_non_ip_and_escapes_reason(monkeypatch):
+    """The ip goes into an xpath and the reason into XML: no injection."""
+    _stub_config(
+        monkeypatch, pan, {"hostname": "pan.test", "api_key": "k", "verify_ssl": True}
+    )
+    route = respx.get(url__startswith="https://pan.test/api/").mock(
+        return_value=httpx.Response(200, text="<response status='success'/>")
+    )
+    for bad in ("1.2.3.4']/../x", "fe80::1%eth0", "not-an-ip"):
+        body = _body(await pan.handle_call_tool("pan_block_ip", {"ip": bad}))
+        assert "error" in body
+    assert not route.called
+
+    await pan.handle_call_tool(
+        "pan_block_ip", {"ip": "1.2.3.4", "reason": "</description><x/>&"}
+    )
+    element = route.calls.last.request.url.params["element"]
+    assert "Blocked: &lt;/description&gt;&lt;x/&gt;&amp;</description>" in element
 
 
 @respx.mock

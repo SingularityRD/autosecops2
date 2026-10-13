@@ -17,13 +17,15 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import Float, and_
 from sqlalchemy import case as sql_case
-from sqlalchemy import cast, func, literal_column, select, true
+from sqlalchemy import cast, func, literal_column, select
+from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from core.auth.permissions import permission_gate
 from core.cases.case_metrics_service import CaseMetricsService
 from core.cases.case_sla_service import CaseSLAService
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
+from core.storage.canary_exclusion import not_canary_case
 from core.storage.models import Case, CaseClosureInfo
 from core.storage.schemas import CaseMetricsSchema
 
@@ -103,9 +105,11 @@ def _seconds_since_created(moment: ColumnElement) -> ColumnElement:
 
 
 def _created_window(
-    start_date: Optional[datetime], end_date: Optional[datetime]
+    session: Session, start_date: Optional[datetime], end_date: Optional[datetime]
 ) -> List[ColumnElement]:
-    filters: List[ColumnElement] = [true()]
+    # A case made of hidden canaries only (W1.5) is a test, not work: it is in
+    # no reporting number here.
+    filters: List[ColumnElement] = [not_canary_case(session, Case.case_id)]
     if start_date:
         filters.append(Case.created_at >= start_date)
     if end_date:
@@ -202,7 +206,7 @@ def get_mttr(
     respond = _seconds_since_created(_first_activity_at())
     day = func.to_char(Case.created_at, "YYYY-MM-DD")
 
-    filters = _created_window(start_date, end_date)
+    filters = _created_window(session, start_date, end_date)
     filters.append(Case.status.in_(_CLOSED_STATUSES))
     if priority:
         filters.append(Case.priority == priority)
@@ -342,7 +346,7 @@ def get_mttd(
     """
     respond = _seconds_since_created(_first_activity_at())
 
-    filters = _created_window(start_date, end_date)
+    filters = _created_window(session, start_date, end_date)
     if priority:
         filters.append(Case.priority == priority)
 
@@ -401,7 +405,7 @@ def get_by_priority(
             func.count(),
             func.count(sql_case((Case.status.in_(_CLOSED_STATUSES), 1))),
         )
-        .filter(and_(*_created_window(start_date, end_date)))
+        .filter(and_(*_created_window(session, start_date, end_date)))
         .group_by(priority)
         .order_by(priority)
         .all()
@@ -440,7 +444,7 @@ def get_by_status(
     status = func.coalesce(func.nullif(Case.status, ""), "unknown")
     rows = (
         session.query(status, func.count())
-        .filter(and_(*_created_window(start_date, end_date)))
+        .filter(and_(*_created_window(session, start_date, end_date)))
         .group_by(status)
         .order_by(status)
         .all()
@@ -479,7 +483,7 @@ def get_all_analyst_performance(
             func.avg(resolve),
         )
         .outerjoin(CaseClosureInfo, CaseClosureInfo.case_id == Case.case_id)
-        .filter(and_(*_created_window(start_date, end_date)))
+        .filter(and_(*_created_window(session, start_date, end_date)))
         .group_by(analyst)
         .order_by(func.count().desc(), analyst)
         .all()

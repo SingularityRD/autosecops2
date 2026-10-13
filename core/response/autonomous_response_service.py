@@ -37,6 +37,14 @@ logger = logging.getLogger(__name__)
 # approved_by / created_by on the reverse rows the expiry sweep writes.
 TTL_SWEEP_ACTOR = "system:ttl-sweep"
 
+# Another run holds the row, it is no longer approved, or the claim could not
+# be written: in every case this run must not call the vendor.
+_NOT_CLAIMED: Dict[str, Any] = {
+    "success": False,
+    "status": "skipped",
+    "error": "not_claimed: the action is already running, done, or unclaimable",
+}
+
 
 def _invalid_reason(error: ValueError) -> str:
     """The first message of a validation error, or the error's text."""
@@ -260,11 +268,20 @@ class AutonomousResponseService:
         Marks the row executed or failed and returns the execution result.
         None: no executor takes the type and it is not isolate_host, so the
         row is left for manual handling, as before the registry.
+
+        A row is claimed (``ApprovalService.claim_execution`` stamps
+        ``executed_at``) before the vendor is called, and a row that cannot be
+        claimed is not run. The claim is what keeps a change from going out
+        twice: if recording the outcome then fails, the row stays approved
+        with ``executed_at`` set, which the loop never dispatches again, and
+        the result says the change is unrecorded.
         """
         executor = self.executors.get(action.action_type)
         if executor is None:
             if action.action_type != ActionType.ISOLATE_HOST.value:
                 return None
+            if not self.approval_service.claim_execution(action.action_id):
+                return dict(_NOT_CLAIMED)
             params = action.parameters or {}
             result = self._execute_isolation(
                 ip_address=action.target,
@@ -273,7 +290,11 @@ class AutonomousResponseService:
                 confidence=action.confidence,
             )
             if result.get("success"):
-                self.approval_service.mark_executed(action.action_id, result)
+                if (
+                    self.approval_service.mark_executed(action.action_id, result)
+                    is None
+                ):
+                    return self._unrecorded(action, result)
             else:
                 self.approval_service.mark_failed(
                     action.action_id, result.get("error", "Unknown error")
@@ -306,16 +327,22 @@ class AutonomousResponseService:
         # failure here must stop the action, not strand an executed change on
         # a row still marked approved (which the next loop would run again).
         executed_at = utcnow()
-        reversible = typed.reversibility == "reversible"
+        # An undo type (unblock_ip, unisolate_host, enable_user) never expires:
+        # the sweep would "reverse" it and re-apply what an analyst lifted.
+        expires = typed.reversibility == "reversible" and self._takes_ttl(
+            action.action_type
+        )
         try:
             columns = typed.to_approval_columns(
                 executed_at=executed_at,
-                default_ttl=executor.default_ttl if reversible else None,
+                default_ttl=executor.default_ttl if expires else None,
             )
         except (OverflowError, ValueError, TypeError) as e:
             return self._refuse(
                 action, f"invalid action: cannot compute expiry ({type(e).__name__})"
             )
+        if not self.approval_service.claim_execution(action.action_id):
+            return dict(_NOT_CLAIMED)
         try:
             outcome = executor.execute(typed)
         except Exception as e:  # noqa: BLE001
@@ -331,12 +358,10 @@ class AutonomousResponseService:
             return outcome.to_execution_result()
 
         expires_at = (
-            columns["expires_at"]
-            if reversible and outcome.status == "executed"
-            else None
+            columns["expires_at"] if expires and outcome.status == "executed" else None
         )
         result = outcome.to_execution_result()
-        self.approval_service.mark_executed(
+        recorded = self.approval_service.mark_executed(
             action.action_id,
             result,
             executed_at=executed_at,
@@ -344,9 +369,40 @@ class AutonomousResponseService:
             after_state=outcome.after_state,
             expires_at=expires_at,
         )
+        if recorded is None:
+            return self._unrecorded(action, result)
         verify_status = self._verify(executor, typed, outcome)
         self.approval_service.record_verification(action.action_id, verify_status)
         return {**result, "verify_status": verify_status}
+
+    def _takes_ttl(self, action_type: str) -> bool:
+        try:
+            return self.policy.config.takes_ttl(action_type)
+        except Exception:  # noqa: BLE001
+            # Unknown: no expiry. A missed expiry leaves a change standing for
+            # a person to lift; a wrong one re-applies a lifted block.
+            return False
+
+    def _unrecorded(self, action: PendingAction, result: Dict[str, Any]) -> Dict:
+        """The vendor changed something and the row could not say so.
+
+        The row keeps its claim (``executed_at``), so it is never dispatched
+        again. Reported as a failure: nobody should read it as done.
+        """
+        logger.critical(
+            "Action %s (%s on %s) was carried out but could not be recorded; "
+            "it will not be retried. Check the vendor and settle it by hand.",
+            action.action_id,
+            action.action_type,
+            action.target,
+        )
+        return {
+            **result,
+            "success": False,
+            "status": "failed",
+            "error": "executed_unrecorded: the change was made but could not be "
+            "recorded; it will not be retried",
+        }
 
     @staticmethod
     def _verify(executor: Any, typed: TypedAction, outcome: ExecResult) -> str:
