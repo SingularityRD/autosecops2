@@ -692,17 +692,35 @@ def _zip64_swap(good: bytes) -> bytes:
     with zipfile.ZipFile(io.BytesIO(good)) as z:
         evil = z.read("data/ledger.json").replace(b"malicious", b"BENIGN!!!")
     crc = zlib.crc32(evil)
-    lfh = struct.pack(
-        "<4sHHHHHIIIHH", b"PK\x03\x04", 20, 0, 0, 0, 0x5C62, crc, len(evil),
-        len(evil), 16, 0,
-    ) + b"data/ledger.json" + evil
+    lfh = (
+        struct.pack(
+            "<4sHHHHHIIIHH",
+            b"PK\x03\x04",
+            20,
+            0,
+            0,
+            0,
+            0x5C62,
+            crc,
+            len(evil),
+            len(evil),
+            16,
+            0,
+        )
+        + b"data/ledger.json"
+        + evil
+    )
     alt = b""
     for r in recs:
         if name(r) == b"data/ledger.json":
             r = (
-                r[:10] + struct.pack("<H", 0) + r[12:16]
+                r[:10]
+                + struct.pack("<H", 0)
+                + r[12:16]
                 + struct.pack("<III", crc, len(evil), len(evil))
-                + r[28:42] + struct.pack("<I", lfh_off) + r[46:]
+                + r[28:42]
+                + struct.pack("<I", lfh_off)
+                + r[46:]
             )
         alt += r
     alt_off = lfh_off + len(lfh)
@@ -793,9 +811,7 @@ def _streamed(monkeypatch):
     return seen
 
 
-def test_no_entry_is_inflated_before_the_signature_holds(
-    tmp_path, capsys, monkeypatch
-):
+def test_no_entry_is_inflated_before_the_signature_holds(tmp_path, capsys, monkeypatch):
     # A forged manifest (not re-signed) that lists a 50 MiB entry.
     files = _files(make_bundle().data)
     files["data/case.json"] = b"0" * (50 * 1024 * 1024)
@@ -884,7 +900,10 @@ def test_every_zip_reader_lists_the_same_pack(tmp_path):
 
     listing = subprocess.run(
         [sys.executable, "-I", "-m", "zipfile", "-l", str(pack)],
-        capture_output=True, text=True, timeout=120, check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
     ).stdout.splitlines()
     assert listing[0].startswith("File Name")
     assert sorted(line.split()[0] for line in listing[1:] if line.strip()) == sorted(
@@ -894,13 +913,18 @@ def test_every_zip_reader_lists_the_same_pack(tmp_path):
     if shutil.which("unzip") is None:
         pytest.skip("unzip is not installed")
     names = subprocess.run(
-        ["unzip", "-Z1", str(pack)], capture_output=True, text=True, timeout=120,
+        ["unzip", "-Z1", str(pack)],
+        capture_output=True,
+        text=True,
+        timeout=120,
         check=True,
     ).stdout.split()
     assert sorted(names) == sorted(ours)
     for name in names:
         body = subprocess.run(
-            ["unzip", "-p", str(pack), name], capture_output=True, timeout=120,
+            ["unzip", "-p", str(pack), name],
+            capture_output=True,
+            timeout=120,
             check=True,
         ).stdout
         assert digest(body) == ours[name], name

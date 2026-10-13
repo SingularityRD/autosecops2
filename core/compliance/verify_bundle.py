@@ -807,7 +807,9 @@ def verify_files(
         if data is None:
             problems.append(f"{name} is missing")
             continue
-        digest = data if isinstance(data, Digest) else Digest(sha256_hex(data), len(data))
+        digest = (
+            data if isinstance(data, Digest) else Digest(sha256_hex(data), len(data))
+        )
         if digest.sha256 != entry.get("sha256") or digest.size != entry.get("bytes"):
             problems.append(f"{name} does not match its sha256")
     for name in sorted(set(files) - names - {MANIFEST, SIGNATURE}):
