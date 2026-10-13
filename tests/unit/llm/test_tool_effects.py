@@ -65,6 +65,18 @@ def test_the_table_classifies_by_name_and_by_flattened_name(name, effect):
         ("acme-edr_xdr_get_host", READ_ONLY),
         ("mde_get_isolation_status", READ_ONLY),
         ("jira_list_contained_hosts", READ_ONLY),
+        # Words split on "-" and camelCase too, so a verb cannot hide (W0.10).
+        ("get_hostAndIsolate", DESTRUCTIVE),
+        ("list-users-delete", DESTRUCTIVE),
+        ("acme_getHostThenWipe", DESTRUCTIVE),
+        ("fetchAndUpdateTicket", WRITE),
+        ("getUser", READ_ONLY),
+        ("acme-edr_getHostStatus", READ_ONLY),
+        # Only the leading verb reads: a read word further in is not the verb.
+        ("export_list_users", DESTRUCTIVE),
+        ("acme_frobnicate_get", DESTRUCTIVE),
+        ("transfer_query_results", DESTRUCTIVE),
+        ("foo_bar_baz_get", DESTRUCTIVE),
         # Says nothing: the restrictive end.
         ("acme_frobnicate", DESTRUCTIVE),
         ("vendor_tool", DESTRUCTIVE),
