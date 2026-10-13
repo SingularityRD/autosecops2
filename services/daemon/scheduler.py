@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from core.config import get_settings
 from core.llm.bifrost.admin import refresh_gateway_rates, run_gateway_rates_refresher
+from core.quality.canary import canary_sweep, without_canaries
 from core.storage.connection import get_db_manager
 from core.time import utcnow
 from core.workflows.enablement import is_enabled
@@ -63,6 +64,8 @@ class TaskScheduler:
             "threat_hunts": 0,
             "probes_injected": 0,
             "probes_scored": 0,
+            "canaries_injected": 0,
+            "canaries_scored": 0,
             "reports_generated": 0,
             "cleanups_run": 0,
             "errors": 0,
@@ -113,6 +116,19 @@ class TaskScheduler:
                     name="probe_sweep",
                     func=self._run_probe_sweep,
                     interval=self.config.probe_interval,
+                    enabled=True,
+                    run_on_start=False,
+                )
+            )
+
+        # Hidden canaries (W1.5): the hourly tick scores what is due and
+        # injects only while an admin has enabled them.
+        if self.config.canaries_enabled:
+            self._tasks.append(
+                ScheduledTask(
+                    name="canary_sweep",
+                    func=self._run_canary_sweep,
+                    interval=self.config.canary_interval,
                     enabled=True,
                     run_on_start=False,
                 )
@@ -312,6 +328,8 @@ class TaskScheduler:
         # Gather data for report
         findings = self._data_service.get_findings()
         cases = self._data_service.get_cases()
+        # Hidden canaries (W1.5) are tests, not activity in the estate.
+        findings, cases = await asyncio.to_thread(without_canaries, findings, cases)
 
         # Calculate time range (last week)
         now = utcnow()
@@ -450,6 +468,13 @@ class TaskScheduler:
             manager.initialize()
         checkpoint = await asyncio.to_thread(run_checkpoint, manager.engine)
         return checkpoint.id if checkpoint is not None else None
+
+    async def _run_canary_sweep(self):
+        """Score canaries past their window, then inject one if due (W1.5)."""
+        result = await canary_sweep(self._processor_queue)
+        self.stats["canaries_scored"] += result["scored"]
+        self.stats["canaries_injected"] += result["injected"]
+        return result
 
     async def _run_sandbox_poll(self):
         """Advance pending sandbox submissions to completed reports."""

@@ -337,14 +337,20 @@ def insert_intake_trigger(
     finding_id: Optional[str] = None,
     payload: Optional[Dict[str, Any]] = None,
 ) -> Optional[int]:
-    """Insert a queued trigger. ``None`` when a queued row for this finding already exists."""
+    """Insert a queued trigger. ``None`` when a queued row for this finding already
+    exists, or when the finding is a hidden canary (W1.5): a canary is never
+    investigated autonomously, whichever path (finding intake, scan, detection)
+    asks for it."""
     from sqlalchemy.exc import IntegrityError
 
+    from core.storage.canary_exclusion import is_canary_finding
     from core.storage.connection import get_db_manager
     from core.storage.models import IntakeTrigger
 
     try:
         with get_db_manager().session_scope() as session:
+            if finding_id and is_canary_finding(finding_id, session):
+                return None
             row = IntakeTrigger(
                 kind=kind,
                 state="queued",
