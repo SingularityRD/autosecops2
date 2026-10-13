@@ -486,6 +486,40 @@ def capability_report(
     }
 
 
+# A verdict run is the hunt loop at triage scale (arch/verdict.yaml): one lead and at
+# most two workers on one uncertain alert. Mirrored from that arch's max_workers.
+VERDICT_MAX_WORKERS = 2
+# What a verdict run does when its ceiling binds: end there, as budget_terminated,
+# rather than park for an operator. Nobody is watching a triage verdict, so waiting
+# is a verdict that never arrives; the agent records it as inconclusive instead.
+VERDICT_ON_BUDGET = "terminate"
+
+
+# Read from settings at resolve time, so the deployment's knobs (and an eval that
+# turns them) reach the next run without a restart of anything but the backend.
+def verdict_budgets() -> Tuple[int, float, int]:
+    """``(max_iterations, max_cost_usd, max_wall_ms)`` for a verdict run."""
+    from core.config import get_settings
+
+    settings = get_settings()
+    return (
+        int(settings.verdict_run_max_iterations),
+        float(settings.verdict_run_max_cost_usd),
+        int(settings.verdict_run_max_wall_ms),
+    )
+
+
+def _verdict_limits() -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    iterations, cost, wall = verdict_budgets()
+    per_iteration = (VERDICT_MAX_WORKERS + 2) * (int(DEFAULT_RUNTIME["max_turns"]) + 2)
+    budgets = {
+        "max_calls": iterations * per_iteration,
+        "max_cost_usd": cost,
+        "max_wall_ms": wall,
+    }
+    return budgets, {"max_iterations": iterations}
+
+
 # The null hypothesis on the board from the start. Without it the benign
 # explanation is only ever an objection, never a competing claim -- which is the
 # whole protection against a loop that searches until it finds something.
@@ -508,7 +542,7 @@ def resolve_hunt(
     provider: Optional[str] = None,
     effort: Optional[str] = None,
 ) -> Tuple[str, str]:
-    from core.workflows.workflows_service import WorkflowsService
+    from core.workflows.workflows_service import VERDICT_RUN_KIND, WorkflowsService
 
     definition = (workflows or WorkflowsService()).get_workflow(workflow_id)
     if definition is None:
@@ -535,6 +569,10 @@ def resolve_hunt(
         "narrative": definition.body,
     }
 
+    verdict = getattr(definition, "run_kind", None) == VERDICT_RUN_KIND
+    budgets, thresholds = (
+        _verdict_limits() if verdict else (dict(HUNT_BUDGETS), dict(HUNT_THRESHOLDS))
+    )
     hunt_tools = _bound_capabilities(
         list(HUNT_CAPABILITIES), _tool_catalogue(registry)
     ) + [_expand_tool()]
@@ -542,7 +580,7 @@ def resolve_hunt(
         "model": model or DEFAULT_MODEL,
         **({"provider": provider} if provider else {}),
         **({"effort": effort} if effort else {}),
-        "budgets": dict(HUNT_BUDGETS),
+        "budgets": budgets,
         "runtime": DEFAULT_RUNTIME,
         "tools": hunt_tools,
         # The hunt gates on its own checkpoint classes, which are a property of
@@ -550,8 +588,11 @@ def resolve_hunt(
         # Its capabilities bind read tools only, so this is empty; computed
         # rather than stated so a gated grant could never ride in ungated.
         "approvals": _approvals_of(hunt_tools),
-        "thresholds": dict(HUNT_THRESHOLDS),
+        "thresholds": thresholds,
         "hypothesis_loop": HUNT_HYPOTHESIS_LOOP,
+        # Only a verdict run says anything here: a hunt or an adjudication left
+        # without it parks at its ceiling, as it always has.
+        **({"on_budget": VERDICT_ON_BUDGET} if verdict else {}),
     }
 
     # Checkpoint policies a definition declares. The agent merges these over its

@@ -6,6 +6,7 @@ import logging
 import time
 from typing import Any, Dict, Optional, Tuple
 
+from core.autonomy.categories import category_of
 from core.response.approval_service import ApprovalService
 from core.response.autonomous_response_service import AutonomousResponseService
 from core.response.config import response_action_decision
@@ -117,6 +118,37 @@ class AutonomousResponder:
 
             except Exception as e:
                 logger.error(f"Action executor error: {e}")
+
+            # Expired reversible actions are undone whether or not auto
+            # response is on: the TTL was part of what was approved.
+            try:
+                reversals = await asyncio.to_thread(
+                    self._response_service.sweep_expired
+                )
+                for reversal in reversals or []:
+                    logger.info(
+                        "TTL reversal of %s: %s",
+                        reversal.get("action_id"),
+                        reversal.get("outcome"),
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.error("TTL sweep error: %s", e)
+
+            # The autonomy circuit breaker (W3.1): a category whose QA bound
+            # broke loses its autonomous tiers now, not at its next action.
+            try:
+                demotions = await asyncio.to_thread(
+                    self._response_service.approval_service.autonomy.check_all
+                )
+                for demotion in demotions or []:
+                    logger.warning(
+                        "Autonomy demoted %s/%s to approve: %s",
+                        demotion.get("category"),
+                        demotion.get("action_type"),
+                        demotion.get("reason"),
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.error("Autonomy check error: %s", e)
 
             # Check every 30 seconds
             try:
@@ -368,6 +400,7 @@ class AutonomousResponder:
             reason=f"Automated response to {finding_id}; {rule}",
             evidence=[finding_id],
             correlation_data=correlation_data,
+            category=category_of(finding),
         )
 
         if result:

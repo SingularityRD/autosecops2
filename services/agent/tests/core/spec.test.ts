@@ -50,7 +50,7 @@ function loadArchOnly(body: string, handled: readonly string[] = ["EXAMINE", "CO
 
 describe("the registry resolves a run kind to an arch", () => {
   it("registers the shipped arches and nothing else", () => {
-    expect(registeredKinds()).toEqual(["adjudicate", "chat", "compose", "hunt", "investigate", "root_cause"]);
+    expect(registeredKinds()).toEqual(["adjudicate", "chat", "compose", "hunt", "investigate", "root_cause", "verdict"]);
   });
 
   // Adding an agent type is an arch file and an entry. Nothing in the worker
@@ -75,6 +75,7 @@ describe("the registry resolves a run kind to an arch", () => {
     expect(isHuntLike("hunt")).toBe(true);
     expect(isHuntLike("root_cause")).toBe(false);
     expect(isHuntLike("adjudicate")).toBe(true);
+    expect(isHuntLike("verdict")).toBe(true);
     expect(isHuntLike("investigate")).toBe(false);
     expect(isHuntLike("compose")).toBe(false);
     expect(isHuntLike("chat")).toBe(false);
@@ -107,6 +108,22 @@ describe("the shipped arches", () => {
     expect(properties["proposed_workflow"]).toEqual({ type: ["string", "null"] });
     expect(spec.roles.lead?.output_schema?.["required"]).not.toContain("proposed_workflow");
     expect(spec.roles.lead?.prompt).toContain("You execute nothing");
+  });
+
+  // The hunt loop at triage scale: a lead, at most two workers, the critic, no
+  // HANDOFF_IR, and a verdict object on CONCLUDE whose authorship code stamps.
+  it("loads verdict.yaml as a two-worker fan-out with the critic and a verdict on CONCLUDE", () => {
+    const spec = buildSpec({ ...HUNT, arch: archFor("verdict").arch }, archFor("verdict").actions);
+    expect(spec.arch).toBe("verdict");
+    expect(archFor("verdict").workflow).toBe("hunt");
+    expect(spec.dispatch).toEqual({ topology: "fan_out", mode: "parallel", fan_out_over: "questions", max_workers: 2 });
+    expect(Object.keys(spec.roles.workers)).toEqual(["threat_hunter", "threat_intel"]);
+    expect(spec.roles.critic).toBeDefined();
+    const properties = spec.roles.lead?.output_schema?.["properties"] as Record<string, { enum?: unknown[]; properties?: Record<string, unknown> }>;
+    expect(properties["action"]?.enum).not.toContain("HANDOFF_IR");
+    expect(properties["action"]?.enum).toContain("VALIDATE");
+    expect(Object.keys(properties["verdict"]?.properties ?? {})).not.toContain("authored");
+    expect(spec.roles.lead?.prompt).toContain("VALIDATE is mandatory before a malicious or benign verdict");
   });
 
   // The other shape the indirection has to carry: one role, its tools, no fan-out.

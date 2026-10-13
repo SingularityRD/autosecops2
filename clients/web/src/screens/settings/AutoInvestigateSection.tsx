@@ -17,6 +17,7 @@ import {
 import type { SectionProps } from './types'
 import { fmtCost } from '../../shared/cost'
 import IntentReportCard from './IntentReportCard'
+import AutonomyTiersPanel from './AutonomyTiersPanel'
 
 // Raising any of these needs a confirm; lowering applies at once. Settings also
 // guards stale_threshold, which Setup's profile picker never changes.
@@ -491,6 +492,8 @@ export default function AutoInvestigateSection({ notify }: SectionProps) {
           <span className="text-xs text-tx-3">Hidden — click Show to see timing, storage and the intent report.</span>
         )}
       </SettingsCard>
+
+      <AutonomyTiersPanel notify={notify} />
 
       <ConfirmDialog
         open={dialog != null}

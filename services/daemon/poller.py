@@ -3,20 +3,28 @@
 * **Federation runner** (:class:`core.federation.runner.FederationRunner`) —
   the only path that polls a source, one task per adapter, each on its
   ``federation_sources`` row's interval.
-* **Webhook** — pushed findings (the LogLM connector, generic senders). When
-  the hand-off to the processor is full it answers 503 with ``Retry-After``,
-  and the sender keeps its bookmark and retries.
+* **Webhook** — pushed findings (the LogLM connector, generic senders). A 200
+  means every finding of the request is durable (W0.12): fsync'd into the
+  ingest spool (core/ingestion/spool.py), which the processor drains and a
+  restarted daemon replays. When the spool is full or cannot be written the
+  webhook answers 503 with ``Retry-After`` and the sender keeps its bookmark
+  and retries. Without a spool (``DAEMON_INGEST_SPOOL_ENABLED=false``, or it
+  could not be opened) the 200 waits for the database row instead, and a
+  finding not stored in time is answered 503.
 """
 
 import asyncio
 import hmac
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from core.config import get_settings
 from core.federation.runner import FederationRunner
+from core.ingestion.ack import new_ack
 from core.ingestion.dedup import RedisDedupSet
 from core.ingestion.handoff import envelope
+from core.ingestion.spool import IngestSpool, SpoolError, SpoolFull
+from core.ingestion.spool import count as spool_count
 from core.webhook_rejections import (
     BAD_TOKEN,
     DISABLED,
@@ -30,6 +38,8 @@ logger = logging.getLogger(__name__)
 
 # Seconds a webhook sender is asked to wait when the hand-off is full.
 _BUSY_RETRY_AFTER = 5
+# Without a spool: how long the webhook waits for the rows before a 503.
+_SYNC_STORE_TIMEOUT = 15.0
 
 
 def normalize_mitre_predictions(raw: Any, finding_id: str) -> Dict[str, float]:
@@ -80,7 +90,6 @@ def normalize_mitre_predictions(raw: Any, finding_id: str) -> Dict[str, float]:
     return out
 
 
-
 class DataPoller:
     """Hosts the Federation runner and the ingest webhook."""
 
@@ -89,13 +98,19 @@ class DataPoller:
         self._output_queue: Optional[asyncio.Queue] = None
         self._federation = FederationRunner(output_queue=None)
         self._webhook_dedup = RedisDedupSet("poller:webhook")
+        self._spool: Optional[IngestSpool] = None
         # The runner's own dict, so /status reads its counts live.
         self.stats: Dict[str, Any] = {
             "webhook_findings": 0,
             "webhook_busy": 0,
+            "webhook_not_stored": 0,
             "webhook_rejections": {},
             "federation": self._federation.stats,
         }
+
+    def set_spool(self, spool: Optional[IngestSpool]) -> None:
+        """Acknowledge webhook findings once they are in ``spool`` (W0.12)."""
+        self._spool = spool
 
     def set_output_queue(self, queue: asyncio.Queue):
         """Set the output queue for processed findings."""
@@ -139,6 +154,74 @@ class DataPoller:
 
         await runner.cleanup()
         logger.info("Webhook server stopped")
+
+    async def _accept_spooled(self, findings: List[Dict[str, Any]]):
+        """200 once ``findings`` are fsync'd in the spool; 503 if they cannot be."""
+        from aiohttp import web
+
+        spool = self._spool
+        assert spool is not None
+        try:
+            taken = await asyncio.to_thread(spool.append, findings, "webhook")
+        except SpoolFull as e:
+            self.stats["webhook_busy"] += 1
+            spool_count("rejected", reason="full")
+            logger.warning("Webhook answered 503: %s", e)
+            return _busy(0, "ingest busy: spool full")
+        except SpoolError as e:
+            self.stats["webhook_busy"] += 1
+            spool_count("rejected", reason="error")
+            logger.error("Webhook answered 503, ingest spool unusable: %s", e)
+            return _busy(0, "ingest unavailable: spool write failed")
+        spool_count("appended", len(taken))
+        # Marked after the spool holds them: a marked id is always on disk or
+        # stored, so skipping a re-send of it loses nothing.
+        for finding_id in taken:
+            await self._webhook_dedup.mark_processed(finding_id)
+        self.stats["webhook_findings"] += len(taken)
+        return web.json_response({"status": "ok", "ingested": len(taken)})
+
+    async def _accept_stored(self, findings: List[Dict[str, Any]]):
+        """No spool: 200 only once every row is stored, else 503."""
+        from aiohttp import web
+
+        if self._output_queue is None:
+            return _busy(0, "ingest not ready: no processor queue")
+        pending = []
+        busy = False
+        for finding_data in findings:
+            item = envelope(finding_data, "webhook")
+            item["ack"] = ack = new_ack()
+            try:
+                self._output_queue.put_nowait(item)
+            except asyncio.QueueFull:
+                busy = True
+                break
+            pending.append((finding_data["finding_id"], ack))
+        if pending:
+            await asyncio.wait([ack for _, ack in pending], timeout=_SYNC_STORE_TIMEOUT)
+        stored = 0
+        dedup = self._webhook_dedup
+        for finding_id, ack in pending:
+            if ack.done() and not ack.cancelled() and ack.result():
+                await dedup.mark_processed(finding_id)
+                stored += 1
+            elif not ack.done():
+                # Answered 503 but still queued: if it is stored later, the
+                # sender's retry is skipped rather than processed twice.
+                def _late(fut, finding_id=finding_id):
+                    if not fut.cancelled() and fut.result():
+                        asyncio.ensure_future(dedup.mark_processed(finding_id))
+
+                ack.add_done_callback(_late)
+        self.stats["webhook_findings"] += stored
+        if busy:
+            self.stats["webhook_busy"] += 1
+            return _busy(stored, "ingest busy: processor queue full")
+        if stored < len(pending):
+            self.stats["webhook_not_stored"] += len(pending) - stored
+            return _busy(stored, "ingest unavailable: findings not stored")
+        return web.json_response({"status": "ok", "ingested": stored})
 
     def _webhook_app(self):
         from aiohttp import web
@@ -217,39 +300,18 @@ class DataPoller:
                         finding_data["finding_id"],
                     )
 
-                if self._output_queue is None:
-                    return _busy(0, "ingest not ready: no processor queue")
-
-                count = 0
                 for finding_data in findings:
-                    finding_id = finding_data["finding_id"]
-                    if await self._webhook_dedup.is_processed(finding_id):
-                        continue
                     finding_data["data_source"] = finding_data.get(
                         "data_source", "webhook"
                     )
-                    try:
-                        # Never wait: the sender holds its bookmark and
-                        # retries, and the ones already taken dedup then.
-                        # The item carries the dedup key, which the processor
-                        # forgets if it gives up on the store.
-                        self._output_queue.put_nowait(
-                            envelope(
-                                finding_data,
-                                "webhook",
-                                dedup=self._webhook_dedup,
-                                dedup_key=finding_id,
-                            )
-                        )
-                    except asyncio.QueueFull:
-                        self.stats["webhook_findings"] += count
-                        self.stats["webhook_busy"] += 1
-                        return _busy(count, "ingest busy: processor queue full")
-                    await self._webhook_dedup.mark_processed(finding_id)
-                    count += 1
-
-                self.stats["webhook_findings"] += count
-                return web.json_response({"status": "ok", "ingested": count})
+                fresh = [
+                    f
+                    for f in findings
+                    if not await self._webhook_dedup.is_processed(f["finding_id"])
+                ]
+                if self._spool is not None:
+                    return await self._accept_spooled(fresh)
+                return await self._accept_stored(fresh)
 
             except Exception as e:
                 logger.error(f"Webhook error: {e}")

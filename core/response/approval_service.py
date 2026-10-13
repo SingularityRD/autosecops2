@@ -15,24 +15,27 @@ other existing callers) keep working.
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional
 
 from opentelemetry.metrics import Observation
-from sqlalchemy import select
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from core.autonomy import AutonomyController, AutonomyDecision, AutonomyWatchOnly
+from core.autonomy.tiers import APPROVE, WATCH
 from core.response.config import (
     ResponseConfig,
     approval_requirement,
     decision_rule,
     split_decision_rule,
 )
+from core.response.policy import PolicyConfig
 from core.storage.config_service import get_config_service
 from core.storage.connection import get_db_manager
 from core.storage.models import ApprovalAction as ApprovalActionRow
-from core.storage.models import Investigation, WorkflowRun
+from core.storage.models import Investigation, Role, User, WorkflowRun
 from core.telemetry import get_meter
 from core.time import utcnow
 
@@ -82,6 +85,8 @@ class ActionType(Enum):
     WAF_BLOCK = "waf_block"  # Cloudflare WAF IP Access Rule
     GATEWAY_BLOCK = "gateway_block"  # Cloudflare Zero Trust Gateway DNS/HTTP rule
     ACCESS_REVOKE = "access_revoke"  # Cloudflare Zero Trust Access session revoke
+    # Entra ID (W2.6): two-person rule by default (policy.DEFAULT_FOUR_EYES_TYPES).
+    REVOKE_SESSIONS = "revoke_sessions"
     CUSTOM = "custom"
 
 
@@ -133,6 +138,141 @@ class PendingAction:
     workflow_phase_id: Optional[str] = None
     reversibility: str = Reversibility.REVERSIBLE.value
     idempotency_key: Optional[str] = None
+    # Execution lifecycle (49_approval_action_lifecycle.sql, W2.4).
+    expires_at: Optional[str] = None
+    verified_at: Optional[str] = None
+    verify_status: Optional[str] = None
+    reversed_at: Optional[str] = None
+    reverse_of: Optional[str] = None
+    before_state: Optional[Dict] = None
+    after_state: Optional[Dict] = None
+    second_approver: Optional[str] = None
+
+
+class SecondApproverConflict(ValueError):
+    """The two-person rule's second approval came from the first approver."""
+
+
+class SecondApproverRoleConflict(SecondApproverConflict):
+    """The second approver holds the first approver's role, or a role is unknown.
+
+    Raised only for types in ``PolicyConfig.distinct_role_types`` (W3.2).
+    """
+
+
+def second_approver_detail(error: SecondApproverConflict) -> str:
+    """The 409 / tool error text for a refused second approval."""
+    if isinstance(error, SecondApproverRoleConflict):
+        return "A second approver with a different role must give the second approval"
+    return "A different person must give the second approval"
+
+
+# approval_decisions (61_approval_decisions.sql): one row per decision with the
+# decider's role at that moment. Written in a savepoint: an install that has not
+# applied the file still decides, and the report falls back to current roles.
+_INSERT_DECISION = text("""
+    INSERT INTO approval_decisions
+        (action_id, step, actor, actor_user_id, actor_role_id, actor_role)
+    VALUES (:action_id, :step, :actor, :user_id, :role_id, :role)
+    """)
+_FIRST_ROLE = text("""
+    SELECT actor_role_id, actor_role FROM approval_decisions
+    WHERE action_id = :action_id AND step = 'first_approval'
+    ORDER BY id DESC LIMIT 1
+    """)
+_decisions_warned = False
+
+#: ``(user_id, role_id, role name)`` of no account.
+NO_ACCOUNT: tuple[Optional[str], Optional[str], Optional[str]] = (None, None, None)
+
+
+def account_of(
+    session, username: Optional[str]
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """``(user_id, role_id, role name)`` of the account named ``username``.
+
+    Usernames are unique only as written ("Carol" and "carol" can be two
+    accounts), so the exact name wins. Failing that, a case-insensitive match
+    counts only when exactly one account has it; two or more are ambiguous
+    and give ``NO_ACCOUNT``, as does a name that is no account (an agent,
+    ``analyst``). Case folding is the database's ``lower()`` on both sides, so
+    the stored name and the asked one fold the same way (Turkish dotted I
+    included).
+    """
+    if not username or not username.strip():
+        return NO_ACCOUNT
+    name = username.strip()
+    stmt = select(User.user_id, User.role_id, Role.name).outerjoin(
+        Role, Role.role_id == User.role_id
+    )
+    row = session.execute(stmt.where(User.username == name)).first()
+    if row is not None:
+        return row[0], row[1], row[2]
+    rows = session.execute(
+        stmt.where(func.lower(User.username) == func.lower(name)).limit(2)
+    ).all()
+    if len(rows) == 1:
+        return rows[0][0], rows[0][1], rows[0][2]
+    if rows:
+        logger.warning(
+            "%r matches more than one account case-insensitively; no role is used",
+            name,
+        )
+    return NO_ACCOUNT
+
+
+def role_of(session, username: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """``(role_id, role name)`` of the account named ``username`` (``account_of``).
+
+    ``(None, None)`` for a name that is no account, or that only matches
+    several accounts case-insensitively.
+    """
+    _user_id, role_id, role = account_of(session, username)
+    return role_id, role
+
+
+def _record_decision(
+    session, action_id: str, step: str, actor: str, account: tuple
+) -> None:
+    global _decisions_warned
+    try:
+        with session.begin_nested():
+            session.execute(
+                _INSERT_DECISION,
+                {
+                    "action_id": action_id,
+                    "step": step,
+                    "actor": (actor or "")[:100],
+                    "user_id": account[0],
+                    "role_id": account[1],
+                    "role": account[2],
+                },
+            )
+    except SQLAlchemyError as e:
+        if not _decisions_warned:
+            logger.warning(
+                "approval_decisions not written (apply 61_approval_decisions.sql): %s",
+                type(e).__name__,
+            )
+            _decisions_warned = True
+
+
+def _first_approver_role(
+    session, action_id: str, first_approver: str
+) -> tuple[Optional[str], Optional[str]]:
+    """The first approver's role as recorded at their decision, else as now."""
+    try:
+        with session.begin_nested():
+            row = session.execute(_FIRST_ROLE, {"action_id": action_id}).first()
+        if row and row[0]:
+            return row[0], row[1]
+    except SQLAlchemyError:
+        pass
+    return role_of(session, first_approver)
+
+
+def _iso(value: Optional[datetime]) -> Optional[str]:
+    return value.isoformat() if value else None
 
 
 def _row_to_pending(row: ApprovalActionRow) -> PendingAction:
@@ -159,7 +299,34 @@ def _row_to_pending(row: ApprovalActionRow) -> PendingAction:
         workflow_phase_id=row.workflow_phase_id,
         reversibility=row.reversibility or Reversibility.REVERSIBLE.value,
         idempotency_key=row.idempotency_key,
+        expires_at=_iso(row.expires_at),
+        verified_at=_iso(row.verified_at),
+        verify_status=row.verify_status,
+        reversed_at=_iso(row.reversed_at),
+        reverse_of=row.reverse_of,
+        before_state=row.before_state,
+        after_state=row.after_state,
+        second_approver=row.second_approver,
     )
+
+
+def _cap_ttl(parameters: Dict[str, Any], ttl_seconds: Optional[int]) -> None:
+    """Hold an autonomous action's ttl to its tier's ``max_ttl_seconds``.
+
+    A ttl the caller set and that is shorter stays; a longer one, or none, is
+    replaced. One that is not a number is left for the dispatcher to refuse.
+    """
+    if not ttl_seconds:
+        return
+    raw = parameters.get("ttl_seconds")
+    if raw is not None and not isinstance(raw, bool):
+        try:
+            current = float(raw)
+        except (TypeError, ValueError):
+            return
+        if 0 < current <= ttl_seconds:
+            return
+    parameters["ttl_seconds"] = int(ttl_seconds)
 
 
 def _nonfailed_by_key(session, key: str) -> Optional[ApprovalActionRow]:
@@ -175,16 +342,61 @@ def _nonfailed_by_key(session, key: str) -> Optional[ApprovalActionRow]:
 class ApprovalService:
     """Service for managing approval workflow for autonomous actions."""
 
-    def __init__(self, config: Optional[ResponseConfig] = None):
+    def __init__(
+        self,
+        config: Optional[ResponseConfig] = None,
+        policy_config: Optional[PolicyConfig] = None,
+        autonomy: Optional[AutonomyController] = None,
+    ):
         """
         Initialize approval service.
 
         Args:
             config: the confidence band; read from Settings when omitted so
                 the no-arg form callers use still honours env (#916).
+            policy_config: the response policy (four-eyes types); read from
+                the ``response.policy`` system config at each decision when
+                omitted.
+            autonomy: the autonomy controller (W3.1); one reading
+                ``autonomy_tiers`` when omitted.
         """
         self.config = config or ResponseConfig.from_settings()
         self.force_manual_approval = False
+        self._policy_config = policy_config
+        self._autonomy = autonomy
+
+    @property
+    def autonomy(self) -> AutonomyController:
+        if self._autonomy is None:
+            self._autonomy = AutonomyController()
+        return self._autonomy
+
+    def autonomy_decision(
+        self,
+        action_type: str,
+        category: Optional[str],
+        reversibility: str,
+        confidence: float,
+    ) -> Optional[AutonomyDecision]:
+        """The tier that governs this action (W3.1); None if tiers do not apply."""
+        try:
+            four_eyes = self.policy_config().needs_second_approver(action_type)
+        except Exception:  # noqa: BLE001
+            four_eyes = True
+        return self.autonomy.decide(
+            category=category,
+            action_type=action_type,
+            reversibility=reversibility,
+            confidence=confidence,
+            four_eyes=four_eyes,
+        )
+
+    def policy_config(self) -> PolicyConfig:
+        return (
+            self._policy_config
+            if self._policy_config is not None
+            else PolicyConfig.load()
+        )
 
     # ------------------------------------------------------------------
     # Config (force_manual_approval) — db/config-backed, read per decision
@@ -233,6 +445,7 @@ class ApprovalService:
         idempotency_key: Optional[str] = None,
         human_only: bool = False,
         annotate_rule: bool = True,
+        category: Optional[str] = None,
     ) -> PendingAction:
         """Create a new pending action.
 
@@ -247,6 +460,10 @@ class ApprovalService:
         the same ``idempotency_key`` returns the existing non-failed row.
         ``annotate_rule=False`` keeps the deciding rule off ``reason`` for rows
         whose reason is read by an analyst and no confidence was ever compared.
+
+        ``category`` is the alert category the autonomy tier is looked up by
+        (W3.1); ``other`` when omitted. Under a ``watch`` tier nothing is
+        recorded and ``AutonomyWatchOnly`` is raised.
         """
         action, _inserted = self._put_action(
             action_type=action_type,
@@ -264,6 +481,7 @@ class ApprovalService:
             idempotency_key=idempotency_key,
             human_only=human_only,
             annotate_rule=annotate_rule,
+            category=category,
         )
         return action
 
@@ -284,6 +502,7 @@ class ApprovalService:
         idempotency_key: Optional[str] = None,
         human_only: bool = False,
         annotate_rule: bool = True,
+        category: Optional[str] = None,
     ) -> tuple[PendingAction, bool]:
         """Insert an approval row, or return the existing non-failed one.
 
@@ -304,6 +523,41 @@ class ApprovalService:
         )
         if human_only:
             rule = decision_rule("approval.human_only", True)
+        elif self.policy_config().needs_second_approver(action_type.value):
+            # Two people decide these; a confidence figure is not one of them.
+            requires_approval = True
+            rule = decision_rule("policy.four_eyes", True)
+
+        # The autonomy tier (W3.1). Only it releases an action without a
+        # person: below ``autonomous`` every action waits for one, whatever its
+        # confidence. ``parameters["autonomy"]`` is the controller's alone.
+        parameters = dict(parameters or {})
+        parameters.pop("autonomy", None)
+        decision = self.autonomy_decision(
+            action_type.value, category, reversibility.value, confidence
+        )
+        if decision is not None:
+            if decision.effective == WATCH:
+                raise AutonomyWatchOnly(
+                    f"{action_type.value} on {decision.category} alerts is at "
+                    "the watch tier: observed, not recorded"
+                )
+            if not decision.autonomous:
+                if not requires_approval:
+                    requires_approval = True
+                    rule = decision_rule("autonomy.tier", decision.effective)
+            elif not requires_approval:
+                # Released by the tier; the confidence rule stays the one
+                # named, and the tier is on the row's autonomy record.
+                _cap_ttl(parameters, decision.ttl_seconds)
+            record = decision.record()
+            if decision.autonomous and requires_approval:
+                # The tier would release it, but another rule (force-manual,
+                # irreversible, the confidence band, four-eyes, human_only)
+                # holds it for a person: the record says what was applied.
+                record["effective"] = APPROVE
+                record["reasons"] = [*record["reasons"], f"held: {rule}"]
+            parameters["autonomy"] = record
         if annotate_rule:
             reason = f"{reason}; {rule}" if reason else rule
 
@@ -334,7 +588,7 @@ class ApprovalService:
                     created_by=created_by,
                     requires_approval=requires_approval,
                     status=status,
-                    parameters=dict(parameters or {}),
+                    parameters=parameters,
                     workflow_run_id=workflow_run_id,
                     workflow_phase_id=workflow_phase_id,
                     reversibility=reversibility.value,
@@ -437,11 +691,24 @@ class ApprovalService:
         action_id: str,
         approved_by: str = "analyst",
     ) -> Optional[PendingAction]:
-        """Approve a pending action."""
+        """Approve a pending action.
+
+        An action type under the two-person rule (``PolicyConfig.four_eyes_types``)
+        needs two approvals: the first records ``approved_by`` and leaves the
+        row pending; the second, from a different user (case-insensitively),
+        records ``second_approver`` and approves it. The first approver
+        approving again raises ``SecondApproverConflict``. For a type in
+        ``PolicyConfig.distinct_role_types`` (W3.2) the second approver must
+        also hold a different role from the first (the first's role as recorded
+        at their approval), else ``SecondApproverRoleConflict``; an approver
+        whose role cannot be found is refused the same way. Every decision is
+        recorded in ``approval_decisions`` with the decider's role.
+        """
+        policy = self.policy_config()
         try:
             db = get_db_manager()
             with db.session_scope() as session:
-                row = session.get(ApprovalActionRow, action_id)
+                row = session.get(ApprovalActionRow, action_id, with_for_update=True)
                 if row is None:
                     logger.warning("Action %s not found", action_id)
                     return None
@@ -452,10 +719,68 @@ class ApprovalService:
                         row.status,
                     )
                     return _row_to_pending(row)
+                if policy.needs_second_approver(row.action_type):
+                    account = account_of(session, approved_by)
+                    role = account[1:]
+                    if not row.approved_by:
+                        row.approved_at = utcnow()
+                        row.approved_by = approved_by
+                        session.flush()
+                        _record_decision(
+                            session, action_id, "first_approval", approved_by, account
+                        )
+                        pending = _row_to_pending(row)
+                        logger.info(
+                            "Action %s first approval by %s; a second approver is required",
+                            action_id,
+                            approved_by,
+                        )
+                        return pending
+                    if (
+                        row.approved_by.strip().casefold()
+                        == approved_by.strip().casefold()
+                    ):
+                        raise SecondApproverConflict(
+                            f"{approved_by} already approved {action_id}; "
+                            "a different person must give the second approval"
+                        )
+                    if policy.needs_distinct_role(row.action_type):
+                        first_role = _first_approver_role(
+                            session, action_id, row.approved_by
+                        )
+                        if role[0] is None or first_role[0] is None:
+                            raise SecondApproverRoleConflict(
+                                f"the role of {row.approved_by if first_role[0] is None else approved_by} "
+                                f"is unknown; {row.action_type} needs approvers of two different roles"
+                            )
+                        if role[0] == first_role[0]:
+                            raise SecondApproverRoleConflict(
+                                f"{approved_by} holds the first approver's role "
+                                f"({first_role[1] or first_role[0]}); {row.action_type} "
+                                "needs a second approver of a different role"
+                            )
+                    row.second_approver = approved_by
+                    row.status = ActionStatus.APPROVED.value
+                    session.flush()
+                    _record_decision(
+                        session, action_id, "second_approval", approved_by, account
+                    )
+                    pending = _row_to_pending(row)
+                    logger.info(
+                        "Action %s second approval by %s", action_id, approved_by
+                    )
+                    return pending
                 row.status = ActionStatus.APPROVED.value
                 row.approved_at = utcnow()
                 row.approved_by = approved_by
                 session.flush()
+                _record_decision(
+                    session,
+                    action_id,
+                    "approve",
+                    approved_by,
+                    account_of(session, approved_by),
+                )
                 pending = _row_to_pending(row)
             logger.info("Action %s approved by %s", action_id, approved_by)
             return pending
@@ -489,6 +814,13 @@ class ApprovalService:
                 row.approved_by = rejected_by
                 row.approved_at = utcnow()
                 session.flush()
+                _record_decision(
+                    session,
+                    action_id,
+                    "reject",
+                    rejected_by,
+                    account_of(session, rejected_by),
+                )
                 pending = _row_to_pending(row)
             logger.info(
                 "Action %s rejected by %s: %s",
@@ -501,12 +833,43 @@ class ApprovalService:
             logger.error("DB error rejecting action %s: %s", action_id, e)
             return None
 
+    def claim_execution(self, action_id: str) -> bool:
+        """Claim an approved row for one run, before any vendor call.
+
+        Sets ``executed_at`` on a row that is approved and has none, in one
+        conditional UPDATE: True for exactly one caller.
+        ``execute_approved_actions`` skips rows with ``executed_at`` set, so a
+        row whose change went out but whose ``mark_executed`` then failed is
+        never run again; it stays approved with executed_at set, for a person
+        to settle. False on a lost race, a row not approved, or a database
+        error: do not execute.
+        """
+        try:
+            db = get_db_manager()
+            with db.session_scope() as session:
+                result = session.execute(
+                    update(ApprovalActionRow)
+                    .where(ApprovalActionRow.action_id == action_id)
+                    .where(ApprovalActionRow.status == ActionStatus.APPROVED.value)
+                    .where(ApprovalActionRow.executed_at.is_(None))
+                    .values(executed_at=utcnow())
+                )
+                return (result.rowcount or 0) == 1
+        except SQLAlchemyError as e:
+            logger.error("DB error claiming %s for execution: %s", action_id, e)
+            return False
+
     def mark_executed(
         self,
         action_id: str,
         result: Dict,
+        *,
+        executed_at: Optional[datetime] = None,
+        before_state: Optional[Dict] = None,
+        after_state: Optional[Dict] = None,
+        expires_at: Optional[datetime] = None,
     ) -> Optional[PendingAction]:
-        """Mark an action as executed."""
+        """Mark an action as executed, with what the executor observed."""
         try:
             db = get_db_manager()
             with db.session_scope() as session:
@@ -521,12 +884,57 @@ class ApprovalService:
                     )
                     return _row_to_pending(row)
                 row.status = ActionStatus.EXECUTED.value
-                row.executed_at = utcnow()
+                row.executed_at = executed_at or utcnow()
                 row.execution_result = result
+                if before_state is not None:
+                    row.before_state = before_state
+                if after_state is not None:
+                    row.after_state = after_state
+                if expires_at is not None:
+                    row.expires_at = expires_at
                 session.flush()
                 return _row_to_pending(row)
         except SQLAlchemyError as e:
             logger.error("DB error marking action %s executed: %s", action_id, e)
+            return None
+
+    def hold_for_person(self, action_id: str, rule: str) -> Optional[PendingAction]:
+        """Put an action released without a person back in the approval queue.
+
+        For the dispatcher (W3.1): a row approved with nobody's name on it whose
+        autonomy no longer holds (the tier was demoted, the bound broke) waits
+        for a person instead of running. Only such a row is touched.
+        """
+        try:
+            db = get_db_manager()
+            with db.session_scope() as session:
+                row = session.get(ApprovalActionRow, action_id, with_for_update=True)
+                if row is None:
+                    return None
+                if row.status != ActionStatus.APPROVED.value or row.approved_by:
+                    return _row_to_pending(row)
+                row.status = ActionStatus.PENDING.value
+                row.requires_approval = True
+                row.approved_at = None
+                # The row now waits for a person: its autonomy record says so,
+                # and the dispatcher no longer reads it as tier-released.
+                params = dict(row.parameters or {})
+                record = params.get("autonomy")
+                if isinstance(record, dict):
+                    record = dict(record)
+                    record["effective"] = APPROVE
+                    record["reasons"] = [
+                        *(record.get("reasons") or []),
+                        f"held at dispatch: {rule}",
+                    ]
+                    params["autonomy"] = record
+                    row.parameters = params
+                row.reason = f"{row.reason}; {rule}" if row.reason else rule
+                session.flush()
+                logger.warning("Action %s held for a person: %s", action_id, rule)
+                return _row_to_pending(row)
+        except SQLAlchemyError as e:
+            logger.error("DB error holding action %s: %s", action_id, e)
             return None
 
     def mark_failed(
@@ -549,6 +957,174 @@ class ApprovalService:
                 return _row_to_pending(row)
         except SQLAlchemyError as e:
             logger.error("DB error marking action %s failed: %s", action_id, e)
+            return None
+
+    def record_verification(
+        self, action_id: str, verify_status: str
+    ) -> Optional[PendingAction]:
+        """Record what the executor's verify found (verified/failed/unknown)."""
+        try:
+            db = get_db_manager()
+            with db.session_scope() as session:
+                row = session.get(ApprovalActionRow, action_id)
+                if row is None:
+                    return None
+                row.verified_at = utcnow()
+                row.verify_status = verify_status
+                session.flush()
+                return _row_to_pending(row)
+        except SQLAlchemyError as e:
+            logger.error("DB error recording verification of %s: %s", action_id, e)
+            return None
+
+    def count_executed_since(self, action_type: str, since: datetime) -> int:
+        """Forward actions of a type executed at or after ``since`` (blast radius).
+
+        Raises on a failed read: a count that could not be taken must not
+        read as zero.
+        """
+        db = get_db_manager()
+        with db.session_scope() as session:
+            stmt = (
+                select(func.count())
+                .select_from(ApprovalActionRow)
+                .where(ApprovalActionRow.action_type == action_type)
+                .where(ApprovalActionRow.status == ActionStatus.EXECUTED.value)
+                .where(ApprovalActionRow.reverse_of.is_(None))
+                .where(ApprovalActionRow.executed_at >= since)
+            )
+            return int(session.execute(stmt).scalar_one())
+
+    def list_expired(
+        self,
+        now: datetime,
+        retry_after: timedelta = timedelta(minutes=15),
+        limit: int = 100,
+    ) -> List[PendingAction]:
+        """Executed reversible actions past expires_at and not yet reversed.
+
+        An action whose reversal failed within ``retry_after`` is left out,
+        so a target that refuses the undo is retried, not hammered.
+        """
+        try:
+            db = get_db_manager()
+            with db.session_scope() as session:
+                reverse = ApprovalActionRow.__table__.alias("rev")
+                recent_failure = (
+                    select(reverse.c.action_id)
+                    .where(reverse.c.reverse_of == ApprovalActionRow.action_id)
+                    .where(reverse.c.status == ActionStatus.FAILED.value)
+                    .where(reverse.c.created_at >= utcnow() - retry_after)
+                    .exists()
+                )
+                stmt = (
+                    select(ApprovalActionRow)
+                    .where(ApprovalActionRow.status == ActionStatus.EXECUTED.value)
+                    .where(ApprovalActionRow.reversed_at.is_(None))
+                    .where(ApprovalActionRow.expires_at.is_not(None))
+                    .where(ApprovalActionRow.expires_at <= now)
+                    .where(
+                        ApprovalActionRow.reversibility
+                        == Reversibility.REVERSIBLE.value
+                    )
+                    .where(ApprovalActionRow.reverse_of.is_(None))
+                    .where(~recent_failure)
+                    .order_by(ApprovalActionRow.expires_at.asc())
+                    .limit(limit)
+                )
+                rows = session.execute(stmt).scalars().all()
+                return [_row_to_pending(r) for r in rows]
+        except SQLAlchemyError as e:
+            logger.error("DB error listing expired actions: %s", e)
+            return []
+
+    def begin_reversal(
+        self, original_id: str, actor: str, reason: str
+    ) -> Optional[PendingAction]:
+        """Claim the reversal of ``original_id``: insert its reverse row.
+
+        The row has the original's action_type and target, ``reverse_of`` set,
+        ``approved_by`` the actor, and idempotency key ``reverse:<id>``, which
+        is unique among non-failed rows: a second concurrent claim gets None,
+        as does an action already reversed. ``finish_reversal`` settles it.
+        """
+        key = f"reverse:{original_id}"
+        try:
+            db = get_db_manager()
+            with db.session_scope() as session:
+                original = session.get(ApprovalActionRow, original_id)
+                if original is None or original.reversed_at is not None:
+                    return None
+                if _nonfailed_by_key(session, key) is not None:
+                    return None
+                now = utcnow()
+                row = ApprovalActionRow(
+                    action_id=f"action-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-rev",
+                    action_type=original.action_type,
+                    title=f"Reverse: {original.title}"[:2000],
+                    description=f"Reversal of {original_id}",
+                    target=original.target,
+                    confidence=float(original.confidence or 0),
+                    reason=reason,
+                    evidence=[original_id],
+                    created_at=now,
+                    created_by=actor,
+                    requires_approval=False,
+                    status=ActionStatus.PENDING.value,
+                    approved_at=now,
+                    approved_by=actor,
+                    parameters=dict(original.parameters or {}),
+                    reversibility=Reversibility.REVERSIBLE.value,
+                    idempotency_key=key,
+                    reverse_of=original_id,
+                )
+                session.add(row)
+                session.flush()
+                return _row_to_pending(row)
+        except IntegrityError:
+            return None
+        except SQLAlchemyError as e:
+            logger.error("DB error claiming reversal of %s: %s", original_id, e)
+            return None
+
+    def finish_reversal(
+        self,
+        reverse_id: str,
+        *,
+        succeeded: bool,
+        result: Dict,
+        verify_status: Optional[str] = None,
+        before_state: Optional[Dict] = None,
+        after_state: Optional[Dict] = None,
+    ) -> Optional[PendingAction]:
+        """Settle a claimed reversal; on success stamp reversed_at on the original."""
+        try:
+            db = get_db_manager()
+            with db.session_scope() as session:
+                row = session.get(ApprovalActionRow, reverse_id)
+                if row is None or row.reverse_of is None:
+                    return None
+                now = utcnow()
+                row.status = (
+                    ActionStatus.EXECUTED.value
+                    if succeeded
+                    else ActionStatus.FAILED.value
+                )
+                row.executed_at = now
+                row.execution_result = result
+                row.before_state = before_state
+                row.after_state = after_state
+                if verify_status is not None:
+                    row.verified_at = now
+                    row.verify_status = verify_status
+                if succeeded:
+                    original = session.get(ApprovalActionRow, row.reverse_of)
+                    if original is not None:
+                        original.reversed_at = now
+                session.flush()
+                return _row_to_pending(row)
+        except SQLAlchemyError as e:
+            logger.error("DB error settling reversal %s: %s", reverse_id, e)
             return None
 
     def get_stats(self) -> Dict:

@@ -1156,6 +1156,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/autonomy/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Audit
+         * @description Tier changes and demotions, newest first.
+         */
+        get: operations["get_api_autonomy_audit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autonomy/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Check
+         * @description Run the circuit breaker now: demote tiers whose QA bound broke.
+         */
+        post: operations["post_api_autonomy_check"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autonomy/tiers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Tiers
+         * @description Every (category, action class) with its tier, and each category's QA bound.
+         */
+        get: operations["get_api_autonomy_tiers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autonomy/tiers/{category}/{action_type}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Tier
+         * @description Set one tier. Raising needs a person and an evidence link.
+         */
+        put: operations["put_api_autonomy_tiers_category_action_type"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/bifrost/routability": {
         parameters: {
             query?: never;
@@ -2516,6 +2596,156 @@ export interface paths {
         get: operations["get_api_compliance_regulatory-clocks_config"];
         /** Put Regulatory Config */
         put: operations["put_api_compliance_regulatory-clocks_config"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/compliance/retention/agent-ledger/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Agent Ledger Archive
+         * @description Step 1 of archive-then-truncate: chain-verified runs, read only.
+         */
+        get: operations["get_api_compliance_retention_agent-ledger_archive"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/compliance/retention/classes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Classes
+         * @description Every data class a policy can name, and how it can be destroyed.
+         */
+        get: operations["get_api_compliance_retention_classes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/compliance/retention/legal-holds": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Legal Holds */
+        get: operations["get_api_compliance_retention_legal-holds"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/compliance/retention/legal-holds/cases/{case_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Put Legal Hold */
+        put: operations["put_api_compliance_retention_legal-holds_cases_case_id"];
+        post?: never;
+        /** Delete Legal Hold */
+        delete: operations["delete_api_compliance_retention_legal-holds_cases_case_id"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/compliance/retention/policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Policies */
+        get: operations["get_api_compliance_retention_policies"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/compliance/retention/policies/{data_class}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Put Policy */
+        put: operations["put_api_compliance_retention_policies_data_class"];
+        post?: never;
+        /** Delete Policy */
+        delete: operations["delete_api_compliance_retention_policies_data_class"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/compliance/retention/purge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Purge
+         * @description Run the policies now. ``dry_run`` (the default) changes nothing.
+         */
+        post: operations["post_api_compliance_retention_purge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/compliance/retention/reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Destruction Report
+         * @description The periodic destruction report (default: the last 180 days).
+         */
+        get: operations["get_api_compliance_retention_reports"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -4999,6 +5229,114 @@ export interface paths {
          * @description Full detail for a single interaction (thinking, tools, messages).
          */
         get: operations["get_api_reasoning_session_id_interactions_interaction_id"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/response/actions/{action_id}/revert": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revert Action
+         * @description Reverse an executed reversible action, then verify it is undone.
+         *
+         *     404: no such action. 409: it is not executed, already reversed, a reverse
+         *     row itself, irreversible, or has no executor. 502: the executor's reverse
+         *     (or its verify) failed; the failed reverse row is kept for the record.
+         *     Sync on purpose: the executor speaks to the vendor synchronously.
+         */
+        post: operations["post_api_response_actions_action_id_revert"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/response/four-eyes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Four Eyes
+         * @description The action classes under the two-person rule and its distinct-role condition.
+         */
+        get: operations["get_api_response_four-eyes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/response/four-eyes/{action_type}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Distinct Role
+         * @description Require (or stop requiring) a second approver of a different role.
+         *
+         *     Turning it on also puts the class under the two-person rule. Turning it off
+         *     leaves the two-person rule as it was.
+         */
+        put: operations["put_api_response_four-eyes_action_type"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/response/segregation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Segregation
+         * @description Who proposed, approved and executed each action, in which role, and violations.
+         */
+        get: operations["get_api_response_segregation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/response/segregation/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Segregation
+         * @description The report as a download (CSV cells cannot start a spreadsheet formula).
+         */
+        get: operations["get_api_response_segregation_export"];
         put?: never;
         post?: never;
         delete?: never;
@@ -7616,6 +7954,39 @@ export interface components {
              */
             approved_by?: string | null;
         };
+        /** AutonomyAuditEntry */
+        AutonomyAuditEntry: {
+            /** Action */
+            action: string;
+            /** At */
+            at?: string | null;
+            /** Changed By */
+            changed_by: string;
+            /** Id */
+            id: number;
+            /** Key */
+            key: string;
+            /** New Value */
+            new_value?: {
+                [key: string]: unknown;
+            } | null;
+            /** Old Value */
+            old_value?: {
+                [key: string]: unknown;
+            } | null;
+            /** Reason */
+            reason?: string | null;
+        };
+        /** AutonomyAuditList */
+        AutonomyAuditList: {
+            /** Entries */
+            entries?: components["schemas"]["AutonomyAuditEntry"][];
+        };
+        /** AutonomyCheckResult */
+        AutonomyCheckResult: {
+            /** Demoted */
+            demoted?: components["schemas"]["AutonomyDemotion"][];
+        };
         /**
          * AutonomyConfig
          * @description The two flags the console chip folds into Assist or Act.
@@ -7629,6 +8000,46 @@ export interface components {
             auto_response_enabled: boolean;
             /** Force Manual Approval */
             force_manual_approval: boolean;
+        };
+        /** AutonomyDemotion */
+        AutonomyDemotion: {
+            /** Action Type */
+            action_type: string;
+            /** Category */
+            category: string;
+            /** From */
+            from: string;
+            /** Reason */
+            reason: string;
+            /** To */
+            to: string;
+        };
+        /** AutonomyMatrix */
+        AutonomyMatrix: {
+            /** Action Classes */
+            action_classes: string[];
+            /** Bounds */
+            bounds?: {
+                [key: string]: components["schemas"]["BoundModel"];
+            };
+            /** Bounds Readable */
+            bounds_readable: boolean;
+            /** Categories */
+            categories: string[];
+            /** Default Tier */
+            default_tier: string;
+            /** Eligible */
+            eligible: string[];
+            /** Entries */
+            entries?: components["schemas"]["TierEntryModel"][];
+            /** Fn Bound Min Reviews */
+            fn_bound_min_reviews: number;
+            /** Fn Bound Target */
+            fn_bound_target: number;
+            /** Max Ttl Seconds */
+            max_ttl_seconds: number;
+            /** Tiers */
+            tiers: string[];
         };
         /** AutostartRequest */
         AutostartRequest: {
@@ -7708,6 +8119,38 @@ export interface components {
         BootstrapStatusResponse: {
             /** Required */
             required: boolean;
+        };
+        /** BoundModel */
+        BoundModel: {
+            /** Category */
+            category: string;
+            /** Fn Upper Bound */
+            fn_upper_bound?: number | null;
+            /**
+             * Holds
+             * @default false
+             */
+            holds: boolean;
+            /**
+             * Misses
+             * @default 0
+             */
+            misses: number;
+            /**
+             * Readable
+             * @default true
+             */
+            readable: boolean;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Reviewed
+             * @default 0
+             */
+            reviewed: number;
         };
         /** Bounds */
         Bounds: {
@@ -9403,6 +9846,13 @@ export interface components {
             /** Kind */
             kind: string;
         };
+        /** DistinctRoleUpdate */
+        DistinctRoleUpdate: {
+            /** Distinct Role */
+            distinct_role: boolean;
+            /** Reason */
+            reason: string;
+        };
         /** DraftLine */
         DraftLine: {
             /** Cites */
@@ -9901,6 +10351,13 @@ export interface components {
             specialization?: string | null;
             /** System Prompt Override */
             system_prompt_override?: string | null;
+        };
+        /** FourEyesConfig */
+        FourEyesConfig: {
+            /** Distinct Role Types */
+            distinct_role_types: string[];
+            /** Four Eyes Types */
+            four_eyes_types: string[];
         };
         /**
          * GeneralConfig
@@ -10418,6 +10875,11 @@ export interface components {
             /** Name */
             name?: string | null;
         };
+        /** LegalHoldBody */
+        LegalHoldBody: {
+            /** Reason */
+            reason: string;
+        };
         /**
          * LoginRequest
          * @description Login request.
@@ -10863,6 +11325,18 @@ export interface components {
              */
             verify_proxy_tls: boolean;
         };
+        /** PolicyBody */
+        PolicyBody: {
+            /**
+             * Legal Hold
+             * @default false
+             */
+            legal_hold: boolean;
+            /** Method */
+            method?: ("delete" | "anonymise" | "archive") | null;
+            /** Retain Days */
+            retain_days: number;
+        };
         /**
          * PostgreSQLConfig
          * @description PostgreSQL database backend configuration.
@@ -10879,6 +11353,26 @@ export interface components {
             count: number;
             /** Priority */
             priority: string;
+        };
+        /** PurgeBody */
+        PurgeBody: {
+            /**
+             * Batch Size
+             * @default 500
+             */
+            batch_size: number;
+            /** Data Classes */
+            data_classes?: string[] | null;
+            /**
+             * Dry Run
+             * @default true
+             */
+            dry_run: boolean;
+            /**
+             * Max Batches
+             * @default 20
+             */
+            max_batches: number;
         };
         /** QACategoryDraw */
         QACategoryDraw: {
@@ -11233,6 +11727,32 @@ export interface components {
             /** Playbook */
             playbook: string;
         };
+        /** RevertRequest */
+        RevertRequest: {
+            /**
+             * Reason
+             * @description Why the action is undone.
+             */
+            reason: string;
+        };
+        /** RevertResponse */
+        RevertResponse: {
+            /** Action Id */
+            action_id: string;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /** Outcome */
+            outcome: string;
+            /** Reverse Action Id */
+            reverse_action_id?: string | null;
+            /** Reversed At */
+            reversed_at?: string | null;
+            /** Verify Status */
+            verify_status?: string | null;
+        };
         /** ReviewRequest */
         ReviewRequest: {
             /** Action */
@@ -11485,6 +12005,84 @@ export interface components {
             /** Tags */
             tags?: string[] | null;
         };
+        /** SegregationPolicy */
+        SegregationPolicy: {
+            /** Distinct Role Types */
+            distinct_role_types: string[];
+            /** Four Eyes Types */
+            four_eyes_types: string[];
+        };
+        /** SegregationReport */
+        SegregationReport: {
+            /** Action Type */
+            action_type?: string | null;
+            policy: components["schemas"]["SegregationPolicy"];
+            /** Rows */
+            rows?: components["schemas"]["SegregationRow"][];
+            /** Since */
+            since?: string | null;
+            summary: components["schemas"]["SegregationSummary"];
+            /** Until */
+            until?: string | null;
+        };
+        /** SegregationRow */
+        SegregationRow: {
+            /** Action Id */
+            action_id: string;
+            /** Action Type */
+            action_type: string;
+            /** Approved By */
+            approved_by?: string | null;
+            /** Approved Role */
+            approved_role?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /**
+             * Distinct Role
+             * @default false
+             */
+            distinct_role: boolean;
+            /** Executed At */
+            executed_at?: string | null;
+            /** Executed By */
+            executed_by?: string | null;
+            /** Execution */
+            execution?: string | null;
+            /**
+             * Four Eyes
+             * @default false
+             */
+            four_eyes: boolean;
+            /** Proposed By */
+            proposed_by?: string | null;
+            /** Proposed Role */
+            proposed_role?: string | null;
+            /** Reverse Of */
+            reverse_of?: string | null;
+            /** Role Source */
+            role_source?: string | null;
+            /** Second Approver */
+            second_approver?: string | null;
+            /** Second Role */
+            second_role?: string | null;
+            /** Status */
+            status: string;
+            /** Target */
+            target?: string | null;
+            /** Violations */
+            violations?: string[];
+        };
+        /** SegregationSummary */
+        SegregationSummary: {
+            /** By Kind */
+            by_kind: {
+                [key: string]: number;
+            };
+            /** Total */
+            total: number;
+            /** With Violations */
+            with_violations: number;
+        };
         /**
          * ServerEnabledRequest
          * @description Request body for enabling/disabling a server.
@@ -11667,7 +12265,7 @@ export interface components {
             prompt: string;
             /**
              * Run Kind
-             * @description One of hunt, root_cause, adjudicate, investigate, compose, chat.
+             * @description One of hunt, root_cause, adjudicate, verdict, investigate, compose, chat.
              * @default hunt
              */
             run_kind: string;
@@ -11914,6 +12512,52 @@ export interface components {
              * @default dark
              */
             theme: string;
+        };
+        /** TierEntryModel */
+        TierEntryModel: {
+            /** Action Type */
+            action_type: string;
+            /** Category */
+            category: string;
+            /**
+             * Eligible
+             * @default false
+             */
+            eligible: boolean;
+            /**
+             * Explicit
+             * @default false
+             */
+            explicit: boolean;
+            /** Max Ttl Seconds */
+            max_ttl_seconds?: number | null;
+            /** Min Confidence */
+            min_confidence?: number | null;
+            /** Tier */
+            tier: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Updated By */
+            updated_by?: string | null;
+        };
+        /** TierUpdate */
+        TierUpdate: {
+            /**
+             * Evidence Url
+             * @description Link to the evidence (Scorecard, eval run) a raise rests on.
+             */
+            evidence_url?: string | null;
+            /** Max Ttl Seconds */
+            max_ttl_seconds?: number | null;
+            /** Min Confidence */
+            min_confidence?: number | null;
+            /** Reason */
+            reason: string;
+            /**
+             * Tier
+             * @enum {string}
+             */
+            tier: "watch" | "suggest" | "approve" | "autonomous";
         };
         /**
          * TimelineEvent
@@ -14270,6 +14914,139 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LoginResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_autonomy_audit: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomyAuditList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_autonomy_check: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomyCheckResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_autonomy_tiers: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomyMatrix"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_api_autonomy_tiers_category_action_type: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                category: string;
+                action_type: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TierUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TierEntryModel"];
                 };
             };
             /** @description Validation Error */
@@ -16839,6 +17616,345 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RegulatoryConfigResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_compliance_retention_agent-ledger_archive": {
+        parameters: {
+            query: {
+                before: string;
+                limit_runs?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_compliance_retention_classes: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_compliance_retention_legal-holds": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "put_api_compliance_retention_legal-holds_cases_case_id": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LegalHoldBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "delete_api_compliance_retention_legal-holds_cases_case_id": {
+        parameters: {
+            query?: {
+                reason?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_compliance_retention_policies: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_api_compliance_retention_policies_data_class: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                data_class: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PolicyBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_api_compliance_retention_policies_data_class: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                data_class: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_compliance_retention_purge: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PurgeBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_compliance_retention_reports: {
+        parameters: {
+            query?: {
+                since?: string | null;
+                until?: string | null;
+                format?: "json" | "markdown";
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -21195,6 +22311,188 @@ export interface operations {
                 session_id: string;
                 interaction_id: string;
             };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_response_actions_action_id_revert: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                action_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevertRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevertResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_response_four-eyes": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FourEyesConfig"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "put_api_response_four-eyes_action_type": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                action_type: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DistinctRoleUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FourEyesConfig"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_response_segregation: {
+        parameters: {
+            query?: {
+                /** @description Actions created at or after */
+                since?: string | null;
+                /** @description Actions created before */
+                until?: string | null;
+                action_type?: string | null;
+                violations_only?: boolean;
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SegregationReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_response_segregation_export: {
+        parameters: {
+            query?: {
+                format?: "csv" | "json";
+                since?: string | null;
+                until?: string | null;
+                action_type?: string | null;
+                violations_only?: boolean;
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;

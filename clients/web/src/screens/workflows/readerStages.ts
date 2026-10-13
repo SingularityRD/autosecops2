@@ -92,6 +92,11 @@ const STRIPS: Record<string, Strip> = {
     loop: [gather, weigh],
     after: [decide, { ...handOff, body: 'Records a verdict and the workflow it would have run. It starts nothing.' }],
   },
+  verdict: {
+    before: [start, frame],
+    loop: [gather, weigh],
+    after: [decide, { ...handOff, title: 'Record', handoff: false, body: 'Records one verdict on the alert: malicious, benign or inconclusive. It starts nothing.' }],
+  },
 }
 
 export function stripFor(runKind: string): Strip | null {

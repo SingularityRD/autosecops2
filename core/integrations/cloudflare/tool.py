@@ -30,11 +30,19 @@ from mcp.server.models import InitializationOptions
 from core.config import is_integration_enabled
 from core.integrations._base.config import resolve
 from core.integrations._base.tool_result import run_tool
+from core.integrations.cloudflare.client import (  # noqa: F401  (re-exported)
+    CF_API_BASE,
+    DEFAULT_TIMEOUT,
+    _access_revoke_session,
+    _gateway_block_domain,
+    _gateway_unblock_domain,
+    _headers,
+    _waf_block_ip,
+    _waf_unblock_ip,
+)
 from core.integrations.cloudflare.descriptor import CLOUDFLARE
 
 logger = logging.getLogger(__name__)
-CF_API_BASE = "https://api.cloudflare.com/client/v4"
-DEFAULT_TIMEOUT = 30
 
 
 def _result(data: Dict[str, Any]):
@@ -48,13 +56,6 @@ def _config() -> Optional[Dict[str, Any]]:
     if not cfg.get("api_token"):
         return None
     return cfg
-
-
-def _headers(api_token: str) -> Dict[str, str]:
-    return {
-        "Authorization": f"Bearer {api_token}",
-        "Content-Type": "application/json",
-    }
 
 
 async def handle_list_tools():
@@ -245,127 +246,9 @@ async def handle_call_tool(name: str, arguments: dict | None):
 
 
 # ---------------------------------------------------------------------------
-# REST helpers — kept module-level so they can be imported by the response
-# service for the approved-action executor (single source of truth for the
-# Cloudflare API surface).
+# REST helpers for the response actions live in client.py, shared with the
+# approved-action executor (executor.py). Re-exported here under their old names.
 # ---------------------------------------------------------------------------
-
-
-def _waf_block_ip(
-    api_token: str,
-    account_id: Optional[str],
-    ip: Optional[str],
-    reason: str,
-    mode: str = "block",
-) -> Dict[str, Any]:
-    if not ip:
-        return {"error": "ip required"}
-    if not account_id:
-        return {"error": "account_id required for WAF IP Access Rules"}
-    payload = {
-        "mode": mode,
-        "configuration": {"target": "ip", "value": ip},
-        "notes": reason[:1024],
-    }
-    resp = httpx.post(
-        f"{CF_API_BASE}/accounts/{account_id}/firewall/access_rules/rules",
-        headers=_headers(api_token),
-        json=payload,
-        timeout=DEFAULT_TIMEOUT,
-    )
-    data = resp.json() if resp.content else {}
-    success = resp.status_code in (200, 201) and data.get("success", False)
-    return {
-        "success": success,
-        "status_code": resp.status_code,
-        "rule_id": (data.get("result") or {}).get("id"),
-        "ip": ip,
-        "mode": mode,
-        "errors": data.get("errors"),
-    }
-
-
-def _waf_unblock_ip(
-    api_token: str, account_id: Optional[str], rule_id: Optional[str]
-) -> Dict[str, Any]:
-    if not rule_id:
-        return {"error": "rule_id required"}
-    if not account_id:
-        return {"error": "account_id required"}
-    resp = httpx.delete(
-        f"{CF_API_BASE}/accounts/{account_id}/firewall/access_rules/rules/{rule_id}",
-        headers=_headers(api_token),
-        timeout=DEFAULT_TIMEOUT,
-    )
-    data = resp.json() if resp.content else {}
-    return {
-        "success": resp.status_code in (200, 204) and data.get("success", True),
-        "status_code": resp.status_code,
-        "rule_id": rule_id,
-        "errors": data.get("errors"),
-    }
-
-
-def _gateway_block_domain(
-    api_token: str,
-    account_id: Optional[str],
-    domain: Optional[str],
-    reason: str,
-    rule_name: Optional[str],
-) -> Dict[str, Any]:
-    if not domain:
-        return {"error": "domain required"}
-    if not account_id:
-        return {"error": "account_id required for Zero Trust Gateway rules"}
-    payload = {
-        "name": rule_name or f"vigil-block-{domain}",
-        "description": reason[:512],
-        "action": "block",
-        "filters": ["dns", "http"],
-        "traffic": f'any(dns.domains[*] in {{"{domain}"}}) or http.host == "{domain}"',
-        "enabled": True,
-    }
-    resp = httpx.post(
-        f"{CF_API_BASE}/accounts/{account_id}/gateway/rules",
-        headers=_headers(api_token),
-        json=payload,
-        timeout=DEFAULT_TIMEOUT,
-    )
-    data = resp.json() if resp.content else {}
-    success = resp.status_code in (200, 201) and data.get("success", False)
-    return {
-        "success": success,
-        "status_code": resp.status_code,
-        "rule_id": (data.get("result") or {}).get("id"),
-        "domain": domain,
-        "errors": data.get("errors"),
-    }
-
-
-def _access_revoke_session(
-    api_token: str,
-    account_id: Optional[str],
-    email: Optional[str],
-    reason: str,
-) -> Dict[str, Any]:
-    if not email:
-        return {"error": "email required"}
-    if not account_id:
-        return {"error": "account_id required for Access session revoke"}
-    resp = httpx.post(
-        f"{CF_API_BASE}/accounts/{account_id}/access/organizations/revoke_user",
-        headers=_headers(api_token),
-        json={"email": email},
-        timeout=DEFAULT_TIMEOUT,
-    )
-    data = resp.json() if resp.content else {}
-    return {
-        "success": resp.status_code in (200, 201) and data.get("success", False),
-        "status_code": resp.status_code,
-        "email": email,
-        "reason": reason,
-        "errors": data.get("errors"),
-    }
 
 
 def _lookup_ip_threat(
