@@ -1,0 +1,265 @@
+# İnternetsiz (air-gapped) kurulum kılavuzu
+
+> **English summary.** How to install AutoSecOps where the deployment has no
+> internet access. A release engineer builds a signed bundle on a connected
+> machine (`infra/airgap/build-bundle.sh`); the customer verifies it against a
+> public key received out of band and installs it with
+> `infra/airgap/install.sh`, which copies the bundle into a private staging
+> directory, verifies signature, checksums, file list and archive members on
+> that copy, and refuses to run any docker/kubectl/helm command if anything is
+> off. Kubernetes installs use `values-airgap.yaml` (local registry, MCP and
+> telemetry off, NetworkPolicy egress limited to the cluster); host/Compose
+> installs load `airgap.env`. `tests/airgap` proves zero outbound connections.
+> The detailed script reference stays in
+> [infra/airgap/README.md](../../infra/airgap/README.md).
+
+Bu kılavuz, kurulumu baştan sona bir kontrol listesi olarak anlatır. Her betiğin
+tüm seçenekleri ve hata iletileri için ayrıntılı başvuru kaynağı
+[infra/airgap/README.md](../../infra/airgap/README.md)'dir; burada yalnızca
+müşteri ortamında izlenecek sıra, kararlar ve kurulum sonrası sertleştirme vardır.
+
+## 1. Süre ve roller
+
+| Adım | Kim | Nerede | Süre (hedef) |
+|---|---|---|---|
+| İmzalama anahtarı (bir kez) | sürüm mühendisi | imzalama makinesi | — |
+| Paketi üretme | sürüm mühendisi | internetli derleme makinesi | 10–20 dk |
+| Aktarım | müşteri | onaylı aktarım yolu (veri diyotu, onaylı medya) | müşteri sürecine bağlı |
+| Doğrulama | müşteri kurulum mühendisi | hedef ortam | 2–5 dk |
+| Kurulum | müşteri kurulum mühendisi | hedef ortam | ~10 dk |
+| Kurulum sonrası ayarlar | müşteri yöneticisi | konsol + küme | ~5–15 dk |
+
+Paket elde olduğunda hedef süre **30 dakikanın altıdır**. Bu süre bu sürümde
+betiklerin çevrimdışı testleriyle (`tests/unit/airgap/test_airgap_bundle.py`)
+doğrulanır; temiz bir sanal makinede uçtan uca ölçüm CI'da yoktur (Planlı — `wp/w0.6-staging`, bu sürümde yok).
+
+## 2. Ön koşullar
+
+**Hedef ortam (internetsiz):**
+
+- Kubernetes ≥ 1.25 ve NetworkPolicy uygulayan bir CNI (Calico, Cilium …). Politika
+  uygulamayan bir CNI'da egress kısıtı **kâğıt üzerinde kalır**.
+- Düğümlerin çekebildiği yerel bir OCI kayıt defteri (Harbor, `registry:2`) ya da
+  her düğüme `--loader ctr` ile aktarım.
+- Kurulum makinesinde: `bash`, `sha256sum`, `openssl`, `kubectl`, `helm`,
+  `docker` veya `ctr`.
+- Varsayılan StorageClass (Postgres, Redis, Bifrost, Ollama birimleri).
+- Ollama için model boyutu + ~2 GB disk; tercihen GPU düğümü.
+- Paketin bir kopyası kadar boş `$TMPDIR` alanı (yükleyici paketi önce oraya kopyalar).
+
+**Bant dışı alınacaklar (paketle birlikte değil):**
+
+- İmza açık anahtarı (`autosecops-airgap.pub`) ve parmak izi. Parmak izini sürüm
+  mühendisiyle telefonda ya da imzalı yazıyla karşılaştırın:
+
+  ```bash
+  openssl pkey -pubin -in autosecops-airgap.pub -outform DER | sha256sum
+  ```
+
+## 3. Paketi üretme (sürüm mühendisi)
+
+İmzalama anahtarı yalnızca imzalama makinesinde (tercihen HSM/akıllı kart ya da
+şifreli kasa) durur; paketin içinde hiçbir anahtar yoktur. Anahtar üretimi ve
+sızma durumunda yapılacaklar: [infra/airgap/README.md](../../infra/airgap/README.md) §1.
+
+```bash
+# 1) Önce neyin pakete gireceğini görün (hiçbir şey çekilmez)
+infra/airgap/build-bundle.sh --dry-run --version 0.7.1
+
+# 2) Paketi üretin (kural depoları ~/security-detections altında önceden klonlu olmalı)
+AIRGAP_PYTHON=/path/to/venv/bin/python \
+infra/airgap/build-bundle.sh --version 0.7.1 \
+  --key ~/keys/autosecops-airgap.key \
+  --ollama-model llama3.1:8b \
+  --out dist/airgap
+```
+
+Sonuç: `dist/airgap/autosecops-airgap-<sürüm>.tar`. Pakette imajlar (OCI arşivleri),
+Helm grafiği, `values-airgap.yaml`, `airgap.env`, `k8s/llm-stack.yaml` (Bifrost +
+Ollama), model ağırlıkları, kural korpusları, çevrimdışı belgeler, `install.sh`,
+`manifest.json`, `SHA256SUMS` ve imzası bulunur. Kural ve model arşivlerine yalnızca
+normal dosya ve dizin girer; ağaç dışına çıkan ya da kırık bir sembolik bağ derlemeyi
+durdurur.
+
+## 4. Hedef ortamda doğrulama
+
+1. Dış tar'ı **açmadan önce listeleyin**; yalnızca `autosecops-airgap-<sürüm>/`
+   altında normal dosya ve dizin olmalı:
+
+   ```bash
+   tar -tvf autosecops-airgap-0.7.1.tar | less
+   ```
+
+2. Yalnızca sizin yazabildiğiniz **yeni, boş** bir dizine açın:
+
+   ```bash
+   install -d -m 0700 /opt/autosecops-kurulum
+   tar -xf autosecops-airgap-0.7.1.tar -C /opt/autosecops-kurulum --no-same-owner
+   cd /opt/autosecops-kurulum/autosecops-airgap-0.7.1
+   ```
+
+3. Yükleyicinin kendisine güvenmeden önce imzayı elle doğrulayın:
+
+   ```bash
+   openssl pkeyutl -verify -pubin -inkey /guvenli/yol/autosecops-airgap.pub \
+     -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig
+   sha256sum --check --strict SHA256SUMS
+   ```
+
+4. Tam doğrulama:
+
+   ```bash
+   ./install.sh verify --pubkey /guvenli/yol/autosecops-airgap.pub
+   ```
+
+`install.sh` paketi önce `$TMPDIR` altında yalnız kendisinin okuyabildiği bir
+hazırlık dizinine (`mktemp -d`, 0700) kopyalar ve tüm denetimleri **bu kopya
+üzerinde** yapar; kurulum da yalnızca bu kopyadan yapılır. Böylece "bundle verified"
+iletisinden sonra paket dizininde yapılan bir değişiklik kuruluma yansımaz.
+Aşağıdakilerden herhangi biri olursa `REFUSED: ...` ile durur ve hiçbir
+`docker`/`ctr`/`kubectl`/`helm` komutu çalıştırmaz: imza yok/geçersiz; özet tutmuyor
+ya da dosya eksik; güvensiz yol; `SHA256SUMS`'ta olmayan dosya, bağ, FIFO, soket,
+aygıt ya da dizin; `manifest.json`/`images.tsv` ile çelişki; kural/model arşivinde
+normal dosya ve dizin dışında üye. Paketin içinde bir açık anahtar olsa bile
+kullanılmaz; yalnızca `--pubkey` ile verdiğiniz anahtar geçerlidir.
+
+## 5. Kurulum (Kubernetes)
+
+```bash
+./install.sh install \
+  --pubkey /guvenli/yol/autosecops-airgap.pub \
+  --registry harbor.musteri.local/autosecops \
+  --namespace autosecops --release autosecops \
+  --rules-into-backend \
+  -- -f musteri-values.yaml
+```
+
+- Önce `--dry-run` ile neler yapılacağını görün (doğrulama yine yapılır).
+- Kayıt defteri yoksa `--loader ctr` ile her düğümde çalıştırın; tek düğümlü Docker
+  ortamında `--loader docker`.
+- `--` sonrasındaki argümanlar `helm upgrade --install`'a geçer. Müşteriye özgü
+  değerleri (sırlar, ingress, kaynak sınırları) ayrı bir `musteri-values.yaml`
+  dosyasında tutun; `values-airgap.yaml`'ı düzenlemeyin.
+- Kural korpusları: `--rules-into-backend` backend pod'unun `~/security-detections`
+  dizinine açar; o dizin kalıcı değilse pod yeniden başladığında tekrarlayın ya da
+  `--rules-dir` ile kalıcı bir birime açın.
+
+### `musteri-values.yaml` içinde mutlaka verilecekler
+
+| Değer | Neden |
+|---|---|
+| `secrets.existingSecret` ya da `secrets.externalSecret.enabled` | JWT anahtarı, Postgres parolası, `AGENT_INTERNAL_TOKEN` gibi sırlar grafikte düz değer olarak durmasın; ExternalSecrets Operator ile kasa (Vault vb.) desteklenir |
+| `secrets.jwtSecretKey` (ya da aynı anahtarı taşıyan Secret) | `DEV_MODE=false` iken backend `JWT_SECRET_KEY` olmadan açılmaz |
+| `secrets.agentInternalToken` | Ajan katmanının `/internal` uçlarına tek kimlik doğrulaması; boşsa iş akışları 503 alır |
+| `secrets.postgresPassword` | Varsayılan değer (`change-me-before-production`) üretimde kullanılmamalı |
+| `stateDirectory.volume` | Varsayılan `emptyDir`'dir; konsoldan girilen sırlar (`secrets.enc`) ve `master.key` pod yeniden başlayınca kaybolur. Kalıcı ReadWriteMany birim verin ya da tüm kimlik bilgilerini Secret ile sağlayın |
+| `networkPolicies.egress.extraCIDRs` | Kümenin dışındaki şirket içi hedefler (SIEM, EDR, güvenlik duvarı yönetim arayüzü, NodeLocal DNS `169.254.20.10/32`) |
+| `networkPolicies.daemon.webhookAllowFrom` | Daemon'un webhook portuna alarm itebilecek kaynak CIDR'leri; boşsa yalnız küme içi |
+| `caBundle.existingSecret` | TLS denetleyen bir vekil sunucu ya da kurum içi CA varsa |
+
+`values-airgap.yaml`'ın kapattıkları (yerel kayıt defteri, uzak MCP ve kendi MCP
+yüzeyi, OTEL, Slack/PagerDuty, bulut sandbox'ları, Kafka, Darktrace, Medic,
+`DEMO_MODE`, e-postanın loga gitmesi, `networkPolicies.egress.inClusterOnly: true`)
+için tablo: [infra/airgap/README.md](../../infra/airgap/README.md#values-airgapyaml-ne-kapatır).
+
+## 6. Kurulum (tek sunucu: host üzerinde ya da Docker Compose)
+
+Kubernetes dışı kurulumlarda aynı kapatmalar `infra/airgap/airgap.env` profilindedir
+ve normal yapılandırmanın **üstüne** yüklenir:
+
+```bash
+# Host üzerinde
+set -a; . infra/airgap/airgap.env; set +a; ./start.sh
+```
+
+Compose'da her servise `env_file: [../airgap/airgap.env]` ekleyin ve iç adresleri
+(`127.0.0.1`) servis adlarıyla değiştirin (`bifrost`, `backend` …). Profilin anahtar
+grupları:
+
+| Grup | Anahtarlar | Değer |
+|---|---|---|
+| İzin listesi | `AIRGAP_EGRESS_ALLOWLIST` | boş = bu makine dışında hiçbir şey |
+| Açılış davranışı | `DEMO_MODE`, `MCP_AUTO_CONNECT_ON_STARTUP` | `false` |
+| Telemetri | `VIGIL_OTEL_ENABLED`, `SENTRY_DSN`, `OTEL_EXPORTER_OTLP_ENDPOINT` | kapalı / boş / loopback |
+| İç servisler | `POSTGRES_HOST`, `REDIS_URL`, `BIFROST_URL`, `OLLAMA_URL`, `AGENT_URL`, `VIGIL_RUNS_URL` … | loopback ya da servis adı |
+| Model sağlayıcıları | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, `ANTHROPIC_BASE_URL` | **boş**: bulut sağlayıcıya hiç gidilmez |
+| Dış satıcı alt sistemleri | `KAFKA_ENABLED`, `DARKTRACE_ENABLED`, `DAEMON_ESCALATION_ENABLED`, `DAEMON_SLACK_ENABLED`, `DAEMON_PAGERDUTY_ENABLED`, `JOE_SANDBOX_ENABLED`, `CAPE_SANDBOX_ENABLED`, `HYBRID_ANALYSIS_ENABLED`, `ANYRUN_ENABLED`, `VIGIL_MEDIC_ENABLED` | `false` |
+| E-posta | `SMTP_HOST`, `VIGIL_EMAIL_BACKEND` | boş, `console` (e-posta loga yazılır) |
+| OCR verisi | `TESSDATA_PREFIX` | `eng.traineddata`'nın bulunduğu yerel dizin |
+| Paket yöneticileri | `NPM_CONFIG_OFFLINE`, `UV_OFFLINE`, `PIP_NO_INDEX` | açık: MCP alt süreçleri yalnızca yerel önbellekten paket çözer |
+
+Helm profili (`values-airgap.yaml`) ile `airgap.env`'in ortak anahtarlarının aynı
+değeri taşıdığı `tests/unit/airgap` testleriyle denetlenir.
+
+## 7. Kurulum sonrası (ilk 15 dakika)
+
+1. Pod'lar ve model:
+
+   ```bash
+   kubectl -n autosecops get pods
+   kubectl -n autosecops exec deploy/ollama -- ollama list
+   ```
+
+2. **İlk yönetici hesabı.** Varsayılan bir yönetici tohumlanmaz. Kullanıcı tablosu
+   boşken giriş ekranı ilk hesabı oluşturmayı önerir (`POST /api/auth/bootstrap`);
+   bu uç ilk hesap oluştuğu anda kalıcı olarak kapanır. Hemen ardından bu hesapta
+   MFA'yı açın (bkz. [yönetici kılavuzu](yonetici-kilavuzu.md#kimlik-doğrulama)).
+3. **Model sağlayıcısı.** Konsolda Ayarlar → AI models altında Bifrost üzerinden
+   Ollama modelini (`ollama/<model>`) ekleyip varsayılan yapın. Bulut sağlayıcı
+   anahtarları bu ortamda işe yaramaz ve egress politikası tarafından düşürülür.
+4. **Müdahale onayını zorunlu kılın.** Düzenlenmiş sektör için önerilen ayar:
+   `DAEMON_FORCE_APPROVAL=true` (Helm: `config.DAEMON_FORCE_APPROVAL`). Gerekçe ve
+   ayrıntı: [yönetici kılavuzu — otonomi](yonetici-kilavuzu.md#otonomi).
+5. **Güvenlik ayarlarını denetleyin:** `DEV_MODE=false` (Helm varsayılanı),
+   `VIGIL_CSRF_REPORT_ONLY=false` (kodun varsayılanı yalnızca raporlamadır;
+   `env.example` `false` önerir), `VIGIL_COOKIE_SECURE=true`, TLS'i API'nin önünde
+   sonlandırın (ingress).
+6. **Yedekleme**: [yönetici kılavuzu — yedekleme](yonetici-kilavuzu.md#yedekleme-ve-geri-yükleme).
+
+## 8. Sıfır egress'i kanıtlama
+
+Kurulumdan bağımsız olarak, ürünün air-gap profiliyle dışarı bağlanmadığı iki
+katmanda test edilir ve CI'da (`.github/workflows/airgap.yml`) her PR'da koşar:
+
+```bash
+# Statik envanter: koddaki her dış bağlantı noktası listelenmiş ve profilde kapalı
+pytest tests/airgap/test_egress_inventory.py --no-cov
+
+# Çalışma zamanı: API, daemon ve LLM worker gerçek akışlarda tek bir dış bağlantı denemesi yapmıyor
+pytest tests/airgap/test_runtime_egress.py --no-cov
+
+# Tarayıcının bulduklarını görmek
+python -m tests.airgap.egress_scan
+```
+
+Bu testlerin kapsamı ve sınırları (yalnızca Python soketleri; Bifrost, Node ajan
+katmanı ve tarayıcı statik taranır) [tests/airgap/README.md](../../tests/airgap/README.md)
+içindedir. Ağ düzeyindeki kesin önlem kümedeki NetworkPolicy'dir; müşteri ortamında
+ayrıca çevre güvenlik duvarında çıkışı kapatmanızı öneririz.
+
+Profil uygulandığında bile operatör eylemiyle dışarı çıkabilecek noktalar
+(envanterde sınıflandırılmış):
+
+- Bir entegrasyon kimlik bilgileriyle etkinleştirildiğinde onun hedefi (SIEM, EDR,
+  güvenlik duvarı). Hedef küme içinde ya da `extraCIDRs`/`AIRGAP_EGRESS_ALLOWLIST`
+  listesinde olmalıdır.
+- Kural deposu senkronu (`git clone`): yalnızca operatör kaynak ekler/senkronlarsa;
+  air-gap'te yerel yol kaynakları kullanın.
+- `tiktoken` kurulursa ilk kullanımda BPE dosyası indirme denemesi (bilinen açık,
+  `known-gap`; paket gereksinimlerinde yoktur).
+- `security-detections` MCP sunucusu `npx` ile başlar; paket kurulum imajında
+  önbellekte olmalıdır (`NPM_CONFIG_OFFLINE=true` ağ yerine hızlı hata verir).
+
+## 9. Güncelleme ve geri alma
+
+- Yeni sürüm aynı yolla (yeni paket → doğrula → `install.sh install`) kurulur;
+  Helm `upgrade --install` yapar.
+- Geri alma: `helm rollback <release>`.
+- Compose/host kurulumlarında, veritabanının sürümü yeni imajdan geride ise
+  `backup-pre-upgrade` servisi kurulumdan önce otomatik bir anlık görüntü alır
+  (`python -m core.backup pre-upgrade`; atlamak için `VIGIL_SKIP_PREUPGRADE_BACKUP`).
+- 0.7.1'den 2.0'a yükseltme yolunun CI testi bu sürümde yoktur (Planlı — dal yok, W4.5, bu sürümde yok).
+
+## 10. Sorun giderme
+
+Hata iletileri ve çözümleri için [infra/airgap/README.md — Sorun giderme](../../infra/airgap/README.md#sorun-giderme).
