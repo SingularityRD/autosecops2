@@ -182,7 +182,11 @@ def test_redactor_redacts_nested_key_names_and_text():
             "new_value": {
                 "credentials": {"user": "u", "password": "p"},
                 "webhookUrl": "https://hooks.example/x",
-                "nested": {"signing_key": "k", "pin": "0000", "sig": "s"},
+                "nested": {
+                    "signing_key": "k",
+                    "pin": "0000",
+                    "sig": "MEUCIQDx9fQ3Zq7Vx2Lm9Rt4",
+                },
                 "note": "redis://:pw@cache:6379",
                 "max_tokens": 1000,
             },

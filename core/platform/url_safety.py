@@ -28,8 +28,34 @@ CLOUD_METADATA_ADDRESSES = frozenset(
         "fd00:ec2::254",  # AWS IMDS over IPv6
         "100.100.100.200",  # Alibaba Cloud
         "168.63.129.16",  # Azure WireServer
+        "fd20:ce::254",  # GCP metadata over IPv6
+        "192.0.0.192",  # Oracle Cloud (OCI) legacy metadata
     }
 )
+
+# Reasons that no allowance (``allow_loopback``, an administrator's allowed
+# networks, the SIEM ranges of the audit exporter) can lift.
+ALWAYS_REFUSED_REASONS = frozenset({"cloud metadata address", "scoped address"})
+
+# NAT64 prefixes (RFC 6052 well-known, RFC 8215 local-use): an address in
+# them reaches the IPv4 address in its last 32 bits through a NAT64 gateway.
+_NAT64_PREFIXES = (
+    ipaddress.ip_network("64:ff9b::/96"),
+    ipaddress.ip_network("64:ff9b:1::/48"),
+)
+
+
+def _embedded_ipv4(ip: "ipaddress.IPv6Address") -> "ipaddress.IPv4Address | None":
+    """The IPv4 address an IPv6 address actually reaches: IPv4-mapped
+    (``::ffff:a.b.c.d``), NAT64 (``64:ff9b::a.b.c.d``) or 6to4
+    (``2002:aabb:ccdd::``)."""
+    if ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    if any(ip in net for net in _NAT64_PREFIXES):
+        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    if ip.sixtofour is not None:
+        return ip.sixtofour
+    return None
 
 
 class UrlSafetyError(ValueError):
@@ -82,17 +108,25 @@ def _is_blocked_ip(ip_str: str) -> Tuple[bool, str]:
     Blocks all loopback / private / link-local / multicast / reserved /
     unspecified ranges plus the AWS/GCP/Azure metadata service IP.
     """
+    # A zone id (``fe80::1%eth0``) picks the interface to leave by: refused
+    # outright, whatever the address.
+    if "%" in str(ip_str):
+        return True, "scoped address"
     try:
         ip = ipaddress.ip_address(ip_str)
     except ValueError:
         return True, f"unparseable IP: {ip_str}"
 
-    # Collapse an IPv4-mapped IPv6 literal (e.g. ::ffff:169.254.169.254) to
-    # its embedded IPv4 before classifying: on Linux it connects as real
-    # IPv4, so it must face the same range/metadata checks as the bare v4.
-    mapped = getattr(ip, "ipv4_mapped", None)
-    if mapped is not None:
-        ip = mapped
+    # Collapse an IPv6 address that embeds an IPv4 one (IPv4-mapped
+    # ``::ffff:169.254.169.254``, NAT64 ``64:ff9b::a9fe:a9fe``, 6to4) to that
+    # IPv4 before classifying: it reaches that address, so it must face the
+    # same range/metadata checks as the bare v4.
+    if ip.version == 6:
+        if str(ip) in CLOUD_METADATA_ADDRESSES:
+            return True, "cloud metadata address"
+        embedded = _embedded_ipv4(ip)
+        if embedded is not None:
+            ip = embedded
 
     if str(ip) in CLOUD_METADATA_ADDRESSES:
         return True, "cloud metadata address"
@@ -177,13 +211,13 @@ def resolve_allowed_addresses(
         raise UnresolvableHostError(f"could not resolve host: {host}") from exc
     addresses: list[str] = []
     for info in infos:
-        addr = str(info[4][0]).split("%", 1)[0]  # drop an IPv6 zone id
+        addr = str(info[4][0])  # a zone id is kept: it is refused
         if addr in addresses:
             continue
         blocked, reason = _is_blocked_ip(addr)
         if (
             blocked
-            and reason != "cloud metadata address"
+            and reason not in ALWAYS_REFUSED_REASONS
             and _in_networks(addr, networks)
         ):
             blocked = False
@@ -244,6 +278,8 @@ def validate_provider_url(
         raise UrlSafetyError("url must not include a fragment")
 
     host = parsed.hostname.lower()
+    if "%" in host:
+        raise UrlSafetyError("scoped (zone id) addresses are not allowed")
     allowed_set = {h.lower() for h in allowed_hosts}
     is_allowlisted = host in allowed_set
 
@@ -261,11 +297,11 @@ def validate_provider_url(
             # LM Studio on localhost / the LAN) past the loopback/private/
             # link-local block, but the cloud-metadata address — the actual
             # SSRF target — stays blocked regardless.
-            if blocked and allow_loopback and reason != "cloud metadata address":
+            if blocked and allow_loopback and reason not in ALWAYS_REFUSED_REASONS:
                 continue
             if (
                 blocked
-                and reason != "cloud metadata address"
+                and reason not in ALWAYS_REFUSED_REASONS
                 and _in_networks(addr, networks)
             ):
                 continue

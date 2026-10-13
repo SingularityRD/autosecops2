@@ -36,6 +36,8 @@ connection is opened. The field mapping and operator notes are in
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import fcntl
 import functools
@@ -75,11 +77,16 @@ from sqlalchemy import DateTime, Integer, String, bindparam, text
 from sqlalchemy.orm import Session
 
 from core.platform.url_safety import (
+    ALWAYS_REFUSED_REASONS,
     blocked_reason,
     ip_in_networks,
     parse_networks,
 )
-from core.telemetry_sanitizer import _SECRET_VALUE_PATTERNS, SensitiveAttributeScrubber
+from core.telemetry_sanitizer import (
+    _CONTENT_KEY_SUBSTRINGS,
+    _SECRET_VALUE_PATTERNS,
+    SensitiveAttributeScrubber,
+)
 from core.version import __version__
 
 logger = logging.getLogger(__name__)
@@ -277,7 +284,7 @@ def _egress_refusal(addr: str) -> Optional[str]:
     reason = blocked_reason(addr)
     if reason is None:
         return None
-    if reason == "cloud metadata address":
+    if reason in ALWAYS_REFUSED_REASONS:
         return reason
     try:
         if ip_in_networks(addr, SIEM_NETWORKS):
@@ -291,11 +298,14 @@ def refuse_reserved_literal(host: str) -> None:
     """Refuse (at config time) a host that is a forbidden address on its face."""
     if host.lower().rstrip(".") in _METADATA_NAMES:
         raise ValueError("metadata hosts are not a valid destination")
+    literal = host.strip("[]")
+    if "%" in literal:
+        raise ValueError("scoped address refused")
     try:
-        ipaddress.ip_address(host.strip("[]").split("%", 1)[0])
+        ipaddress.ip_address(literal)
     except ValueError:
         return
-    reason = _egress_refusal(host.strip("[]").split("%", 1)[0])
+    reason = _egress_refusal(literal)
     if reason:
         raise ValueError(f"{reason} refused")
 
@@ -319,7 +329,7 @@ def resolve_egress(host: str, port: int) -> list[str]:
         raise DeliveryError("dns_failed") from exc
     addresses: list[str] = []
     for info in infos:
-        addr = str(info[4][0]).split("%", 1)[0]
+        addr = str(info[4][0])  # a zone id is kept: it is refused
         if addr in addresses:
             continue
         if _egress_refusal(addr):
@@ -395,24 +405,75 @@ _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _PII_KEYS = frozenset(
     {"email", "phone", "full_name", "ssn", "national_id", "tckn", "address"}
 )
+# Keys naming who acted. The audit trail exists to answer "who did this", so
+# these are exported verbatim even with ``redact_pii`` on (secrets inside them
+# are still cut). See AUDIT_EXPORT.md, "Redaction policy".
+_ACTOR_KEYS = frozenset(
+    {
+        "actor",
+        "actor_name",
+        "actor_email",
+        "user",
+        "username",
+        "user_name",
+        "login",
+        "approver",
+        "approved_by",
+        "decided_by",
+        "created_by",
+        "updated_by",
+        "requested_by",
+        "performed_by",
+        "assignee",
+        "reviewer",
+        "analyst",
+    }
+)
 _KEY_SPLIT = re.compile(r"[._\-\s/]+")
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
-# A key whose segments (split on ``. _ - /`` and camelCase) include one of
-# these holds a credential. Single words match one segment; the compound
-# names match as a contiguous run (``x.webhook_url``, ``webhookUrl``).
+# How sure a key name is that its value is a credential.
+#   STRONG: ``password``, ``api_key``, ``client_secret``: the value goes,
+#           whatever it looks like.
+#   WEAK:   ``token``, ``key``, ``auth``, ``pin``, ``sig``, ``session_id``:
+#           as often a status, a count, an id or a rule name (``auth: failed``,
+#           ``key: SEC-4821``, ``signature: ET MALWARE ...``) as a secret, so
+#           the value goes only when it reads as one (:func:`_secretish`).
+WEAK = 1
+STRONG = 2
+
 _SECRET_WORDS = frozenset(
     {
         "password",
         "passwd",
         "pwd",
         "passphrase",
+        "passcode",
+        "passkey",
         "secret",
         "secrets",
-        "token",
         "credential",
         "credentials",
         "creds",
+        "apikey",
+        "dsn",
+        "jwt",
+        "bearer",
+        "authorization",
+        "privatekey",
+        "privkey",
+        "clientkey",
+        "authkey",
+        "hmackey",
+        "appkey",
+        "phpsessid",
+        "jsessionid",
+        "aspsessionid",
+    }
+)
+_WEAK_WORDS = frozenset(
+    {
+        "token",
         "pin",
         "sig",
         "signature",
@@ -420,13 +481,9 @@ _SECRET_WORDS = frozenset(
         "totp",
         "cookie",
         "cookies",
-        "apikey",
-        "dsn",
-        "jwt",
-        "bearer",
-        "authorization",
-        "privatekey",
         "sas",
+        "sid",
+        "sessionid",
     }
 )
 _SECRET_PHRASES = tuple(
@@ -436,18 +493,28 @@ _SECRET_PHRASES = tuple(
         "access_key",
         "secret_key",
         "private_key",
+        "priv_key",
         "signing_key",
         "encryption_key",
+        "enc_key",
         "master_key",
         "account_key",
         "shared_access_key",
+        "client_key",
+        "auth_key",
+        "hmac_key",
+        "app_key",
+        "license_key",
+        "subscription_key",
+        "functions_key",
+        "function_key",
+        "host_key",
+        "key_material",
         "client_secret",
         "access_token",
         "refresh_token",
         "id_token",
         "auth_token",
-        "session_id",
-        "session_key",
         "webhook_url",
         "database_url",
         "db_url",
@@ -457,15 +524,74 @@ _SECRET_PHRASES = tuple(
         "mongodb_uri",
         "connection_string",
         "conn_str",
-        "set_cookie",
-        "mfa_code",
         "mfa_secret",
         "recovery_codes",
     )
 )
-# Leaf names that are a credential only on their own (``auth`` alone, not
-# ``auth_scheme``).
-_SECRET_LEAVES = frozenset({"auth", "pass", "key_material"})
+_WEAK_PHRASES = tuple(
+    tuple(p.split("_"))
+    for p in (
+        "session_id",
+        "session_key",
+        "set_cookie",
+        "mfa_code",
+        "auth_code",
+        "verification_code",
+    )
+)
+# A one-word key that is a credential only on its own (``auth``, not
+# ``auth_scheme``), and only when its value reads as one.
+_WEAK_LEAVES = frozenset({"pass", "key", "auth"})
+# ``token_count``, ``password_policy``, ``credential_dumping``,
+# ``cookie_consent``: about a credential, not one.
+_NON_SECRET_LEAVES = frozenset(
+    {
+        "count",
+        "counts",
+        "usage",
+        "used",
+        "limit",
+        "limits",
+        "length",
+        "len",
+        "budget",
+        "type",
+        "kind",
+        "method",
+        "scheme",
+        "mode",
+        "status",
+        "state",
+        "expiry",
+        "expires",
+        "expired",
+        "expiration",
+        "ttl",
+        "age",
+        "enabled",
+        "required",
+        "changed",
+        "sent",
+        "consent",
+        "rotated",
+        "rotation",
+        "policy",
+        "dumping",
+        "stuffing",
+        "spraying",
+        "harvesting",
+        "theft",
+        "reuse",
+        "manager",
+        "provider",
+        "strength",
+        "hint",
+        "name",
+        "names",
+    }
+)
+# Words containing a secret word that are not about one.
+_NOT_EMBEDDED = ("secretary", "secretariat")
 
 
 def key_segments(path: str) -> list[str]:
@@ -473,14 +599,8 @@ def key_segments(path: str) -> list[str]:
     return [s for s in _KEY_SPLIT.split(_CAMEL.sub("_", path).lower()) if s]
 
 
-def secret_key(path: str) -> bool:
-    """Whether a dict key (or dotted path) names a credential."""
-    segments = key_segments(path)
-    if not segments:
-        return False
-    if segments[-1] in _SECRET_LEAVES or _SECRET_WORDS.intersection(segments):
-        return True
-    for phrase in _SECRET_PHRASES:
+def _has_phrase(segments: list[str], phrases: tuple) -> bool:
+    for phrase in phrases:
         n = len(phrase)
         for i in range(len(segments) - n + 1):
             if tuple(segments[i : i + n]) == phrase:
@@ -488,20 +608,27 @@ def secret_key(path: str) -> bool:
     return False
 
 
-# -- free text ---------------------------------------------------------------
-
 # A free-text key (``PGPASSWORD``, ``dbPass``, ``x_api_key``, ``--password``)
-# names a credential when :func:`secret_key` says so, when it contains one of
-# these words anywhere (no separator needed: ``PGPASSWORD``, ``MYSQLPWD``), or
-# when it is one of the short words below on its own or as its last segment.
+# is STRONG when it contains one of these words anywhere (no separator
+# needed: ``PGPASSWORD``, ``MYSQLPWD``, ``NEW_RELIC_LICENSE_KEY``).
 _EMBEDDED_WORDS = (
     "password",
     "passwd",
     "passphrase",
+    "passcode",
+    "passkey",
     "secret",
     "apikey",
     "accesskey",
     "privatekey",
+    "privkey",
+    "clientkey",
+    "authkey",
+    "hmackey",
+    "appkey",
+    "licensekey",
+    "subscriptionkey",
+    "functionskey",
     "credential",
     "authtoken",
     "accesstoken",
@@ -509,8 +636,10 @@ _EMBEDDED_WORDS = (
     "sessiontoken",
     "securitytoken",
     "vaulttoken",
+    "phpsessid",
+    "jsessionid",
+    "aspsessionid",
 )
-_SHORT_LEAVES = frozenset({"pass", "pw", "pwd", "key", "auth", "pin", "otp", "token"})
 # ``…pass`` / ``…pwd`` glued to a prefix (``DBPASS``, ``MYSQLPWD``) unless the
 # word is an ordinary one that happens to end that way.
 _GLUED_SUFFIXES = ("pass", "pwd")
@@ -519,45 +648,186 @@ _NOT_GLUED = frozenset({"bypass", "compass", "surpass", "overpass", "underpass"}
 _INDIRECT_FLAG = re.compile(r"(?i)[-_](?:stdin|file|path|env|prompt|policy)$")
 
 
-@functools.lru_cache(maxsize=4096)
-def secret_identifier(name: str) -> bool:
-    """Whether a free-text key, flag, tag or ``name`` field names a credential.
+@functools.lru_cache(maxsize=8192)
+def identifier_strength(name: str) -> int:
+    """0, :data:`WEAK` or :data:`STRONG`: how surely a key, flag, tag or
+    ``name`` field names a credential.
 
     Word-boundary and camelCase aware: ``dbPass``, ``DB_PASSWORD``,
-    ``PGPASSWORD``, ``pass``, ``pw``, ``--password``, ``Password`` all hit;
-    ``max_tokens``, ``bypass``, ``config_key`` do not.
+    ``PGPASSWORD``, ``--password``, ``clientKey``, ``DD_APP_KEY``,
+    ``bot_token`` are STRONG; ``token``, ``key``, ``auth``, ``pin``,
+    ``signature``, ``session_id`` are WEAK; ``max_tokens``, ``bypass``,
+    ``token_count``, ``config_key`` are 0.
     """
-    bare = name.strip("\"'-\\ ")
-    if not bare or len(bare) > 96:
-        return False
-    if secret_key(bare):
-        return True
-    flat = re.sub(r"[^a-z0-9]", "", bare.lower())
-    if any(word in flat for word in _EMBEDDED_WORDS):
-        return True
+    bare = name.strip("\"'-\\ :")
+    if not bare or len(bare) > 256:
+        return 0
     segments = key_segments(bare)
     if not segments:
-        return False
+        return 0
     leaf = segments[-1]
-    if len(segments) == 1 and leaf in _SHORT_LEAVES:
-        return True
-    if leaf in {"pass", "pw", "pwd"}:
-        return True
-    return leaf not in _NOT_GLUED and leaf.endswith(_GLUED_SUFFIXES)
+    if len(segments) > 1 and leaf in _NON_SECRET_LEAVES:
+        return 0
+    flat = re.sub(r"[^a-z0-9]", "", bare.lower())
+    if any(word in flat for word in _EMBEDDED_WORDS) and not any(
+        word in flat for word in _NOT_EMBEDDED
+    ):
+        return STRONG
+    if _SECRET_WORDS.intersection(segments) or _has_phrase(segments, _SECRET_PHRASES):
+        return STRONG
+    if len(segments) > 1 and leaf in {"pass", "pw", "pwd", "token"}:
+        return STRONG  # ``ssh_pass``, ``bot_token``, ``NPM_TOKEN``
+    if leaf in {"pw", "pwd"}:
+        return STRONG
+    if leaf != "pass" and leaf not in _NOT_GLUED and leaf.endswith(_GLUED_SUFFIXES):
+        return STRONG
+    if _WEAK_WORDS.intersection(segments) or _has_phrase(segments, _WEAK_PHRASES):
+        return WEAK
+    if len(segments) == 1 and leaf in _WEAK_LEAVES:
+        return WEAK
+    return 0
 
 
-_IDENT = r"-{0,2}[A-Za-z_][A-Za-z0-9_.\-]{0,95}"
-# ``key=value``, ``"key": "value"``, ``key%3Dvalue`` (URL-encoded), with an
-# optional quote (plain or JSON-escaped) closing the key.
+def secret_key(path: str) -> bool:
+    """Whether a dict key (or dotted path) may name a credential."""
+    return identifier_strength(path) > 0
+
+
+def secret_identifier(name: str) -> bool:
+    """Whether a free-text key, flag, tag or ``name`` field may name a
+    credential (STRONG or WEAK)."""
+    return identifier_strength(name) > 0
+
+
+def _numeric_identifier(name: str) -> bool:
+    """A key whose secret is a number: ``pin``, ``otp``, ``mfa_code``."""
+    return bool(
+        {"pin", "otp", "totp", "mfa", "passcode", "code"}.intersection(
+            key_segments(name.strip("\"'-\\ :"))
+        )
+    )
+
+
+# Values that are a state, never a secret: ``auth: failed``, ``token:
+# expired``, ``pin: true``, ``sig: valid``.
+_STATUS_WORDS = frozenset(
+    {
+        "true",
+        "false",
+        "none",
+        "null",
+        "nil",
+        "undefined",
+        "yes",
+        "no",
+        "ok",
+        "on",
+        "off",
+        "valid",
+        "invalid",
+        "verified",
+        "unverified",
+        "failed",
+        "failure",
+        "success",
+        "succeeded",
+        "successful",
+        "expired",
+        "revoked",
+        "rotated",
+        "required",
+        "optional",
+        "enabled",
+        "disabled",
+        "missing",
+        "present",
+        "absent",
+        "set",
+        "unset",
+        "pending",
+        "approved",
+        "denied",
+        "rejected",
+        "accepted",
+        "granted",
+        "allowed",
+        "blocked",
+        "locked",
+        "unlocked",
+        "active",
+        "inactive",
+        "unknown",
+        "empty",
+        "hidden",
+        "masked",
+        "redacted",
+        "changed",
+        "reset",
+        "sent",
+        "received",
+    }
+)
+_HEX_RUN = re.compile(r"[0-9a-fA-F]{32,}")
+_TOKEN_CHARS = re.compile(r"[A-Za-z0-9+/=_\-.~]+")
+_WORD_PIECES = re.compile(r"[-_.:@]+")
+
+
+def _wordy(value: str) -> bool:
+    """``case-session-1``, ``created_at``, ``lateral-movement``: an identifier
+    made of words and small numbers, not random material."""
+    pieces = [p for p in _WORD_PIECES.split(value) if p]
+    return bool(pieces) and all(
+        p.isalpha() or (p.isdigit() and len(p) <= 6) for p in pieces
+    )
+
+
+def _secretish(value: str, numeric_ok: bool = False) -> bool:
+    """Whether a value behind a WEAK key reads as a credential rather than a
+    status word, a count, a rule name, a registry path or a ticket id."""
+    s = value.strip()
+    if len(s) >= 2 and s[0] in "\"'" and s[-1] == s[0]:
+        s = s[1:-1]
+    if numeric_ok and re.fullmatch(r"\d{4,12}", s):
+        return True
+    if len(s) < 6 or any(c.isspace() for c in s) or s.startswith("[REDACTED"):
+        return False
+    if s.lower() in _STATUS_WORDS:
+        return False
+    if "\\" in s or s.startswith("/"):
+        return False  # a registry key or a path
+    if _HEX_RUN.fullmatch(s):
+        return True
+    upper = any(c.isupper() for c in s)
+    lower = any(c.islower() for c in s)
+    digit = any(c.isdigit() for c in s)
+    if len(s) >= 8 and upper and lower and digit:
+        return True
+    if len(s) >= 8 and (digit or upper) and any(c in "!@#$%^*+=~" for c in s):
+        return True
+    if len(s) >= 12 and digit and (upper or lower) and not _wordy(s):
+        return True
+    return len(s) >= 20 and bool(_TOKEN_CHARS.fullmatch(s)) and not _wordy(s)
+
+
+# -- free text ---------------------------------------------------------------
+
+_IDENT = r"-{0,2}[A-Za-z_][A-Za-z0-9_.\-]{0,255}"
+# ``key=value``, ``"key": "value"``, ``key%3Dvalue`` (URL-encoded),
+# ``'key' => 'value'`` (PHP, Ruby, Perl), with an optional quote (plain or
+# JSON-escaped) closing the key.
 _KEY_SEP = re.compile(
     r"(?<![A-Za-z0-9_.\-%])(\\?[\"']?)(" + _IDENT + r")"
-    r"((?:\\?[\"'])?[ \t]*(?:=|:|%3[Dd]|%3[Aa])[ \t]*)"
+    r"((?:\\?[\"'])?[ \t]*(?:=>|=|:|%3[Dd]|%3[Aa])[ \t]*)"
 )
 # ``PASSWORD<tab>value``, ``token value``, ``--password value``.
 _KEY_SPACE = re.compile(r"(?<![A-Za-z0-9_.\-%=:/\\])(" + _IDENT + r")([ \t]+)")
 _VALUE = re.compile(
-    r"\\\"(?:[^\"\\]|\\[^\"])*\\\"|\"[^\"]*\"|'[^']*'|\{[^}]*\}|[^\s;&,\"'<>]+"
+    r"\\\r?\n[ \t]*[^\s;&,\"'<>]+"  # ``DB_PASS=\`` + continuation line
+    r"|\\\"(?:[^\"\\]|\\[^\"])*\\\"|\"[^\"]*\"|'[^']*'|\{[^}]*\}"
+    r"|[^\s;&,\"'<>][^\s;&,\"<>]*"
 )
+# ``Password=ab;cd`` where ``cd`` is no ``key=`` of its own: still the value.
+_SEMI_TAIL = re.compile(r";([^\s;=&,\"'<>]+)(?=[\s,]|$)")
 _SPACE_VALUE = re.compile(r"\"[^\"]*\"|'[^']*'|[^\s;,\"'<>|]+")
 _YAML_BLOCK_INDICATOR = re.compile(r"^[|>][+-]?\d*$")
 # ``password: >-`` / ``password: |`` and the indented lines under it.
@@ -565,13 +835,41 @@ _YAML_BLOCK = re.compile(
     r"(?m)^([ \t]*)(-[ \t]+)?([\"']?)([A-Za-z_][A-Za-z0-9_.\-]*)\3[ \t]*:[ \t]*"
     r"([|>][+-]?\d*)[ \t]*(?:#[^\n]*)?\n((?:\1[ \t]+\S[^\n]*(?:\n|$))+)"
 )
+# ``password:`` with its scalar on the next, deeper-indented line.
+_YAML_NEXT_LINE = re.compile(
+    r"(?m)^([ \t]*)(?:-[ \t]+)?([\"']?)([A-Za-z_][A-Za-z0-9_.\-]*)\2[ \t]*:[ \t]*"
+    r"(?:#[^\n]*)?\n(\1[ \t]++)(?!-[ \t])(?!#)([^\n:#]*[^\s:#])[ \t]*$"
+)
+# HCL / shell heredoc: ``password = <<EOF`` ... ``EOF``.
+_HEREDOC = re.compile(
+    r"(?ms)^([ \t]*[\"']?)([A-Za-z_][\w.\-]*)([\"']?[ \t]*[=:][ \t]*<<-?[ \t]*)"
+    r"([\"']?)([A-Za-z_]\w*)\4[ \t]*\n(.*?)(^[ \t]*\5[ \t]*$)"
+)
 # ``<password>x</password>``, ``<ns:ApiKey attr="1">x</ns:ApiKey>``.
 _XML_ELEMENT = re.compile(
     r"<((?:[A-Za-z_][\w.\-]*:)?([A-Za-z_][\w.\-]*))(\s[^<>]*)?>([^<]*)</\1\s*>"
 )
+# ``<password><![CDATA[x]]></password>``.
+_XML_CDATA = re.compile(
+    r"<((?:[A-Za-z_][\w.\-]*:)?([A-Za-z_][\w.\-]*))(\s[^<>]*)?>(\s*<!\[CDATA\[)"
+    r"(.*?)(\]\]>\s*</\1\s*>)",
+    re.DOTALL,
+)
+# ``<Password><Value>x</Value></Password>``: the secret's name on the parent.
+_XML_NESTED = re.compile(
+    r"<((?:[A-Za-z_][\w.\-]*:)?([A-Za-z_][\w.\-]*))(\s[^<>]*)?>"
+    r"(\s*<([A-Za-z_][\w.:\-]*)(?:\s[^<>]*)?>)([^<]*)(</\5\s*>)"
+)
 # .NET ``<add key="Password" value="x"/>`` and ``name="..." value="..."``.
 _NAMED_VALUE_ATTR = re.compile(
     r"(?i)\b((?:key|name)\s*=\s*([\"'])([^\"']*)\2\s+value\s*=\s*)([\"'])([^\"']*)\4"
+)
+# Kubernetes env / header lists written out as text:
+# ``- name: API_TOKEN\n  value: x``, ``"name": "X-Api-Key", "value": "x"``.
+_NAMED_VALUE_TEXT = re.compile(
+    r"(?i)(?<![\w-])([\"']?)(?:name|key|header)\1[ \t]*[:=][ \t]*([\"']?)"
+    r"([A-Za-z_][\w.\-]{0,127})\2([ \t,;]*+(?:\r?\n[ \t]*+)?(?:-[ \t]++)?"
+    r"([\"']?)(?:value|val)\5[ \t]*+[:=][ \t]*+)"
 )
 # ``mysql -pS3cret`` (attached), only where it reads as a password.
 _DASH_P = re.compile(r"(?<![\w\-])(-p)([^\s\-;&,\"'<>|][^\s;&,\"'<>|]*)")
@@ -583,14 +881,23 @@ _SSHPASS = re.compile(r"(?i)(\bsshpass\b[^\n|;&]{0,256}?\s-p[ \t]*)([^\s;&|]+)")
 _NET_USE = re.compile(
     r"(?i)(\bnet\s+use\b[^\n]{0,256}?\\\\\S+[ \t]+)(?![/*])([^\s/]\S*)"
 )
+# ``echo S | docker login --password-stdin``, ``| gh auth login --with-token``,
+# ``echo 'root:S' | chpasswd``.
 _STDIN_SECRET = re.compile(
     r"(?i)(\b(?:echo|printf)\s+(?:-[neE]+\s+)?)([\"']?)([^\s\"'|]+)\2"
-    r"(?=\s*\|[^\n|]{0,256}--password-stdin)"
+    r"(?=\s*\|[^\n|]{0,256}(?:--password-stdin|--with-token|--token-stdin"
+    r"|--stdin\b|\bchpasswd\b))"
 )
 _HTPASSWD = re.compile(r"(?i)\bhtpasswd((?:[ \t]+[^\s;&|]+)+)")
 _OTP_CODE = re.compile(
     r"(?i)\b((?:totp|otp|mfa|2fa|one[- ]time|verification|authenticator)"
     r"[ \t]+(?:code|token|pin|passcode)[ \t]*(?:[:=][ \t]*|is[ \t]+)?)(\d{6,8})\b"
+)
+# ``the new password is S``, ``pin was 1234``.
+_PROSE_SECRET = re.compile(
+    r"(?i)\b((?:password|passphrase|passwd|passcode|pin|secret|token|api[ _-]?key)"
+    r"[ \t]+(?:is|was|=|set[ \t]+to|changed[ \t]+to|reset[ \t]+to)[ \t]+)"
+    r"([\"']?)([^\s\"']+?)\2(?=[\s,;)]|\.(?:\s|$)|$)"
 )
 _AUTH_HEADER = re.compile(
     r"(?i)\b((?:proxy-)?authorization[\"']?\s*[:=]\s*[\"']?)"
@@ -603,9 +910,13 @@ _PEM_PRIVATE = re.compile(
     r"(?:-----END[ A-Z0-9]*PRIVATE KEY(?: BLOCK)?-----|\Z)",
     re.DOTALL,
 )
+# PuTTY ``.ppk``: the ``Private-Lines: N`` block.
+_PPK_PRIVATE = re.compile(r"(?i)(Private-Lines:[ \t]*(\d{1,4})[ \t]*\r?\n)")
 # ``scheme://user:password@host`` (and ``redis://:pw@``, ``mongodb+srv://``):
 # the whole userinfo goes.
 _URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]{1,30}://)[^\s/?#@\"'<>]*@")
+# ``?code=`` (Azure Functions keys, OAuth codes) in a URL query.
+_URL_CODE = re.compile(r"(?i)([?&](?:code|sig)=)([^&\s#\"'<>]+)")
 # Webhook URLs whose path is the credential.
 _WEBHOOK_URLS = re.compile(
     r"(?i)(https?://(?:hooks\.slack\.com/(?:services|workflows|triggers)/|"
@@ -613,6 +924,23 @@ _WEBHOOK_URLS = re.compile(
     r"[a-z0-9.-]*webhook\.office\.com/|"
     r"[a-z0-9.-]*\.logic\.azure\.com[^\s\"'<>?]*\?))"
     r"[^\s\"'<>]+"
+)
+# Windows ``app.exe /p:"S"`` (an msbuild ``/p:Name=Value`` property is not).
+_WIN_PASS_SWITCH = re.compile(
+    r"(?i)((?<=\s)/(?:p|pw|pwd|pass|password):)(\"[^\"]*\"|'[^']*'|[^\s\"']+)"
+)
+# SQL and PowerShell statements that set a password.
+_SQL_IDENTIFIED_BY = re.compile(
+    r"(?i)(\bIDENTIFIED\s+(?:WITH\s+\S+\s+)?BY\s+(?:PASSWORD\s+|VALUES\s+)?)"
+    r"(\"[^\"]*\"|'[^']*'|[^\s;'\"]+)"
+)
+_SQL_PASSWORD_FN = re.compile(r"(?i)(\b(?:OLD_)?PASSWORD\s*\(\s*)(\"[^\"]*\"|'[^']*')")
+_SECURE_STRING = re.compile(
+    r"(?i)(\bConvertTo-SecureString\s+(?:-String\s+)?)(\"[^\"]*\"|'[^']*'|[^\s\"'-]\S*)"
+)
+# ``.pgpass``: ``host:port:db:user:password``.
+_PGPASS = re.compile(
+    r"(?m)^([A-Za-z0-9.\-*\[\]_]+:(?:\d{1,5}|\*):[^:\s]+:[^:\s]+:)(\S+)[ \t]*$"
 )
 # Credentials recognisable by their shape alone.
 _TOKEN_SHAPES = [
@@ -624,6 +952,7 @@ _TOKEN_SHAPES = [
         r"\bgh[pousr]_[A-Za-z0-9]{20,}",
         r"\bgithub_pat_[A-Za-z0-9_]{20,}",
         r"\bglpat-[A-Za-z0-9_\-]{20,}",
+        r"\bgl(?:rt|ptt|dt|cbt|imt|ft|soat|agent)-[A-Za-z0-9_\-]{20,}",
         r"\bxox[abposer]-[A-Za-z0-9\-]{10,}",
         r"\bxapp-[A-Za-z0-9\-]{10,}",
         r"\bAIza[0-9A-Za-z_\-]{35}",
@@ -647,18 +976,42 @@ _TOKEN_SHAPES = [
         r"\bdp\.(?:st|ct|pt|sa)\.[A-Za-z0-9_\-]{20,}",
         r"\bpul-[a-f0-9]{40}",
         r"\bPMAK-[A-Za-z0-9\-]{30,}",
+        # Telegram bot, Mailgun, Atlassian, Tailscale, age, Square, Meta,
+        # Azure AD client secrets, OpenAI sessions.
+        r"(?:(?<=bot)|(?<![A-Za-z0-9]))\d{6,12}:AA[A-Za-z0-9_\-]{30,}",
+        r"\bkey-[0-9a-z]{32}\b",
+        r"\bATATT3[A-Za-z0-9_\-=]{20,}",
+        r"\btskey-[a-z]+-[A-Za-z0-9\-]{10,}",
+        r"\bAGE-SECRET-KEY-1[0-9A-Z]{40,}",
+        r"\bsq0(?:atp|csp|idp)-[A-Za-z0-9_\-]{20,}",
+        r"\bEAA[A-Za-z0-9]{30,}",
+        r"(?<![A-Za-z0-9_\-.~])[A-Za-z0-9_\-.]{3}\dQ~[A-Za-z0-9_.~\-]{20,}",
+        r"\bsess-[A-Za-z0-9]{32,}",
     )
 ]
 # The sanitizer's patterns match a secret's start (``sk-ant-``, ``AKIA...``, a
 # DSN up to ``@``); a redaction must swallow the rest of that token as well.
+# Its bare-hex rule is left out: hash IOCs (MD5, SHA-1, SHA-256) and trace ids
+# are evidence, not credentials (``_LONG_HEX`` below).
 _SECRET_TOKENS = [
-    re.compile(p.pattern + r"[^\s\"',;]*", p.flags) for p in _SECRET_VALUE_PATTERNS
+    re.compile(p.pattern + r"[^\s\"',;]*", p.flags)
+    for p in _SECRET_VALUE_PATTERNS
+    if "a-fA-F0-9]{32" not in p.pattern
 ]
+_LONG_HEX = re.compile(r"(?<![A-Za-z0-9])[a-fA-F0-9]{32,}(?![A-Za-z0-9])")
+# MD5 / trace id, SHA-1, SHA-224, SHA-256, SHA-384, SHA-512.
+_HASH_HEX_LENGTHS = frozenset({32, 40, 56, 64, 96, 128})
 # An AWS secret access key: 40 characters of base64 with no prefix to go by.
 _AWS_SECRET = re.compile(r"(?<![A-Za-z0-9/+=])[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+=])")
+# Base64 runs worth decoding to look inside (``.dockerconfigjson``,
+# kubeconfig ``client-key-data``, ``base64("password=...")``).
+_B64_RUN = re.compile(
+    r"(?<![A-Za-z0-9+/_\-])[A-Za-z0-9+/_\-]{24,}={0,2}(?![A-Za-z0-9+/=_\-])"
+)
 # Our own hash-chain values: hex by design, not a leaked credential.
 _VERBATIM_HEX = frozenset({"prev_hash", "event_hash", "hash"})
 _HEX = re.compile(r"^[0-9a-fA-F]{32,128}$")
+_MAX_NEST = 4  # JSON-in-a-string / base64 / escape decoding depth
 
 
 def _redacted_value(value: str) -> str:
@@ -670,14 +1023,24 @@ def _redacted_value(value: str) -> str:
     return REDACTED
 
 
+def _is_flag_key(text_: str, start: int, ident: str) -> bool:
+    """``--key=x`` / ``/pass:x`` / ``?sig=x``: a command-line switch or a URL
+    query parameter, whose value is what its name says."""
+    return ident.startswith("-") or (start > 0 and text_[start - 1] in "/?&")
+
+
 def _redact_pairs(text_: str) -> str:
-    """``key=value`` / ``"key": "value"`` / ``key%3Dvalue`` whose key names a
-    credential. Scanned key by key so that a non-secret pair never swallows a
-    secret one after it (``foo=password=x``)."""
+    """``key=value`` / ``"key": "value"`` / ``key%3Dvalue`` / ``key => value``
+    whose key names a credential. Scanned key by key so that a non-secret pair
+    never swallows a secret one after it (``foo=password=x``)."""
     out: list[str] = []
     pos = 0
     for m in _KEY_SEP.finditer(text_):
-        if m.start() < pos or not secret_identifier(m.group(2)):
+        if m.start() < pos:
+            continue
+        ident = m.group(2)
+        strength = identifier_strength(ident)
+        if not strength:
             continue
         vm = _VALUE.match(text_, m.end())
         if vm is None:
@@ -685,13 +1048,26 @@ def _redact_pairs(text_: str) -> str:
         value = vm.group(0)
         if value == REDACTED or _YAML_BLOCK_INDICATOR.match(value):
             continue
-        if value.startswith("[REDACTED"):
+        if value.startswith("[REDACTED") or value.startswith("<<"):
             continue
         if text_.startswith(" " + REDACTED, vm.end()):
             continue  # ``Authorization: Basic [REDACTED]``: the scheme stays
+        if (
+            strength == WEAK
+            and not _is_flag_key(text_, m.start(2), ident)
+            and not _secretish(value, _numeric_identifier(ident))
+        ):
+            continue
+        end = vm.end()
+        if strength == STRONG:
+            while True:
+                tail = _SEMI_TAIL.match(text_, end)
+                if tail is None:
+                    break
+                end = tail.end()
         out.append(text_[pos : vm.start()])
-        out.append(_redacted_value(value))
-        pos = vm.end()
+        out.append(_redacted_value(value) if end == vm.end() else REDACTED)
+        pos = end
     out.append(text_[pos:])
     return "".join(out)
 
@@ -714,17 +1090,32 @@ def _redact_spaced(text_: str) -> str:
     pos = 0
     for m in _KEY_SPACE.finditer(text_):
         ident = m.group(1)
-        if m.start() < pos or not secret_identifier(ident):
+        if m.start() < pos:
+            continue
+        strength = identifier_strength(ident)
+        if not strength:
             continue
         vm = _SPACE_VALUE.match(text_, m.end())
         if vm is None:
             continue
         value = vm.group(0)
-        if value.startswith("[REDACTED") or value.startswith("-"):
+        if value.startswith("[REDACTED"):
             continue
         is_flag = ident.startswith("-")
+        if value.startswith("-"):
+            # ``--password -S3cr3t``: a dash-led secret, not the next flag.
+            if not (
+                is_flag
+                and strength == STRONG
+                and not value.startswith("--")
+                and _secretish(value[1:])
+            ):
+                continue
         if is_flag:
             if _INDIRECT_FLAG.search(ident):
+                continue
+        elif strength == WEAK:
+            if not _secretish(value, _numeric_identifier(ident)):
                 continue
         elif not _random_enough(value):
             continue
@@ -733,6 +1124,13 @@ def _redact_spaced(text_: str) -> str:
         pos = vm.end()
     out.append(text_[pos:])
     return "".join(out)
+
+
+def _pair_hit(name: str, value: str) -> bool:
+    strength = identifier_strength(name)
+    if strength == STRONG:
+        return True
+    return strength == WEAK and _secretish(value, _numeric_identifier(name))
 
 
 def _yaml_block_redaction(match: "re.Match[str]") -> str:
@@ -744,18 +1142,71 @@ def _yaml_block_redaction(match: "re.Match[str]") -> str:
     return f"{head}{indent}  {REDACTED}{trailing}"
 
 
+def _yaml_next_line_redaction(match: "re.Match[str]") -> str:
+    value = match.group(5)
+    if value.startswith("[REDACTED") or not _pair_hit(match.group(3), value):
+        return match.group(0)
+    head = match.group(0)[: match.start(5) - match.start(0)]
+    return head + _redacted_value(value.strip())
+
+
+def _heredoc_redaction(match: "re.Match[str]") -> str:
+    body = match.group(6)
+    if not body.strip() or not _pair_hit(match.group(2), body.strip()):
+        return match.group(0)
+    head = match.group(0)[: match.start(6) - match.start(0)]
+    return f"{head}{REDACTED}\n{match.group(7)}"
+
+
 def _xml_redaction(match: "re.Match[str]") -> str:
-    if not secret_identifier(match.group(2)) or not match.group(4).strip():
+    content = match.group(4)
+    if not content.strip() or not _pair_hit(match.group(2), content.strip()):
         return match.group(0)
     attrs = match.group(3) or ""
     return f"<{match.group(1)}{attrs}>{REDACTED}</{match.group(1)}>"
 
 
+def _xml_cdata_redaction(match: "re.Match[str]") -> str:
+    if not match.group(5).strip() or not _pair_hit(match.group(2), match.group(5)):
+        return match.group(0)
+    head = match.group(0)[: match.start(5) - match.start(0)]
+    return head + REDACTED + match.group(6)
+
+
+def _xml_nested_redaction(match: "re.Match[str]") -> str:
+    inner = match.group(6)
+    if not inner.strip() or inner.startswith("[REDACTED"):
+        return match.group(0)
+    if not _pair_hit(match.group(2), inner.strip()):
+        return match.group(0)
+    head = match.group(0)[: match.start(6) - match.start(0)]
+    return head + REDACTED + match.group(7)
+
+
 def _named_attr_redaction(match: "re.Match[str]") -> str:
-    if not secret_identifier(match.group(3)):
+    if not _pair_hit(match.group(3), match.group(5)):
         return match.group(0)
     q = match.group(4)
     return f"{match.group(1)}{q}{REDACTED}{q}"
+
+
+def _redact_named_values(text_: str) -> str:
+    """``- name: API_TOKEN`` / ``value: x`` written out as text."""
+    out: list[str] = []
+    pos = 0
+    for m in _NAMED_VALUE_TEXT.finditer(text_):
+        if m.start() < pos:
+            continue
+        vm = _VALUE.match(text_, m.end())
+        if vm is None or vm.group(0).startswith("[REDACTED"):
+            continue
+        if not _pair_hit(m.group(3), vm.group(0)):
+            continue
+        out.append(text_[pos : vm.start()])
+        out.append(_redacted_value(vm.group(0)))
+        pos = vm.end()
+    out.append(text_[pos:])
+    return "".join(out)
 
 
 def _dash_p_redaction(match: "re.Match[str]") -> str:
@@ -810,8 +1261,30 @@ def _scheme_redaction(match: "re.Match[str]") -> str:
     return f"{match.group(1)} {REDACTED}"
 
 
+def _b64_decode_text(run: str) -> Optional[str]:
+    """``run`` as base64(url) of printable UTF-8 text, or None."""
+    body = run.rstrip("=")
+    if len(body) % 4 == 1:
+        return None
+    padded = body + "=" * (-len(body) % 4)
+    try:
+        raw = base64.b64decode(
+            padded.replace("-", "+").replace("_", "/"), validate=True
+        )
+        decoded = raw.decode("utf-8")
+    except (ValueError, binascii.Error, UnicodeDecodeError):
+        return None
+    if not decoded or any(not (c.isprintable() or c in "\r\n\t") for c in decoded):
+        return None
+    return decoded
+
+
 def _aws_secret_redaction(match: "re.Match[str]") -> str:
     value = match.group(0)
+    if value.startswith("/") and value.count("/") >= 3:
+        return value  # a path: ``/Users/JohnDoe/Library/Caches/Chrome1234``
+    if _b64_decode_text(value) is not None:
+        return value  # base64 of readable text (a file name), not a key
     if (
         any(c.isupper() for c in value)
         and any(c.islower() for c in value)
@@ -821,18 +1294,327 @@ def _aws_secret_redaction(match: "re.Match[str]") -> str:
     return value
 
 
-def _redact_raw(value: str) -> str:
+def _long_hex_redaction(match: "re.Match[str]") -> str:
+    value = match.group(0)
+    return value if len(value) in _HASH_HEX_LENGTHS else REDACTED
+
+
+def _ppk_redaction(text_: str) -> str:
+    out: list[str] = []
+    pos = 0
+    for m in _PPK_PRIVATE.finditer(text_):
+        if m.start() < pos:
+            continue
+        end = m.end()
+        for _ in range(int(m.group(2))):
+            nl = text_.find("\n", end)
+            end = len(text_) if nl < 0 else nl + 1
+        body = text_[m.end() : end]
+        if not body.strip():
+            continue
+        out.append(text_[pos : m.end()])
+        out.append(REDACTED + ("\n" if body.endswith("\n") else ""))
+        pos = end
+    out.append(text_[pos:])
+    return "".join(out)
+
+
+# -- command lines -----------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _CliSpec:
+    """Which arguments of a tool carry a credential.
+
+    ``flags`` maps a flag to how its value is cut: ``all`` (the whole
+    value), ``colon`` (``user:PASS``) or ``percent`` (``user%PASS``).
+    ``requires`` lists subcommands one of which must be present
+    (``docker login``, not ``docker run -p 80:80``). ``positional`` names a
+    subcommand after which the n-th non-flag argument is the secret
+    (``vault login S``, ``rabbitmqctl add_user u S``, ``net user u S``)."""
+
+    flags: dict = field(default_factory=dict)
+    requires: frozenset = frozenset()
+    positional: tuple = ()  # ((subcommand, n), ...)
+    ci: bool = False  # flags are case-insensitive (Windows tools)
+
+
+_LOGIN = frozenset({"login"})
+_CLI_TOOLS: dict[str, _CliSpec] = {}
+for _names, _spec in (
+    (
+        ("curl",),
+        _CliSpec(
+            flags={
+                "-u": "colon",
+                "--user": "colon",
+                "-U": "colon",
+                "--proxy-user": "colon",
+            }
+        ),
+    ),
+    (
+        ("redis-cli", "valkey-cli", "keydb-cli"),
+        _CliSpec(flags={"-a": "all", "--pass": "all"}),
+    ),
+    (("sqlcmd", "bcp", "osql", "isql"), _CliSpec(flags={"-P": "all"})),
+    (
+        (
+            "ldapsearch",
+            "ldapmodify",
+            "ldapadd",
+            "ldapdelete",
+            "ldapwhoami",
+            "ldappasswd",
+            "ldapcompare",
+            "ldapmodrdn",
+        ),
+        _CliSpec(flags={"-w": "all"}),
+    ),
+    (
+        ("docker", "podman", "buildah", "skopeo", "nerdctl", "oras", "crane", "helm"),
+        _CliSpec(flags={"-p": "all", "--password": "all"}, requires=_LOGIN),
+    ),
+    (
+        (
+            "mongo",
+            "mongosh",
+            "mongodump",
+            "mongorestore",
+            "mongoexport",
+            "mongoimport",
+            "mongostat",
+            "mongotop",
+            "mongofiles",
+        ),
+        _CliSpec(flags={"-p": "all", "--password": "all"}),
+    ),
+    (("psexec", "psexec64", "paexec"), _CliSpec(flags={"-p": "all"}, ci=True)),
+    (("az",), _CliSpec(flags={"-p": "all", "--password": "all"}, requires=_LOGIN)),
+    (("zip", "zipcloak"), _CliSpec(flags={"-P": "all", "--password": "all"})),
+    (("openssl",), _CliSpec(flags={"-k": "all", "-K": "all"})),
+    (("twilio",), _CliSpec(flags={"-t": "all", "--auth-token": "all"})),
+    (
+        ("smbclient", "rpcclient", "smbcacls", "smbget", "smbtree"),
+        _CliSpec(flags={"-U": "percent", "--user": "percent"}),
+    ),
+    (("smbmap", "crackmapexec", "nxc", "netexec"), _CliSpec(flags={"-p": "all"})),
+    (("ssh-keygen",), _CliSpec(flags={"-N": "all", "-P": "all"})),
+    (("schtasks",), _CliSpec(flags={"/rp": "all", "/p": "all"}, ci=True)),
+    (("sshpass",), _CliSpec(flags={"-p": "all"})),
+    (("vault", "bao"), _CliSpec(positional=(("login", 1),))),
+    (
+        ("rabbitmqctl",),
+        _CliSpec(positional=(("add_user", 2), ("change_password", 2))),
+    ),
+    (("net", "net1"), _CliSpec(positional=(("user", 2),), ci=True)),
+    (("mysqladmin",), _CliSpec(positional=(("password", 1),))),
+):
+    for _name in _names:
+        _CLI_TOOLS[_name] = _spec
+
+
+def _tool_name(arg: str) -> str:
+    name = re.split(r"[\\/]", arg.strip("\"'"))[-1].lower()
+    return name[:-4] if name.endswith(".exe") else name
+
+
+def cli_secret_args(args: list) -> dict[int, str]:
+    """Indices of ``args`` (an argv) that hold a credential, with how to cut
+    each (``all`` / ``colon`` / ``percent``)."""
+    strs = [a.strip("\"'") if isinstance(a, str) else "" for a in args]
+    tool_at = next(
+        (i for i, a in enumerate(strs[:8]) if _tool_name(a) in _CLI_TOOLS), None
+    )
+    if tool_at is None:
+        return {}
+    spec = _CLI_TOOLS[_tool_name(strs[tool_at])]
+    rest = strs[tool_at + 1 :]
+    if spec.requires and not any(a.lower() in spec.requires for a in rest):
+        return {}
+    hits: dict[int, str] = {}
+    flags = {k.lower(): v for k, v in spec.flags.items()} if spec.ci else spec.flags
+    for j in range(tool_at + 1, len(strs) - 1):
+        flag = strs[j].lower() if spec.ci else strs[j]
+        if flag in flags and strs[j + 1] and not strs[j + 1].startswith("[REDACTED"):
+            hits[j + 1] = flags[flag]
+    for sub, n in spec.positional:
+        for j in range(tool_at + 1, len(strs)):
+            if strs[j].lower() != sub:
+                continue
+            seen = 0
+            for k in range(j + 1, len(strs)):
+                a = strs[k]
+                if a.startswith("-") or a.startswith("/") or "=" in a:
+                    continue
+                seen += 1
+                if seen == n:
+                    if a and a != "*" and not a.startswith("[REDACTED"):
+                        hits[k] = "all"
+                    break
+            break
+    return hits
+
+
+def _cut_cli_value(value: str, mode: str) -> str:
+    q = (
+        value[0]
+        if len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0]
+        else ""
+    )
+    body = value[1:-1] if q else value
+    sep = {"colon": ":", "percent": "%"}.get(mode)
+    if sep is None:
+        return f"{q}{REDACTED}{q}"
+    user, found, secret = body.partition(sep)
+    if not found or not secret or secret.startswith("[REDACTED"):
+        return value
+    if mode == "colon" and secret.isdigit():
+        return value  # ``-u 1000:1000``: a uid:gid, not a password
+    return f"{q}{user}{sep}{REDACTED}{q}"
+
+
+_CLI_SEGMENT = re.compile(r"[^\n|;&]+")
+_CLI_ARG = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'[^']*'|\S+")
+
+
+def _redact_cli(text_: str) -> str:
+    """Tool-aware argv redaction over each command in free text."""
+    if not any(
+        name in text_.lower()
+        for name in (
+            "curl",
+            "cli",
+            "sql",
+            "ldap",
+            "login",
+            "mongo",
+            "exec",
+            "zip",
+            "openssl",
+            "twilio",
+            "smb",
+            "ssh",
+            "schtasks",
+            "vault",
+            "bao",
+            "rabbitmq",
+            "net",
+            "mysqladmin",
+            "crackmap",
+            "nxc",
+            "rpc",
+        )
+    ):
+        return text_
+    edits: list[tuple[int, int, str]] = []
+    for seg in _CLI_SEGMENT.finditer(text_):
+        tokens = list(_CLI_ARG.finditer(seg.group(0)))
+        hits = cli_secret_args([t.group(0) for t in tokens])
+        for idx, mode in hits.items():
+            t = tokens[idx]
+            new = _cut_cli_value(t.group(0), mode)
+            if new != t.group(0):
+                edits.append((seg.start() + t.start(), seg.start() + t.end(), new))
+    if not edits:
+        return text_
+    out: list[str] = []
+    pos = 0
+    for start, end, new in sorted(edits):
+        out.append(text_[pos:start])
+        out.append(new)
+        pos = end
+    out.append(text_[pos:])
+    return "".join(out)
+
+
+# -- decoders ----------------------------------------------------------------
+
+_PERCENT = re.compile(r"%[0-9A-Fa-f]{2}")
+_ESCAPES = re.compile(
+    r"\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})|&#(\d{1,7});|&#[xX]([0-9a-fA-F]{1,6});"
+    r"|&(quot|apos|amp|lt|gt|equals|colon);"
+)
+_NAMED_ENTITIES = {
+    "quot": '"',
+    "apos": "'",
+    "amp": "&",
+    "lt": "<",
+    "gt": ">",
+    "equals": "=",
+    "colon": ":",
+}
+
+
+def _unescape(match: "re.Match[str]") -> str:
+    uni, hx, dec, hexent, named = match.groups()
+    try:
+        if uni or hx or hexent:
+            return chr(int(uni or hx or hexent, 16))
+        if dec:
+            return chr(int(dec))
+    except (ValueError, OverflowError):
+        return match.group(0)
+    return _NAMED_ENTITIES[named]
+
+
+def _redact_base64(text_: str, depth: int) -> str:
+    """Cut a base64 blob whole when what it decodes to holds a credential: a
+    PEM key (kubeconfig ``client-key-data``), a ``.dockerconfigjson``, or
+    ``base64("password=...")``."""
+    if depth >= _MAX_NEST:
+        return text_
+
+    def one(match: "re.Match[str]") -> str:
+        run = match.group(0)
+        decoded = _b64_decode_text(run)
+        if decoded is None or len(decoded) < 6:
+            return run
+        if (
+            "PRIVATE KEY" in decoded
+            or redact_text(decoded, _depth=depth + 1) != decoded
+        ):
+            return REDACTED
+        return run
+
+    return _B64_RUN.sub(one, text_)
+
+
+def _redact_raw(value: str, depth: int = 0) -> str:
     out = _PEM_PRIVATE.sub(REDACTED, value)
+    out = _ppk_redaction(out)
     out = _AUTH_HEADER.sub(_auth_header_redaction, out)
     out = _WEBHOOK_URLS.sub(lambda m: m.group(1) + REDACTED, out)
     out = _URL_USERINFO.sub(lambda m: m.group(1) + REDACTED + "@", out)
+    out = _URL_CODE.sub(
+        lambda m: m.group(1) + REDACTED if _secretish(m.group(2)) else m.group(0), out
+    )
     for pattern in _TOKEN_SHAPES:
         out = pattern.sub(REDACTED, out)
     out = _SCHEME_CREDENTIAL.sub(_scheme_redaction, out)
+    out = _HEREDOC.sub(_heredoc_redaction, out)
     out = _YAML_BLOCK.sub(_yaml_block_redaction, out)
+    out = _YAML_NEXT_LINE.sub(_yaml_next_line_redaction, out)
+    out = _XML_CDATA.sub(_xml_cdata_redaction, out)
+    out = _XML_NESTED.sub(_xml_nested_redaction, out)
     out = _XML_ELEMENT.sub(_xml_redaction, out)
     out = _NAMED_VALUE_ATTR.sub(_named_attr_redaction, out)
+    out = _redact_named_values(out)
+    out = _SQL_IDENTIFIED_BY.sub(
+        lambda m: m.group(1) + _redacted_value(m.group(2)), out
+    )
+    out = _SQL_PASSWORD_FN.sub(lambda m: m.group(1) + _redacted_value(m.group(2)), out)
+    out = _SECURE_STRING.sub(lambda m: m.group(1) + _redacted_value(m.group(2)), out)
+    out = _WIN_PASS_SWITCH.sub(
+        lambda m: (
+            m.group(0)
+            if "=" in m.group(2) or m.group(2).startswith("[REDACTED")
+            else m.group(1) + _redacted_value(m.group(2))
+        ),
+        out,
+    )
     out = _redact_pairs(out)
+    out = _redact_cli(out)
     out = _SSHPASS.sub(lambda m: m.group(1) + REDACTED, out)
     out = _NET_USE.sub(lambda m: m.group(1) + REDACTED, out)
     out = _STDIN_SECRET.sub(
@@ -840,31 +1622,94 @@ def _redact_raw(value: str) -> str:
     )
     out = _HTPASSWD.sub(_htpasswd_redaction, out)
     out = _OTP_CODE.sub(lambda m: m.group(1) + REDACTED, out)
+    out = _PROSE_SECRET.sub(
+        lambda m: (
+            m.group(1) + m.group(2) + REDACTED + m.group(2)
+            if _secretish(m.group(3), numeric_ok=True)
+            else m.group(0)
+        ),
+        out,
+    )
     out = _DASH_P.sub(_dash_p_redaction, out)
     out = _redact_spaced(out)
+    out = _PGPASS.sub(_pgpass_redaction, out)
     for pattern in _SECRET_TOKENS:
         out = pattern.sub(REDACTED, out)
+    out = _LONG_HEX.sub(_long_hex_redaction, out)
+    out = _redact_base64(out, depth)
     return _AWS_SECRET.sub(_aws_secret_redaction, out)
 
 
-_PERCENT = re.compile(r"%[0-9A-Fa-f]{2}")
+def _pgpass_redaction(match: "re.Match[str]") -> str:
+    secret = match.group(2)
+    if secret.startswith("[REDACTED"):
+        return match.group(0)
+    line = match.group(0).strip()
+    with contextlib.suppress(ValueError):
+        ipaddress.ip_address(line)
+        return match.group(0)  # an IPv6 address, not a .pgpass line
+    if re.fullmatch(r"[0-9a-fA-F]{1,4}", secret):
+        return match.group(0)
+    return match.group(1) + REDACTED
 
 
-def redact_text(value: str) -> str:
+def _redact_json_text(value: str, depth: int) -> Optional[str]:
+    """A string that is itself JSON (an object, an array, or an encoded
+    string): redact it as a structure, so a secret nested in JSON nested in a
+    string is still found. None when it is not JSON or nothing changed."""
+    s = value.strip()
+    if len(s) < 2 or len(s) > 1_000_000:
+        return None
+    if not (
+        (s[0] == "{" and s[-1] == "}")
+        or (s[0] == "[" and s[-1] == "]")
+        or (s[0] == '"' and s[-1] == '"')
+    ):
+        return None
+    try:
+        parsed = json.loads(s)
+    except (ValueError, RecursionError):
+        return None
+    if isinstance(parsed, str):
+        inner = redact_text(parsed, _depth=depth + 1)
+        return None if inner == parsed else json.dumps(inner)
+    if not isinstance(parsed, (dict, list)):
+        return None
+    walker = Redactor(redact_pii=False, max_string=10**9, _depth=depth + 1)
+    out = walker.value("", parsed)
+    if walker.count == 0 or out == parsed:
+        return None
+    return json.dumps(out)
+
+
+def redact_text(value: str, *, _depth: int = 0) -> str:
     """Cut every credential this module recognises out of free text.
 
-    Text carrying percent-escapes is also redacted after decoding
-    (``password%3Dx``, ``%22secret%22%3A%22x%22``); when the decoded form hides
-    a secret the raw form did not show, the decoded, redacted text is what is
-    exported."""
-    out = _redact_raw(value)
-    if _PERCENT.search(value):
-        decoded = unquote(value)
-        for _ in range(2):  # double-encoded (``%253D``) as well
+    A string that is JSON is walked as a structure (recursively: JSON in a
+    string in JSON). Text carrying percent-escapes, ``\\uXXXX`` / ``\\xXX``
+    escapes or HTML entities is also redacted after decoding (``password%3Dx``,
+    ``password\\u003dx``, ``password&#61;x``); when the decoded form hides a
+    secret the raw form did not show, the decoded, redacted text is what is
+    exported. Base64 blobs that decode to a credential are cut whole."""
+    if _depth < _MAX_NEST:
+        structured = _redact_json_text(value, _depth)
+        if structured is not None:
+            return structured
+    out = _redact_raw(value, _depth)
+    if _depth >= _MAX_NEST:
+        return out
+    decoded = value
+    if _PERCENT.search(decoded):
+        for _ in range(3):  # double- and triple-encoded (``%25253D``) as well
             if not _PERCENT.search(decoded):
                 break
             decoded = unquote(decoded)
-        decoded_out = _redact_raw(decoded)
+    for _ in range(2):
+        if not _ESCAPES.search(decoded):
+            break
+        decoded = _ESCAPES.sub(_unescape, decoded)
+    if decoded != value:
+        decoded_out = redact_text(decoded, _depth=_depth + 1)
         if decoded_out.count(REDACTED) > out.count(REDACTED):
             return decoded_out
     return out
@@ -874,12 +1719,24 @@ def redact_text(value: str) -> str:
 # lists, ``{"key": "password", "value": "x"}`` settings rows): the secret's
 # name sits in one field and the secret in a sibling.
 _NAME_FIELDS = frozenset(
-    {"name", "key", "param", "parameter", "header", "field", "variable", "var", "id"}
+    {
+        "name",
+        "key",
+        "k",
+        "param",
+        "parameter",
+        "header",
+        "field",
+        "variable",
+        "var",
+        "id",
+    }
 )
 _VALUE_FIELDS = frozenset(
     {
         "value",
         "val",
+        "v",
         "values",
         "data",
         "content",
@@ -888,35 +1745,54 @@ _VALUE_FIELDS = frozenset(
         "secret",
     }
 )
+# A JSON Web Key's private members.
+_JWK_PRIVATE = frozenset({"d", "p", "q", "dp", "dq", "qi", "k", "oth"})
 
 
-def _paired_value_keys(mapping: dict) -> set:
-    """Keys of ``mapping`` whose value is a secret named by a sibling field."""
-    named = any(
-        str(k).lower() in _NAME_FIELDS and isinstance(v, str) and secret_identifier(v)
-        for k, v in mapping.items()
-    )
-    if not named:
-        return set()
-    return {k for k in mapping if str(k).lower() in _VALUE_FIELDS}
+def _paired_value_keys(mapping: dict) -> dict:
+    """Keys of ``mapping`` whose value is a secret named by a sibling field,
+    mapped to ``(strength, numeric)`` of the naming field. A name that is
+    prose (``"Rotate API key"``, ``"OS Credential Dumping"``) counts as WEAK:
+    its value goes only when it reads as a secret."""
+    best = 0
+    numeric = False
+    for k, v in mapping.items():
+        if str(k).lower() not in _NAME_FIELDS or not isinstance(v, str):
+            continue
+        strength = identifier_strength(v)
+        if strength and any(c.isspace() for c in v.strip()):
+            strength = WEAK
+        if strength:
+            best = max(best, strength)
+            numeric = numeric or _numeric_identifier(v)
+    if not best:
+        return {}
+    return {k: (best, numeric) for k in mapping if str(k).lower() in _VALUE_FIELDS}
 
 
 _FLAG = re.compile(r"^-{1,2}[A-Za-z][A-Za-z0-9_.\-]*$")
 
 
+def _is_argv(value: Any) -> bool:
+    """An argv of a tool we know (``{"sshpass": ["sshpass", "-p", "x"]}``):
+    cut argument by argument, not whole, even under a credential-named key."""
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and isinstance(value[0], str)
+        and _tool_name(value[0]) in _CLI_TOOLS
+    )
+
+
 def _secret_argument(args: Any, index: int) -> bool:
-    """``["--password", "x"]``, ``["sshpass", "-p", "x"]``: the argument after a
-    flag naming a credential."""
+    """``["--password", "x"]``: the argument after a flag naming a
+    credential. (Tool-specific flags, ``-a`` for ``redis-cli`` and the like,
+    are :func:`cli_secret_args`.)"""
     if index == 0:
         return False
     prev = args[index - 1]
     if not isinstance(prev, str) or not _FLAG.match(prev):
         return False
-    if prev == "-p":
-        return any(
-            isinstance(a, str) and os.path.basename(a) == "sshpass"
-            for a in args[: index - 1]
-        )
     if args[index].startswith("-") or _INDIRECT_FLAG.search(prev):
         return False
     return secret_identifier(prev)
@@ -926,17 +1802,17 @@ class Redactor:
     """Scrub secrets (and, by default, PII) from what an event carries.
 
     Key names: ``core.telemetry_sanitizer``'s sensitive segments and content
-    keys, plus :func:`secret_key` (``credentials``, ``access_key``,
-    ``webhook_url``, ``database_url``, ``signing_key``, ``pwd``, ``pin``,
-    ``sig``, ... in snake, kebab, dotted or camel case) redact a value
-    outright. Free text goes through :func:`redact_text`: ``key=value`` and
-    ``"key": "value"`` pairs, ODBC ``Pwd=…;``, URL userinfo and secret query
-    parameters, ``Authorization`` headers and bare Basic/Bearer credentials,
-    PEM private keys, webhook URLs (Slack, Discord, Teams), well-known token
-    shapes (OpenAI, Anthropic, GitHub, GitLab, Slack, Stripe, Google, AWS key
-    ids and secret keys, JWTs, ...) and the sanitizer's own value patterns.
-    Only ``message``, ``details``, ``user_agent`` and ``actor`` are scrubbed;
-    ids, hashes and enums are ours and are left alone.
+    keys, plus :func:`identifier_strength` (``credentials``, ``access_key``,
+    ``webhook_url``, ``clientKey``, ``license_key``, ``pwd``, ... in snake,
+    kebab, dotted or camel case) redact a value outright; WEAK names
+    (``token``, ``key``, ``auth``, ``pin``, ``signature``, ``session_id``)
+    redact it only when it reads as a secret, so a status (``auth: failed``),
+    a count (``token_count: 512``) or a rule name (``signature: ET MALWARE``)
+    survives. Booleans are never secrets. Free text goes through
+    :func:`redact_text`. Only ``message``, ``details``, ``user_agent`` and
+    ``actor`` are scrubbed; ids, hashes and enums are ours and are left
+    alone. ``actor`` and actor-named detail keys (``user``, ``approved_by``,
+    ...) lose secrets but never PII: who acted is what an audit trail is for.
     """
 
     def __init__(
@@ -946,31 +1822,36 @@ class Redactor:
         max_string: int = 2048,
         max_depth: int = 6,
         max_items: int = 100,
+        _depth: int = 0,
     ) -> None:
         self._scrubber = SensitiveAttributeScrubber()
         self.redact_pii = redact_pii
         self.max_string = max_string
         self.max_depth = max_depth
         self.max_items = max_items
+        self._nest = _depth
         self.count = 0  # values redacted, for metrics
 
-    def _key_hit(self, path: str) -> bool:
+    def _key_strength(self, path: str) -> int:
+        leaf = path.rsplit(".", 1)[-1]
+        segments = key_segments(leaf)
+        if self.redact_pii and (leaf.lower() in _PII_KEYS or set(segments) & _PII_KEYS):
+            return STRONG
+        if len(segments) > 1 and segments[-1] in _NON_SECRET_LEAVES:
+            return 0
+        strength = identifier_strength(leaf)
+        if strength:
+            return strength
+        if self._scrubber._should_redact(leaf.lower(), None):
+            return WEAK if {"session", "cookie"} & set(segments) else STRONG
         lowered = path.lower()
-        # Ask the span scrubber with a non-secret value: only its key rules fire.
-        if self._scrubber._should_redact(lowered, None):
-            return True
-        if secret_key(path):
-            return True
-        if self.redact_pii:
-            segments = set(key_segments(path))
-            leaf = lowered.rsplit(".", 1)[-1]
-            if leaf in _PII_KEYS or segments & _PII_KEYS:
-                return True
-        return False
+        if any(c in lowered for c in _CONTENT_KEY_SUBSTRINGS):
+            return STRONG
+        return 0
 
-    def text(self, value: str) -> str:
-        out = redact_text(value)
-        if self.redact_pii:
+    def text(self, value: str, *, pii: bool = True) -> str:
+        out = redact_text(value, _depth=self._nest)
+        if self.redact_pii and pii:
             out = _EMAIL.sub("[REDACTED-EMAIL]", out)
         if out != value:
             self.count += 1
@@ -978,45 +1859,81 @@ class Redactor:
             out = out[: self.max_string] + "...[truncated]"
         return out
 
-    def value(self, path: str, value: Any, depth: int = 0) -> Any:
-        if path and self._key_hit(path):
-            if value is None or value == "" or value == {}:
+    def _redact(self) -> str:
+        self.count += 1
+        return REDACTED
+
+    def value(
+        self,
+        path: str,
+        value: Any,
+        depth: int = 0,
+        weak: Optional[bool] = None,
+    ) -> Any:
+        """Redact ``value`` found under ``path``. ``weak`` is set below a WEAK
+        key: strings there go when they read as secrets (``True``: numbers
+        too, under ``pin``/``otp``)."""
+        if isinstance(value, bool) or value is None:
+            return value
+        strength = self._key_strength(path) if path else 0
+        if strength == STRONG and not _is_argv(value):
+            if value == "" or value == {} or value == []:
                 return value
-            self.count += 1
-            return REDACTED
+            return self._redact()
+        if strength == WEAK:
+            weak = bool(weak) or _numeric_identifier(path.rsplit(".", 1)[-1])
         if depth >= self.max_depth:
             return "[truncated]"
         if isinstance(value, dict):
             out = {}
             paired = _paired_value_keys(value)
+            jwk = "kty" in value
             for i, (k, v) in enumerate(value.items()):
                 if i >= self.max_items:
                     out["_truncated"] = True
                     break
                 key = str(k)[:128]
-                if k in paired and v not in (None, "", {}, []):
-                    self.count += 1
-                    out[key] = REDACTED
+                if jwk and key in _JWK_PRIVATE and v not in (None, "", {}, []):
+                    out[key] = self._redact()
                     continue
-                out[key] = self.value(f"{path}.{key}" if path else key, v, depth + 1)
+                if k in paired and v not in (None, "", {}, []):
+                    pstrength, numeric = paired[k]
+                    if pstrength == STRONG or (
+                        isinstance(v, (str, int)) and _secretish(str(v), numeric)
+                    ):
+                        out[key] = self._redact()
+                        continue
+                out[key] = self.value(
+                    f"{path}.{key}" if path else key, v, depth + 1, weak
+                )
             return out
         if isinstance(value, (list, tuple)):
             items = []
+            item_path = "" if _is_argv(value) else path
+            cli = cli_secret_args(list(value[: self.max_items]))
             for i, v in enumerate(value[: self.max_items]):
-                if isinstance(v, str) and v and _secret_argument(value, i):
-                    self.count += 1
-                    items.append(REDACTED)
+                if isinstance(v, str) and v and i in cli:
+                    new = _cut_cli_value(v, cli[i])
+                    if new != v:
+                        self.count += 1
+                    items.append(new)
                     continue
-                items.append(self.value(path, v, depth + 1))
+                if isinstance(v, str) and v and _secret_argument(value, i):
+                    items.append(self._redact())
+                    continue
+                items.append(self.value(item_path, v, depth + 1, weak))
             if len(value) > self.max_items:
                 items.append("[truncated]")
             return items
+        if weak is not None:
+            if isinstance(value, (str, int)) and _secretish(str(value), weak):
+                return self._redact()
         if isinstance(value, str):
             leaf = path.rsplit(".", 1)[-1]
             if leaf in _VERBATIM_HEX and _HEX.match(value):
                 return value
-            return self.text(value)
-        if value is None or isinstance(value, (bool, int, float)):
+            return self.text(value, pii=leaf.lower() not in _ACTOR_KEYS)
+        if isinstance(value, (int, float)):
             return value
         return self.text(str(value))
 
@@ -1024,7 +1941,7 @@ class Redactor:
         return replace(
             ev,
             message=self.text(ev.message),
-            actor=self.text(ev.actor) if ev.actor else ev.actor,
+            actor=self.text(ev.actor, pii=False) if ev.actor else ev.actor,
             user_agent=self.text(ev.user_agent) if ev.user_agent else ev.user_agent,
             details=self.value("", ev.details),
         )
@@ -3064,9 +3981,11 @@ class AuditExportService:
         self.restart_base_s = 1.0
         self.restart_cap_s = 300.0
         self.restarts = 0  # total, for metrics
-        self._consecutive_restarts = 0
-        self._restart_not_before = 0.0
-        self._started_at = 0.0
+        # Per destination: only the pipeline that died is restarted, and its
+        # backoff is its own (a healthy destination is never interrupted).
+        self._consecutive_restarts: dict[str, int] = {}
+        self._restart_not_before: dict[str, float] = {}
+        self._started_at: dict[str, float] = {}
         self._restart_timer: Optional[asyncio.TimerHandle] = None
         self._rng = random.Random()
         # Export horizon (Postgres): see probe_xid_horizon.
@@ -3208,19 +4127,25 @@ class AuditExportService:
                     self.is_leader = False
                 if not self.is_leader:
                     return
-            dead = not all(p.running for p in self.pipelines.values())
             if self._fingerprint != cfg.fingerprint():
-                self._consecutive_restarts = 0
-                self._restart_not_before = 0.0
+                self._consecutive_restarts.clear()
+                self._restart_not_before.clear()
                 await self._stop_pipelines()
                 self._start_pipelines(cfg)
-            elif dead:
-                await self._restart_dead(cfg)
-            elif (
-                self._consecutive_restarts
-                and time.monotonic() - self._started_at >= self._restart_cap(cfg)
-            ):
-                self._consecutive_restarts = 0  # healthy long enough: forgive
+            else:
+                dead = [n for n, p in self.pipelines.items() if not p.running]
+                if dead:
+                    await self._restart_dead(cfg, dead)
+                now = time.monotonic()
+                for name, pipeline in self.pipelines.items():
+                    if (
+                        self._consecutive_restarts.get(name)
+                        and pipeline.running
+                        and now - self._started_at.get(name, now)
+                        >= self._restart_cap(cfg)
+                    ):
+                        # healthy long enough: forgive
+                        self._consecutive_restarts[name] = 0
             await asyncio.to_thread(self._prune_spool)
             await self._check_horizon(cfg)
 
@@ -3233,23 +4158,37 @@ class AuditExportService:
         ceiling = min(cap, self.restart_base_s * (2 ** min(n - 1, 20)))
         return self._rng.uniform(ceiling / 2, ceiling)
 
-    async def _restart_dead(self, cfg: AuditExportConfig) -> None:
+    async def _restart_dead(self, cfg: AuditExportConfig, dead: list[str]) -> None:
+        """Restart the dead destinations' pipelines, and only those: the
+        others keep running (no re-read, no reconnect)."""
         now = time.monotonic()
-        if now < self._restart_not_before:
-            self._schedule_wake(self._restart_not_before - now)
-            return
-        self._consecutive_restarts += 1
-        self.restarts += 1
-        delay = self.restart_delay(self._consecutive_restarts, cfg)
-        self._restart_not_before = now + delay
-        logger.warning(
-            "audit export: restarting a dead pipeline (restart %d in a row; "
-            "next no sooner than %.1fs)",
-            self._consecutive_restarts,
-            delay,
-        )
-        await self._stop_pipelines()
-        self._start_pipelines(cfg)
+        dests = {d.name: d for d in cfg.destinations}
+        waits: list[float] = []
+        for name in dead:
+            not_before = self._restart_not_before.get(name, 0.0)
+            if now < not_before:
+                waits.append(not_before - now)
+                continue
+            n = self._consecutive_restarts.get(name, 0) + 1
+            self._consecutive_restarts[name] = n
+            self.restarts += 1
+            delay = self.restart_delay(n, cfg)
+            self._restart_not_before[name] = now + delay
+            waits.append(delay)
+            logger.warning(
+                "audit export: restarting dead pipeline %s (restart %d in a row; "
+                "next no sooner than %.1fs)",
+                name,
+                n,
+                delay,
+            )
+            pipeline = self.pipelines.pop(name, None)
+            if pipeline is not None:
+                await pipeline.stop()
+            if name in dests:
+                self._start_pipeline(cfg, dests[name])
+        if waits:
+            self._schedule_wake(min(waits))
 
     def _schedule_wake(self, delay: float) -> None:
         if self._loop is None or self._loop.is_closed():
@@ -3258,22 +4197,25 @@ class AuditExportService:
             self._restart_timer.cancel()
         self._restart_timer = self._loop.call_later(max(0.0, delay), self.wake)
 
+    def _start_pipeline(self, cfg: AuditExportConfig, dest: Any) -> None:
+        self._started_at[dest.name] = time.monotonic()
+        pipeline = Pipeline(
+            destination=dest.name,
+            transport=build_transport(dest, self.secrets, self.host),
+            sources=build_sources(
+                cfg, self.session_scope, self.spool, clock=self.clock
+            ),
+            cursors=self.cursors,
+            cfg=cfg,
+            redactor=Redactor(redact_pii=cfg.redact_pii),
+            on_dead=self.wake,
+        )
+        pipeline.start()
+        self.pipelines[dest.name] = pipeline
+
     def _start_pipelines(self, cfg: AuditExportConfig) -> None:
-        self._started_at = time.monotonic()
         for dest in cfg.destinations:
-            pipeline = Pipeline(
-                destination=dest.name,
-                transport=build_transport(dest, self.secrets, self.host),
-                sources=build_sources(
-                    cfg, self.session_scope, self.spool, clock=self.clock
-                ),
-                cursors=self.cursors,
-                cfg=cfg,
-                redactor=Redactor(redact_pii=cfg.redact_pii),
-                on_dead=self.wake,
-            )
-            pipeline.start()
-            self.pipelines[dest.name] = pipeline
+            self._start_pipeline(cfg, dest)
         self._fingerprint = cfg.fingerprint()
         logger.info(
             "audit export: started %d destination(s), sources %s",

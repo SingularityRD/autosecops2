@@ -208,6 +208,54 @@ yeniden kullanılır.
   başına anahtarlı bir HMAC özeti (`identifier_digest`, tekrarlanan denemeleri
   ilişkilendirmeye yeter, tahminle doğrulanamaz; anahtar
   `$VIGIL_DIR/audit_export/identifier.key`, 0600) ile uzunluğu aktarılır.
+- **Round 5 (ikinci doğrulama):** araç bilen argv kesimi (`curl -u u:[REDACTED]`,
+  `redis-cli -a`, `docker|podman login -p`, `sqlcmd -P`, `ldapsearch -w`,
+  `mongo -p`, `psexec -p`, `smbclient -U u%…`, `zip -P`, `openssl -k`,
+  `ssh-keygen -N`, `schtasks /rp`, `twilio -t`, `vault login X`,
+  `rabbitmqctl add_user u X`, `net user u X`) — metinde ve argüman
+  listelerinde aynı tablo; `IDENTIFIED BY`, `PASSWORD('…')`,
+  `ConvertTo-SecureString`, `.pgpass` satırları, `/p:"…"`; PHP/Ruby/Perl
+  `'password' => '…'`; YAML'da değeri sonraki satırda olan anahtar; HCL
+  heredoc; CDATA ve `<Password><Value>…</Value></Password>`; metin olarak
+  yazılmış `name:`/`value:` çiftleri; JSON görünümlü dizeler yapı olarak ve
+  özyinelemeli taranır (string içinde JSON içinde JSON); `\uXXXX`, `\xXX` ve
+  HTML varlıkları çözülerek de taranır; çözüldüğünde kimlik bilgisi veya PEM
+  veren base64 bloğu (kubeconfig `client-key-data`, `.dockerconfigjson`)
+  bütün olarak kesilir; JWK özel üyeleri (`d`, `p`, `q`, …); ek jeton
+  biçimleri (Telegram bot, Mailgun, Atlassian, Tailscale, age, Square, Meta,
+  Azure AD istemci gizlisi, GitLab runner).
+
+### Maskeleme politikası
+
+- **Anahtar gücü.** GÜÇLÜ adlar (`password`, `passwd`, `secret`, `api_key`,
+  `client_secret`, `clientKey`, `license_key`, `subscription_key`, `passcode`,
+  `*_token`, `PHPSESSID`, …) değeri her durumda keser. ZAYIF adlar (`token`,
+  `key`, `auth`, `pin`, `otp`, `sig`, `signature`, `session_id`, `cookie`,
+  `sid`) değeri yalnızca gizli gibi görünüyorsa keser (boşluksuz, ≥6 karakter,
+  durum sözcüğü değil, yol/kayıt defteri anahtarı değil; karışık harf+rakam,
+  uzun rastgele dizi ya da hex; `pin`/`otp` altında 4–12 haneli sayı). Böylece
+  `auth: failed`, `token: expired`, `pin: true`, `sig: valid`,
+  `key: SEC-4821`, `signature: ET MALWARE …`, `Registry key: HKLM\…` korunur.
+  Komut satırı bayrağı ve URL sorgu parametresi olarak yazılan ZAYIF adlar
+  (`--key=`, `?sig=`) GÜÇLÜ sayılır.
+- **Gizli olmayan son ekler:** `token_count`, `token_usage`, `password_policy`,
+  `credential_dumping`, `cookie_consent`, `*_type`, `*_method`, `*_expires`,
+  `*_name` … bir kimlik bilgisini anlatır, taşımaz. Bool değerler hiçbir zaman
+  maskelenmez (`password_changed: true`).
+- **Kanıt korunur:** MD5/SHA-1/SHA-256/SHA-512 uzunluğundaki hex dizeler ve
+  32-hex izleme kimlikleri IOC'dir, maskelenmez (sanitizer'ın "≥32 hex"
+  kuralı burada uygulanmaz; başka uzunluktaki uzun hex hâlâ maskelenir);
+  base64 olarak okunabilir metne çözülen 40 karakter (dosya adı) ve `/` ile
+  başlayan yollar AWS gizli anahtarı sayılmaz.
+- **Aktör ve PII:** `actor` alanı ile `details` içindeki aktör anahtarları
+  (`actor`, `user`, `username`, `login`, `approver`, `approved_by`,
+  `decided_by`, `created_by`, `requested_by`, `assignee`, `analyst` …)
+  `redact_pii` açıkken de olduğu gibi aktarılır — denetim izinin amacı "kim
+  yaptı" sorusudur; bu alanlardaki gizli değerler yine kesilir. Serbest
+  metindeki (`message`, diğer `details` dizeleri) e-posta adresleri ve
+  `email`/`phone`/… anahtarları `redact_pii: true` iken maskelenir.
+- **Bilinçli maskelemeler:** OTP/MFA kodları reddedilmiş ya da süresi geçmiş
+  olsa da maskelenir.
 - Dizeler 2048 karakterde, iç içe yapı 6 seviyede, listeler/sözlükler 100
   öğede kesilir. Maskelenen değer sayısı `redactions` metriğindedir.
 
@@ -283,7 +331,9 @@ LLM anahtarını) seçip dışarı gönderemez. İstemci anahtarı diske yalnız
   listesinde görünür.
 - Adres denetimi `core/platform/url_safety.py` ile yapılır. Bulut metadata
   adresleri (`169.254.169.254`, `169.254.170.2`, `fd00:ec2::254`,
-  `100.100.100.200`, `168.63.129.16`) ve adları, link-local, çoklu yayın,
+  `fd20:ce::254`, `100.100.100.200`, `168.63.129.16`, `192.0.0.192`; NAT64
+  `64:ff9b::/96`, `64:ff9b:1::/48`, 6to4 ve IPv4-eşlemli biçimleri dahil) ve
+  adları, kapsamlı (`%zone`) IPv6 adresleri, link-local, çoklu yayın,
   belirtilmemiş ve ayrılmış adresler hem yapılandırmada hem bağlantı anında
   reddedilir. Loopback, RFC 1918, CGNAT `100.64.0.0/10` (VPN kaplamaları) ve
   IPv6 ULA izinlidir (SIEM aktarıcıları genelde oradadır); metadata adresleri bu

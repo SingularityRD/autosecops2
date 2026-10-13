@@ -165,7 +165,9 @@ async def test_enabled_auth_events_reach_an_http_receiver(tmp_path):
     assert event["src_ip"] == "198.51.100.4"
     assert event["user_agent"] == "pytest-agent"
     assert event["severity"] == 5
-    assert "mallory@example.com" not in rx.requests[0]["body"].decode()
+    # The actor is the audit trail's subject and is exported as-is, even with
+    # redact_pii on (AUDIT_EXPORT.md, "Redaction policy").
+    assert event["actor"]["name"] == "mallory@example.com"
     assert event["details"]["password"] == "[REDACTED]"
     assert event["id"].startswith("auth:")
     dest = status["destinations"][0]

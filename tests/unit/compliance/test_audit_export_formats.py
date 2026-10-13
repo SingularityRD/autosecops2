@@ -235,13 +235,16 @@ def test_redactor_scrubs_secret_keys_values_and_pii():
         "hunter2",
         JWT,
         "SECRETSECRET",
-        "alice@example.com",
         "bob@example.com",
         "AKIAABCDEFGHIJKLMNOP",
         "123456",
         "pw@db",
     ):
         assert leaked not in dumped, leaked
+    # Who acted is the audit trail: the actor keeps its e-mail address; the
+    # same address in free text is still PII and goes.
+    assert out.actor == "alice@example.com"
+    assert "alice@example.com" not in out.message
     assert out.details["password"] == REDACTED
     assert out.details["new_value"]["api_key"] == REDACTED
     assert out.details["new_value"]["nested"]["client_secret"] == REDACTED

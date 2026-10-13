@@ -153,3 +153,52 @@ def test_llm_provider_allowed_cidrs_setting_reaches_discovery(monkeypatch):
         assert discovery.provider_allowed_networks() == ()
     finally:
         get_settings.cache_clear()
+
+
+# Round 5 (W3.6): more metadata endpoints, NAT64 / 6to4 embeddings of the
+# metadata address, and IPv6 zone ids.
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://[fd20:ce::254]/computeMetadata/v1/",  # GCP over IPv6
+        "http://192.0.0.192/opc/v1/instance/",  # Oracle Cloud legacy
+        "http://[64:ff9b::a9fe:a9fe]/latest/meta-data",  # NAT64 well-known
+        "http://[64:ff9b:1::a9fe:a9fe]/latest/meta-data",  # NAT64 local-use
+        "http://[2002:a9fe:a9fe::1]/latest/meta-data",  # 6to4
+    ],
+)
+def test_round5_metadata_forms_blocked_even_with_allowances(url):
+    from core.platform.url_safety import parse_networks
+
+    with pytest.raises(UrlSafetyError, match="metadata"):
+        validate_provider_url(
+            url,
+            allow_loopback=True,
+            allowed_networks=parse_networks("::/0, 0.0.0.0/0"),
+        )
+
+
+def test_nat64_of_a_public_address_is_classified_as_that_address():
+    from core.platform.url_safety import blocked_reason
+
+    assert blocked_reason("64:ff9b::808:808") is None  # 8.8.8.8
+    assert blocked_reason("64:ff9b::a00:1") == "private address"  # 10.0.0.1
+
+
+@pytest.mark.parametrize(
+    "url", ["http://[fe80::1%25eth0]/", "http://[fd00::1%25eth0]/"]
+)
+def test_scoped_ipv6_address_is_refused(url):
+    with pytest.raises(UrlSafetyError, match="scoped"):
+        validate_provider_url(url, allow_loopback=True)
+
+
+def test_scoped_address_refused_by_resolver_and_audit_export():
+    from core.compliance.audit_export import refuse_reserved_literal
+    from core.platform.url_safety import blocked_reason
+
+    assert blocked_reason("fd00::1%eth0") == "scoped address"
+    with pytest.raises(ValueError, match="scoped"):
+        refuse_reserved_literal("fd12::1%eth0")
+    with pytest.raises(ValueError, match="metadata"):
+        refuse_reserved_literal("fd20:ce::254")  # inside the allowed ULA range

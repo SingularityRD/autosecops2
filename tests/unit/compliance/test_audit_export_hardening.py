@@ -403,6 +403,55 @@ async def test_a_pipeline_that_dies_on_every_start_is_restarted_with_backoff(
     assert len(deaths) == svc.restarts + 1
 
 
+async def test_only_the_dead_destinations_pipeline_is_restarted(tmp_path, monkeypatch):
+    """Round 5: a dead sender on one destination used to stop and restart
+    every destination's pipeline. Now only the dead one is restarted; the
+    healthy one keeps its pipeline (same object, never stopped)."""
+    real = Pipeline._send_loop
+    deaths: list = []
+
+    async def send_loop(self):
+        if self.destination == "bad" and len(deaths) < 3:
+            deaths.append(1)
+            raise RuntimeError("sender bug")
+        await real(self)
+
+    monkeypatch.setattr(Pipeline, "_send_loop", send_loop)
+    src = ListSource()
+    src.add(3)
+    svc = _svc(
+        tmp_path,
+        monkeypatch,
+        src,
+        _RecordingTx(),
+        destinations=[
+            {"type": "http", "name": "good", "url": "https://siem.example/"},
+            {"type": "http", "name": "bad", "url": "https://siem2.example/"},
+        ],
+    )
+    svc.restart_base_s = 0.05
+    stopped: list[str] = []
+    real_stop = Pipeline.stop
+
+    async def stop(self, grace_s: float = 5.0):
+        stopped.append(self.destination)
+        await real_stop(self, grace_s)
+
+    monkeypatch.setattr(Pipeline, "stop", stop)
+    await svc.start()
+    try:
+        await _until(lambda: svc.pipelines.get("good") is not None)
+        good = svc.pipelines["good"]
+        await _until(lambda: len(deaths) >= 3 and svc.restarts >= 3)
+        await _until(lambda: svc.pipelines["bad"].running)
+        assert svc.pipelines["good"] is good and good.running
+        assert "good" not in stopped
+        assert stopped.count("bad") == svc.restarts
+        assert svc._consecutive_restarts.get("good", 0) == 0
+    finally:
+        await svc.stop()
+
+
 def test_restart_delay_is_jittered_exponential_and_capped(tmp_path):
     svc = AuditExportService(
         state_dir=tmp_path,
