@@ -8,6 +8,7 @@ import logging
 import re
 from typing import Dict, List, Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from core.storage.models import Case, CaseNotification, CaseWatcher
@@ -187,18 +188,37 @@ class CaseNotificationService:
         metadata: Optional[Dict] = None,
         session: Optional[Session] = None,
     ) -> Optional[CaseNotification]:
-        """Write the one broadcast row for a case event (see BROADCAST_USER_ID)."""
-        return self.create_notification(
-            user_id=BROADCAST_USER_ID,
-            notification_type=notification_type,
-            title=title,
-            message=message,
-            case_id=case_id,
-            delivery_channel=BROADCAST_CHANNEL,
-            priority=priority,
-            metadata={**(metadata or {}), "event_key": event_key},
-            session=session,
-        )
+        """Write the one broadcast row for a case event (see BROADCAST_USER_ID).
+
+        Returns None when the event was already raised. The unique index
+        ``uq_case_notification_broadcast_event`` decides, not the
+        ``event_already_raised`` read: two passes racing past that read both
+        try to insert, and the loser's insert conflicts inside a savepoint,
+        so the caller's transaction (and anything else it wrote) survives.
+        """
+        with unit_of_work(session) as session:
+            notification = CaseNotification(
+                case_id=case_id,
+                user_id=BROADCAST_USER_ID,
+                notification_type=notification_type,
+                title=title,
+                message=message,
+                delivery_channel=BROADCAST_CHANNEL,
+                priority=priority,
+                notification_metadata={**(metadata or {}), "event_key": event_key},
+                is_read=False,
+                is_sent=False,
+            )
+            try:
+                with session.begin_nested():
+                    session.add(notification)
+                    session.flush()
+            except IntegrityError:
+                logger.info(
+                    "Case event %s already raised; not raising again", event_key
+                )
+                return None
+            return notification
 
     def notify_sla_warning(
         self,
@@ -239,16 +259,21 @@ class CaseNotificationService:
                 "event_key": sla_event_key(case_id, sla_type, threshold_percent),
             }
 
-            self.create_broadcast(
-                notification_type="sla_warning",
-                title=f"SLA Warning: {threshold_percent}% Elapsed",
-                message=message,
-                event_key=metadata["event_key"],
-                case_id=case_id,
-                priority=urgency,
-                metadata=metadata,
-                session=session,
-            )
+            if (
+                self.create_broadcast(
+                    notification_type="sla_warning",
+                    title=f"SLA Warning: {threshold_percent}% Elapsed",
+                    message=message,
+                    event_key=metadata["event_key"],
+                    case_id=case_id,
+                    priority=urgency,
+                    metadata=metadata,
+                    session=session,
+                )
+                is None
+            ):
+                # Another pass raised this threshold first; its rows stand.
+                return False
 
             # Notify assignee if assigned
             if case.assignee:
@@ -285,14 +310,18 @@ class CaseNotificationService:
             if self.event_already_raised(event_key, session):
                 return False
             message = f'Case "{case.title}" has had no activity for 7+ days'
-            self.create_broadcast(
-                notification_type="stale_case",
-                title="Stale Case Alert",
-                message=message,
-                event_key=event_key,
-                case_id=case.case_id,
-                session=session,
-            )
+            if (
+                self.create_broadcast(
+                    notification_type="stale_case",
+                    title="Stale Case Alert",
+                    message=message,
+                    event_key=event_key,
+                    case_id=case.case_id,
+                    session=session,
+                )
+                is None
+            ):
+                return False
             if case.assignee:
                 self.create_notification(
                     user_id=case.assignee,

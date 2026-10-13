@@ -443,6 +443,7 @@ dbInit:
     - 49_approval_action_lifecycle.sql
     - 50_regulatory_clocks.sql
     - 56_alert_lane_decisions.sql
+    - 58_broadcast_unique_and_clock_heads.sql
     - 61_approval_decisions.sql
   resources:
     requests:

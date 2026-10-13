@@ -73,6 +73,13 @@ function Pill({ chip }: { chip: Chip }) {
 function detailOf(error: unknown, fallback: string): string {
   const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
   if (typeof detail === 'string' && detail.trim()) return detail
+  // The revert route answers 502 with an object: {message, reverse_action_id, verify_status}.
+  if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+    const { message, verify_status: verify } = detail as { message?: unknown; verify_status?: unknown }
+    if (typeof message === 'string' && message.trim()) {
+      return typeof verify === 'string' && verify ? `${message} (verify: ${verify})` : message
+    }
+  }
   return (error as { message?: string })?.message || fallback
 }
 
@@ -175,7 +182,16 @@ function ActionRow({ item, now, canRevert, onReverted }: { item: CaseActionItem;
     } catch (e) {
       const status = statusOf(e)
       if (status === 404 || status === 501) notify('info', 'Revert is not available on this AutoSecOps server yet.')
-      else notify('err', detailOf(e, 'Could not revert that action'))
+      else {
+        notify('err', detailOf(e, 'Could not revert that action'))
+        if (status === 502) {
+          // The reverse ran and failed: its row is on the record now, so re-read
+          // the timeline to show it.
+          setOpen(false)
+          setReason('')
+          onReverted()
+        }
+      }
     } finally {
       setBusy(false)
     }
