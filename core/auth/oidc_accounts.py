@@ -24,6 +24,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+import idna
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -240,36 +241,96 @@ class SsoLogin:
     role_changed: bool
 
 
-_EMAIL_SHAPE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+#: Letters from these scripts never share a local part with a Latin letter
+#: (or with each other): "раураl" in Cyrillic beside Latin is a spoof.
+_CONFUSABLE_SCRIPTS = {"LATIN", "CYRILLIC", "GREEK", "ARMENIAN", "CHEROKEE", "COPTIC"}
+
+
+def _scripts(text: str) -> set[str]:
+    return {unicodedata.name(ch, "?").split(" ", 1)[0] for ch in text if ch.isalpha()}
+
+
+def _clean_address(value: Any) -> Optional[tuple[str, str]]:
+    """``(local, domain)`` of an acceptable address, or None.
+
+    Refused rather than repaired: control, format and separator characters
+    (zero-width space, bidi marks, a trailing newline, ...), whitespace,
+    compatibility characters (fullwidth letters, ligatures, the Kelvin sign:
+    anything NFKC would change), and a local part mixing confusable scripts.
+    """
+    if not isinstance(value, str) or not value or len(value) > 254:
+        return None
+    text = unicodedata.normalize("NFC", value)
+    if (
+        _UNPRINTABLE.search(text)
+        or any(ch.isspace() or unicodedata.category(ch)[0] in "CZ" for ch in text)
+        or unicodedata.normalize("NFKC", text) != text
+        or text.count("@") != 1
+    ):
+        return None
+    local, domain = text.split("@")
+    if not local or len(local) > 64 or "." not in domain:
+        return None
+    scripts = _scripts(local) & _CONFUSABLE_SCRIPTS
+    if len(scripts) > 1:
+        return None
+    try:
+        ascii_domain = idna.encode(
+            domain, uts46=True, transitional=False, std3_rules=True
+        ).decode("ascii")
+    except (idna.IDNAError, UnicodeError, ValueError):
+        return None
+    ascii_domain = ascii_domain.lower()
+    if "." not in ascii_domain.strip("."):
+        return None
+    return local, ascii_domain
 
 
 def normalize_email(value: Any) -> Optional[str]:
-    """``value`` as a comparable address, or None if it is not one.
+    """``value`` as a comparison key, or None if it is not an acceptable address.
 
-    NFKC folds compatibility look-alikes (fullwidth letters, the Kelvin
-    sign, ...) and ``casefold`` folds case beyond ASCII, so two spellings a
-    person would read as the same address compare equal. Anything carrying a
-    control or format character (zero-width space, bidi marks, ...), a line
-    break (a trailing newline included) or other whitespace is refused
-    rather than trimmed.
+    The key is the NFC local part, lower-cased (``str.lower``, not
+    ``casefold``: "ß" stays "ß", so alice@straße.de never matches
+    alice@strasse.de), ``@``, and the domain as IDNA ASCII (punycode, IDNA
+    2008 non-transitional). Use it only to compare; store the address as
+    given (:func:`valid_email`).
     """
-    if not isinstance(value, str):
+    parts = _clean_address(value)
+    if parts is None:
         return None
-    folded = unicodedata.normalize("NFKC", value).casefold()
-    if (
-        not folded
-        or len(folded) > 200
-        or _UNPRINTABLE.search(folded)
-        or any(ch.isspace() or unicodedata.category(ch)[0] in "CZ" for ch in folded)
-        or not _EMAIL_SHAPE.fullmatch(folded)
-    ):
-        return None
-    return folded
+    local, ascii_domain = parts
+    return f"{local.lower()}@{ascii_domain}"
+
+
+def valid_email(value: Any) -> Optional[str]:
+    """``value`` unchanged if it is an acceptable address, else None."""
+    return value if normalize_email(value) is not None else None
+
+
+def email_owner(
+    session: Session, key: str, exclude_user_id: Optional[str] = None
+) -> Optional[User]:
+    """The account whose email *or* address-shaped username has key ``key``.
+
+    Compared in Python with :func:`normalize_email`: SQL ``lower`` folds
+    neither Unicode nor IDNA, so it cannot be the match. The user table is
+    small; every row carrying an "@" is checked.
+    """
+    query = session.query(User).filter(
+        User.email.contains("@") | User.username.contains("@")
+    )
+    if exclude_user_id is not None:
+        query = query.filter(User.user_id != exclude_user_id)
+    for row in query.order_by(User.user_id).all():
+        if normalize_email(row.email) == key or normalize_email(row.username) == key:
+            return row
+    return None
 
 
 def _email_from_claims(claims: Dict[str, Any]) -> Optional[str]:
+    """The first acceptable address among the claims, as the provider sent it."""
     for name in ("email", "preferred_username", "upn"):
-        email = normalize_email(claims.get(name))
+        email = valid_email(claims.get(name))
         if email:
             return email
     return None
@@ -298,37 +359,23 @@ def _unique_username(session: Session, claims: Dict[str, Any], email: str) -> st
     raise OidcError("account", "could not choose a unique username")
 
 
-def _at_domain(email: str) -> str:
-    return "@" + email.rsplit("@", 1)[1]
-
-
 def _find_by_email(session: Session, email: str) -> Optional[User]:
-    """The account whose normalised email is ``email`` (already normalised).
-
-    SQL ``lower`` is only a prefilter: the match is confirmed with the same
-    normalisation as the claim, so a stored address is never matched by a
-    look-alike nor missed because of case folding the database lacks.
-    """
-    rows = (
-        session.query(User)
-        .filter(func.lower(User.email).endswith(_at_domain(email), autoescape=True))
-        .order_by(User.user_id)
-        .all()
-    )
-    for row in rows:
-        if normalize_email(row.email) == email:
+    """The account whose stored email compares equal to ``email``."""
+    key = normalize_email(email)
+    if key is None:
+        return None
+    query = session.query(User).filter(User.email.contains("@"))
+    for row in query.order_by(User.user_id).all():
+        if normalize_email(row.email) == key:
             return row
     return None
 
 
 def _username_taken_by_address(session: Session, email: str) -> bool:
-    """Whether some account's *username* is ``email`` (normalised)."""
-    rows = (
-        session.query(User.username)
-        .filter(func.lower(User.username).endswith(_at_domain(email), autoescape=True))
-        .all()
-    )
-    return any(normalize_email(r.username) == email for r in rows)
+    """Whether some account's *username* compares equal to ``email``."""
+    key = normalize_email(email)
+    rows = session.query(User.username).filter(User.username.contains("@")).all()
+    return any(normalize_email(r.username) == key for r in rows)
 
 
 def resolve_user(

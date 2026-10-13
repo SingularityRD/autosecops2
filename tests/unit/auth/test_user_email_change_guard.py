@@ -16,7 +16,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from core.auth import password_reset
-from core.storage.models import Base, Role, User
+from core.storage.models import Base, Role, SystemConfig, User
 from services.api.routers import users
 
 PERMS = {
@@ -36,7 +36,9 @@ def session(monkeypatch):
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
-    Base.metadata.create_all(engine, tables=[Role.__table__, User.__table__])
+    Base.metadata.create_all(
+        engine, tables=[Role.__table__, User.__table__, SystemConfig.__table__]
+    )
     s = sessionmaker(bind=engine)()
     for role_id, perms in PERMS.items():
         s.add(Role(role_id=role_id, name=role_id, description="", permissions=perms))
@@ -152,3 +154,164 @@ def test_a_reset_link_dies_when_the_email_changes(monkeypatch):
     # A token minted without the binding (before this fix) is refused.
     legacy = password_reset._get_serializer().dumps({"user_id": "u-admin"})
     assert not password_reset.token_matches_email(legacy, "root@corp.example")
+
+
+# --- role / active-state changes and look-alike addresses (round 5) ---------
+
+
+def _update(session, actor_id, target_id, **fields):
+    return users._apply_user_update(
+        session,
+        session.get(User, actor_id),
+        target_id,
+        users.UpdateUserRequest(**fields),
+    )
+
+
+@pytest.mark.parametrize("fields", [{"role_id": "role-viewer"}, {"is_active": False}])
+@pytest.mark.parametrize("target", ["u-admin", "u-mgr2"])
+def test_a_manager_cannot_demote_or_deactivate_an_admin_or_a_peer(
+    session, target, fields
+):
+    before = session.get(User, target)
+    role, active = before.role_id, before.is_active
+    with pytest.raises(HTTPException) as exc:
+        _update(session, "u-mgr", target, **fields)
+    assert exc.value.status_code == 403
+    session.rollback()
+    after = session.get(User, target)
+    assert (after.role_id, after.is_active) == (role, active)
+
+
+def test_a_manager_may_still_deactivate_an_account_below_them(session):
+    _update(session, "u-mgr", "u-viewer", is_active=False)
+    assert session.get(User, "u-viewer").is_active is False
+
+
+def test_a_manager_cannot_delete_an_admin(session):
+    with pytest.raises(HTTPException) as exc:
+        users.delete_user("u-admin", session.get(User, "u-mgr"), session)
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.parametrize("fields", [{"role_id": "role-manager"}, {"is_active": False}])
+def test_the_last_active_admin_cannot_be_demoted_or_deactivated(session, fields):
+    with pytest.raises(HTTPException) as exc:
+        _update(session, "u-admin", "u-admin", **fields)
+    assert exc.value.status_code == 409
+    assert "last active administrator" in exc.value.detail
+
+
+def test_the_last_admin_cannot_be_deleted(session):
+    session.add(
+        User(
+            user_id="u-admin2",
+            username="u-admin2",
+            email="u-admin2@corp.example",
+            password_hash="x",
+            full_name="a2",
+            role_id="role-admin",
+            is_active=False,
+        )
+    )
+    session.commit()
+    with pytest.raises(HTTPException) as exc:
+        users.delete_user("u-admin", session.get(User, "u-admin2"), session)
+    assert exc.value.status_code == 409
+
+
+def _break_glass(session, *user_ids):
+    from core.auth.login_policy import LOGIN_POLICY_KEY
+
+    session.add(
+        SystemConfig(
+            key=LOGIN_POLICY_KEY,
+            value={
+                "local_login_enabled": False,
+                "break_glass_user_ids": list(user_ids),
+            },
+            config_type="auth",
+        )
+    )
+    session.commit()
+
+
+@pytest.mark.parametrize("fields", [{"role_id": "role-viewer"}, {"is_active": False}])
+def test_a_break_glass_account_cannot_be_demoted_or_deactivated(session, fields):
+    session.add(
+        User(
+            user_id="u-admin2",
+            username="u-admin2",
+            email="u-admin2@corp.example",
+            password_hash="x",
+            full_name="a2",
+            role_id="role-admin",
+            is_active=True,
+        )
+    )
+    session.commit()
+    _break_glass(session, "u-admin2")
+    with pytest.raises(HTTPException) as exc:
+        _update(session, "u-admin", "u-admin2", **fields)
+    assert exc.value.status_code == 409
+    assert "break-glass" in exc.value.detail
+    # Other admins are still manageable.
+    _update(session, "u-admin2", "u-admin", is_active=False)
+    assert session.get(User, "u-admin").is_active is False
+
+
+@pytest.mark.parametrize(
+    "email",
+    [
+        "U-ADMIN@corp.example",  # case
+        "u-admin@CORP.EXAMPLE",
+    ],
+)
+def test_an_email_equal_to_another_after_normalisation_is_refused(session, email):
+    with pytest.raises(HTTPException) as exc:
+        _change_email(session, "u-mgr", "u-mgr", email)
+    assert exc.value.status_code == 400
+    assert "in use" in exc.value.detail
+
+
+@pytest.mark.parametrize(
+    "email",
+    [
+        "ｕ-admin@corp.example",  # fullwidth
+        "u-аdmin@corp.example",  # Cyrillic a among Latin letters
+    ],
+)
+def test_a_lookalike_email_is_refused(session, email):
+    with pytest.raises(HTTPException) as exc:
+        _change_email(session, "u-mgr", "u-mgr", email)
+    assert exc.value.status_code == 400
+    session.rollback()
+    assert session.get(User, "u-mgr").email == "u-mgr@corp.example"
+
+
+def test_create_refuses_a_colliding_or_lookalike_email(session, monkeypatch):
+    monkeypatch.setattr(users, "validate_password_strength", lambda *a, **k: None)
+    created = MagicMock()
+    monkeypatch.setattr(users.AuthService, "create_user", created)
+    for email in ("U-Admin@Corp.Example", "ｕ-admin@corp.example"):
+        request = users.CreateUserRequest(
+            username="newbie",
+            email=email,
+            password="x",
+            full_name="n",
+            role_id="role-viewer",
+        )
+        with pytest.raises(HTTPException) as exc:
+            users.create_user(request, session.get(User, "u-admin"), session)
+        assert exc.value.status_code == 400
+    # A username that is another account's address is refused too.
+    request = users.CreateUserRequest(
+        username="U-Admin@corp.example",
+        email="fresh@corp.example",
+        password="x",
+        full_name="n",
+        role_id="role-viewer",
+    )
+    with pytest.raises(HTTPException):
+        users.create_user(request, session.get(User, "u-admin"), session)
+    created.assert_not_called()

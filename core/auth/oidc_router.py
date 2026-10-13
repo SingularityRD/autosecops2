@@ -542,6 +542,51 @@ def _require_secret_on_repoint(
         )
 
 
+def _delete_client_secret(provider_id: str, must_vanish: bool = True) -> None:
+    """Delete a provider's client secret from every store, or raise.
+
+    ``must_vanish``: also raise when a copy is still readable afterwards
+    (an environment variable from the deployment, a read-only .env).
+    """
+    key = client_secret_key(provider_id)
+    if not delete_secret(key):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not delete the client secret from every secrets store",
+        )
+    if must_vanish and get_secret(key):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"The client secret is also set outside the application "
+                f"({key} in the environment or a .env file); remove it there"
+            ),
+        )
+
+
+def _require_fresh_secret_on_create(
+    previous: Optional[ProviderConfig], provider_id: str, body
+) -> None:
+    """Refuse to create a provider that would inherit a leftover secret.
+
+    Deleting a provider cannot remove a secret the deployment supplies (an
+    environment variable, a read-only .env). A provider later created under
+    the same id, pointing at any issuer, would send that secret to it. So a
+    new provider whose id still resolves to a secret must bring its own.
+    """
+    if previous is not None or body.client_secret:
+        return
+    if get_secret(client_secret_key(provider_id)):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"A client secret for {provider_id!r} is still set "
+                f"({client_secret_key(provider_id)}, e.g. in the environment); "
+                "enter the client secret, or use a different provider id"
+            ),
+        )
+
+
 @router.get("/admin/config", response_model=SsoAdminConfig)
 def get_sso_config(
     request: Request,
@@ -583,6 +628,7 @@ def upsert_provider(
     previous = next((p for p in providers if p.id == provider_id), None)
     existed = previous is not None
     _require_secret_on_repoint(previous, provider, body)
+    _require_fresh_secret_on_create(previous, provider_id, body)
     providers = [p for p in providers if p.id != provider_id] + [provider]
     if not any(p.enabled for p in providers) and not (
         get_login_policy(session).local_login_enabled
@@ -603,7 +649,7 @@ def upsert_provider(
 
     key = client_secret_key(provider_id)
     if body.clear_client_secret:
-        delete_secret(key)
+        _delete_client_secret(provider_id)
     elif body.client_secret:
         if not set_secret(key, body.client_secret):
             raise HTTPException(
@@ -639,7 +685,11 @@ def delete_provider(
     save_providers(
         session, remaining, changed_by=current_user.username, action="delete"
     )
-    delete_secret(client_secret_key(provider_id))
+    # Raises (and so rolls the deletion back) if a store refused; a secret
+    # left in the process environment or a read-only .env cannot be removed
+    # here, and _require_fresh_secret_on_create keeps it from ever being
+    # sent by a provider re-created under the same id.
+    _delete_client_secret(provider_id, must_vanish=False)
     session.flush()
     return _admin_config(session, request)
 

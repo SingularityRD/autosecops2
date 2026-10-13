@@ -40,6 +40,8 @@ def _allow():
     with (
         patch.object(users.AuthService, "check_permission", return_value=True),
         patch.object(users, "_can_assign_role", return_value=True),
+        patch.object(users, "_refuse_unless_may_manage", return_value=None),
+        patch.object(users, "_refuse_losing_admin_access", return_value=None),
         patch.object(users.UserSchema, "dump", return_value={}),
     ):
         yield

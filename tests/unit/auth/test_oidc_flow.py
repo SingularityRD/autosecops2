@@ -32,6 +32,7 @@ from core.auth.current_user import get_current_user  # noqa: E402
 from core.auth.oidc_accounts import (  # noqa: E402
     IDENTITY_CONFIG_TYPE,
     SSO_ONLY_PASSWORD_HASH,
+    load_providers,
 )
 from core.routing import request_unit_of_work  # noqa: E402
 from core.storage.models import ConfigAuditLog, Role, SystemConfig, User  # noqa: E402
@@ -263,7 +264,9 @@ def world(monkeypatch):
         oidc_router, "set_secret", lambda k, v: secrets_box.__setitem__(k, v) or True
     )
     monkeypatch.setattr(
-        oidc_router, "delete_secret", lambda k: secrets_box.pop(k, None) is not None
+        oidc_router,
+        "delete_secret",
+        lambda k: secrets_box.pop(k, None) is not None or True,
     )
 
     async def _not_revoked(payload):
@@ -1066,8 +1069,8 @@ def test_a_manager_cannot_repoint_a_provider_and_receive_its_secret(world):
 @pytest.mark.parametrize(
     "claimed",
     [
-        "ＲＯＯＴ@corp.example",  # fullwidth letters (NFKC)
         "ROOT@CORP.EXAMPLE",  # case
+        "root@CORP.example",
     ],
 )
 def test_email_linking_compares_normalised_addresses(world, claimed):
@@ -1088,14 +1091,59 @@ def test_email_linking_compares_normalised_addresses(world, claimed):
         "ro\u200bot@corp.example",
         "root@corp.example\x00",
         "root@corp.example\u202e",
+        "ＲＯＯＴ@corp.example",  # fullwidth: a look-alike, not an address
+        "\ufb01@corp.example",  # "fi" ligature
+        "root@ｃｏｒｐ.example",
+        "r\u043e\u043et@corp.example",  # Cyrillic o beside Latin letters
+        "a@b@corp.example",
+        "root@-corp.example",
     ],
 )
-def test_an_email_with_control_characters_is_not_an_email(claimed):
+def test_an_email_with_control_or_lookalike_characters_is_not_an_email(claimed):
     from core.auth.oidc_accounts import normalize_email
 
     assert normalize_email(claimed) is None
+
+
+def test_email_keys_keep_sharp_s_and_compare_domains_as_idna():
+    """NFKC+casefold made alice@straße.de the same person as alice@strasse.de."""
+    from core.auth.oidc_accounts import normalize_email
+
     assert normalize_email("Root@Corp.Example") == "root@corp.example"
-    assert normalize_email("ﬁ@corp.example") == "fi@corp.example"
+    assert normalize_email("alice@straße.de") == "alice@xn--strae-oqa.de"
+    assert normalize_email("alice@straße.de") != normalize_email("alice@strasse.de")
+    assert normalize_email("ALICE@xn--strae-oqa.de") == normalize_email(
+        "alice@Straße.de"
+    )
+    assert normalize_email("straße@corp.example") != normalize_email(
+        "strasse@corp.example"
+    )
+    # NFC: a decomposed "é" is the same address as the precomposed one.
+    assert normalize_email("e\u0301lodie@corp.example") == normalize_email(
+        "\u00e9lodie@corp.example"
+    )
+
+
+def test_a_sharp_s_domain_does_not_link_to_the_ss_account(world):
+    world.add_user("u-alice", "alice", "role-admin", email="alice@strasse.de")
+    world.set_provider(link_by_verified_email=True, jit_provisioning=True)
+    world.idp.claims = {"email": "alice@straße.de"}
+    response, _, _ = world.login()
+    payload = AuthService.verify_jwt_token(response.cookies["access_token"])
+    assert payload["user_id"] != "u-alice"
+    with world.db() as s:
+        created = s.query(User).filter(User.user_id != "u-alice").one()
+        # Stored as the provider sent it, not folded.
+        assert created.email == "alice@straße.de"
+        assert created.role_id == "role-viewer"
+
+
+def test_jit_stores_the_address_as_sent(world):
+    world.set_provider()
+    world.idp.claims = {"email": "Carol.Smith@Example.COM"}
+    world.login()
+    with world.db() as s:
+        assert s.query(User).one().email == "Carol.Smith@Example.COM"
 
 
 def test_a_trailing_newline_email_neither_links_nor_provisions(world):
@@ -1142,3 +1190,54 @@ def test_an_unexpected_failure_log_sanitises_the_provider_id(
     messages = [r.getMessage() for r in caplog.records]
     assert any("failed unexpectedly" in m for m in messages)
     assert all("\n" not in m for m in messages)
+
+
+# --- a deleted provider's secret (round 5 follow-up) ------------------------
+
+
+def test_a_provider_recreated_under_an_id_with_a_leftover_secret_needs_its_own(
+    world,
+):
+    """An env/.env secret survives deleting the provider; a provider later
+    created with that id must not inherit (and send) it."""
+    world.add_user("u-admin", "root", "role-admin")
+    world.as_user("u-admin")
+    world.secrets["OIDC_CLIENT_SECRET_OKTA"] = "from-the-environment"
+    body = _provider_body(issuer="https://evil.test")
+    del body["client_secret"]
+    response = world.client.put("/api/auth/sso/admin/providers/okta", json=body)
+    assert response.status_code == 409, response.text
+    assert "OIDC_CLIENT_SECRET_OKTA" in response.json()["detail"]
+    with world.db() as s:
+        assert load_providers(s) == []
+    # Bringing its own secret is fine.
+    body["client_secret"] = "new"
+    assert (
+        world.client.put("/api/auth/sso/admin/providers/okta", json=body).status_code
+        == 200
+    )
+    assert world.secrets == {"OIDC_CLIENT_SECRET_OKTA": "new"}
+
+
+def test_deleting_a_provider_fails_if_its_secret_cannot_be_deleted(world, monkeypatch):
+    world.add_user("u-admin", "root", "role-admin")
+    world.as_user("u-admin")
+    world.client.put("/api/auth/sso/admin/providers/okta", json=_provider_body())
+    monkeypatch.setattr(oidc_router, "delete_secret", lambda k: False)
+    response = world.client.delete("/api/auth/sso/admin/providers/okta")
+    assert response.status_code == 500
+    with world.db() as s:
+        assert [p.id for p in load_providers(s)] == ["okta"]
+
+
+def test_clearing_a_secret_that_lives_in_the_environment_is_refused(world, monkeypatch):
+    world.add_user("u-admin", "root", "role-admin")
+    world.as_user("u-admin")
+    world.client.put("/api/auth/sso/admin/providers/okta", json=_provider_body())
+    # A store that "deletes" but the value is still readable (process env).
+    monkeypatch.setattr(oidc_router, "delete_secret", lambda k: True)
+    body = _provider_body(clear_client_secret=True)
+    del body["client_secret"]
+    response = world.client.put("/api/auth/sso/admin/providers/okta", json=body)
+    assert response.status_code == 409
+    assert "environment" in response.json()["detail"]
