@@ -1,0 +1,12 @@
+[Unit]
+Description=AutoSecOps staging: replay eval-corpus alerts and score the local model's triage
+Documentation=file:///opt/autosecops-staging/src/infra/staging/README.md
+After=k3s.service autosecops-staging-nightly.service
+Requires=k3s.service
+
+[Service]
+Type=oneshot
+Environment=KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+ExecStart=/opt/autosecops-staging/src/infra/staging/replay.sh
+TimeoutStartSec=3h
+Nice=10
