@@ -25,6 +25,7 @@ import { DEFAULT_BUDGETS, type Decision, type DispatchResult } from "../../workf
 import {
   BENIGN_UNARGUED_GAP,
   BENIGN_WHILE_PROVEN_GAP,
+  CONCLUDE_REFUSED_GAP,
   criticGate,
   journaledVerdict,
   journalVerdict,
@@ -252,7 +253,8 @@ describe("a malicious verdict through the critic", () => {
 
 describe("the critic is mandatory", () => {
   // CONCLUDE with the claim still active is refused by the controller; with a ceiling
-  // of one iteration the run ends there, and what the lead wrote is held to the gate.
+  // of one iteration the run ends there on its budget, and what the lead wrote is a
+  // refused draft, not a verdict.
   it("records a malicious verdict with no VALIDATE behind it as inconclusive", async () => {
     const run = await verdictRun({ budgets: budgets(1, 5) });
     await conclude(run, { verdict: "malicious", confidence: 0.95, category: "malware", cited_fields: [], gaps: [] });
@@ -261,7 +263,8 @@ describe("the critic is mandatory", () => {
     const { verdict } = await finish(run);
     expectValid(verdict);
     expect(verdict.verdict).toBe("inconclusive");
-    expect(verdict.gaps).toContain(MALICIOUS_UNPROVEN_GAP);
+    expect(verdict.confidence).toBe(0);
+    expect(verdict.gaps[0]).toContain(CONCLUDE_REFUSED_GAP);
     expect(verdict.recommended_action).toBeNull();
   });
 
@@ -313,6 +316,95 @@ describe("the critic is mandatory", () => {
     expect(verdict.verdict).toBe("benign");
     expect(verdict.cited_fields).toEqual([{ field: `${beacon}.conn_count`, authored: "sensor" }]);
     expect(verdict.gaps).toEqual(["no endpoint telemetry for 10.128.0.5"]);
+  });
+});
+
+describe("a CONCLUDE the controller refused is never the verdict", () => {
+  const benign = (beacon: string) => ({
+    verdict: "benign",
+    confidence: 0.9,
+    category: "network",
+    cited_fields: [`${beacon}.conn_count`],
+    gaps: [],
+    recommended_action: null,
+  });
+  const malicious = (beacon: string) => ({
+    verdict: "malicious",
+    confidence: 0.9,
+    category: "network",
+    cited_fields: [`${beacon}.conn_count`],
+    gaps: [],
+    recommended_action: { type: "isolate_host", target: "10.128.0.5" },
+  });
+
+  function expectRefusedInconclusive(run: Run, verdict: Verdict | null): void {
+    expectValid(verdict);
+    expect(run.ledger.projection.hunt.outcome).toBe("budget_terminated");
+    expect(verdict).toMatchObject({ verdict: "inconclusive", confidence: 0, category: "other", cited_fields: [], recommended_action: null });
+    expect(verdict.gaps).toHaveLength(1);
+    expect(verdict.gaps[0]).toContain(CONCLUDE_REFUSED_GAP);
+    expect(verdict.gaps[0]).toContain("budget_terminated");
+  }
+
+  // The benign case is the one that matters: the critic argued and its benign account
+  // stood, so the gate alone would pass a benign verdict -- but the claim was never
+  // abandoned, so the controller refused the CONCLUDE, and the budget ended the run.
+  it("benign, refused on the last iteration of the budget", async () => {
+    const run = await verdictRun({ budgets: budgets(3, 5) });
+    const [beacon, dns] = await investigate(run);
+    await validate(run, [beacon!, dns!], false);
+    expect(criticGate(run.ledger.projection, "benign")).toBeNull();
+    const ended = await conclude(run, benign(beacon!));
+    expect(ended.note).toContain("CONCLUDE refused");
+    expect(run.ledger.projection.hunt.status).toBe("terminal");
+    expectRefusedInconclusive(run, (await finish(run)).verdict);
+  });
+
+  it("malicious, refused on the last iteration of the budget", async () => {
+    const run = await verdictRun({ budgets: budgets(2, 5) });
+    const [beacon] = await investigate(run);
+    const ended = await conclude(run, malicious(beacon!));
+    expect(ended.note).toContain("CONCLUDE refused");
+    expectRefusedInconclusive(run, (await finish(run)).verdict);
+  });
+
+  // The wall clock is refused by the harness, which ends the run through parkOnRefusal
+  // with the refused CONCLUDE still the last decision on the ledger.
+  it("benign, refused and then ended on the wall clock", async () => {
+    const run = await verdictRun({ budgets: budgets(10, 5) });
+    const [beacon, dns] = await investigate(run);
+    await validate(run, [beacon!, dns!], false);
+    await conclude(run, benign(beacon!));
+    expect(run.ledger.projection.hunt.status).toBe("active");
+    expect(verdictOf(run.ledger.projection)).toBeNull();
+    controllerFor(run.ledger, []).parkOnRefusal("wall_clock_exhausted");
+    expect(run.ledger.projection.hunt.status).toBe("terminal");
+    expectRefusedInconclusive(run, (await finish(run)).verdict);
+  });
+
+  it("malicious, refused and then ended on the wall clock", async () => {
+    const run = await verdictRun({ budgets: budgets(10, 5) });
+    const [beacon] = await investigate(run);
+    await conclude(run, malicious(beacon!));
+    expect(run.ledger.projection.hunt.status).toBe("active");
+    controllerFor(run.ledger, []).parkOnRefusal("wall_clock_exhausted");
+    const { verdict } = await finish(run);
+    expectRefusedInconclusive(run, verdict);
+    expect(verdict!.gaps[0]).toContain("wall_clock_exhausted");
+  });
+
+  // An aborted run is no more concluded than one that ran out of budget.
+  it("an aborted run after a refused CONCLUDE", async () => {
+    const run = await verdictRun({ budgets: budgets(10, 5) });
+    const [beacon, dns] = await investigate(run);
+    await validate(run, [beacon!, dns!], false);
+    await conclude(run, benign(beacon!));
+    controllerFor(run.ledger, []).terminate("aborted", "an operator halted the hunt");
+    const { verdict } = await finish(run);
+    expectValid(verdict);
+    expect(verdict).toMatchObject({ verdict: "inconclusive", confidence: 0 });
+    expect(verdict.gaps[0]).toContain(CONCLUDE_REFUSED_GAP);
+    expect(verdict.gaps[0]).toContain("aborted");
   });
 });
 
@@ -368,8 +460,12 @@ describe("provenance comes from the ledger", () => {
   });
 
   it("records a malformed verdict as inconclusive, never a crash", async () => {
-    const run = await verdictRun({ budgets: budgets(1, 5) });
+    // An accepted CONCLUDE (the claim proven), so the malformed draft is what is read.
+    const run = await verdictRun();
+    const [beacon, dns] = await investigate(run);
+    await validate(run, [beacon!, dns!], true);
     await conclude(run, { verdict: "certainly", confidence: 7 });
+    expect(run.ledger.projection.hunt.outcome).toBe("completed");
     const { verdict } = await finish(run);
     expectValid(verdict);
     expect(verdict.verdict).toBe("inconclusive");

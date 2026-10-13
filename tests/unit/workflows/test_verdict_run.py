@@ -96,6 +96,26 @@ class TestTheFlag:
         assert "ignore" not in parameters["hypothesis"]
         # execute_workflow refuses a topic; this has to be an arguable claim.
         assert not _not_a_claim(parameters["hypothesis"])
+        # The spec contract's payload: {finding_id, hypothesis, context}, the
+        # context written by code and carrying none of the finding's text.
+        assert set(parameters) == {"finding_id", "hypothesis", "context"}
+        assert "f-4821" in parameters["context"]
+        assert "ignore" not in parameters["context"]
+
+    def test_a_caller_s_context_is_sent_as_given(self, monkeypatch):
+        _settings(monkeypatch, verdict_run_enabled=True)
+        service = _Recorder()
+
+        asyncio.run(
+            verdict_run.enqueue_verdict_run(
+                {"finding_id": "f-9"},
+                workflows=service,
+                context="triage confidence 0.41, below the auto-close floor",
+            )
+        )
+
+        [(_, parameters, _)] = service.calls
+        assert parameters["context"] == "triage confidence 0.41, below the auto-close floor"
 
     def test_a_finding_without_an_id_is_not_queued(self, monkeypatch):
         _settings(monkeypatch, verdict_run_enabled=True)

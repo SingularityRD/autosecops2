@@ -11,7 +11,7 @@ import { BASE_RATE_PROVENANCE } from "./controller.js";
 import { fold, type HuntEvent, type HuntKinds, type Projection } from "./ledger.js";
 import { huntProjection, type HuntProjection } from "./projection.js";
 import { NULL_CHECK_PROVENANCE } from "./strength.js";
-import type { DecisionRecord, EvidenceRecord, Hypothesis } from "./types.js";
+import type { DecisionRecord, EvidenceRecord, Hypothesis, HuntOutcome } from "./types.js";
 
 // The verdict run kind's answer: one contract verdict (contracts/verdict.ts) about
 // one uncertain alert, derived from the hunt ledger by code. The lead proposes it on
@@ -41,6 +41,8 @@ export const UNKNOWN_MODEL = "unknown";
 
 // The gaps the gate writes. Exported so tests and readers match on them, not on prose.
 export const NO_CONCLUDE_GAP = "the run ended before the lead concluded";
+export const CONCLUDE_REFUSED_GAP =
+  "the controller refused the lead's CONCLUDE and the run ended without concluding; its proposed verdict is not recorded";
 export const NO_VERDICT_GAP = "the lead concluded without a well-formed verdict";
 export const MALICIOUS_UNPROVEN_GAP =
   "malicious verdict without the alert's hypothesis proven through the critic (VALIDATE); downgraded to inconclusive";
@@ -89,12 +91,30 @@ export function ledgerProvenance(projection: Projection): ProvenanceMap {
   return map;
 }
 
-// The CONCLUDE the run ended on, if it ended on one. A CONCLUDE the controller
-// refused and the lead then moved past is a draft written before the evidence that
-// followed it, so a run that ran out of budget after one has not concluded.
+// The outcomes the controller reaches only by concluding: the termination predicate
+// passed (on a CONCLUDE, past its verdict review, or at the last of the budget), or an
+// operator asked the hunt to conclude on what it had. Every other ending --
+// budget_terminated on iterations, cost or the wall clock, failed, aborted -- is a run
+// that stopped without concluding, whatever the lead last proposed.
+const CONCLUDED: ReadonlySet<HuntOutcome> = new Set<HuntOutcome>(["completed", "data_starved"]);
+
+// The CONCLUDE the run ended on, if it ended by concluding. A CONCLUDE the controller
+// refused is a draft the evidence did not yet support: when the run then ends on its
+// budget (or fails, or is aborted) the draft is not a verdict, even when it was the
+// last decision the lead made.
 function lastConclude(projection: Projection): DecisionRecord | undefined {
+  const outcome = projection.hunt.outcome;
+  if (outcome === null || !CONCLUDED.has(outcome)) return undefined;
   const last = projection.decisions.at(-1);
   return last?.decision.action === "CONCLUDE" ? last : undefined;
+}
+
+// Why the run has no verdict of the lead's to record, naming how it ended.
+function unconcludedGap(projection: Projection): string {
+  const outcome = projection.hunt.outcome ?? "ended";
+  const why = projection.hunt.termination_reason || outcome || "no conclusion";
+  const refused = projection.decisions.at(-1)?.decision.action === "CONCLUDE" && !CONCLUDED.has(outcome as HuntOutcome);
+  return `${refused ? CONCLUDE_REFUSED_GAP : NO_CONCLUDE_GAP} (${outcome}): ${why}`;
 }
 
 function stampOf(projection: Projection, conclude: DecisionRecord | undefined): { model: string; prompt_version: string } {
@@ -126,13 +146,12 @@ export function verdictOf(projection: Projection): Verdict | null {
   const stamp = stampOf(projection, conclude);
 
   if (conclude === undefined) {
-    const why = projection.hunt.termination_reason || projection.hunt.outcome || "no conclusion";
     return {
       verdict: "inconclusive",
       confidence: 0,
       category: "other",
       cited_fields: [],
-      gaps: [`${NO_CONCLUDE_GAP} (${projection.hunt.outcome ?? "ended"}): ${why}`],
+      gaps: [unconcludedGap(projection)],
       recommended_action: null,
       ...stamp,
     };
