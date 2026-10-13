@@ -51,6 +51,7 @@ def test_every_matcher_must_hold(change):
 
 def test_matching_is_case_insensitive_and_covers_rule_and_mitre():
     scope = {
+        "data_source": "ENTRA",
         "rule_name": "failed SIGN-INS across many accounts from one address",
         "mitre_technique": "t1110.003",
         "usernames": ["ALI"],
@@ -152,6 +153,13 @@ def test_output_is_a_hint_only_and_the_alert_is_untouched():
         ({"hostnames": ["WS-12"]}, "data_source, rule_name, mitre_technique"),
         ({"usernames": ["ali"], "src_ips": [SCANNER_IP]}, "data_source, rule_name"),
         ({"file_hashes": ["a" * 64]}, "data_source, rule_name"),
+        # Round 6: an anchor must be sensor-authored (W1.2) for every source
+        # the lesson can match. Rule names are adversary (Splunk, Elastic and
+        # by default elsewhere); a webhook's MITRE ids are third-party.
+        ({"rule_name": "Nightly Backup Job"}, "sensor"),
+        ({"rule_name": "Nightly Backup Job", "hostnames": ["bk-01"]}, "sensor"),
+        ({"mitre_technique": "T1059"}, "sensor"),
+        ({"data_source": " "}, "empty"),
         ({"src_ips": [SCANNER_IP], "title_contains": "scanner"}, "unknown matcher"),
         ({"description": "x"}, "unknown matcher"),
         ({"src_ips": []}, "non-empty"),
@@ -165,8 +173,11 @@ def test_scope_validation_refuses_unsafe_scopes(scope, message):
 
 
 def test_scope_defaults_to_medium_and_sorts_lists():
-    scope = validate_scope({"rule_name": "r", "hostnames": ["b", "a", "a"]})
+    scope = validate_scope(
+        {"data_source": "splunk", "rule_name": "r", "hostnames": ["b", "a", "a"]}
+    )
     assert scope == {
+        "data_source": "splunk",
         "rule_name": "r",
         "hostnames": ["a", "b"],
         "max_severity": "medium",
@@ -179,3 +190,38 @@ def test_a_stored_lesson_without_an_anchor_never_applies():
     out = apply_lessons(alert(), "malicious", [lesson], NOW)
     assert out.verdict == "malicious"
     assert out.skipped == [("l-1", "scope:unanchored")]
+
+
+@pytest.mark.parametrize(
+    "applies_to",
+    [
+        # Stored rows the scope validator would refuse (an earlier draft, a
+        # direct SQL write): no sensor-authored anchor, so never applied.
+        {"rule_name": "Nightly Backup Job", "max_severity": "high"},
+        {"mitre_technique": "T1110.003", "max_severity": "high"},
+        {"data_source": "", "src_ips": [SCANNER_IP], "max_severity": "high"},
+        {"data_source": "   ", "src_ips": [SCANNER_IP], "max_severity": "high"},
+    ],
+)
+def test_a_stored_lesson_anchored_on_adversary_fields_never_applies(applies_to):
+    lesson = make_lesson()
+    lesson.applies_to = applies_to
+    probe = alert(
+        data_source="splunk",
+        raw_event={"rule_name": "Nightly Backup Job"},
+    )
+    for target in (probe, alert()):
+        out = apply_lessons(target, "malicious", [lesson], NOW)
+        assert out.verdict == "malicious"
+
+
+def test_anchor_judgement_is_w12_field_provenance():
+    from core.federation.provenance import ADAPTER_PROVENANCE
+    from core.lessons.model import anchors
+
+    assert anchors({"data_source": "splunk", "rule_name": "x"}) == ["data_source"]
+    # No map makes the rule name or the technique sensor for *every* source,
+    # which is what lessons_active_gate (SQL 55) relies on when it asks for a
+    # non-empty data_source.
+    assert anchors({"rule_name": "x", "mitre_technique": "T1059"}) == []
+    assert "splunk" in ADAPTER_PROVENANCE

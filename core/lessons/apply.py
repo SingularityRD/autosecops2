@@ -6,8 +6,9 @@ the same function, so what was measured is what runs.
 Safety rules, enforced here whatever the stored row says:
 
 * a lesson whose provenance is not ``analyst`` never applies;
-* a lesson whose scope names no ``data_source`` / ``rule_name`` /
-  ``mitre_technique`` (only host, user, IP or hash values) never applies;
+* a lesson whose scope has no sensor-authored anchor (``data_source``, or a
+  ``rule_name`` / ``mitre_technique`` W1.2 marks sensor for every source it
+  can match; ``core.lessons.model.anchored``) never applies;
 * an expired lesson never applies;
 * no lesson applies to a ``critical`` alert, or to an alert whose severity is
   unknown or above the lesson's ``max_severity``;
@@ -23,11 +24,11 @@ from datetime import datetime
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from core.lessons.model import (
-    ANCHOR_MATCHERS,
     LIST_MATCHERS,
     SEVERITY_RANK,
     TRUSTED_PROVENANCE,
     Lesson,
+    anchored,
     as_list,
 )
 
@@ -123,7 +124,7 @@ def why_not(
         return f"status:{lesson.status}"
     if lesson.expired(now):
         return "expired"
-    if not any(lesson.applies_to.get(key) for key in ANCHOR_MATCHERS):
+    if not anchored(lesson.applies_to):
         return "scope:unanchored"
     rank = severity_rank(alert)
     if rank is None:

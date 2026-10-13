@@ -13,6 +13,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional
 
+from core.federation.provenance import (
+    ADAPTER_PROVENANCE,
+    ADVERSARY,
+    SENSOR,
+    author_of,
+    provenance_for,
+)
+
 STATUSES = ("proposed", "active", "retired")
 SOURCE_KINDS = (
     "qa_review",
@@ -53,11 +61,68 @@ LIST_MATCHERS = ("hostnames", "usernames", "src_ips", "file_hashes")
 STRING_MATCHERS = ("data_source", "rule_name", "mitre_technique")
 #: Matchers that identify what a lesson is about. ``max_severity`` only narrows.
 IDENTIFYING_MATCHERS = STRING_MATCHERS + LIST_MATCHERS
-#: Scope keys whose values the alert's author cannot choose (W1.2: the source,
-#: the vendor's rule, the technique id). Every lesson names at least one, so
-#: a lesson is never keyed on host or user names (or bare IPs/hashes) alone:
-#: whoever controls a machine names it. Mirrored by ``lessons_active_gate``.
+#: Scope keys that may anchor a lesson: the source, the vendor's rule, the
+#: technique id. Every lesson names at least one that is *sensor-authored*
+#: under the W1.2 field-provenance maps (``core/federation/provenance.py``)
+#: for every source the lesson can match (:func:`anchored`), so a lesson is
+#: never keyed on host or user names (or bare IPs/hashes) alone: whoever
+#: controls a machine names it. Mirrored by ``lessons_active_gate``.
 ANCHOR_MATCHERS = STRING_MATCHERS
+#: The W1.2 field each matcher reads on an alert (``core.lessons.apply``).
+#: ``data_source`` is the routing key itself, not a field of the finding: the
+#: adapter sets it, or the authenticated webhook/Kafka/import sender (W1.2's
+#: trust boundary), so it is sensor for every source.
+MATCHER_FIELDS = {
+    "rule_name": "raw_event.rule_name",
+    "mitre_technique": "mitre_predictions",
+    "hostnames": "entity_context.hostnames",
+    "usernames": "entity_context.usernames",
+    "src_ips": "entity_context.src_ips",
+    "file_hashes": "entity_context.file_hashes",
+}
+#: Every map a finding can be judged under: the adapters', and the webhook map
+#: (``None``) any other ``data_source`` gets.
+ALL_SOURCES = tuple(ADAPTER_PROVENANCE) + (None,)
+
+
+def matcher_author(key: str, value: str, data_source: Optional[str]) -> str:
+    """W1.2's author of ``value`` in the field matcher ``key`` reads, for a
+    finding from ``data_source`` (a sensor field whose value fails its type
+    check is ``adversary``)."""
+    if key == "data_source":
+        return SENSOR
+    if ", " in value:
+        # author_of reads ", " as W1.2's list rendering and checks each part;
+        # one matcher value is one item.
+        return ADVERSARY
+    return author_of(MATCHER_FIELDS[key], value, provenance_for(data_source))
+
+
+def anchors(scope: Mapping[str, Any]) -> List[str]:
+    """The anchor matchers in ``scope`` that are sensor-authored.
+
+    With ``data_source`` in scope the lesson matches only that source, and
+    ``data_source`` anchors it. Without it the lesson matches every source,
+    so a ``rule_name`` / ``mitre_technique`` anchors only when it is sensor
+    under every map: under W1.2 rule names are adversary (Splunk, Elastic and
+    by default elsewhere) and webhook MITRE ids third-party, so neither does.
+    """
+    out = []
+    source = scope.get("data_source")
+    for key in ANCHOR_MATCHERS:
+        value = scope.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        sources = (source,) if source else ALL_SOURCES
+        if all(matcher_author(key, value, ds) == SENSOR for ds in sources):
+            out.append(key)
+    return out
+
+
+def anchored(scope: Mapping[str, Any]) -> bool:
+    return bool(anchors(scope))
+
+
 SCOPE_KEYS = IDENTIFYING_MATCHERS + ("max_severity",)
 
 MAX_LIST_VALUES = 50
@@ -109,11 +174,14 @@ def validate_scope(raw: Mapping[str, Any]) -> Dict[str, Any]:
         raise ScopeError(
             "a lesson needs at least one of: " + ", ".join(IDENTIFYING_MATCHERS)
         )
-    if not any(key in scope for key in ANCHOR_MATCHERS):
+    if not anchored(scope):
         raise ScopeError(
             "a lesson needs at least one of "
             + ", ".join(ANCHOR_MATCHERS)
-            + ": host names, user names, IPs and hashes only narrow it"
+            + " that the sensor writes for every source it can match (W1.2"
+            " field provenance: give data_source; rule names and webhook"
+            " MITRE ids are not sensor-authored): host names, user names,"
+            " IPs and hashes only narrow it"
         )
     max_severity = raw.get("max_severity", DEFAULT_MAX_SEVERITY)
     if max_severity not in MAX_SEVERITIES:

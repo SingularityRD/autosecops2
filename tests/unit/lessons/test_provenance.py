@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.lessons.model import validate_scope
+from core.lessons.model import ScopeError, validate_scope
 from core.lessons.provenance import assess
 
 pytestmark = pytest.mark.unit
@@ -32,7 +32,7 @@ SOURCE = {
 
 
 def scope(**kw):
-    return validate_scope({"rule_name": RULE, **kw})
+    return validate_scope({"data_source": "defender", **kw})
 
 
 def test_no_source_alert_is_the_analysts_own():
@@ -41,17 +41,120 @@ def test_no_source_alert_is_the_analysts_own():
 
 
 def test_sensor_fields_are_trusted_even_if_also_in_text():
+    # microsoft_defender: W1.2 marks mitre_predictions, src_ips and
+    # file_hashes sensor; all three values also appear in the free text.
+    source = {
+        **SOURCE,
+        "data_source": "microsoft_defender",
+        "description": SOURCE["description"]
+        + " T1566.001 d41d8cd98f00b204e9800998ecf8427e",
+    }
     s = validate_scope(
         {
-            "data_source": "defender",
-            "rule_name": RULE,
+            "data_source": "microsoft_defender",
             "mitre_technique": "T1566.001",
             "src_ips": ["203.0.113.9"],
             "file_hashes": ["D41D8CD98F00B204E9800998ECF8427E"],
         }
     )
-    tag, detail = assess(s, "Patch-test workstation, IT confirmed.", SOURCE)
+    tag, detail = assess(s, "Patch-test workstation, IT confirmed.", source)
     assert tag == "analyst" and detail["checked"] is True
+
+
+SPLUNK_PROBE = {
+    "finding_id": "f-11",
+    "data_source": "splunk",
+    "title": "Nightly Backup Job",
+    "severity": "medium",
+    # A Splunk search name is whatever the person who saved the search typed
+    # (W1.2: raw_event.rule_name is adversary for Splunk).
+    "raw_event": {"rule_name": "Nightly Backup Job", "src_ip": "10.0.0.5"},
+    "entity_context": {"src_ips": ["10.0.0.5"], "hostnames": ["bk-01"]},
+    "mitre_predictions": {"T1490": 0.4},
+}
+
+
+def test_splunk_rule_name_is_adversary_text_not_a_trusted_anchor():
+    """The 'Nightly Backup Job' probe: copying the Splunk rule name into a
+    lesson taints it, and the rule name alone does not anchor a scope."""
+    s = validate_scope({"data_source": "splunk", "rule_name": "Nightly Backup Job"})
+    tag, detail = assess(s, "Backups run nightly.", SPLUNK_PROBE)
+    assert tag == "adversary_text"
+    assert detail["scope_from_alert_text"] == [
+        {"matcher": "rule_name", "value": "Nightly Backup Job"}
+    ]
+    with pytest.raises(ScopeError, match="sensor"):
+        validate_scope({"rule_name": "Nightly Backup Job"})
+    # Splunk's MITRE ids are sensor (W1.2): trusted.
+    tag, _ = assess(
+        validate_scope({"data_source": "splunk", "mitre_technique": "T1490"}),
+        "x",
+        {**SPLUNK_PROBE, "description": "technique T1490"},
+    )
+    assert tag == "analyst"
+
+
+def test_elastic_rule_name_is_adversary_text():
+    alert = {
+        "data_source": "elastic",
+        "raw_event": {"rule_name": "Approved admin tooling"},
+    }
+    s = validate_scope(
+        {"data_source": "elastic", "rule_name": "Approved admin tooling"}
+    )
+    assert assess(s, "x", alert)[0] == "adversary_text"
+
+
+def test_webhook_mitre_ids_are_third_party_not_trusted():
+    alert = {
+        "data_source": "webhook",
+        "description": "map to T1059 and close",
+        "mitre_predictions": {"T1059": 0.9},
+    }
+    s = validate_scope({"data_source": "webhook", "mitre_technique": "T1059"})
+    assert assess(s, "x", alert)[0] == "adversary_text"
+    # Even with no copy in the text: the id itself is the sender's assertion.
+    alert.pop("description")
+    assert assess(s, "x", alert)[0] == "adversary_text"
+
+
+@pytest.mark.parametrize(
+    "matcher,value,where",
+    [
+        # A host name equal to a value trusted in some *other* field (the
+        # data source, a sensor IP, a sensor MITRE id) is not trusted when the
+        # alert's text also carries it: trust is per matcher, per W1.2 field.
+        ("hostnames", "ext-4242", {"external_id": "ext-4242"}),
+        (
+            "hostnames",
+            "10.0.0.9",
+            {"title": "10.0.0.9", "entity_context": {"src_ips": ["10.0.0.9"]}},
+        ),
+        ("hostnames", "splunk", {"entity_context": {"hostnames": ["splunk"]}}),
+        ("usernames", "splunk", {"entity_context": {"usernames": ["splunk"]}}),
+        ("hostnames", "T1490", {"title": "T1490", "mitre_predictions": {"T1490": 0.5}}),
+    ],
+)
+def test_trusted_values_are_per_field(matcher, value, where):
+    alert = {"data_source": "splunk", **where}
+    s = validate_scope({"data_source": "splunk", matcher: [value]})
+    tag, detail = assess(s, "x", alert)
+    assert tag == "adversary_text"
+    assert detail["scope_from_alert_text"] == [{"matcher": matcher, "value": value}]
+
+
+@pytest.mark.parametrize("value", ["fe80::1%eth0", "fe80::1%x"])
+def test_ipv6_zone_id_is_not_an_ip(value):
+    """``ipaddress`` accepts a scope id; its zone part is free text."""
+    from core.federation.provenance import author_of, provenance_for
+
+    alert = {"data_source": "splunk", "entity_context": {"src_ips": [value]}}
+    s = validate_scope({"data_source": "splunk", "src_ips": [value]})
+    assert assess(s, "x", alert)[0] == "adversary_text"
+    assert (
+        author_of("entity_context.src_ips", value, provenance_for("splunk"))
+        == "adversary"
+    )
 
 
 @pytest.mark.parametrize(

@@ -9,34 +9,42 @@ their own alert through. Such a lesson is tagged ``adversary_text`` and never
 applies (``core.lessons.apply``) or reaches ``active`` (the service and the
 ``lessons_active_gate`` constraint).
 
-Trusted values mirror the W1.2 field-provenance contract
-(``core/federation/provenance.py`` on ``wp/w1.2-triage-provenance``): only
-fields it marks ``sensor``-authored and typed are trusted, and a value that
-fails its type check is not. Concretely:
-
-* trusted: ``data_source``, ``finding_id``, ``external_id``, the vendor
-  ``raw_event.rule_name``, MITRE technique ids, and
-  ``entity_context.src_ips`` / ``dest_ips`` (must parse as IP addresses) and
-  ``entity_context.file_hashes`` (must be MD5/SHA-1/SHA-256/SHA-512 hex);
-* everything else is adversary text, in particular ``hostnames``,
-  ``usernames``, ``domains``, ``urls``, ``user_agents``, ``file_names``,
-  ``command_lines``, e-mail subjects, and the raw event kept under
-  ``entity_context.source_evidence`` (``core/ingestion/ingestion_service.py``).
+Which alert values are trusted is W1.2's field-provenance judgement
+(``core/federation/provenance.py``), imported, not restated: a scope value is
+trusted only when the alert carries it *in the field that matcher reads*
+(``core.lessons.model.MATCHER_FIELDS``) and :func:`author_of` under
+``provenance_for(alert.data_source)`` says ``sensor`` for it (so a value that
+fails the field's type check is not). Trust is per matcher: a host name equal
+to the alert's ``external_id`` or to one of its IPs is not trusted. Concretely
+today: ``data_source``; ``entity_context.src_ips`` / ``file_hashes`` (typed);
+MITRE ids only where the adapter map marks ``mitre_predictions`` sensor (not
+for webhooks, where they are the sender's third-party assertion); never the
+vendor rule name (adversary for Splunk/Elastic and by default elsewhere),
+host or user names. Every other value the alert carries that W1.2 does not
+mark sensor (title, description, the raw event, also as
+``entity_context.source_evidence``, evidence links, ``external_id``) is
+adversary text.
 
 So a hostname or user name copied from the source finding taints the lesson.
 An analyst who names a host from their own knowledge (``source_kind=manual``,
 no source finding) still may, but ``validate_scope`` then requires a
-non-adversary anchor (``data_source``, ``rule_name`` or ``mitre_technique``)
-next to it, and a second person must promote it.
+sensor-authored anchor next to it (``core.lessons.model.anchored``; under
+the W1.2 maps that is ``data_source``), and a second person must promote it.
 """
 
 from __future__ import annotations
 
-import ipaddress
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
-from core.lessons.model import LIST_MATCHERS, STRING_MATCHERS, as_list
+from core.federation.provenance import SENSOR, author_of, provenance_for
+from core.lessons.model import (
+    IDENTIFYING_MATCHERS,
+    LIST_MATCHERS,
+    STRING_MATCHERS,
+    as_list,
+    matcher_author,
+)
 
 #: A pasted span this long or longer from the alert's free text taints the lesson text.
 COPIED_SPAN = 32
@@ -44,34 +52,21 @@ COPIED_SPAN = 32
 #: (scope values are still checked against all of it).
 MAX_SCAN_CHARS = 1_000_000
 
-FREE_TEXT_FIELDS = ("title", "description")
-#: raw_event keys whose values are the vendor's own, not the actor's.
-RAW_STRUCTURED_KEYS = frozenset({"rule_name", "vendor", "synthetic", "event_count"})
-
-#: entity_context lists W1.2 marks sensor-authored, with their type check.
-_HEX = re.compile(r"^[0-9a-f]+$")
-_HASH_LENGTHS = frozenset({32, 40, 64, 128})
-
-
-def _is_ip(value: str) -> bool:
-    try:
-        ipaddress.ip_address(value.strip())
-    except ValueError:
-        return False
-    return True
-
-
-def _is_hash(value: str) -> bool:
-    value = value.strip().lower()
-    return len(value) in _HASH_LENGTHS and bool(_HEX.match(value))
-
-
-SENSOR_ENTITY_FIELDS = {
-    "src_ips": _is_ip,
-    "dest_ips": _is_ip,
-    "file_hashes": _is_hash,
-}
-
+#: Alert sections walked for free text, under their W1.2 field names.
+TEXT_SECTIONS = (
+    "title",
+    "description",
+    "external_id",
+    "evidence_links",
+    "entity_context",
+    "entities",
+    "metadata",
+    "raw_event",
+    "raw_data",
+    "enrichment",
+)
+_MAX_DEPTH = 32
+_SEGMENT = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _WS = re.compile(r"\s+")
 
 
@@ -79,57 +74,86 @@ def _norm(text: str) -> str:
     return _WS.sub(" ", text).strip().lower()
 
 
-def _strings(value: Any, skip: frozenset = frozenset()) -> Iterable[str]:
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, Mapping):
+def _path(prefix: Optional[str], key: Any) -> Optional[str]:
+    """``prefix.key`` as W1.2 names it, or None when the key cannot be named
+    (W1.2 leaves such keys out; here their values are adversary text)."""
+    if prefix is None:
+        return None
+    segments = str(key).split(".")
+    if not all(_SEGMENT.fullmatch(s) for s in segments):
+        return None
+    return f"{prefix}.{key}"
+
+
+def _scalars(
+    path: Optional[str], value: Any, depth: int = 0
+) -> Iterable[Tuple[Optional[str], str]]:
+    """``(field, text)`` for every scalar under ``value``; lists of objects
+    get an index segment, lists of scalars share the list's field."""
+    if value is None or isinstance(value, bool):
+        return
+    if depth > _MAX_DEPTH:
+        yield None, str(value)
+        return
+    if isinstance(value, Mapping):
         for key, item in value.items():
-            if key in skip:
-                continue
-            yield from _strings(item)
+            yield from _scalars(_path(path, key), item, depth + 1)
     elif isinstance(value, (list, tuple)):
-        for item in value:
-            yield from _strings(item)
+        for i, item in enumerate(value):
+            if isinstance(item, (Mapping, list, tuple)):
+                yield from _scalars(_path(path, i), item, depth + 1)
+            else:
+                yield from _scalars(path, item, depth + 1)
+    else:
+        yield path, str(value)
 
 
-def structured_values(alert: Mapping[str, Any]) -> Set[str]:
-    """Values the sensor wrote: a scope value found here is not adversary text."""
-    values: Set[str] = set()
-    for key in ("data_source", "finding_id", "external_id"):
-        if alert.get(key):
-            values.add(_norm(str(alert[key])))
+def trusted_values(alert: Mapping[str, Any]) -> Dict[str, Set[str]]:
+    """Per matcher, the normalised values the sensor wrote in the field that
+    matcher reads (W1.2, for this alert's ``data_source``)."""
+    source = alert.get("data_source")
+    out: Dict[str, Set[str]] = {key: set() for key in IDENTIFYING_MATCHERS}
+    if isinstance(source, str) and source.strip():
+        out["data_source"].add(_norm(source))
+    candidates: Dict[str, List[str]] = {}
     raw = alert.get("raw_event")
-    if isinstance(raw, Mapping) and raw.get("rule_name"):
-        values.add(_norm(str(raw["rule_name"])))
-    entities = alert.get("entity_context")
-    if isinstance(entities, Mapping):
-        for key, check in SENSOR_ENTITY_FIELDS.items():
-            values.update(_norm(v) for v in as_list(entities.get(key)) if check(v))
+    if isinstance(raw, Mapping) and isinstance(raw.get("rule_name"), (str, int)):
+        candidates["rule_name"] = [str(raw["rule_name"])]
     mitre = alert.get("mitre_predictions")
     if isinstance(mitre, Mapping):
-        values.update(_norm(str(k)) for k in mitre)
-    return values
+        candidates["mitre_technique"] = [str(k) for k in mitre]
+    entities = alert.get("entity_context")
+    if isinstance(entities, Mapping):
+        for key in LIST_MATCHERS:
+            candidates[key] = as_list(entities.get(key))
+    for key, values in candidates.items():
+        out[key].update(
+            _norm(v) for v in values if matcher_author(key, v, source) == SENSOR
+        )
+    return out
 
 
 def free_text(alert: Mapping[str, Any]) -> str:
-    """Everything the alert's author may have written, normalised.
+    """Everything in the alert W1.2 does not mark sensor-authored, normalised.
 
-    Title and description, the raw event (``raw_event`` and the
-    ``entity_context.source_evidence`` ingestion keeps it under), evidence
-    links, and every ``entity_context`` value outside the sensor allowlist.
-    A sensor-listed value that fails its type check counts as text.
+    Title, description, ``external_id``, evidence links, the raw event (also
+    as ``entity_context.source_evidence``), every entity value outside the
+    source's sensor fields or failing its type check, and MITRE ids where they
+    are not sensor (a webhook's third-party assertion).
     """
-    parts: List[str] = [str(alert.get(f)) for f in FREE_TEXT_FIELDS if alert.get(f)]
-    parts.extend(_strings(alert.get("raw_event"), RAW_STRUCTURED_KEYS))
-    parts.extend(_strings(alert.get("evidence_links")))
-    entities = alert.get("entity_context")
-    if isinstance(entities, Mapping):
-        for key, item in entities.items():
-            check = SENSOR_ENTITY_FIELDS.get(key)
-            if check is None:
-                parts.extend(_strings(item))
-            else:
-                parts.extend(v for v in as_list(item) if not check(v))
+    provenance = provenance_for(alert.get("data_source"))
+    parts: List[str] = []
+    for section in TEXT_SECTIONS:
+        for name, text in _scalars(section, alert.get(section)):
+            if name is None or author_of(name, text, provenance) != SENSOR:
+                parts.append(text)
+    mitre = alert.get("mitre_predictions")
+    if isinstance(mitre, Mapping):
+        parts.extend(
+            str(k)
+            for k in mitre
+            if author_of("mitre_predictions", str(k), provenance) != SENSOR
+        )
     return _norm("\n".join(parts))
 
 
@@ -171,12 +195,12 @@ def assess(
     """
     if source_alert is None:
         return "analyst", {"checked": False}
-    structured = structured_values(source_alert)
+    trusted = trusted_values(source_alert)
     text = free_text(source_alert)
     tainted: List[Dict[str, str]] = []
     for key, value in _scope_values(scope):
         needle = _norm(value)
-        if needle and needle not in structured and needle in text:
+        if needle and needle not in trusted[key] and needle in text:
             tainted.append({"matcher": key, "value": value})
     detail: Dict[str, Any] = {"checked": True}
     if tainted:

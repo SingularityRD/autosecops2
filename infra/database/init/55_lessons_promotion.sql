@@ -10,11 +10,19 @@
 -- passed and its report is kept, its provenance is 'analyst' (not traced to
 -- alert text the adversary controls, not written by automation), it has an
 -- effect and an expiry at most 90 days after creation, a person other than
--- its proposer approved it, and its scope names a field the alert's author
--- cannot choose (data_source, rule_name or mitre_technique). No lesson may
+-- its proposer approved it, and its scope has a sensor-authored anchor: a
+-- non-empty string data_source. (core.lessons.model.anchored also accepts a
+-- rule_name or mitre_technique that the W1.2 field-provenance maps mark
+-- sensor for every source; none do: rule names are adversary, webhook MITRE
+-- ids third-party. tests/unit/lessons/test_apply.py pins that.) No lesson may
 -- name critical as its max_severity, in any letter case. A retired lesson is
 -- final: lessons_status_transition refuses any later write to it. The
 -- application enforces the same rules (core/lessons); these are the backstop.
+--
+-- The per-row value checks (effect, provenance, never critical, source_id)
+-- do not hold a retired row: a row written by an earlier draft that breaks a
+-- rule added since must still be retirable (rolled back), and a retired row
+-- never applies.
 --
 -- Tenancy: rows carry tenant_id (default 'default'). The API runs single
 -- tenant today and SqlLessonStore scopes every read and write to one tenant;
@@ -35,11 +43,11 @@ ALTER TABLE lessons ADD COLUMN IF NOT EXISTS version           INTEGER     NOT N
 
 ALTER TABLE lessons DROP CONSTRAINT IF EXISTS lessons_effect_check;
 ALTER TABLE lessons ADD CONSTRAINT lessons_effect_check
-    CHECK (effect IS NULL OR effect IN ('benign_hint', 'escalate')) NOT VALID;
+    CHECK (status = 'retired' OR effect IS NULL OR effect IN ('benign_hint', 'escalate')) NOT VALID;
 
 ALTER TABLE lessons DROP CONSTRAINT IF EXISTS lessons_provenance_check;
 ALTER TABLE lessons ADD CONSTRAINT lessons_provenance_check
-    CHECK (provenance IN ('analyst', 'adversary_text', 'system')) NOT VALID;
+    CHECK (status = 'retired' OR provenance IN ('analyst', 'adversary_text', 'system')) NOT VALID;
 
 ALTER TABLE lessons DROP CONSTRAINT IF EXISTS lessons_active_gate;
 ALTER TABLE lessons ADD CONSTRAINT lessons_active_gate
@@ -53,14 +61,15 @@ ALTER TABLE lessons ADD CONSTRAINT lessons_active_gate
         AND approved_by IS NOT NULL
         AND btrim(approved_by) <> ''
         AND lower(btrim(approved_by)) <> lower(btrim(created_by))
-        AND (applies_to->>'data_source' IS NOT NULL
-             OR applies_to->>'rule_name' IS NOT NULL
-             OR applies_to->>'mitre_technique' IS NOT NULL)
+        -- COALESCE: a missing key is NULL, and a NULL CHECK passes.
+        AND COALESCE(jsonb_typeof(applies_to->'data_source') = 'string'
+                     AND btrim(applies_to->>'data_source') <> '', FALSE)
     )) NOT VALID;
 
 ALTER TABLE lessons DROP CONSTRAINT IF EXISTS lessons_never_critical;
 ALTER TABLE lessons ADD CONSTRAINT lessons_never_critical
-    CHECK (lower(btrim(COALESCE(applies_to->>'max_severity', ''))) <> 'critical') NOT VALID;
+    CHECK (status = 'retired'
+           OR lower(btrim(COALESCE(applies_to->>'max_severity', ''))) <> 'critical') NOT VALID;
 
 ALTER TABLE lessons DROP CONSTRAINT IF EXISTS lessons_retired_has_reason;
 ALTER TABLE lessons ADD CONSTRAINT lessons_retired_has_reason
@@ -70,11 +79,14 @@ ALTER TABLE lessons ADD CONSTRAINT lessons_retired_has_reason
 -- review, an eval case, a canary run).
 ALTER TABLE lessons DROP CONSTRAINT IF EXISTS lessons_source_id_required;
 ALTER TABLE lessons ADD CONSTRAINT lessons_source_id_required
-    CHECK (source_kind = 'manual' OR (source_id IS NOT NULL AND btrim(source_id) <> '')) NOT VALID;
+    CHECK (status = 'retired' OR source_kind = 'manual'
+           OR (source_id IS NOT NULL AND btrim(source_id) <> '')) NOT VALID;
 
 -- proposed -> proposed | active | retired; active -> active | retired;
 -- retired -> nothing. Once out of 'proposed', what the replay measured
--- (scope, effect, text, expiry, provenance, proposer) is frozen.
+-- (scope, effect, text, expiry, provenance, proposer) and the evidence of
+-- its promotion (approver, replay report, provenance detail, source,
+-- creation time) are frozen.
 CREATE OR REPLACE FUNCTION lessons_status_transition()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -96,6 +108,15 @@ BEGIN
     OR NEW.provenance IS DISTINCT FROM OLD.provenance
     OR NEW.created_by IS DISTINCT FROM OLD.created_by
     OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+    OR NEW.approved_by IS DISTINCT FROM OLD.approved_by
+    OR NEW.approved_at IS DISTINCT FROM OLD.approved_at
+    OR NEW.replay IS DISTINCT FROM OLD.replay
+    OR NEW.replay_passed IS DISTINCT FROM OLD.replay_passed
+    OR NEW.replayed_at IS DISTINCT FROM OLD.replayed_at
+    OR NEW.provenance_detail IS DISTINCT FROM OLD.provenance_detail
+    OR NEW.source_kind IS DISTINCT FROM OLD.source_kind
+    OR NEW.source_id IS DISTINCT FROM OLD.source_id
+    OR NEW.created_at IS DISTINCT FROM OLD.created_at
   ) THEN
     RAISE EXCEPTION 'lesson % is %: its definition is frozen', OLD.id, OLD.status;
   END IF;

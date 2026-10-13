@@ -166,6 +166,14 @@ def test_constraints_gate_active(session):
         {
             "scope": '{"hostnames": ["WS-12"], "src_ips": ["1.2.3.4"], "max_severity": "low"}'
         },
+        # Round 6: the anchor must be a sensor-authored, non-empty data_source
+        # (W1.2: rule names are adversary, webhook MITRE ids third-party).
+        {"scope": '{"data_source": "", "src_ips": ["1.2.3.4"], "max_severity": "low"}'},
+        {"scope": '{"data_source": "  ", "max_severity": "low"}'},
+        {"scope": '{"data_source": 7, "max_severity": "low"}'},
+        {"scope": '{"data_source": {"x": 1}, "max_severity": "low"}'},
+        {"scope": '{"rule_name": "Nightly Backup Job", "max_severity": "low"}'},
+        {"scope": '{"mitre_technique": "T1490", "max_severity": "low"}'},
         # Round 5: non-manual lessons name their source.
         {"kind": "analyst_override", "status": "proposed"},
         {"kind": "eval_failure", "source_id": " ", "status": "proposed"},
@@ -248,8 +256,56 @@ def test_an_active_lessons_definition_is_frozen(session):
         "UPDATE lessons SET effect = 'escalate' WHERE id = :id",
         "UPDATE lessons SET expires_at = expires_at - interval '1 day' WHERE id = :id",
         "UPDATE lessons SET created_by = 'z' WHERE id = :id",
+        # Round 6: the evidence of its promotion is frozen too.
+        "UPDATE lessons SET approved_by = 'c' WHERE id = :id",
+        "UPDATE lessons SET approved_at = now() WHERE id = :id",
+        'UPDATE lessons SET replay = \'{"passed": true, "x": 1}\' WHERE id = :id',
+        "UPDATE lessons SET replay_passed = false WHERE id = :id",
+        "UPDATE lessons SET replayed_at = now() WHERE id = :id",
+        "UPDATE lessons SET provenance_detail = '{\"checked\": false}' WHERE id = :id",
+        "UPDATE lessons SET source_id = 'f-2' WHERE id = :id",
+        "UPDATE lessons SET source_kind = 'qa_review', source_id = 'q' WHERE id = :id",
+        "UPDATE lessons SET created_at = created_at - interval '1 day' WHERE id = :id",
     ):
         _refused(session, sql, {"id": lesson_id}, DBAPIError)
+    # Retiring through the store (which rewrites the same values) still works.
+    service = LessonService(SqlLessonStore(session), None, now=lambda: NOW)
+    assert service.rollback(str(lesson_id), "b", "done").status == "retired"
+
+
+def test_rows_from_an_earlier_draft_can_still_be_rolled_back(session):
+    """Constraints are NOT VALID: rows an earlier draft wrote may break rules
+    added since. Retiring them must work all the same."""
+    conn = session.connection()
+    for name in (
+        "lessons_active_gate",
+        "lessons_never_critical",
+        "lessons_effect_check",
+        "lessons_provenance_check",
+        "lessons_source_id_required",
+    ):
+        conn.execute(text(f"ALTER TABLE lessons DROP CONSTRAINT {name}"))
+    legacy = [
+        _insert(session, scope='{"data_source": "", "max_severity": "low"}'),
+        _insert(session, scope='{"rule_name": "Nightly Backup Job"}', approved_by="a"),
+        _insert(session, scope='{"data_source": "e", "max_severity": "critical"}'),
+        _insert(session, effect="suppress"),
+        _insert(session, provenance="legacy"),
+        _insert(session, kind="analyst_override", status="proposed"),
+    ]
+    # The current file re-adds every constraint (NOT VALID) over those rows.
+    conn.execute(text((INIT / FILES[1]).read_text(encoding="utf-8")))
+    _refused(session, INSERT, {**OK, "effect": "suppress"})
+    service = LessonService(SqlLessonStore(session), None, now=lambda: NOW)
+    for lesson_id in legacy:
+        assert service.rollback(str(lesson_id), "ops", "legacy").status == "retired"
+    assert {
+        row[0]
+        for row in conn.execute(
+            text("SELECT status FROM lessons WHERE id = ANY(:ids)"),
+            {"ids": legacy},
+        )
+    } == {"retired"}
 
 
 @pytest.fixture()
