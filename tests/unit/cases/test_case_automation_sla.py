@@ -180,3 +180,61 @@ def test_stale_cases_are_raised_once_a_day_and_canaries_never(db):
     assert svc.detect_stale_cases() == 0
     keys = _broadcast_keys(db)
     assert keys == [f"stale:{stale.case_id}:{utcnow().date().isoformat()}"]
+
+
+@pytest.mark.external_service
+@pytest.mark.database
+def test_two_passes_racing_past_the_check_raise_the_event_once(db):
+    """Both passes read "not raised yet"; the unique index lets one insert win.
+
+    The losing pass keeps its transaction: the breach it marks in the same
+    pass is still committed.
+    """
+    case = _case_with_sla(db, "race")
+    svc = _service({"response_percent_elapsed": 120, "resolution_percent_elapsed": 10})
+    # Both passes see "not raised yet", as two monitors would when they read
+    # before either commits.
+    svc.notification_service.event_already_raised = lambda key, session: False
+
+    assert svc.check_sla_deadlines() == 1
+    assert svc.check_sla_deadlines() == 0
+    assert _broadcast_keys(db) == [sla_event_key(case.case_id, "response", 100)]
+    # One broadcast and one assignee row: the loser wrote no per-person copies.
+    assert db.query(CaseNotification).count() == 2
+    sla = db.query(CaseSLA).filter(CaseSLA.case_id == case.case_id).one()
+    assert sla.breached is True
+
+
+@pytest.mark.external_service
+@pytest.mark.database
+def test_concurrent_broadcast_inserts_conflict_on_the_event_key(db):
+    """Two sessions in flight at once: the second insert waits, then conflicts."""
+    import threading
+
+    from core.cases.case_notification_service import CaseNotificationService
+
+    case = _case_with_sla(db, "race2")
+    service = CaseNotificationService()
+    first = get_db_session()
+    second = get_db_session()
+    try:
+        assert service.notify_sla_warning(case.case_id, 90, "response", first)
+        results = []
+
+        def run():
+            results.append(
+                service.notify_sla_warning(case.case_id, 90, "response", second)
+            )
+            second.commit()
+
+        worker = threading.Thread(target=run)
+        worker.start()
+        worker.join(timeout=1)
+        assert worker.is_alive()  # blocked on the first session's uncommitted row
+        first.commit()
+        worker.join(timeout=30)
+        assert results == [False]
+    finally:
+        first.close()
+        second.close()
+    assert _broadcast_keys(db) == [sla_event_key(case.case_id, "response", 90)]

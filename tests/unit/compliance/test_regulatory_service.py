@@ -180,6 +180,7 @@ def test_the_chain_links_every_event(service, store):
         "broken_at": None,
         "why": None,
         "rows": 3,
+        "anchored": True,
     }
 
 
@@ -260,3 +261,115 @@ def test_bad_configuration_is_not_stored(service, store):
     with pytest.raises(ClockConfigError):
         service.set_config("Europe/Berlin", {}, "")
     assert store.config_rows == {} and store.config_audits == []
+
+
+# --- chain head (W0.10) --------------------------------------------------------
+
+
+@pytest.mark.parametrize("dropped", [1, 2, 3])
+def test_deleting_the_last_events_is_detected(service, store, dropped):
+    """The chain alone still verifies once its tail is gone; the head does not."""
+    for hour in (5, 6, 7):
+        service.record_instant(
+            "c-1", "dora", "aware_at", T(f"2026-03-02T0{hour}:00:00+00:00"), "a", "fix"
+        )
+    del store.rows[-dropped:]
+    assert service.verify_chain("c-1") == {
+        "ok": False,
+        "broken_at": 4 - dropped,
+        "why": "missing row",
+    }
+
+
+def test_a_forged_tail_after_a_deletion_stays_detected(service, store):
+    for hour in (5, 6):
+        service.record_instant(
+            "c-1", "dora", "aware_at", T(f"2026-03-02T0{hour}:00:00+00:00"), "a", "fix"
+        )
+    del store.rows[-1]
+    # The service writes the next event as seq 2 again, chained to seq 1: the
+    # chain verifies, but the head saw seq 2 appended twice.
+    service.record_instant(
+        "c-1", "dora", "aware_at", T("2026-03-02T04:00:00+00:00"), "x", "forged"
+    )
+    service.record_instant(
+        "c-1", "dora", "classification_at", T("2026-03-02T09:00:00+00:00"), "x"
+    )
+    assert service.verify_chain("c-1") == {
+        "ok": False,
+        "broken_at": 2,
+        "why": "append out of sequence",
+    }
+
+
+def test_a_head_without_events_is_a_deleted_chain(service, store):
+    service.record_instant(
+        "c-1", "nis2", "aware_at", T("2026-03-02T08:00:00+00:00"), "a"
+    )
+    store.rows.clear()
+    assert service.verify_chain("c-1")["why"] == "missing row"
+    assert service.verify_chain("c-2")["ok"] is True  # never had events
+
+
+# --- instant order (W0.10) -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "regime,first,first_at,second,second_at",
+    [
+        ("dora", "aware_at", "08", "notified_at", "07"),
+        ("dora", "classification_at", "09", "notified_at", "08"),
+        ("dora", "notified_at", "09", "last_intermediate_at", "08"),
+        ("dora", "last_intermediate_at", "09", "final_at", "08"),
+        ("dora", "notified_at", "09", "classification_at", "10"),
+        ("nis2", "aware_at", "08", "early_warning_at", "07"),
+        ("nis2", "aware_at", "08", "notified_at", "07"),
+        ("nis2", "notified_at", "09", "final_at", "08"),
+        ("nis2", "early_warning_at", "09", "aware_at", "10"),
+    ],
+)
+def test_instants_out_of_order_are_refused(
+    service, store, regime, first, first_at, second, second_at
+):
+    service.record_instant(
+        "c-1", regime, first, T(f"2026-03-02T{first_at}:00:00+00:00"), "a"
+    )
+    with pytest.raises(InstantRefused, match="cannot be before"):
+        service.record_instant(
+            "c-1", regime, second, T(f"2026-03-02T{second_at}:00:00+00:00"), "a"
+        )
+    assert len(store.rows) == 1
+
+
+def test_instants_in_order_or_equal_are_accepted(service, store):
+    for instant, hour in (
+        ("aware_at", "08"),
+        ("classification_at", "08"),
+        ("notified_at", "09"),
+        ("last_intermediate_at", "10"),
+        ("final_at", "11"),
+    ):
+        service.record_instant(
+            "c-1", "dora", instant, T(f"2026-03-02T{hour}:00:00+00:00"), "a"
+        )
+    # NIS2: the notification may precede the early warning; both follow awareness.
+    service.record_instant("c-1", "nis2", "aware_at", T("2026-03-02T08:00:00+00:00"), "a")
+    service.record_instant("c-1", "nis2", "notified_at", T("2026-03-02T09:00:00+00:00"), "a")
+    service.record_instant(
+        "c-1", "nis2", "early_warning_at", T("2026-03-02T10:00:00+00:00"), "a"
+    )
+    assert len(store.rows) == 8
+
+
+def test_dora_initial_is_not_met_before_it_starts(service):
+    """notified_at without a classification: the clock has not started."""
+    service.record_instant(
+        "c-1", "dora", "aware_at", T("2026-03-02T08:00:00+00:00"), "a"
+    )
+    service.record_instant(
+        "c-1", "dora", "notified_at", T("2026-03-02T09:00:00+00:00"), "a"
+    )
+    initial = _clock(service.status("c-1"), "dora.initial")
+    assert initial["state"] == "not_started"
+    assert initial["waiting_for"] == "classification_at"
+    assert initial["met_at"] == "2026-03-02T09:00:00+00:00"
