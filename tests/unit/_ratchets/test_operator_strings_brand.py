@@ -46,3 +46,9 @@ def test_python_messages_do_not_name_vigil(path, message):
     at = text.index(message)
     window = text[at : at + 160]
     assert "Vigil" not in window, window
+
+
+def test_api_startup_logs_do_not_name_vigil_soc():
+    """Round 3: the API's startup log lines said "Vigil SOC"."""
+    text = (REPO / "services/api/main.py").read_text(encoding="utf-8")
+    assert "Vigil SOC" not in text

@@ -833,6 +833,10 @@ jobs:
         run: |
           # The Job's image and command, run as its pod runs them: uid 70, a
           # read-only root filesystem, and the chart's SQL bundle at /sql.
+          # APP_SCHEMA_WAIT_SECONDS=0 (the chart default is 180): here the
+          # backend's create_all runs in the next step, not alongside the Job,
+          # so waiting for its tables would only burn 180s. 50/58 stay
+          # unrecorded and the upgrade step below must apply them.
           job="$RUNNER_TEMP/db-init-job.yaml"
           container='.spec.template.spec.containers[] | select(.name == "db-init")'
           readarray -d '' command < <(yq -0 "$container | .command[]" "$job")
@@ -840,6 +844,7 @@ jobs:
             -v "$PWD/infra/helm/vigil/files/database-init:/sql:ro" \
             -e PGHOST=postgres -e PGPORT=5432 -e PGDATABASE="$POSTGRES_DB" \
             -e PGUSER=deeptempo -e PGPASSWORD="$POSTGRES_PASSWORD" \
+            -e APP_SCHEMA_WAIT_SECONDS=0 \
             "$(yq "$container | .image" "$job")" "${command[@]}"
 
       - name: Initialize schema as vigil_app
@@ -930,6 +935,7 @@ jobs:
             -v "$PWD/infra/helm/vigil/files/database-init:/sql:ro" \
             -e PGHOST=postgres -e PGPORT=5432 -e PGDATABASE="$POSTGRES_DB" \
             -e PGUSER=deeptempo -e PGPASSWORD="$POSTGRES_PASSWORD" \
+            -e APP_SCHEMA_WAIT_SECONDS=0 \
             "$(yq "$container | .image" "$job")" "${command[@]}"
           missing=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h localhost -U deeptempo -d "$POSTGRES_DB" -tAc \
             "SELECT string_agg(t, ', ') FROM unnest(ARRAY['regulatory_clock_events','regulatory_report_drafts','regulatory_clock_heads']) t WHERE to_regclass(t) IS NULL")

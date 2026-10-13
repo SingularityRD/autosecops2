@@ -188,3 +188,34 @@ def test_second_pass_applies_them_once_the_backend_has_built_its_tables(scratch)
     for table in REGULATORY:
         assert _exists(scratch, table), f"{table} missing after the second pass\n{proc.stdout}"
     assert "not applied:" not in proc.stderr, proc.stderr
+
+
+def test_upgrade_heals_ghost_markers_from_older_releases(scratch):
+    """Round 3: an install made before this fix recorded 50/58 although they
+    failed. The Job drops such a marker when the file's tables are missing and
+    applies the file again, so no manual DELETE is needed."""
+    # Install, backend start, upgrade: a healthy install with every file recorded.
+    assert run_job().returncode == 0
+    _create_all(scratch)
+    proc = run_job()
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    # Reproduce the old state: markers present, tables gone.
+    with scratch.begin() as conn:
+        conn.execute(text("DROP TABLE regulatory_clock_heads CASCADE"))
+        conn.execute(text("DROP TABLE regulatory_report_drafts CASCADE"))
+        conn.execute(text("DROP TABLE regulatory_clock_events CASCADE"))
+    assert {"50_regulatory_clocks.sql", "58_broadcast_unique_and_clock_heads.sql"} <= _recorded(scratch)
+
+    proc = run_job()
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "HEAL 50_regulatory_clocks.sql" in proc.stdout
+    assert "HEAL 58_broadcast_unique_and_clock_heads.sql" in proc.stdout
+    for table in REGULATORY:
+        assert _exists(scratch, table), f"{table} missing after heal\n{proc.stdout}"
+    assert {"50_regulatory_clocks.sql", "58_broadcast_unique_and_clock_heads.sql"} <= _recorded(scratch)
+
+    # A healthy install is left alone on the next run.
+    proc = run_job()
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "HEAL" not in proc.stdout
+    assert "SKIP 50_regulatory_clocks.sql" in proc.stdout
