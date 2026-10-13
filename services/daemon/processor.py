@@ -787,7 +787,7 @@ class FindingProcessor:
                 spool.release(entry)  # still on disk; replayed if we stop now
             raise
         except Exception as e:
-            logger.error(f"Error processing finding {finding_id}: {e}")
+            logger.error("Error processing finding %s: %s", finding_id, e)
             self.stats["errors"] += 1
             if not stored and spool is not None:
                 spool.release(entry)

@@ -59,11 +59,13 @@ yoktur, ama Postgres kesintisinde gönderenler bekler.
 | `DAEMON_INGEST_SPOOL_ENABLED` | `true` | Spool'u kullan. `false`: 200 satır yazılınca |
 | `DAEMON_INGEST_SPOOL_DIR` | boş → `<VIGIL_DIR>/spool/webhook` | Spool dizini; **kalıcı, pod'a özel** bir birimde olmalı |
 | `DAEMON_INGEST_SPOOL_MAX_FINDINGS` | `10000` | Yazılmamış bulgu sınırı; aşılırsa 503 |
-| `DAEMON_INGEST_SPOOL_MAX_MB` | `256` | Yazılmamış bulgu bayt sınırı; aşılırsa 503 |
+| `DAEMON_INGEST_SPOOL_MAX_MB` | `128` | Yazılmamış bulgu bayt sınırı (diskte); aşılırsa 503 |
 
 Sınır, Postgres kesintisinde ne kadar süre kabul etmeye devam edileceğini
 belirler: 10 000 bulgu, 10 bulgu/sn'de ~16 dakikalık kesintidir. Sonrasında
-webhook 503 verir ve birikim gönderende kalır (geri basınç).
+webhook 503 verir ve birikim gönderende kalır (geri basınç). Bekleyen bulgular
+bellekte de tutulur (diskteki boyutun birkaç katı); sınırı yükseltirken
+daemon bellek sınırını (`daemon.resources.limits.memory`) da gözetin.
 
 ## 4. Kurulumlar
 

@@ -60,7 +60,7 @@ class IngestSpoolConfig:
     enabled: bool = True
     directory: str = ""  # empty: <VIGIL_DIR>/spool/webhook
     max_findings: int = 10_000
-    max_mb: int = 256
+    max_mb: int = 128
 
     def resolved_directory(self):
         from pathlib import Path

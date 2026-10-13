@@ -813,7 +813,7 @@ config:
   # W0.12: findings the webhook acknowledged but has not stored yet; full =>
   # 503 + Retry-After. The directory is per pod (daemon-statefulset.yaml).
   DAEMON_INGEST_SPOOL_MAX_FINDINGS: "10000"
-  DAEMON_INGEST_SPOOL_MAX_MB: "256"
+  DAEMON_INGEST_SPOOL_MAX_MB: "128"
   DAEMON_AUTO_RESPONSE: "true"
   DAEMON_CONFIDENCE_THRESHOLD: "0.90"
   DAEMON_REVIEW_THRESHOLD: "0.85"

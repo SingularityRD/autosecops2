@@ -103,7 +103,7 @@ class IngestSpool:
         directory: Path | str,
         *,
         max_findings: int = 10_000,
-        max_bytes: int = 256 * 1024 * 1024,
+        max_bytes: int = 128 * 1024 * 1024,
         fsync: bool = True,
     ) -> None:
         if max_findings < 1 or max_bytes < 1:

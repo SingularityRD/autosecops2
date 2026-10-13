@@ -288,7 +288,7 @@ class Settings(BaseSettings):
     daemon_ingest_spool_enabled: bool = True
     daemon_ingest_spool_dir: str = ""
     daemon_ingest_spool_max_findings: int = 10000
-    daemon_ingest_spool_max_mb: int = 256
+    daemon_ingest_spool_max_mb: int = 128
     daemon_enrich_backfill: bool = True
     daemon_enrich_backfill_interval: int = 300
     daemon_enrich_backfill_batch: int = 50
