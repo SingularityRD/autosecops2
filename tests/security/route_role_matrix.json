@@ -432,6 +432,22 @@
    "role-manager": "allow",
    "role-admin": "allow"
   },
+  "GET /api/autonomy/audit": {
+   "gate": "login + perm:settings.read",
+   "role-viewer": "deny",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "GET /api/autonomy/tiers": {
+   "gate": "login + perm:settings.read",
+   "role-viewer": "deny",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
   "GET /api/bifrost/routability": {
    "gate": "login + inline:settings.write",
    "role-viewer": "deny",
@@ -1237,6 +1253,30 @@
    "gate": "login",
    "role-viewer": "allow",
    "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "GET /api/response/four-eyes": {
+   "gate": "login + perm:users.read",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "GET /api/response/segregation": {
+   "gate": "login + perm:users.read",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "GET /api/response/segregation/export": {
+   "gate": "login + perm:users.read",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
@@ -2057,6 +2097,14 @@
    "role-viewer": "allow",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "POST /api/autonomy/check": {
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
@@ -3160,6 +3208,14 @@
    "role-manager": "allow",
    "role-admin": "allow"
   },
+  "PUT /api/autonomy/tiers/{category}/{action_type}": {
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
   "PUT /api/bifrost/{path}": {
    "gate": "login + inline:settings.write",
    "role-viewer": "deny",
@@ -3262,6 +3318,14 @@
    "role-analyst": "deny",
    "role-senior-analyst": "deny",
    "role-manager": "deny",
+   "role-admin": "allow"
+  },
+  "PUT /api/response/four-eyes/{action_type}": {
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
+   "role-manager": "allow",
    "role-admin": "allow"
   },
   "PUT /api/services/autostart": {
