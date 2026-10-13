@@ -3,7 +3,8 @@
 # AutoSecOps release pipeline (WP W4.7). Runs when a v* tag is pushed to the
 # canonical repository SingularityRD/autosecops2; every job is skipped in forks.
 #
-#   version         tag <-> VERSION <-> release notes checks (fails before any build)
+#   version         tagged commit is on main; tag <-> VERSION <-> release notes
+#                   checks (fails before any build)
 #   build-images    backend, daemon, agent -> ghcr.io/singularityrd/autosecops-<c>
 #                   (linux/amd64 + linux/arm64, pushed and recorded by digest)
 #   build-web       the web console as a static bundle (the same SPA the backend
@@ -12,10 +13,13 @@
 #                   same code as scripts/release/dry-run.sh) and every image
 #                   platform (syft); images.json with index + platform digests
 #   smoke-test      the pushed images start and answer their health checks
-#   sign            the ONLY job with an OIDC token: keyless cosign signatures on
+#   sign            keyless cosign (OIDC token; see github-attestations) signatures on
 #                   every image digest, CycloneDX SBOM + SLSA v1 provenance
 #                   attestations attached to the images, a Sigstore bundle per
 #                   release file, SHA256SUMS + its bundle, the Sigstore trusted root
+#   github-attestations  optional (vars.RELEASE_GITHUB_ATTESTATIONS == 'true'):
+#                   GitHub artifact attestations; the only other job with an OIDC
+#                   token, and the only one with `attestations: write`
 #   update-release  DRAFT GitHub Release with the signed files and release notes
 #
 # A person publishes the draft after the GA decision (VERSIONING.md, "Release
@@ -63,6 +67,21 @@ jobs:
           fetch-depth: 0 # check-notes reads the merge history
           persist-credentials: false
 
+      # A v* tag on a commit that never reached main (a feature branch, a
+      # fork's commit pushed by someone with tag rights) must not release.
+      # The tag ruleset (VERSIONING.md, "Tag protection") limits who can
+      # create v* tags; this check limits what they can point at.
+      - name: Tagged commit is on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.extraheader=AUTHORIZATION: basic ${auth}" fetch --no-tags \
+            origin +refs/heads/main:refs/remotes/origin/main
+          python3 scripts/release/release_tool.py check-on-main \
+            --commit "$GITHUB_SHA" --main refs/remotes/origin/main
+
       - name: Tag, version files and release notes agree
         id: v
         env:
@@ -74,7 +93,10 @@ jobs:
           base="${TAG#v}"
           base="${base%%-*}"
           notes="docs/release/${base}.md"
-          python3 scripts/release/release_tool.py check-notes --notes "$notes" --strict
+          # --data: the notes and the CHANGELOG block must be exactly what
+          # render-notes produces from this commit's merge history.
+          python3 scripts/release/release_tool.py check-notes --notes "$notes" --strict \
+            --data "docs/release/${base}.json"
           echo "notes=$notes" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------
@@ -388,8 +410,7 @@ jobs:
     permissions:
       contents: read
       packages: write # cosign stores signatures and attestations next to the images
-      id-token: write # keyless signing (Fulcio); this job only
-      attestations: write # optional GitHub attestations (RELEASE_GITHUB_ATTESTATIONS)
+      id-token: write # keyless signing (Fulcio)
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -489,48 +510,6 @@ jobs:
           sh scripts/release/verify-release.sh --dir dist --version "$VERSION" \
             --repo "$GITHUB_REPOSITORY" --trusted-root dist/trusted_root.json
 
-      # Optional GitHub artifact attestations (gh attestation verify). Private
-      # repositories need GitHub Enterprise Cloud for these, so they are opt-in
-      # through the repository variable RELEASE_GITHUB_ATTESTATIONS=true.
-      - name: GitHub provenance attestation (release files)
-        if: vars.RELEASE_GITHUB_ATTESTATIONS == 'true'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-checksums: dist/SHA256SUMS
-
-      - name: Image digests for GitHub attestations
-        if: vars.RELEASE_GITHUB_ATTESTATIONS == 'true'
-        id: digests
-        run: |
-          set -eu
-          while IFS="$(printf '\t')" read -r component _ ref; do
-            echo "${component}=${ref#*@}" >> "$GITHUB_OUTPUT"
-          done < index.tsv
-
-      - name: GitHub provenance attestation (backend)
-        if: vars.RELEASE_GITHUB_ATTESTATIONS == 'true'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-name: ${{ env.IMAGE_PREFIX }}-backend
-          subject-digest: ${{ steps.digests.outputs.backend }}
-          push-to-registry: true
-
-      - name: GitHub provenance attestation (daemon)
-        if: vars.RELEASE_GITHUB_ATTESTATIONS == 'true'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-name: ${{ env.IMAGE_PREFIX }}-daemon
-          subject-digest: ${{ steps.digests.outputs.daemon }}
-          push-to-registry: true
-
-      - name: GitHub provenance attestation (agent)
-        if: vars.RELEASE_GITHUB_ATTESTATIONS == 'true'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-name: ${{ env.IMAGE_PREFIX }}-agent
-          subject-digest: ${{ steps.digests.outputs.agent }}
-          push-to-registry: true
-
       - name: Upload signed release files
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -538,6 +517,80 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Optional GitHub artifact attestations (gh attestation verify). Private
+  # repositories need GitHub Enterprise Cloud for these, so they are opt-in
+  # through the repository variable RELEASE_GITHUB_ATTESTATIONS=true. A separate
+  # job so that `attestations: write` is granted only when the option is on;
+  # the cosign signatures and attestations of the sign job do not depend on it.
+  github-attestations:
+    name: GitHub attestations (optional)
+    if: github.repository == 'SingularityRD/autosecops2' && vars.RELEASE_GITHUB_ATTESTATIONS == 'true'
+    needs: [version, sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write # push-to-registry stores the attestation next to the image
+      id-token: write # attest-build-provenance signs with the workflow identity
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download signed release files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-signed
+          path: dist
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Provenance attestation (release files)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      - name: Image digests
+        id: digests
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -eu
+          python3 scripts/release/release_tool.py image-refs --index \
+            --images "dist/autosecops-${VERSION}-images.json" > index.tsv
+          while IFS="$(printf '\t')" read -r component _ ref; do
+            echo "${component}=${ref#*@}" >> "$GITHUB_OUTPUT"
+          done < index.tsv
+
+      - name: Provenance attestation (backend)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE_PREFIX }}-backend
+          subject-digest: ${{ steps.digests.outputs.backend }}
+          push-to-registry: true
+
+      - name: Provenance attestation (daemon)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE_PREFIX }}-daemon
+          subject-digest: ${{ steps.digests.outputs.daemon }}
+          push-to-registry: true
+
+      - name: Provenance attestation (agent)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE_PREFIX }}-agent
+          subject-digest: ${{ steps.digests.outputs.agent }}
+          push-to-registry: true
 
   # ---------------------------------------------------------------------------
   # Draft release with the signed files and the notes. Publishing it is a

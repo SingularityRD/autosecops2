@@ -68,12 +68,15 @@ release-please is not active in this repository, so the steps are manual:
 
 1. **Prepare on `integration`.** Bump `VERSION` and every file
    `.github/release-please-config.json` lists under `extra-files` (plus
-   `.github/.release-please-manifest.json`); write `CHANGELOG.md` and the
-   release notes `docs/release/<VERSION>.md`.
+   `.github/.release-please-manifest.json`); keep the WP table
+   `docs/release/<VERSION>.json` current and render the release notes
+   `docs/release/<VERSION>.md` and the generated `CHANGELOG.md` block with
+   `release_tool.py render-notes --data docs/release/<VERSION>.json --write`.
    `python3 scripts/release/release_tool.py check-versions` must pass.
 2. **Rehearse offline.** `scripts/release/dry-run.sh --out /tmp/rel --strict-notes`
-   checks versions, checks that every work package marked "Dahil" was merged
-   and none marked "Dahil değil" was, and builds and checksums the lockfile
+   checks versions, checks that every work package marked "Dahil" was merged,
+   that every merged `wp/<id>-*` branch has a "Dahil" row and that the notes
+   are freshly rendered, and builds and checksums the lockfile
    SBOMs. The tag pipeline runs the same checks and fails before building
    anything if they do not pass.
 3. **Release candidate.** Merge `integration` into `main`, then tag the merge
@@ -87,6 +90,48 @@ release-please is not active in this repository, so the steps are manual:
    publishes it.
 5. **Never move or delete a pushed release tag.** A wrong release is fixed by a
    new patch version. Signatures stay in the public Sigstore log either way.
+
+The tag pipeline also refuses a tag whose commit is not an ancestor of `main`
+(the `version` job fetches `main` and runs `release_tool.py check-on-main`), and
+refuses release notes that are not exactly what
+`release_tool.py render-notes --data docs/release/<VERSION>.json` produces from
+the tagged commit's merge history: regenerate them on `main` right before
+tagging (`render-notes ... --write`, commit, merge).
+
+## Tag protection (required)
+
+Anyone who can push a `v*` tag starts a release that signs with the
+repository's identity, so **before the first release tag** the repository must
+carry two GitHub tag rulesets (repository Settings › Rules › Rulesets; on a
+private repository rulesets need a GitHub Team or Enterprise plan):
+
+1. `scripts/release/rulesets/release-tags-create.json`: creating a `v*` tag is
+   restricted; only the release managers team (bypass actor) may create one.
+2. `scripts/release/rulesets/release-tags-immutable.json`: nobody, including
+   release managers and admins, may update (move) or delete a
+   `v*` tag (no bypass actors).
+
+They are two rulesets because a bypass actor bypasses every rule of its
+ruleset: one ruleset with a release-manager bypass would also let release
+managers move and delete tags.
+
+Apply them (a repository admin; this is not done by CI and was not applied by
+W4.7). The team slug `release-managers` is an example; use the team that owns
+releases:
+
+```sh
+team_id=$(gh api orgs/SingularityRD/teams/release-managers --jq .id)
+jq --argjson id "$team_id" '.bypass_actors[0].actor_id = $id' \
+  scripts/release/rulesets/release-tags-create.json |
+  gh api --method POST repos/SingularityRD/autosecops2/rulesets --input -
+gh api --method POST repos/SingularityRD/autosecops2/rulesets \
+  --input scripts/release/rulesets/release-tags-immutable.json
+# check
+gh api repos/SingularityRD/autosecops2/rulesets --jq '.[] | [.id, .name, .target, .enforcement] | @tsv'
+```
+
+A release manager checks that both rulesets are listed and `active` before
+pushing `v<VERSION>-rc.1`.
 
 Customers verify a release, also offline, with `docs/release/dogrulama.md`
 (Turkish) and the `verify-release.sh` attached to every release.

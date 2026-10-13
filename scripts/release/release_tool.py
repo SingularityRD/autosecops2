@@ -10,7 +10,12 @@ what the tag pipeline produces.
 Subcommands
   check-tag       validate a vX.Y.Z[-rc.N] tag against VERSION
   check-versions  every file that carries the release version agrees with VERSION
-  check-notes     release notes: every "Dahil" WP really was merged
+  check-notes     release notes: every "Dahil" WP really was merged (--strict:
+                  every merged wp/<id>-* branch has a "Dahil" row; --data: the
+                  notes are exactly what render-notes produces)
+  render-notes    release notes + CHANGELOG block from git log --merges and
+                  the WP data file (docs/release/<V>.json)
+  check-on-main   the tagged commit is an ancestor of main
   sbom-python     CycloneDX SBOM from a pip/uv lock (name==version lines)
   sbom-npm        CycloneDX SBOM from an npm package-lock.json (v2/v3)
   sboms           all lockfile SBOMs of the repository into one directory
@@ -141,6 +146,8 @@ def check_versions(repo: Path = REPO) -> str:
 # --------------------------------------------------------------------------- notes
 
 MERGE_RE = re.compile(r"^Merge (?:branch )?'?(?P<branch>[\w./-]+)'?")
+# wp/<id>-<slug>: w0.4b, w0.10, w0.11, w12.3 ... (the id is upper-cased: W0.10)
+WP_BRANCH_RE = re.compile(r"^wp/(?P<id>w\d+\.\d+[a-z]?)-")
 
 
 def merged_branches(repo: Path, ref: str = "HEAD") -> set[str]:
@@ -156,6 +163,22 @@ def merged_branches(repo: Path, ref: str = "HEAD") -> set[str]:
         m = MERGE_RE.match(line.strip())
         if m:
             out.add(m.group("branch"))
+    return out
+
+
+def wp_id_of_branch(branch: str) -> Optional[str]:
+    """W<major>.<minor>[x] for a wp/<id>-<slug> branch, else None."""
+    m = WP_BRANCH_RE.match(branch)
+    return ("W" + m.group("id")[1:]) if m else None
+
+
+def merged_wps(merged: Iterable[str]) -> dict[str, str]:
+    """WP id -> merged wp/<id>-* branch (sorted, first wins on duplicates)."""
+    out: dict[str, str] = {}
+    for b in sorted(merged):
+        wp = wp_id_of_branch(b)
+        if wp and wp not in out:
+            out[wp] = b
     return out
 
 
@@ -187,10 +210,23 @@ def parse_notes(text: str) -> list[dict]:
 
 
 def check_notes(
-    notes: Path, repo: Path, ref: str = "HEAD", strict: bool = False
+    notes: Path,
+    repo: Path,
+    ref: str = "HEAD",
+    strict: bool = False,
+    data: Optional[Path] = None,
 ) -> list[dict]:
+    """Release notes against the merge history of ref.
+
+    Always: every "Dahil" row has a merge commit, no WP is listed twice.
+    strict (the tag pipeline): no merged wp/<id>-* branch is "Dahil değil" or
+    missing from the table (the release's own WP, ``self`` in the data file,
+    excepted). With data: the notes (and the CHANGELOG block) are exactly what
+    ``render-notes`` produces for ref, so stale notes fail the tag.
+    """
     rows = parse_notes(notes.read_text(encoding="utf-8"))
     merged = merged_branches(repo, ref)
+    by_wp = merged_wps(merged)
     errors = []
     seen = set()
     for row in rows:
@@ -198,8 +234,6 @@ def check_notes(
         if wp in seen:
             errors.append(f"{wp}: listed twice")
         seen.add(wp)
-        wp_prefix = f"wp/{wp.lower()}-"
-        wp_merged = any(b.startswith(wp_prefix) for b in merged)
         if row["included"]:
             if not row["branch"]:
                 errors.append(f"{wp}: marked Dahil without a merged branch")
@@ -207,16 +241,232 @@ def check_notes(
                 errors.append(
                     f"{wp}: marked Dahil but branch {row['branch']} has no merge commit on {ref}"
                 )
-        elif strict and wp_merged:
+        elif strict and wp in by_wp:
             errors.append(
-                f"{wp}: marked 'Dahil değil' but a wp/{wp.lower()}-* branch is merged on {ref};"
+                f"{wp}: marked 'Dahil değil' but {by_wp[wp]} is merged on {ref};"
                 " update the release notes"
             )
+    if strict:
+        self_wps = set()
+        if data is not None:
+            self_wps = set(_load_notes_data(data).get("self", []))
+        for wp, branch in sorted(by_wp.items(), key=lambda kv: _wp_key(kv[0])):
+            if wp not in seen and wp not in self_wps:
+                errors.append(
+                    f"{wp}: {branch} is merged on {ref} but has no row in the"
+                    " release notes; add it to the data file and re-render"
+                )
+    if data is not None:
+        for path, want in render_notes(_load_notes_data(data), repo, ref).items():
+            have = path.read_text(encoding="utf-8") if path.is_file() else ""
+            if have != want:
+                root = repo.resolve()
+                rel = path.relative_to(root) if path.is_relative_to(root) else path
+                errors.append(
+                    f"{rel} is stale against {ref}; run: release_tool.py"
+                    f" render-notes --data {data} --ref {ref} --write"
+                )
     if errors:
         raise ReleaseError(
             "release notes disagree with git history:\n  " + "\n  ".join(errors)
         )
     return rows
+
+
+# --- rendering the notes from the merge history + a WP table -----------------
+#
+# docs/release/<V>.json holds what git cannot know: every WP of the plan with
+# its topic, highlights, upgrade notes and known issues, each guarded by
+# ``when`` (all of these WPs merged) / ``unless`` (none of them merged). Which
+# WPs are merged, with which branch, and which init SQL files exist come from
+# ``git log --merges <ref>`` and ``git ls-tree <ref>``, so the notes are
+# regenerated, not edited, at tag time.
+
+
+def _wp_key(wp: str) -> tuple:
+    m = re.match(r"^W(\d+)\.(\d+)([a-z]?)$", wp)
+    if not m:
+        return (1 << 30, wp)
+    return (int(m.group(1)), int(m.group(2)), m.group(3))
+
+
+def _load_notes_data(path: Path) -> dict:
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ReleaseError(f"{path}: {exc}") from exc
+    for key in ("notes", "template", "wps"):
+        if key not in doc:
+            raise ReleaseError(f"{path}: missing key {key!r}")
+    ids = [w["id"] for w in doc["wps"]]
+    bad = [i for i in ids if not WP_ID_RE.match(i)]
+    if bad:
+        raise ReleaseError(f"{path}: bad WP ids {bad}")
+    dup = sorted({i for i in ids if ids.count(i) > 1})
+    if dup:
+        raise ReleaseError(f"{path}: WPs listed twice: {dup}")
+    doc["_base"] = path.resolve().parent
+    return doc
+
+
+def _repo_path(repo: Path, rel: str) -> Path:
+    return (repo / rel).resolve()
+
+
+def init_sql_numbers(repo: Path, ref: str, start: int) -> list[int]:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "ls-tree", "--name-only", ref, "infra/database/init/"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    nums = set()
+    for line in proc.stdout.splitlines():
+        m = re.match(r"^(\d+)_.*\.sql$", line.rsplit("/", 1)[-1])
+        if m and int(m.group(1)) >= start:
+            nums.add(int(m.group(1)))
+    return sorted(nums)
+
+
+def _ranges(nums: list[int]) -> str:
+    if not nums:
+        return "—"
+    parts, lo, prev = [], nums[0], nums[0]
+    for n in nums[1:] + [None]:
+        if n is not None and n == prev + 1:
+            prev = n
+            continue
+        parts.append(str(lo) if lo == prev else f"{lo}–{prev}")
+        if n is not None:
+            lo = prev = n
+    return ", ".join(parts)
+
+
+def _applies(item: dict, included: set[str]) -> bool:
+    return all(w in included for w in item.get("when", [])) and not any(
+        w in included for w in item.get("unless", [])
+    )
+
+
+def _bullets(items: list[dict], included: set[str], key: str = "text") -> str:
+    lines = [f"- {i[key]}" for i in items if _applies(i, included)]
+    return "\n".join(lines) if lines else "- —"
+
+
+def _join_ids(ids: list[str]) -> str:
+    return ", ".join(ids) if ids else "—"
+
+
+def render_notes(data: dict, repo: Path, ref: str = "HEAD") -> dict[Path, str]:
+    """{path: content} for the notes (and the CHANGELOG block when configured)."""
+    merged = merged_branches(repo, ref)
+    by_wp = merged_wps(merged)
+    rows, included = [], set()
+    for wp in data["wps"]:
+        branch = wp.get("branch") or by_wp.get(wp["id"])
+        inc = bool(branch) and branch in merged
+        if inc:
+            included.add(wp["id"])
+        rows.append(
+            f"| {wp['id']} | {wp['topic']} | {'Dahil' if inc else 'Dahil değil'}"
+            f" | {('`' + branch + '`') if inc else '—'} |"
+        )
+    self_ids = set(data.get("self", []))
+    known = {w["id"] for w in data["wps"]} | self_ids
+    missing = sorted((set(by_wp) - known), key=_wp_key)
+    if missing:
+        raise ReleaseError(
+            "merged WPs missing from the data file: "
+            + ", ".join(f"{w} ({by_wp[w]})" for w in missing)
+        )
+    open_issues, fixed_issues = [], []
+    for issue in data.get("known_issues", []):
+        if issue["wp"] not in included:
+            continue
+        fixer = issue.get("fixed_by")
+        if fixer and fixer in included:
+            fixed_issues.append(f"- {issue['wp']}: {issue['text']} ({fixer} ile giderildi)")
+        else:
+            note = f" {issue['open_note']}" if issue.get("open_note") else ""
+            open_issues.append(f"- {issue['wp']}: {issue['text']}{note}")
+    inc_sorted = sorted(included, key=_wp_key)
+    not_inc = [w["id"] for w in data["wps"] if w["id"] not in included]
+    en = {w["id"]: w.get("topic_en", w["topic"]) for w in data["wps"]}
+    values = {
+        "wp_table": "\n".join(
+            ["| WP | Konu | Durum | Birleştirme |", "|---|---|---|---|", *rows]
+        ),
+        "highlights": _bullets(data.get("highlights", []), included),
+        "upgrade_notes": _bullets(data.get("upgrade_notes", []), included),
+        "known_issues": "\n".join(open_issues) if open_issues else "- —",
+        "fixed_issues": "\n".join(fixed_issues) if fixed_issues else "- —",
+        "init_sql": _ranges(
+            init_sql_numbers(repo, ref, int(data.get("init_sql_from", 0)))
+        ),
+        "included_count": str(len(included)),
+        "not_included_count": str(len(not_inc)),
+        "included_ids": _join_ids(inc_sorted),
+        "not_included_ids": _join_ids(not_inc),
+        "included_en": "; ".join(f"{w} {en[w]}" for w in inc_sorted) or "—",
+        "not_included_en": "; ".join(f"{w} {en[w]}" for w in not_inc) or "—",
+    }
+
+    def fill(template: str) -> str:
+        def sub(m: re.Match) -> str:
+            key = m.group(1)
+            if key not in values:
+                raise ReleaseError(f"unknown template field {{{{{key}}}}}")
+            return values[key]
+
+        return re.sub(r"\{\{(\w+)\}\}", sub, template)
+
+    out: dict[Path, str] = {}
+    tpl = (data["_base"] / data["template"]).read_text(encoding="utf-8")
+    out[_repo_path(repo, data["notes"])] = fill(tpl)
+    cl = data.get("changelog")
+    if cl:
+        path = _repo_path(repo, cl["file"])
+        text = path.read_text(encoding="utf-8")
+        begin, end = cl["begin"], cl["end"]
+        if text.count(begin) != 1 or text.count(end) != 1 or text.index(begin) > text.index(end):
+            raise ReleaseError(f"{cl['file']}: needs exactly one {begin} ... {end} block")
+        block = fill((data["_base"] / cl["template"]).read_text(encoding="utf-8"))
+        head, rest = text.split(begin, 1)
+        _, tail = rest.split(end, 1)
+        out[path] = f"{head}{begin}\n{block.rstrip()}\n{end}{tail}"
+    return out
+
+
+# --- tag safety --------------------------------------------------------------
+
+
+def check_on_main(repo: Path, commit: str, main_ref: str) -> str:
+    """The tagged commit must already be on main (an ancestor of main_ref)."""
+
+    def rev(r: str) -> str:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", r + "^{commit}"],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            raise ReleaseError(f"cannot resolve {r!r}; fetch it first")
+        return proc.stdout.strip()
+
+    sha, main_sha = rev(commit), rev(main_ref)
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", sha, main_sha],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode == 1:
+        raise ReleaseError(
+            f"{commit} ({sha[:12]}) is not on {main_ref} ({main_sha[:12]}); release"
+            " tags must point at a commit already merged to main"
+        )
+    if proc.returncode != 0:
+        raise ReleaseError(f"git merge-base failed: {proc.stderr.strip()}")
+    return sha
 
 
 # --------------------------------------------------------------------------- SBOM
@@ -670,6 +920,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     s.add_argument("--notes", required=True)
     s.add_argument("--ref", default="HEAD")
     s.add_argument("--strict", action="store_true")
+    s.add_argument(
+        "--data", help="WP data file; the notes must equal render-notes output"
+    )
+
+    s = sub.add_parser("render-notes")
+    s.add_argument("--data", required=True)
+    s.add_argument("--ref", default="HEAD")
+    s.add_argument("--write", action="store_true", help="write instead of print")
+
+    s = sub.add_parser("check-on-main")
+    s.add_argument("--commit", required=True)
+    s.add_argument("--main", default="origin/main")
 
     for name in ("sbom-python", "sbom-npm"):
         s = sub.add_parser(name)
@@ -718,9 +980,26 @@ def main(argv: Optional[list[str]] = None) -> int:
         elif a.cmd == "check-versions":
             print(f"versions ok: {check_versions(repo)}")
         elif a.cmd == "check-notes":
-            rows = check_notes(Path(a.notes), repo, a.ref, a.strict)
+            rows = check_notes(
+                Path(a.notes),
+                repo,
+                a.ref,
+                a.strict,
+                Path(a.data) if a.data else None,
+            )
             inc = sum(r["included"] for r in rows)
             print(f"notes ok: {inc} included, {len(rows) - inc} not included")
+        elif a.cmd == "render-notes":
+            rendered = render_notes(_load_notes_data(Path(a.data)), repo, a.ref)
+            for path, text in rendered.items():
+                if a.write:
+                    path.write_text(text, encoding="utf-8")
+                    print(f"wrote {path}")
+                else:
+                    sys.stdout.write(text)
+        elif a.cmd == "check-on-main":
+            sha = check_on_main(repo, a.commit, a.main)
+            print(f"on main: {sha}")
         elif a.cmd in ("sbom-python", "sbom-npm"):
             lock = Path(a.lock)
             version = a.version or read_version(repo)

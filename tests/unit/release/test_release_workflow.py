@@ -64,9 +64,15 @@ def test_triggers_only_on_v_tags(wf: dict) -> None:
     assert wf["on"] == {"push": {"tags": ["v*"]}}
 
 
+OPT_IN = "vars.RELEASE_GITHUB_ATTESTATIONS == 'true'"
+
+
 def test_every_job_is_guarded_to_the_canonical_repo(wf: dict) -> None:
     for name, job in wf["jobs"].items():
-        assert job.get("if") == CANONICAL, name
+        if name == "github-attestations":
+            assert job.get("if") == f"{CANONICAL} && {OPT_IN}", name
+        else:
+            assert job.get("if") == CANONICAL, name
 
 
 def test_least_privilege_permissions(wf: dict) -> None:
@@ -76,9 +82,12 @@ def test_least_privilege_permissions(wf: dict) -> None:
         assert isinstance(perms, dict), f"{name}: explicit permissions required"
         for scope, level in perms.items():
             assert level in ("read", "write"), f"{name}: {scope}={level}"
-    id_token = [n for n, j in wf["jobs"].items() if "id-token" in j["permissions"]]
-    assert id_token == ["sign"], "OIDC token only in the sign job"
+    id_token = {n for n, j in wf["jobs"].items() if "id-token" in j["permissions"]}
+    # The opt-in attestation job is skipped unless the variable is set.
+    assert id_token == {"sign", "github-attestations"}, id_token
     assert wf["jobs"]["sign"]["permissions"]["id-token"] == "write"
+    attest = {n for n, j in wf["jobs"].items() if "attestations" in j["permissions"]}
+    assert attest == {"github-attestations"}, "attestations: write only when opted in"
     contents_write = [
         n for n, j in wf["jobs"].items() if j["permissions"].get("contents") == "write"
     ]
@@ -86,7 +95,7 @@ def test_least_privilege_permissions(wf: dict) -> None:
     packages_write = {
         n for n, j in wf["jobs"].items() if j["permissions"].get("packages") == "write"
     }
-    assert packages_write == {"build-images", "sign"}
+    assert packages_write == {"build-images", "sign", "github-attestations"}
 
 
 def test_actions_pinned_by_full_sha_with_tag_comment(raw: str, wf: dict) -> None:
@@ -168,6 +177,7 @@ def test_version_job_checks_before_building(wf: dict) -> None:
     run = " ".join(s.get("run", "") for s in wf["jobs"]["version"]["steps"])
     assert "check-tag" in run and "check-versions" in run
     assert "check-notes" in run and "--strict" in run
+    assert '--data "docs/release/${base}.json"' in run  # notes must be fresh
     for name, job in wf["jobs"].items():
         if name != "version":
             assert "version" in job["needs"], name
@@ -190,3 +200,65 @@ def test_release_tool_subcommands_exist(raw: str) -> None:
         with pytest.raises(SystemExit) as exc:
             release_tool.main([cmd, "--help"])
         assert exc.value.code == 0, cmd
+
+
+def test_version_job_requires_the_tagged_commit_on_main(wf: dict) -> None:
+    steps = wf["jobs"]["version"]["steps"]
+    co = steps[0]
+    assert co["uses"].startswith("actions/checkout@")
+    assert co["with"]["fetch-depth"] == 0
+    names = [s.get("name", "") for s in steps]
+    on_main = steps[names.index("Tagged commit is on main")]
+    # Before the version/notes checks, so nothing runs for an off-main tag.
+    assert names.index("Tagged commit is on main") < names.index(
+        "Tag, version files and release notes agree"
+    )
+    run = on_main["run"]
+    assert "fetch --no-tags" in run
+    assert "+refs/heads/main:refs/remotes/origin/main" in run
+    assert "check-on-main" in run and '--commit "$GITHUB_SHA"' in run
+    assert "--main refs/remotes/origin/main" in run
+    assert on_main["env"]["GH_TOKEN"] == "${{ github.token }}"
+
+
+def test_github_attestations_are_a_separate_opt_in_job(wf: dict) -> None:
+    sign = wf["jobs"]["sign"]
+    assert not any(
+        s.get("uses", "").startswith("actions/attest-build-provenance@")
+        for s in sign["steps"]
+    ), "sign job must not write GitHub attestations"
+    job = wf["jobs"]["github-attestations"]
+    assert set(job["needs"]) == {"version", "sign"}
+    attest = [
+        s
+        for s in job["steps"]
+        if s.get("uses", "").startswith("actions/attest-build-provenance@")
+    ]
+    assert len(attest) == 4
+    for s in attest:
+        assert "if" not in s  # the job condition covers every step
+    # The release does not wait for (or skip because of) the optional job.
+    assert "github-attestations" not in wf["jobs"]["update-release"]["needs"]
+
+
+RULESETS = REPO / "scripts" / "release" / "rulesets"
+
+
+def test_tag_rulesets_restrict_create_and_forbid_update_delete() -> None:
+    import json
+
+    create = json.loads((RULESETS / "release-tags-create.json").read_text())
+    immutable = json.loads((RULESETS / "release-tags-immutable.json").read_text())
+    for rs in (create, immutable):
+        assert rs["target"] == "tag"
+        assert rs["enforcement"] == "active"
+        assert rs["conditions"]["ref_name"]["include"] == ["refs/tags/v*"]
+    assert [r["type"] for r in create["rules"]] == ["creation"]
+    assert [b["actor_type"] for b in create["bypass_actors"]] == ["Team"]
+    assert {r["type"] for r in immutable["rules"]} == {"update", "deletion"}
+    assert immutable["bypass_actors"] == [], "nobody may move or delete v* tags"
+    doc = (REPO / "VERSIONING.md").read_text(encoding="utf-8")
+    assert "## Tag protection (required)" in doc
+    for f in ("release-tags-create.json", "release-tags-immutable.json"):
+        assert f"scripts/release/rulesets/{f}" in doc
+    assert "gh api --method POST repos/SingularityRD/autosecops2/rulesets" in doc

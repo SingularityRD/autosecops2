@@ -7,8 +7,9 @@
 # jobs of .github/workflows/release.yml:
 #   1. version files agree with VERSION (and --tag, when given, with VERSION)
 #   2. docs/release/<V>.md: every "Dahil" WP has a merge commit; with
-#      --strict-notes also no merged WP is listed as "Dahil değil" (the tag
-#      pipeline runs strict)
+#      --strict-notes also every merged wp/<id>-* branch has a "Dahil" row and
+#      the notes + CHANGELOG block equal `release_tool.py render-notes` output
+#      for HEAD (docs/release/<V>.json; the tag pipeline runs strict)
 #   3. CycloneDX SBOMs from requirements.lock and every package-lock.json,
 #      validated, into DIR
 #   4. SHA256SUMS over DIR, checked back with sha256sum/shasum
@@ -31,7 +32,7 @@ while [ $# -gt 0 ]; do
     --version) version="${2:?--version needs a value}"; shift 2 ;;
     --tag) tag="${2:?--tag needs a value}"; shift 2 ;;
     --strict-notes) strict="--strict"; shift ;;
-    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "dry-run: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -49,8 +50,13 @@ fi
 step "release notes"
 notes="$repo/docs/release/${version%%-*}.md"
 [ -f "$notes" ] || { echo "dry-run: release notes $notes missing" >&2; exit 1; }
-# shellcheck disable=SC2086  # $strict is empty or one flag
-"$PY" "$tool" --repo "$repo" check-notes --notes "$notes" $strict
+data="$repo/docs/release/${version%%-*}.json"
+if [ -n "$strict" ] && [ -f "$data" ]; then
+  "$PY" "$tool" --repo "$repo" check-notes --notes "$notes" --strict --data "$data"
+else
+  # shellcheck disable=SC2086  # $strict is empty or one flag
+  "$PY" "$tool" --repo "$repo" check-notes --notes "$notes" $strict
+fi
 
 step "lockfile SBOMs (offline)"
 mkdir -p "$out"

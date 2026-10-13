@@ -1,0 +1,12 @@
+### Included work packages ({{included_count}})
+
+{{included_en}}.
+
+### Not included ({{not_included_count}})
+
+{{not_included_en}}.
+
+The 0.7.1 → 2.0 database upgrade path is W4.5: when it is not in the included
+list above, it is not verified in this release.
+
+New init SQL files in 2.0.0: {{init_sql}}.

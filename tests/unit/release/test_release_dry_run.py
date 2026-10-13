@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -142,7 +143,21 @@ def test_release_notes_included_items_are_merged() -> None:
     rows = rt.check_notes(REPO / "docs/release/2.0.0.md", REPO)
     included = {r["wp"] for r in rows if r["included"]}
     assert {"W0.1", "W2.2", "W3.3", "W3.8"} <= included
-    assert "W1.9" not in included  # not merged when the notes were drafted
+    # Whatever is merged when the test runs, not a snapshot of the drafting day:
+    # "Dahil" exactly for the merged wp/<id>-* branches (W4.7 itself excepted).
+    merged = set(rt.merged_wps(rt.merged_branches(REPO))) - {"W4.7"}
+    assert {r["wp"] for r in rows if r["wp"] in merged} == merged
+    assert included - {"W0.2"} == merged
+    for r in rows:
+        if not r["included"]:
+            assert r["wp"] not in merged, r["wp"]
+
+
+def test_release_notes_are_rendered_from_history() -> None:
+    """docs/release/2.0.0.md and the CHANGELOG block are fresh for HEAD."""
+    data = REPO / "docs/release/2.0.0.json"
+    rows = rt.check_notes(REPO / "docs/release/2.0.0.md", REPO, strict=True, data=data)
+    assert len(rows) == len(json.loads(data.read_text())["wps"])
 
 
 # --- check-tag / check-versions ------------------------------------------------
@@ -510,3 +525,222 @@ def test_checksums_skip_themselves(tmp_path: Path) -> None:
     out = rt.write_checksums(tmp_path)
     names = [line.split("  ")[1] for line in out.read_text().splitlines()]
     assert names == ["a.txt", "b.txt"]
+
+
+# --- strict: merged WPs without a row, two-digit ids ---------------------------
+
+
+def _merge(repo: Path, branch: str, subject: Optional[str] = None) -> None:
+    _git(repo, "checkout", "-q", "-b", branch, "integration")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", f"work on {branch}")
+    _git(repo, "checkout", "-q", "integration")
+    _git(
+        repo,
+        "merge",
+        "-q",
+        "--no-ff",
+        branch,
+        "-m",
+        subject or f"Merge {branch} into integration (verified PASS)",
+    )
+
+
+@pytest.mark.parametrize(
+    "branch,wp",
+    [
+        ("wp/w0.10-merged-followups", "W0.10"),
+        ("wp/w0.11-more", "W0.11"),
+        ("wp/w0.4b-gates-fix", "W0.4b"),
+        ("wp/w12.3-x", "W12.3"),
+        ("wp/w0.1-upstream-sync", "W0.1"),
+        ("brand/autosecops-ui", None),
+        ("wp/notawp", None),
+    ],
+)
+def test_wp_id_of_branch(branch: str, wp: Optional[str]) -> None:
+    assert rt.wp_id_of_branch(branch) == wp
+
+
+def test_check_notes_strict_rejects_merged_wp_without_a_row(
+    tmp_path: Path, history: Path
+) -> None:
+    _merge(history, "wp/w0.10-merged-followups")
+    notes = _notes(
+        tmp_path, w22="Dahil", w22b="`wp/w2.2-alert-lanes`", w19="Dahil değil", w19b="—"
+    )
+    rt.check_notes(notes, history)  # drafting mode tolerates it
+    with pytest.raises(rt.ReleaseError) as exc:
+        rt.check_notes(notes, history, strict=True)
+    msg = str(exc.value)
+    assert "W0.10: wp/w0.10-merged-followups is merged" in msg
+    assert "has no row" in msg
+    # W0.1 is not confused with W0.10 (prefix wp/w0.1- vs wp/w0.10-).
+    assert "W0.1:" not in msg
+    assert rt.main(
+        ["--repo", str(history), "check-notes", "--notes", str(notes), "--strict"]
+    ) == 1
+
+
+def test_check_notes_strict_two_digit_id_marked_not_included(
+    tmp_path: Path, history: Path
+) -> None:
+    _merge(history, "wp/w0.10-merged-followups")
+    notes = tmp_path / "n.md"
+    notes.write_text(
+        NOTES.format(
+            w22="Dahil", w22b="`wp/w2.2-alert-lanes`", w19="Dahil değil", w19b="—"
+        )
+        + "| W0.10 | Followups | Dahil değil | — |\n"
+        + "| W0.1 | Sync | Dahil değil | — |\n"
+    )
+    with pytest.raises(rt.ReleaseError) as exc:
+        rt.check_notes(notes, history, strict=True)
+    assert "W0.10: marked 'Dahil değil'" in str(exc.value)
+    assert "W0.1: marked" not in str(exc.value)
+
+
+# --- render-notes: data-driven notes ---------------------------------------------
+
+
+def _render_fixture(tmp_path: Path, repo: Path) -> Path:
+    rel = repo / "docs" / "release"
+    rel.mkdir(parents=True)
+    init = repo / "infra" / "database" / "init"
+    init.mkdir(parents=True)
+    for name in ("45_old.sql", "46_a.sql", "47_b.sql", "56_c.sql", "58_d.sql"):
+        (init / name).write_text("-- x\n")
+    (rel / "t.md.in").write_text(
+        "{{highlights}}\n\n{{wp_table}}\n\nSQL {{init_sql}}\n\n{{upgrade_notes}}\n\n"
+        "OPEN\n{{known_issues}}\nFIXED\n{{fixed_issues}}\n"
+        "{{included_count}}/{{not_included_count}} {{included_ids}} | {{not_included_ids}}\n"
+    )
+    (rel / "cl.md.in").write_text("inc: {{included_en}}\nnot: {{not_included_en}}\n")
+    (repo / "CHANGELOG.md").write_text("# Changelog\n<!-- b -->\nold\n<!-- e -->\ntail\n")
+    data = {
+        "notes": "docs/release/n.md",
+        "template": "t.md.in",
+        "changelog": {
+            "file": "CHANGELOG.md",
+            "template": "cl.md.in",
+            "begin": "<!-- b -->",
+            "end": "<!-- e -->",
+        },
+        "self": ["W4.7"],
+        "init_sql_from": 46,
+        "wps": [
+            {"id": "W0.2", "topic": "Marka", "topic_en": "brand", "branch": "brand/x"},
+            {"id": "W0.10", "topic": "Takip", "topic_en": "follow-ups"},
+            {"id": "W1.1", "topic": "Eval", "topic_en": "eval"},
+            {"id": "W2.2", "topic": "Lanes", "topic_en": "lanes"},
+            {"id": "W3.6", "topic": "Export", "topic_en": "export"},
+        ],
+        "highlights": [
+            {"when": ["W1.1"], "text": "H-eval"},
+            {"when": ["W3.6"], "text": "H-export"},
+        ],
+        "upgrade_notes": [
+            {"unless": ["W3.6"], "text": "U-cgnat-open"},
+            {"when": ["W3.6"], "text": "U-cgnat-allowlist"},
+        ],
+        "known_issues": [
+            {"wp": "W1.1", "text": "cgnat", "fixed_by": "W3.6"},
+            {"wp": "W1.1", "text": "doc", "fixed_by": "W0.10"},
+            {"wp": "W3.6", "text": "not shown: W3.6 not merged"},
+        ],
+    }
+    p = rel / "n.json"
+    p.write_text(json.dumps(data))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "files")
+    return p
+
+
+def test_render_notes_from_history(tmp_path: Path, history: Path) -> None:
+    data = _render_fixture(tmp_path, history)
+    _merge(history, "wp/w0.10-merged-followups")
+    _merge(history, "brand/x", "Merge brand/x: the brand")
+    out = rt.render_notes(rt._load_notes_data(data), history)
+    notes = out[(history / "docs/release/n.md").resolve()]
+    assert "| W0.10 | Takip | Dahil | `wp/w0.10-merged-followups` |" in notes
+    assert "| W0.2 | Marka | Dahil | `brand/x` |" in notes
+    assert "| W1.1 | Eval | Dahil | `wp/w1.1-eval-harness` |" in notes
+    assert "| W3.6 | Export | Dahil değil | — |" in notes
+    assert "H-eval" in notes and "H-export" not in notes
+    assert "U-cgnat-open" in notes and "U-cgnat-allowlist" not in notes
+    assert "SQL 46–47, 56, 58" in notes
+    open_part, fixed_part = notes.split("OPEN\n")[1].split("FIXED\n")
+    assert "W1.1: cgnat" in open_part and "doc" not in open_part
+    assert "W1.1: doc (W0.10 ile giderildi)" in fixed_part
+    assert "not shown" not in notes
+    assert "4/1 W0.2, W0.10, W1.1, W2.2 | W3.6" in notes
+    cl = out[(history / "CHANGELOG.md").resolve()]
+    assert cl.startswith("# Changelog\n<!-- b -->\ninc: W0.2 brand; W0.10 follow-ups")
+    assert "not: W3.6 export\n<!-- e -->\ntail\n" in cl
+
+    # W3.6 merges: the CGNAT issue moves to "fixed", the notes flip.
+    _merge(history, "wp/w3.6-audit-export")
+    notes = rt.render_notes(rt._load_notes_data(data), history)[
+        (history / "docs/release/n.md").resolve()
+    ]
+    assert "U-cgnat-allowlist" in notes and "U-cgnat-open" not in notes
+    assert "W1.1: cgnat (W3.6 ile giderildi)" in notes
+    assert "H-export" in notes
+
+
+def test_render_notes_refuses_merged_wp_missing_from_data(
+    tmp_path: Path, history: Path
+) -> None:
+    data = _render_fixture(tmp_path, history)
+    _merge(history, "wp/w0.11-new-thing")
+    _merge(history, "wp/w4.7-release")  # self: allowed without a row
+    with pytest.raises(rt.ReleaseError, match=r"W0.11 \(wp/w0.11-new-thing\)") as exc:
+        rt.render_notes(rt._load_notes_data(data), history)
+    assert "W4.7" not in str(exc.value)
+
+
+def test_check_notes_with_data_detects_stale_notes(
+    tmp_path: Path, history: Path
+) -> None:
+    data = _render_fixture(tmp_path, history)
+    assert rt.main(
+        ["--repo", str(history), "render-notes", "--data", str(data), "--write"]
+    ) == 0
+    notes = history / "docs/release/n.md"
+    rt.check_notes(notes, history, strict=True, data=data)
+    # A WP merges after the notes were rendered: stale, the tag must fail.
+    _merge(history, "wp/w0.10-merged-followups")
+    with pytest.raises(rt.ReleaseError, match="n.md is stale"):
+        rt.check_notes(notes, history, strict=True, data=data)
+    assert rt.main(
+        ["--repo", str(history), "render-notes", "--data", str(data), "--write"]
+    ) == 0
+    rt.check_notes(notes, history, strict=True, data=data)
+    # A hand edit of the generated CHANGELOG block is caught too.
+    cl = history / "CHANGELOG.md"
+    cl.write_text(cl.read_text().replace("inc: ", "inc: W9.9 extra; "))
+    with pytest.raises(rt.ReleaseError, match="CHANGELOG.md is stale"):
+        rt.check_notes(notes, history, strict=True, data=data)
+
+
+# --- check-on-main ----------------------------------------------------------------
+
+
+def test_check_on_main(tmp_path: Path, history: Path) -> None:
+    _git(history, "branch", "main", "integration")
+    on_main = subprocess.run(
+        ["git", "-C", str(history), "rev-parse", "integration"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert rt.check_on_main(history, on_main, "main") == on_main
+    _git(history, "checkout", "-q", "-b", "feature", "integration")
+    _git(history, "commit", "-q", "--allow-empty", "-m", "not on main")
+    with pytest.raises(rt.ReleaseError, match="is not on main"):
+        rt.check_on_main(history, "feature", "main")
+    assert (
+        rt.main(["--repo", str(history), "check-on-main", "--commit", "feature", "--main", "main"])
+        == 1
+    )
+    with pytest.raises(rt.ReleaseError, match="cannot resolve"):
+        rt.check_on_main(history, "HEAD", "origin/main")
