@@ -27,7 +27,7 @@ A quarantined entry is written in the same format under ``dead/``; moving
 such a file back into the spool directory replays it on the next start.
 
 W0.12b: an entry stored (or quarantined) while others of its segment are still
-pending is recorded in ``<segment>.done`` (one body-line index per line), so a
+pending is recorded in ``<segment>.done`` (one ``<index> <crc32>`` mark per line), so a
 replay skips it instead of offering a stored finding again. A segment whose
 body has unreadable lines keeps its readable entries; the bad lines are copied
 to ``corrupt/<segment>-lines-<ns>.jsonl`` (same format: the original header,
@@ -44,6 +44,7 @@ import logging
 import os
 import threading
 import time
+import zlib
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -105,6 +106,29 @@ def _fsync_dir(path: Path) -> None:
             raise
     finally:
         os.close(fd)
+
+
+def _done_record(index: int) -> bytes:
+    """One done mark: ``<index> <crc32 of index, hex>\\n``."""
+    text = str(index).encode("ascii")
+    return text + b" " + f"{zlib.crc32(text):08x}".encode("ascii") + b"\n"
+
+
+def _parse_done(raw: bytes) -> set:
+    """Indices of the well-formed marks in a ``.done`` file.
+
+    A mark torn by a crash (or one a later mark was appended onto) fails its
+    check and is ignored: that entry replays and the store reports it as
+    already stored. A damaged file can lose marks; it never invents one.
+    """
+    done = set()
+    for record in raw.split(b"\n"):
+        parts = record.split(b" ")
+        if len(parts) != 2 or not parts[0].isdigit():
+            continue
+        if parts[1] == f"{zlib.crc32(parts[0]):08x}".encode("ascii"):
+            done.add(int(parts[0]))
+    return done
 
 
 class IngestSpool:
@@ -253,18 +277,10 @@ class IngestSpool:
         return loaded
 
     def _read_done(self, segment: str) -> set:
-        """Body-line indices recorded as stored/quarantined; a torn last line
-        (a crash mid-write) is ignored: that entry replays, harmlessly."""
         try:
-            raw = self._done_path(segment).read_bytes()
+            return _parse_done(self._done_path(segment).read_bytes())
         except FileNotFoundError:
             return set()
-        done = set()
-        for token in raw.split(b"\n"):
-            token = token.strip()
-            if token.isdigit():
-                done.add(int(token))
-        return done
 
     def _set_aside(self, path: Path, error: Exception) -> None:
         corrupt = self._subdir(CORRUPT_DIR)
@@ -489,7 +505,7 @@ class IngestSpool:
             _FILE_MODE,
         )
         try:
-            os.write(fd, "".join(f"{i}\n" for i in indices).encode("ascii"))
+            os.write(fd, b"".join(_done_record(i) for i in indices))
             if sync and self._fsync:
                 os.fsync(fd)
         finally:
@@ -644,8 +660,7 @@ def waiting_findings(directory: Path | str) -> int:
         body = [i for i, line in enumerate(lines[1:]) if line.strip()]
         done: set = set()
         try:
-            marks = (path / (segment.name + _DONE_SUFFIX)).read_bytes()
-            done = {int(t) for t in marks.split() if t.isdigit()}
+            done = _parse_done((path / (segment.name + _DONE_SUFFIX)).read_bytes())
         except OSError:
             pass
         total += sum(1 for i in body if i not in done)

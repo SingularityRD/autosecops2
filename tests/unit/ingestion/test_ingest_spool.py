@@ -204,8 +204,8 @@ def test_a_torn_done_mark_replays_that_entry_only(tmp_path):
     spool.quarantine(entries[1], "refused")
     [segment] = _segments(tmp_path)
     with open(tmp_path / (segment + ".done"), "ab") as fh:
-        fh.write(b"3")  # torn: the crash came mid-write, no newline...
-        fh.write(b"x")  # ...and garbage
+        fh.write(b"3 ")  # torn: the crash came mid-write; then garbage
+        fh.write(b"\x00\x00\n2\n3 00000000\n")  # nor a bare or bad mark
     spool.close()
     again = IngestSpool(tmp_path)
     assert again.open() == 2
@@ -213,7 +213,7 @@ def test_a_torn_done_mark_replays_that_entry_only(tmp_path):
 
 
 def test_an_orphan_done_file_is_removed(tmp_path):
-    (tmp_path / "seg-00000000000000000009-1-00000001.jsonl.done").write_text("0\n")
+    (tmp_path / "seg-00000000000000000009-1-00000001.jsonl.done").write_bytes(b"0\n")
     spool = IngestSpool(tmp_path)
     assert spool.open() == 0
     assert not list(tmp_path.glob("seg-*"))

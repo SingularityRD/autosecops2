@@ -39,7 +39,7 @@ gönderen ──POST──▶ webhook ──append+fsync──▶ spool (disk) �
   Veritabanı dönünce birikim sırayla yazılır.
 - Segmentin tüm bulguları yazılınca dosya silinir. Segmentin bir kısmı
   yazıldıysa yazılanlar tek tek `<segment>.done` dosyasına (satır başına bir
-  gövde satırı sırası) işaretlenir (W0.12b). Daemon durur ya da öldürülürse
+  gövde satırı sırası ve onun crc32 denetimi; yırtık işaret yok sayılır) işaretlenir (W0.12b). Daemon durur ya da öldürülürse
   kalan segmentler bir sonraki açılışta yüklenir ve yalnızca işaretlenmemiş
   bulgular yeniden oynatılır (`"replaying them"` uyarısı). İşaret `fsync`
   edilmez: süreç öldürülmesinde korunur; elektrik kesintisinde kaybolursa bulgu
