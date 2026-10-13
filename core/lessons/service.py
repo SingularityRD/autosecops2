@@ -49,6 +49,10 @@ class LessonNotFound(LookupError):
     pass
 
 
+class LessonForbidden(PermissionError):
+    """The actor may not do this to this lesson (HTTP 403)."""
+
+
 class ReplayUnavailable(RuntimeError):
     """The replay harness could not run (HTTP 503)."""
 
@@ -70,11 +74,19 @@ class LessonService:
         self.now = now
 
     # -- reads -----------------------------------------------------------
-    def get(self, lesson_id: str) -> Lesson:
-        lesson = self.store.get(lesson_id)
+    def get(self, lesson_id: str, *, for_update: bool = False) -> Lesson:
+        lesson = self.store.get(lesson_id, for_update=for_update)
         if lesson is None:
             raise LessonNotFound(lesson_id)
         return lesson
+
+    def _write(self, lesson: Lesson, expected_status: str) -> None:
+        """Conditional write; a lost race is a conflict, never a silent overwrite."""
+        if not self.store.update(lesson, expected_status):
+            raise LessonConflict(
+                "the lesson was changed by someone else (for example rolled back); "
+                "reload it and try again"
+            )
 
     def list(self, status: Optional[str] = None) -> List[Lesson]:
         return self.store.list(status)
@@ -122,6 +134,11 @@ class LessonService:
             raise LessonInvalid(f"effect must be one of {', '.join(EFFECTS)}")
         if source_kind not in SOURCE_KINDS:
             raise LessonInvalid(f"source_kind must be one of {', '.join(SOURCE_KINDS)}")
+        source_id = (source_id or "").strip() or None
+        if source_kind != "manual" and source_id is None:
+            raise LessonInvalid(f"source_id is required for source_kind {source_kind}")
+        if source_kind == "analyst_override" and source_alert is None:
+            raise LessonInvalid("source finding not found")
         if category is not None and category not in CATEGORIES:
             raise LessonInvalid(f"category must be one of {', '.join(CATEGORIES)}")
         if not 1 <= int(expires_in_days) <= MAX_EXPIRY_DAYS:
@@ -169,17 +186,23 @@ class LessonService:
         return replay(lesson, cases, self.now(), meta=meta)
 
     def run_replay(self, lesson_id: str, actor: str) -> Tuple[Lesson, Dict[str, Any]]:
-        """Replay without changing status; the report is kept on the lesson."""
-        lesson = self.get(lesson_id)
+        """Replay without changing status.
+
+        The report is kept on a proposed lesson. An active lesson keeps the
+        report it was promoted on (the ``lessons_active_gate`` evidence); a
+        replay of it is a dry run recorded only in ``lesson_events``.
+        """
+        lesson = self.get(lesson_id, for_update=True)
         if lesson.status == "retired":
             raise LessonConflict("a retired lesson is not replayed")
         report = self._replay(lesson)
-        lesson.replay, lesson.replay_passed, lesson.replayed_at = (
-            report,
-            bool(report["passed"]),
-            self.now(),
-        )
-        self.store.update(lesson)
+        if lesson.status == "proposed":
+            lesson.replay, lesson.replay_passed, lesson.replayed_at = (
+                report,
+                bool(report["passed"]),
+                self.now(),
+            )
+            self._write(lesson, "proposed")
         self._event(lesson.id, "replayed", actor, **_summary(report))
         return lesson, report
 
@@ -192,8 +215,13 @@ class LessonService:
         Returns ``(lesson, report, promoted)``. A refusal after replay is
         recorded as a ``promotion_refused`` event and returned, not raised, so
         the caller can show the report and the audit row is kept.
+
+        The row is locked (``SELECT ... FOR UPDATE``) for the whole promotion
+        and written only while it is still ``proposed`` at the version read,
+        so a rollback that commits meanwhile wins and this call answers 409.
+        The person who proposed a lesson may not promote it.
         """
-        lesson = self.get(lesson_id)
+        lesson = self.get(lesson_id, for_update=True)
         if lesson.status != "proposed":
             raise LessonConflict(
                 f"only a proposed lesson can be promoted (it is {lesson.status})"
@@ -202,6 +230,11 @@ class LessonService:
             raise LessonConflict(
                 f"a lesson with {lesson.provenance} provenance cannot be promoted: "
                 "it was traced to text the alert's author controls or to automation"
+            )
+        if _same_person(actor, lesson.created_by):
+            raise LessonForbidden(
+                "the person who proposed a lesson cannot promote it; "
+                "a second analyst must"
             )
         if lesson.expired(self.now()):
             raise LessonConflict("the lesson has expired; propose it again")
@@ -212,7 +245,7 @@ class LessonService:
             self.now(),
         )
         if not report["passed"]:
-            self.store.update(lesson)
+            self._write(lesson, "proposed")
             self._event(
                 lesson.id,
                 "promotion_refused",
@@ -224,7 +257,7 @@ class LessonService:
         lesson.status = "active"
         lesson.approved_by = actor
         lesson.approved_at = self.now()
-        self.store.update(lesson)
+        self._write(lesson, "proposed")
         self._event(lesson.id, "promoted", actor, **_summary(report))
         return lesson, report, True
 
@@ -236,7 +269,7 @@ class LessonService:
             raise LessonInvalid(
                 f"a reason of 1..{MAX_REASON_LEN} characters is required"
             )
-        lesson = self.get(lesson_id)
+        lesson = self.get(lesson_id, for_update=True)
         if lesson.status == "retired":
             raise LessonConflict("the lesson is already retired")
         previous = lesson.status
@@ -244,11 +277,15 @@ class LessonService:
         lesson.retired_at = self.now()
         lesson.retired_by = actor
         lesson.retire_reason = reason
-        self.store.update(lesson)
+        self._write(lesson, previous)
         self._event(
             lesson.id, "rolled_back", actor, previous_status=previous, reason=reason
         )
         return lesson
+
+
+def _same_person(a: Optional[str], b: Optional[str]) -> bool:
+    return (a or "").strip().casefold() == (b or "").strip().casefold()
 
 
 def _summary(report: Mapping[str, Any]) -> Dict[str, Any]:

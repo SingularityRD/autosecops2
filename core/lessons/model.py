@@ -53,6 +53,11 @@ LIST_MATCHERS = ("hostnames", "usernames", "src_ips", "file_hashes")
 STRING_MATCHERS = ("data_source", "rule_name", "mitre_technique")
 #: Matchers that identify what a lesson is about. ``max_severity`` only narrows.
 IDENTIFYING_MATCHERS = STRING_MATCHERS + LIST_MATCHERS
+#: Scope keys whose values the alert's author cannot choose (W1.2: the source,
+#: the vendor's rule, the technique id). Every lesson names at least one, so
+#: a lesson is never keyed on host or user names (or bare IPs/hashes) alone:
+#: whoever controls a machine names it. Mirrored by ``lessons_active_gate``.
+ANCHOR_MATCHERS = STRING_MATCHERS
 SCOPE_KEYS = IDENTIFYING_MATCHERS + ("max_severity",)
 
 MAX_LIST_VALUES = 50
@@ -104,6 +109,12 @@ def validate_scope(raw: Mapping[str, Any]) -> Dict[str, Any]:
         raise ScopeError(
             "a lesson needs at least one of: " + ", ".join(IDENTIFYING_MATCHERS)
         )
+    if not any(key in scope for key in ANCHOR_MATCHERS):
+        raise ScopeError(
+            "a lesson needs at least one of "
+            + ", ".join(ANCHOR_MATCHERS)
+            + ": host names, user names, IPs and hashes only narrow it"
+        )
     max_severity = raw.get("max_severity", DEFAULT_MAX_SEVERITY)
     if max_severity not in MAX_SEVERITIES:
         raise ScopeError(
@@ -139,6 +150,8 @@ class Lesson:
     retired_at: Optional[datetime] = None
     retired_by: Optional[str] = None
     retire_reason: Optional[str] = None
+    #: Bumped by every write; a write names the version it read (optimistic lock).
+    version: int = 0
 
     def expired(self, now: datetime) -> bool:
         return self.expires_at is None or self.expires_at <= now

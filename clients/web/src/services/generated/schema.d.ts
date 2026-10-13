@@ -4188,9 +4188,11 @@ export interface paths {
          * Propose Lesson
          * @description Propose a lesson. It does nothing until promoted.
          *
-         *     When ``source_id`` names a finding, the scope and text are traced against
-         *     that finding's free text; a lesson built from it is tagged
-         *     ``adversary_text`` and can never be promoted.
+         *     ``analyst_override`` requires ``source_id``, and any ``source_id`` given
+         *     must name an existing finding. The scope and text are traced against that
+         *     finding's free text (title, description, raw event, adversary-authored
+         *     entities); a lesson built from it is tagged ``adversary_text`` and can
+         *     never be promoted.
          */
         post: operations["post_api_lessons"];
         delete?: never;
@@ -20141,6 +20143,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ReplayResultResponse"];
                 };
+            };
+            /** @description The proposer cannot promote their own lesson */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Replay failed or the lesson cannot be promoted */
             409: {

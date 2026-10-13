@@ -57,7 +57,9 @@ def test_a_rule_wide_lesson_fails_on_recall(history):
 
 def test_a_lesson_with_no_evidence_is_not_promotable(history):
     cases, _ = history
-    lesson = make_lesson({"hostnames": ["NO-SUCH-HOST"]}, status="proposed")
+    lesson = make_lesson(
+        {"data_source": "entra", "hostnames": ["NO-SUCH-HOST"]}, status="proposed"
+    )
     report = replay(lesson, cases, NOW)
     assert report["passed"] is False and report["matched"] == 0
     assert report["reasons"] == ["the lesson improved no historical verdict"]
@@ -81,7 +83,9 @@ def test_escalate_that_raises_false_positives_regresses():
         ReplayCase("a", "t", alert, expected="benign", actual="benign"),
         ReplayCase("b", "t", alert, expected="malicious", actual="benign"),
     ]
-    lesson = make_lesson({"hostnames": ["H"]}, effect="escalate", status="proposed")
+    lesson = make_lesson(
+        {"data_source": "x", "hostnames": ["H"]}, effect="escalate", status="proposed"
+    )
     report = replay(lesson, cases, NOW)
     assert report["improvements"] == 1 and report["regressions"] == 1
     assert report["passed"] is False
@@ -97,6 +101,10 @@ def test_inconclusive_made_benign_on_a_malicious_case_is_a_regression():
         ReplayCase("a", "t", alert, expected="benign", actual="malicious"),
         ReplayCase("b", "t", alert, expected="malicious", actual="inconclusive"),
     ]
-    report = replay(make_lesson({"hostnames": ["H"]}, status="proposed"), cases, NOW)
+    report = replay(
+        make_lesson({"data_source": "x", "hostnames": ["H"]}, status="proposed"),
+        cases,
+        NOW,
+    )
     assert report["regressions"] == 1 and report["passed"] is False
     assert report["with_lesson"]["tp"] == report["baseline"]["tp"]

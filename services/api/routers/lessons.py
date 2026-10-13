@@ -6,6 +6,7 @@
     POST /api/lessons                    findings.write        propose
     POST /api/lessons/{id}/replay        findings.write        dry-run replay
     POST /api/lessons/{id}/promote       ai_decisions.approve  replay, then activate
+                                                               (not by the proposer)
     POST /api/lessons/{id}/rollback      findings.write        retire in one step
 
 Parked here rather than in core/lessons/ because replay drives evalkit, which
@@ -26,6 +27,7 @@ from core.auth.permissions import require_permission
 from core.lessons.model import DEFAULT_EXPIRY_DAYS, MAX_EXPIRY_DAYS, Lesson
 from core.lessons.service import (
     LessonConflict,
+    LessonForbidden,
     LessonInvalid,
     LessonNotFound,
     LessonService,
@@ -145,6 +147,7 @@ def _source_alert(session, finding_id: str) -> Optional[Dict[str, Any]]:
     row = session.query(Finding).filter(Finding.finding_id == finding_id).first()
     if row is None:
         return None
+    entities = row.entity_context if isinstance(row.entity_context, dict) else {}
     return {
         "finding_id": row.finding_id,
         "external_id": row.external_id,
@@ -152,7 +155,11 @@ def _source_alert(session, finding_id: str) -> Optional[Dict[str, Any]]:
         "severity": row.severity,
         "title": row.title,
         "description": row.description,
-        "entity_context": row.entity_context or {},
+        # Ingestion keeps the raw event here (core/ingestion/ingestion_service.py
+        # to_internal_finding): free text the alert's author wrote.
+        "raw_event": entities.get("source_evidence"),
+        "evidence_links": row.evidence_links,
+        "entity_context": entities,
         "mitre_predictions": {
             p.technique_id: p.confidence for p in (row.mitre_prediction_rows or [])
         },
@@ -179,6 +186,8 @@ def _raise(exc: Exception):
         raise HTTPException(status_code=404, detail="Lesson not found") from None
     if isinstance(exc, LessonInvalid):
         raise HTTPException(status_code=422, detail=str(exc)) from None
+    if isinstance(exc, LessonForbidden):
+        raise HTTPException(status_code=403, detail=str(exc)) from None
     if isinstance(exc, LessonConflict):
         raise HTTPException(status_code=409, detail=str(exc)) from None
     if isinstance(exc, ReplayUnavailable):
@@ -222,15 +231,22 @@ def propose_lesson(
 ) -> Dict[str, Any]:
     """Propose a lesson. It does nothing until promoted.
 
-    When ``source_id`` names a finding, the scope and text are traced against
-    that finding's free text; a lesson built from it is tagged
-    ``adversary_text`` and can never be promoted.
+    ``analyst_override`` requires ``source_id``, and any ``source_id`` given
+    must name an existing finding. The scope and text are traced against that
+    finding's free text (title, description, raw event, adversary-authored
+    entities); a lesson built from it is tagged ``adversary_text`` and can
+    never be promoted.
     """
     source_alert = None
-    if body.source_id:
-        source_alert = _source_alert(session, body.source_id)
-        if source_alert is None and body.source_kind == "analyst_override":
+    source_id = (body.source_id or "").strip() or None
+    if source_id:
+        source_alert = _source_alert(session, source_id)
+        if source_alert is None:
             raise HTTPException(status_code=422, detail="source finding not found")
+    elif body.source_kind != "manual":
+        raise HTTPException(
+            status_code=422, detail="source_id is required unless source_kind is manual"
+        )
     service = _service(session)
     try:
         lesson = service.propose(
@@ -239,7 +255,7 @@ def propose_lesson(
             applies_to=body.applies_to.model_dump(exclude_none=True),
             category=body.category,
             source_kind=body.source_kind,
-            source_id=body.source_id,
+            source_id=source_id,
             expires_in_days=body.expires_in_days,
             actor=_actor(user),
             source_alert=source_alert,
@@ -266,7 +282,10 @@ def replay_lesson(
 @router.post(
     "/{lesson_id}/promote",
     response_model=ReplayResultResponse,
-    responses={409: {"description": "Replay failed or the lesson cannot be promoted"}},
+    responses={
+        403: {"description": "The proposer cannot promote their own lesson"},
+        409: {"description": "Replay failed or the lesson cannot be promoted"},
+    },
 )
 def promote_lesson(
     lesson_id: str, session: UnitOfWorkSession, user: User = Depends(_APPROVE)
@@ -280,7 +299,7 @@ def promote_lesson(
     _get(service, lesson_id)
     try:
         lesson, report, promoted = service.promote(lesson_id, _actor(user))
-    except (LessonConflict, ReplayUnavailable) as exc:
+    except (LessonConflict, LessonForbidden, ReplayUnavailable) as exc:
         _raise(exc)
     body = {"lesson": _out(service, lesson), "replay": report, "promoted": promoted}
     if not promoted:

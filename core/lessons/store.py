@@ -24,18 +24,18 @@ _COLUMNS = (
     "id, tenant_id, source_kind, source_id, category, lesson, applies_to, status, "
     "created_by, created_at, approved_by, approved_at, retired_at, effect, expires_at, "
     "provenance, provenance_detail, replay, replay_passed, replayed_at, retired_by, "
-    "retire_reason"
+    "retire_reason, version"
 )
 
 
 class LessonStore(Protocol):
     def add(self, lesson: Lesson) -> Lesson: ...
 
-    def get(self, lesson_id: str) -> Optional[Lesson]: ...
+    def get(self, lesson_id: str, *, for_update: bool = False) -> Optional[Lesson]: ...
 
     def list(self, status: Optional[str] = None) -> List[Lesson]: ...
 
-    def update(self, lesson: Lesson) -> None: ...
+    def update(self, lesson: Lesson, expected_status: str) -> bool: ...
 
     def add_event(self, event: LessonEvent) -> LessonEvent: ...
 
@@ -51,7 +51,7 @@ class MemoryLessonStore:
         self.rows[lesson.id] = replace(lesson)
         return lesson
 
-    def get(self, lesson_id: str) -> Optional[Lesson]:
+    def get(self, lesson_id: str, *, for_update: bool = False) -> Optional[Lesson]:
         row = self.rows.get(lesson_id)
         return replace(row) if row else None
 
@@ -61,8 +61,19 @@ class MemoryLessonStore:
             replace(r) for r in sorted(rows, key=lambda r: r.created_at, reverse=True)
         ]
 
-    def update(self, lesson: Lesson) -> None:
+    def update(self, lesson: Lesson, expected_status: str) -> bool:
+        """Write ``lesson`` only if the stored row is still the one it was read from."""
+        current = self.rows.get(lesson.id)
+        if (
+            current is None
+            or current.status != expected_status
+            or current.version != lesson.version
+            or current.status == "retired"
+        ):
+            return False
+        lesson.version += 1
         self.rows[lesson.id] = replace(lesson)
+        return True
 
     def add_event(self, event: LessonEvent) -> LessonEvent:
         event = replace(event, id=len(self.event_rows) + 1)
@@ -126,6 +137,7 @@ class SqlLessonStore:
             replayed_at=_aware(m["replayed_at"]),
             retired_by=m["retired_by"],
             retire_reason=m["retire_reason"],
+            version=int(m["version"]),
         )
 
     def add(self, lesson: Lesson) -> Lesson:
@@ -158,15 +170,17 @@ class SqlLessonStore:
         )
         return replace(lesson, id=lesson_id, tenant_id=self.tenant_id)
 
-    def get(self, lesson_id: str) -> Optional[Lesson]:
+    def get(self, lesson_id: str, *, for_update: bool = False) -> Optional[Lesson]:
+        """One lesson; ``for_update`` row-locks it until the transaction ends."""
         try:
             uuid.UUID(lesson_id)
         except ValueError:
             return None
+        lock = " FOR UPDATE" if for_update else ""
         row = self.session.execute(
             text(
                 f"SELECT {_COLUMNS} FROM lessons "  # noqa: S608 — fixed column list
-                "WHERE tenant_id = :tenant AND id = CAST(:id AS UUID)"
+                "WHERE tenant_id = :tenant AND id = CAST(:id AS UUID)" + lock
             ),
             {"tenant": self.tenant_id, "id": lesson_id},
         ).first()
@@ -184,18 +198,28 @@ class SqlLessonStore:
         ).all()
         return [self._row(r) for r in rows]
 
-    def update(self, lesson: Lesson) -> None:
-        """Write the mutable columns: status, approval, replay and retirement."""
-        self.session.execute(
+    def update(self, lesson: Lesson, expected_status: str) -> bool:
+        """Write the mutable columns: status, approval, replay and retirement.
+
+        Conditional: only when the row still has ``expected_status`` and the
+        version ``lesson`` was read at, so a concurrent rollback is never
+        overwritten. ``False`` when another writer got there first. The
+        ``lessons_status_transition`` trigger refuses any write to a retired
+        row whatever this method is asked.
+        """
+        result = self.session.execute(
             text(
                 "UPDATE lessons SET status = :status, approved_by = :approved_by, "
                 "approved_at = :approved_at, replay = CAST(:replay AS JSONB), "
                 "replay_passed = :replay_passed, replayed_at = :replayed_at, "
                 "retired_at = :retired_at, retired_by = :retired_by, "
-                "retire_reason = :retire_reason "
-                "WHERE tenant_id = :tenant AND id = CAST(:id AS UUID)"
+                "retire_reason = :retire_reason, version = version + 1 "
+                "WHERE tenant_id = :tenant AND id = CAST(:id AS UUID) "
+                "AND status = :expected_status AND version = :version"
             ),
             {
+                "expected_status": expected_status,
+                "version": lesson.version,
                 "tenant": self.tenant_id,
                 "id": lesson.id,
                 "status": lesson.status,
@@ -209,6 +233,10 @@ class SqlLessonStore:
                 "retire_reason": lesson.retire_reason,
             },
         )
+        if result.rowcount != 1:
+            return False
+        lesson.version += 1
+        return True
 
     def add_event(self, event: LessonEvent) -> LessonEvent:
         new_id = self.session.execute(

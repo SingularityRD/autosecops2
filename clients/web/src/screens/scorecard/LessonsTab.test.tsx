@@ -119,4 +119,14 @@ describe('LessonsTab', () => {
     renderTab()
     expect(within(await row('b')).queryAllByRole('button')).toHaveLength(0)
   })
+
+  it('does not offer Promote on a lesson the signed-in user proposed', async () => {
+    state.lessons = [lesson('mine', { created_by: 'ANA' }), lesson('theirs')]
+    renderTab()
+    const mine = await row('mine')
+    expect(within(mine).queryByRole('button', { name: /promote/i })).toBeNull()
+    expect(within(mine).getByText(/needs a second analyst/i)).toBeTruthy()
+    const theirs = await row('theirs')
+    expect(within(theirs).getByRole('button', { name: /promote/i })).toBeTruthy()
+  })
 })

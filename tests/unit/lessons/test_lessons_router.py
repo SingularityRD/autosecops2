@@ -50,10 +50,26 @@ def store(monkeypatch):
 @pytest.fixture()
 def client(authenticate_app, store):
     app = FastAPI()
-    authenticate_app(app)
+    user = authenticate_app(app)
     app.include_router(lessons_router.router, prefix=BASE)
     app.dependency_overrides[request_unit_of_work] = lambda: None
-    return TestClient(app, raise_server_exceptions=False)
+    client = TestClient(app, raise_server_exceptions=False)
+    client.user = user
+    return client
+
+
+class acting_as:
+    """Requests inside the block are made by ``name`` (the two-person rule)."""
+
+    def __init__(self, client, name):
+        self.user, self.name = client.user, name
+
+    def __enter__(self):
+        self.saved = (self.user.username, self.user.user_id)
+        self.user.username = self.user.user_id = self.name
+
+    def __exit__(self, *exc):
+        self.user.username, self.user.user_id = self.saved
 
 
 def _allow_only(monkeypatch, *allowed):
@@ -71,7 +87,9 @@ def _deny(monkeypatch, permission):
 
 
 def _seed(client, body=GOOD):
-    response = client.post(BASE, json=body)
+    """Proposed by someone other than the requests that follow."""
+    with acting_as(client, "proposer"):
+        response = client.post(BASE, json=body)
     assert response.status_code == 200, response.text
     return response.json()["id"]
 
@@ -132,11 +150,14 @@ def test_full_cycle_with_actor_from_login(client, store):
     assert created["created_by"] == "test-admin"
     assert created["status"] == "proposed" and created["expired"] is False
     lesson_id = created["id"]
-    promoted = client.post(f"{BASE}/{lesson_id}/promote")
+    own = client.post(f"{BASE}/{lesson_id}/promote")
+    assert own.status_code == 403 and "second analyst" in own.json()["detail"]
+    with acting_as(client, "second-admin"):
+        promoted = client.post(f"{BASE}/{lesson_id}/promote")
     assert promoted.status_code == 200, promoted.text
     out = promoted.json()
     assert out["promoted"] is True and out["lesson"]["status"] == "active"
-    assert out["lesson"]["approved_by"] == "test-admin"
+    assert out["lesson"]["approved_by"] == "second-admin"
     assert out["replay"]["passed"] is True and out["replay"]["regressions"] == 0
     listed = client.get(BASE, params={"status": "active"}).json()["lessons"]
     assert [x["id"] for x in listed] == [lesson_id]
@@ -149,7 +170,7 @@ def test_full_cycle_with_actor_from_login(client, store):
     )
     events = client.get(f"{BASE}/{lesson_id}/events").json()["events"]
     assert [e["action"] for e in events] == ["proposed", "promoted", "rolled_back"]
-    assert {e["actor"] for e in events} == {"test-admin"}
+    assert [e["actor"] for e in events] == ["test-admin", "second-admin", "test-admin"]
 
 
 def test_failed_replay_is_409_with_report_and_stays_proposed(client, store):
@@ -194,11 +215,47 @@ def test_override_needs_a_real_source_finding(client, store):
         {"applies_to": {"max_severity": "low"}},
         {"expires_in_days": 365},
         {"source_kind": "eval_failure"},
+        # analyst_override without a source finding; host-only scope.
+        {"source_kind": "analyst_override"},
+        {"applies_to": {"hostnames": ["WS-12"], "max_severity": "low"}},
+        # a manual lesson that names a source must name a real one.
+        {"source_id": "nope"},
     ],
 )
 def test_unsafe_proposals_are_422(client, store, change):
     assert client.post(BASE, json={**GOOD, **change}).status_code == 422
     assert store.rows == {}
+
+
+def test_source_alert_reads_the_raw_event_from_source_evidence():
+    from types import SimpleNamespace
+
+    row = SimpleNamespace(
+        finding_id="f-2",
+        external_id=None,
+        data_source="webhook",
+        severity="low",
+        title="t",
+        description="d",
+        evidence_links=[{"url": "http://evil.test/benign"}],
+        entity_context={"source_evidence": {"records": [{"computer": "BUILD-7"}]}},
+        mitre_prediction_rows=[],
+    )
+
+    class Query:
+        def filter(self, *_):
+            return self
+
+        def first(self):
+            return row
+
+    session = SimpleNamespace(query=lambda model: Query())
+    alert = lessons_router._source_alert(session, "f-2")
+    assert alert["raw_event"] == {"records": [{"computer": "BUILD-7"}]}
+    from core.lessons.provenance import free_text
+
+    text = free_text(alert)
+    assert "build-7" in text and "evil.test" in text
 
 
 def test_unknown_lesson_is_404(client):

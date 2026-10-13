@@ -77,7 +77,10 @@ const day = (iso?: string | null) => (iso ? iso.slice(0, 10) : '—')
  *  replay over labelled historical alerts shows no verdict got worse; rollback
  *  retires it at once. */
 export default function LessonsTab() {
-  const { hasPermission } = useAuth()
+  const { user, hasPermission } = useAuth()
+  // Two-person rule: the API refuses a promotion by the lesson's proposer.
+  const me = [user?.username, user?.user_id].filter(Boolean).map((v) => String(v).trim().toLowerCase())
+  const proposedByMe = (l: Lesson) => me.includes(String(l.created_by ?? '').trim().toLowerCase())
   const { notify } = useToast()
   const canPromote = hasPermission(PROMOTE_PERMISSION)
   const canWrite = hasPermission(WRITE_PERMISSION)
@@ -156,7 +159,10 @@ export default function LessonsTab() {
                       <td className="font-mono text-xs">{day(l.expires_at)}</td>
                       <td>
                         <div className="flex gap-2 justify-end">
-                          {canPromote && promotable && (
+                          {canPromote && promotable && proposedByMe(l) && (
+                            <span className="text-xs text-tx-3" title="The person who proposed a lesson cannot promote it.">Needs a second analyst</span>
+                          )}
+                          {canPromote && promotable && !proposedByMe(l) && (
                             <button className="btn primary" disabled={busy === l.id} onClick={() => promote(l)}>
                               <Icon name="check" /> Promote
                             </button>

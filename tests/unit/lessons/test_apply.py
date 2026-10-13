@@ -68,7 +68,9 @@ def test_no_benign_hint_on_critical_or_unknown_severity(severity):
 
 
 def test_max_severity_bounds_the_scope():
-    lesson = make_lesson({"src_ips": [SCANNER_IP], "max_severity": "medium"})
+    lesson = make_lesson(
+        {"data_source": "entra", "src_ips": [SCANNER_IP], "max_severity": "medium"}
+    )
     assert (
         apply_lessons(alert(severity="high"), "malicious", [lesson], NOW).verdict
         == "malicious"
@@ -140,7 +142,16 @@ def test_output_is_a_hint_only_and_the_alert_is_untouched():
     "scope,message",
     [
         ({"max_severity": "low"}, "at least one"),
-        ({"src_ips": [SCANNER_IP], "max_severity": "critical"}, "critical"),
+        (
+            {"data_source": "x", "src_ips": [SCANNER_IP], "max_severity": "critical"},
+            "critical",
+        ),
+        ({"data_source": "x", "max_severity": "CRITICAL"}, "critical"),
+        # Host / user names are chosen by whoever controls the machine or
+        # account; IPs and hashes alone are too broad. An anchor is required.
+        ({"hostnames": ["WS-12"]}, "data_source, rule_name, mitre_technique"),
+        ({"usernames": ["ali"], "src_ips": [SCANNER_IP]}, "data_source, rule_name"),
+        ({"file_hashes": ["a" * 64]}, "data_source, rule_name"),
         ({"src_ips": [SCANNER_IP], "title_contains": "scanner"}, "unknown matcher"),
         ({"description": "x"}, "unknown matcher"),
         ({"src_ips": []}, "non-empty"),
@@ -154,5 +165,17 @@ def test_scope_validation_refuses_unsafe_scopes(scope, message):
 
 
 def test_scope_defaults_to_medium_and_sorts_lists():
-    scope = validate_scope({"hostnames": ["b", "a", "a"]})
-    assert scope == {"hostnames": ["a", "b"], "max_severity": "medium"}
+    scope = validate_scope({"rule_name": "r", "hostnames": ["b", "a", "a"]})
+    assert scope == {
+        "rule_name": "r",
+        "hostnames": ["a", "b"],
+        "max_severity": "medium",
+    }
+
+
+def test_a_stored_lesson_without_an_anchor_never_applies():
+    lesson = make_lesson()
+    lesson.applies_to = {"src_ips": [SCANNER_IP], "max_severity": "high"}
+    out = apply_lessons(alert(), "malicious", [lesson], NOW)
+    assert out.verdict == "malicious"
+    assert out.skipped == [("l-1", "scope:unanchored")]
