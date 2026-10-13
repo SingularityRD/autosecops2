@@ -1125,3 +1125,185 @@ def test_ledger_archive_export_is_audited(db):
         db.query(ConfigAuditLog).filter_by(action=retention.LEDGER_ARCHIVE_ACTION).one()
     )
     assert row.new_value["sha256"] == out["manifest"]["sha256"]
+
+
+# --- regressions: shared evidence files (verifier round 3) --------------------
+
+
+def _shared_ref(db, cid, file_path, *, age=OLD):
+    """An evidence row of ``cid`` pointing at an existing file, as spelled."""
+    when = utcnow() - age
+    db.add(
+        CaseEvidence(
+            case_id=cid,
+            evidence_type="file",
+            name="ref",
+            file_path=file_path,
+            collected_by="bob",
+            collected_at=when,
+            chain_of_custody=[],
+            created_at=when,
+            updated_at=when,
+        )
+    )
+    db.flush()
+
+
+@pytest.mark.parametrize("spelling", ["c-held/shared.bin", "./c-held/shared.bin"])
+def test_evidence_purge_keeps_a_file_a_held_case_still_references(db, store, spelling):
+    # P7a: a purgeable case's row points at the held case's file.
+    _case(db, "c-held")
+    _case(db, "c-other")
+    _, held_file = _evidence(db, store, "c-held", "shared.bin")
+    _shared_ref(db, "c-other", spelling)
+    db.commit()
+    _hold(db, "c-held")
+    _policy(db, "case_evidence")
+
+    report = _purge(store)
+
+    assert _result(report, "case_evidence")["processed"] == 1
+    assert _result(report, "case_evidence")["files_removed"] == 0
+    assert held_file.exists()
+    db.expire_all()
+    assert {e.case_id for e in db.query(CaseEvidence)} == {"c-held"}
+
+
+def test_case_purge_keeps_a_file_a_held_case_still_references(db, store):
+    # P7b: deleting the whole case must not take the held case's file along,
+    # even when the two rows spell the path differently.
+    _case(db, "c-held")
+    _case(db, "c-other")
+    _, held_file = _evidence(db, store, "c-held", "shared.bin")
+    _shared_ref(
+        db, "c-other", os.path.join(os.path.realpath(store), "c-held/shared.bin")
+    )
+    db.commit()
+    _hold(db, "c-held")
+    _policy(db, "cases")
+
+    _purge(store)
+
+    db.expire_all()
+    assert db.get(Case, "c-other") is None
+    assert held_file.exists()
+
+
+def test_case_purge_still_removes_files_nobody_else_references(db, store):
+    _case(db, "c-a")
+    _case(db, "c-b")
+    _, a_file = _evidence(db, store, "c-a", "a.bin")
+    _, b_file = _evidence(db, store, "c-b", "b.bin")
+    _shared_ref(db, "c-b", "./c-a/a.bin")  # both purged: a.bin goes too
+    db.commit()
+    _policy(db, "cases")
+
+    report = _purge(store)
+
+    assert _result(report, "cases")["files_removed"] == 2
+    assert not a_file.exists() and not b_file.exists()
+
+
+def test_uploads_treat_absolute_and_dotted_references_as_referenced(db, store):
+    # P7c: rows spelling an in-store path absolutely or with ./ still protect it.
+    _case(db, "c-open", status="investigating")
+    _, abs_file = _evidence(db, store, "c-open", "abs.bin")
+    _, dot_file = _evidence(db, store, "c-open", "dot.bin")
+    db.execute(
+        text("UPDATE case_evidence SET file_path = :p WHERE name = 'abs.bin'"),
+        {"p": os.path.join(os.path.realpath(store), "c-open", "abs.bin")},
+    )
+    db.execute(
+        text(
+            "UPDATE case_evidence SET file_path = './c-open/dot.bin' "
+            "WHERE name = 'dot.bin'"
+        )
+    )
+    db.commit()
+    orphan = store / "c-gone" / "orphan.bin"
+    orphan.parent.mkdir()
+    orphan.write_text("x")
+    old = (utcnow() - OLD).timestamp() - 7200
+    for path in (abs_file, dot_file, orphan):
+        os.utime(path, (old, old))
+    _policy(db, "uploads")
+
+    report = _purge(store)
+
+    assert _result(report, "uploads")["processed"] == 1
+    assert abs_file.exists() and dot_file.exists()
+    assert not orphan.exists()
+
+
+def test_llm_logs_of_a_caseless_investigation_triggered_by_a_held_finding_are_kept(
+    db, store
+):
+    # P6: case_id is NULL, but the trigger finding belongs to a held case.
+    from core.storage.models import Investigation
+
+    _finding(db, "f-held")
+    _finding(db, "f-free")
+    _case(db, "c-held", findings=["f-held"])
+    _case(db, "c-open", status="investigating")
+    for iid, triggers in (
+        ("inv-held", ["f-held"]),
+        ("inv-case", ["c-open"]),
+        ("inv-free", ["f-free"]),
+    ):
+        db.add(
+            Investigation(
+                investigation_id=iid,
+                case_id=None,
+                workflow_id="w",
+                trigger_type="finding",
+                trigger_ids=triggers,
+                workdir="/tmp/x",
+            )
+        )
+    db.flush()
+    _llm_log(db, "i-held", investigation_id="inv-held")
+    _llm_log(db, "i-case", investigation_id="inv-case")
+    _llm_log(db, "i-free", investigation_id="inv-free")
+    db.commit()
+    _hold(db, "c-held")
+    _policy(db, "llm_logs")
+
+    _purge(store)
+
+    db.expire_all()
+    left = {r.interaction_id for r in db.query(LLMInteractionLog)}
+    assert left == {"i-held", "i-case"}
+
+
+def test_evidence_may_not_point_into_another_cases_directory(db, store):
+    from core.cases.case_evidence_service import CaseEvidenceService
+
+    _case(db, "c-held")
+    _case(db, "c-other")
+    _evidence(db, store, "c-held", "shared.bin")
+    db.commit()
+    service = CaseEvidenceService(storage_path=str(store))
+
+    for spelling in (
+        "c-held/shared.bin",
+        "./c-held/shared.bin",
+        os.path.join(os.path.realpath(store), "c-held/shared.bin"),
+    ):
+        with pytest.raises(ValueError):
+            service.add_evidence(
+                "c-other", "file", "x", "bob", file_path=spelling, session=db
+            )
+    db.rollback()
+    (store / "c-other").mkdir()
+    (store / "c-other" / "own.bin").write_text("x")
+    (store / "loose.bin").write_text("x")
+    assert service.add_evidence(
+        "c-other", "file", "x", "bob", file_path="c-other/own.bin", session=db
+    )
+    assert service.add_evidence(
+        "c-held", "file", "x", "bob", file_path="./c-held/shared.bin", session=db
+    )
+    assert service.add_evidence(
+        "c-other", "file", "x", "bob", file_path="loose.bin", session=db
+    )
+    db.rollback()

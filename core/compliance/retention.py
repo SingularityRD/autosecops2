@@ -35,7 +35,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -671,6 +671,50 @@ def _case_files(session, case_ids) -> List[str]:
     return [r[0] for r in rows if r[0]]
 
 
+def _canon(real_root: str, path: str) -> Optional[str]:
+    """``path`` as stored ('./x', 'x', '/abs/store/x'...) -> one canonical form:
+    its real path relative to the (real) store root; None if it escapes it."""
+    full = os.path.realpath(os.path.join(real_root, path))
+    if not full.startswith(real_root + os.sep):
+        return None
+    return os.path.relpath(full, real_root)
+
+
+def _referenced_files(session, real_root: str) -> Set[str]:
+    """Canonical paths of every file an evidence/attachment row points at."""
+    out: Set[str] = set()
+    for (path,) in session.execute(
+        text(
+            "SELECT file_path FROM case_evidence WHERE file_path IS NOT NULL "
+            "UNION SELECT file_path FROM case_attachments WHERE file_path <> ''"
+        )
+    ):
+        if path:
+            rel = _canon(real_root, path)
+            if rel is not None:
+                out.add(rel)
+    return out
+
+
+def _unreferenced(session, ctx, files: Sequence[str]) -> List[str]:
+    """Of the purged rows' files, those no remaining row still points at.
+
+    Runs after the rows are gone, in the same transaction: a file shared with
+    a row that stays -- a held or open case's, or one simply not purged this
+    batch -- is never removed, however the two rows spell the path.
+    """
+    if not files or ctx.evidence_root is None:
+        return []
+    real_root = os.path.realpath(ctx.evidence_root)
+    keep = _referenced_files(session, real_root)
+    out: List[str] = []
+    for path in files:
+        rel = _canon(real_root, path)
+        if rel is not None and rel not in keep and rel not in out:
+            out.append(rel)
+    return out
+
+
 def _cases_apply(session, ctx, method, ids):
     if method == DELETE:
         files = _case_files(session, ids)
@@ -679,7 +723,7 @@ def _cases_apply(session, ctx, method, ids):
             text("DELETE FROM cases WHERE case_id = ANY(CAST(:ids AS text[]))"),
             {"ids": ids},
         )
-        return files
+        return _unreferenced(session, ctx, files)
     session.execute(
         text(
             "UPDATE cases SET title = :anon, description = '', assignee = NULL, "
@@ -760,7 +804,7 @@ def _evidence_apply(session, ctx, method, ids):
             ),
             {"a": attachments},
         )
-        return files
+        return _unreferenced(session, ctx, files)
     custody = json.dumps(
         [{"action": "retention_anonymised", "at": _iso(ctx.now), "by": SYSTEM_ACTOR}]
     )
@@ -791,7 +835,7 @@ def _evidence_apply(session, ctx, method, ids):
         ),
         {"anon": ANON, "tag": ANON_TAG, "a": attachments},
     )
-    return files
+    return _unreferenced(session, ctx, files)
 
 
 def _chat_select(session, ctx, method, limit, lock):
@@ -844,6 +888,17 @@ def _llm_select(session, ctx, method, limit, lock):
         "AND NOT EXISTS (SELECT 1 FROM investigations i "
         "WHERE i.investigation_id = l.investigation_id AND i.case_id IS NOT NULL "
         "AND " + _case_id_protected("i.case_id") + ") "
+        # ...investigations with no case_id whose trigger ids name a protected
+        # case, or a finding tied to one...
+        "AND NOT EXISTS (SELECT 1 FROM investigations i "
+        "CROSS JOIN LATERAL jsonb_array_elements_text("
+        "CASE WHEN jsonb_typeof(i.trigger_ids) = 'array' THEN i.trigger_ids "
+        "ELSE CAST('[]' AS jsonb) END) AS t(tid) "
+        "WHERE i.investigation_id = l.investigation_id AND ("
+        + _case_id_protected("t.tid")
+        + " OR EXISTS (SELECT 1 FROM findings f WHERE f.finding_id = t.tid AND "
+        + _FINDING_PROTECTED
+        + "))) "
         # ...and chat turns: session_id is the conversation id.
         "AND NOT EXISTS (SELECT 1 FROM conversations cv "
         "WHERE cv.id = l.session_id AND cv.case_id IS NOT NULL "
@@ -948,21 +1003,13 @@ def _uploads_select(session, ctx, method, limit, lock):
     root = ctx.evidence_root
     if root is None or not root.is_dir():
         return []
-    referenced = {
-        os.path.normpath(r[0])
-        for r in session.execute(
-            text(
-                "SELECT file_path FROM case_evidence WHERE file_path IS NOT NULL "
-                "UNION SELECT file_path FROM case_attachments WHERE file_path <> ''"
-            )
-        )
-        if r[0]
-    }
+    real_root = os.path.realpath(root)
+    referenced = _referenced_files(session, real_root)
     held = set(ctx.held)
     cutoff_ts = _epoch(ctx.cutoff)
     found: List[Tuple[float, str]] = []
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        rel_dir = os.path.relpath(dirpath, root)
+    for dirpath, dirnames, filenames in os.walk(real_root, followlinks=False):
+        rel_dir = os.path.relpath(dirpath, real_root)
         top = rel_dir.split(os.sep, 1)[0]
         if top in held:  # attachments live under <case_id>/
             dirnames[:] = []
@@ -971,8 +1018,8 @@ def _uploads_select(session, ctx, method, limit, lock):
             full = os.path.join(dirpath, name)
             if os.path.islink(full):
                 continue
-            rel = os.path.normpath(os.path.relpath(full, root))
-            if rel in referenced:
+            rel = _canon(real_root, full)
+            if rel is None or rel in referenced:
                 continue
             try:
                 mtime = os.stat(full).st_mtime
