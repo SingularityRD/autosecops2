@@ -289,7 +289,7 @@ def _audit_retarget(previous, current, user: User) -> None:
 @router.post("/init-schema")
 def init_schema(current_user: User = Depends(get_current_active_user)):
     """
-    Provision Vigil's tables into an **empty** target database.
+    Provision the AutoSecOps tables into an **empty** target database.
 
     Split out of /reconnect, and deliberately narrow. ``create_all`` is
     ``checkfirst=True``: it creates what's missing and silently skips tables

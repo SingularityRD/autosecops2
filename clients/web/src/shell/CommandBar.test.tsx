@@ -48,6 +48,7 @@ vi.mock('../services/api', () => ({
     getEvidence: () => Promise.resolve({ data: { evidence: [] } }),
     getIOCs: () => Promise.resolve({ data: { iocs: [] } }),
     getEscalations: () => Promise.resolve({ data: { escalations: [] } }),
+    getActionTimeline: () => Promise.resolve({ data: { case_id: '', count: 0, truncated: false, actions: [] } }),
   },
   findingsApi: {
     getById: (id: string) => getFinding(id),

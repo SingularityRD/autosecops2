@@ -85,6 +85,32 @@ GATED_ROUTES = [
         "settings.write",
     ),
     ("GET", "/api/compliance/retention/policies", None, "settings.read"),
+    ("POST", "/api/qa/samples/draw", {}, "ai_decisions.approve"),
+    ("POST", "/api/qa/samples/1/review", {"agrees": True}, "findings.write"),
+    (
+        "POST",
+        "/api/webhook-endpoints",
+        {"name": "x", "url": "https://example.com"},
+        "settings.write",
+    ),
+    (
+        "PATCH",
+        "/api/webhook-endpoints/9c1c2d3e-0000-4000-8000-0000000000aa",
+        {"enabled": False},
+        "settings.write",
+    ),
+    (
+        "DELETE",
+        "/api/webhook-endpoints/9c1c2d3e-0000-4000-8000-0000000000aa",
+        None,
+        "settings.write",
+    ),
+    (
+        "POST",
+        "/api/webhook-endpoints/9c1c2d3e-0000-4000-8000-0000000000aa/test",
+        None,
+        "settings.write",
+    ),
 ]
 
 

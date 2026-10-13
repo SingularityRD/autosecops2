@@ -1,4 +1,5 @@
-"""Compliance: data retention and periodic destruction (KVKK).
+"""Compliance features.
 
-See ``core/compliance/RETENTION.md``.
+- Data retention and periodic destruction (KVKK); see ``core/compliance/RETENTION.md``.
+- Regulatory notification clocks (DORA, NIS2) and report drafts.
 """
