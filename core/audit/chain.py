@@ -361,9 +361,7 @@ def check_sources(conn: Connection) -> ChainReport:
                     f"{_SOURCE_DETAIL[reason]} ({total} row(s) affected)",
                 )
             )
-        history = text(_HISTORY_CHECK).bindparams(
-            bindparam("events", expanding=True)
-        )
+        history = text(_HISTORY_CHECK).bindparams(bindparam("events", expanding=True))
         row = conn.execute(
             history, {"table": table, "events": list(SOURCE_EVENTS)}
         ).first()
