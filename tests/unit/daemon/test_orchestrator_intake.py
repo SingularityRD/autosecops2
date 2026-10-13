@@ -693,3 +693,59 @@ def test_a_failed_postgres_read_leaves_every_detection_without_a_finding(monkeyp
     row = {"id": 4, "kind": "detection", "finding_id": "f-real"}
 
     assert orch._hydrate_detection_findings([row]) == {}
+
+
+def test_the_tick_reads_open_cases_once_for_the_whole_queue(monkeypatch):
+    """#2245 in the batched tick: one open-case read per tick, not one per row.
+
+    A finding already on an open Case merges into it; the rest go on.
+    """
+    reads = []
+
+    def holding(ids):
+        reads.append(sorted(ids))
+        return {"f-high": "case-open"}
+
+    monkeypatch.setattr("services.daemon.orchestrator._open_cases_holding", holding)
+    orch = _orchestrator()
+    orch._hydrate_detection_findings = MagicMock(
+        return_value={"f-high": HIGH, "f-med": MEDIUM}
+    )
+    rows = [
+        {"id": 1, "kind": "detection", "finding_id": "f-high"},
+        {"id": 2, "kind": "detection", "finding_id": "f-med"},
+        {"id": 3, "kind": "schedule", "payload": {}},
+    ]
+    orch._queued_intake_triggers = MagicMock(return_value=rows)
+
+    kept = orch._resolve_queue(utcnow())
+
+    assert reads == [["f-high", "f-med"]]
+    assert [r["id"] for r in kept] == [2, 3]
+    orch._decide_trigger.assert_called_once_with(
+        1, state="merged", reason="finding_on_open_case", merged_into="case-open"
+    )
+    assert orch.stats["dedup_prevented"] == 1
+
+
+def test_a_failed_open_case_read_holds_every_detection_in_the_tick(monkeypatch):
+    def boom(_ids):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("services.daemon.orchestrator._open_cases_holding", boom)
+    orch = _orchestrator()
+    orch._hydrate_detection_findings = MagicMock(
+        return_value={"f-high": HIGH, "f-med": MEDIUM}
+    )
+    rows = [
+        {"id": 1, "kind": "detection", "finding_id": "f-high"},
+        {"id": 2, "kind": "detection", "finding_id": "f-med"},
+        {"id": 3, "kind": "schedule", "payload": {}},
+    ]
+    orch._queued_intake_triggers = MagicMock(return_value=rows)
+
+    kept = orch._resolve_queue(utcnow())
+
+    assert [r["id"] for r in kept] == [3]
+    orch._decide_trigger.assert_not_called()
+    assert orch.stats["dedup_prevented"] == 0

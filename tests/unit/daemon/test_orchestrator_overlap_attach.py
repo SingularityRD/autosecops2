@@ -180,3 +180,40 @@ async def test_a_failed_investigation_read_holds_the_row(attach):
     attach.assert_not_called()
     orch._create_investigation.assert_not_awaited()
     orch._decide_trigger.assert_not_called()
+
+
+# A finding already on a not-closed Case merges into it even once that Case's
+# investigation has finished and the overlap lookup no longer names it (#2245).
+
+
+@pytest.mark.asyncio
+async def test_a_finding_on_an_open_case_merges_into_it(attach, monkeypatch):
+    monkeypatch.setattr(
+        "services.daemon.orchestrator._open_cases_holding",
+        lambda ids: {"f-2": "case-7"} if "f-2" in ids else {},
+    )
+    orch = _orchestrator(None, {})
+
+    await orch._create_investigation_for_finding(FINDING, None, trigger_id=9)
+
+    attach.assert_not_called()  # the link already exists
+    orch.shared_intel.overlaps_by_finding.assert_not_called()
+    orch._decide_trigger.assert_called_once_with(
+        9, state="merged", reason="finding_on_open_case", merged_into="case-7"
+    )
+    _nothing_new_opened(orch)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_open_case_lookup_holds_the_row(attach, monkeypatch):
+    def boom(_ids):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("services.daemon.orchestrator._open_cases_holding", boom)
+    orch = _orchestrator(None, {})
+
+    await orch._create_investigation_for_finding(FINDING, None, trigger_id=9)
+
+    orch._create_investigation.assert_not_awaited()
+    orch._decide_trigger.assert_not_called()
+    assert orch.stats["dedup_prevented"] == 0

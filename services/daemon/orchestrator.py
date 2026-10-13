@@ -244,6 +244,10 @@ def lift_ai_enrichment(finding: Dict) -> Dict:
     return lifted
 
 
+# ``_merge_if_overlaps`` called without the tick's open-case read (the check at launch).
+_UNPLANNED = object()
+
+
 class _Overlap(str, Enum):
     """What overlapping live work means for the Trigger that overlaps it.
 
@@ -509,6 +513,33 @@ def _load_findings(finding_ids: List[str]) -> Dict[str, Dict]:
         logger.error("Failed to read %d findings: %s", len(finding_ids), e)
         return {}
     return {f["finding_id"]: f for f in found if f}
+
+
+def _open_cases_holding(finding_ids: List[str]) -> Dict[str, str]:
+    """For each finding already linked to a not-closed Case, the newest such Case.
+
+    One query for every id (the batched intake tick reads the whole queue
+    with it). Findings on no open Case are absent. Raises on a failed read.
+    """
+    from core.storage.models import Case, case_findings
+
+    ids = sorted({fid for fid in finding_ids if fid})
+    if not ids:
+        return {}
+    with get_db_manager().session_scope() as session:
+        rows = session.execute(
+            select(case_findings.c.finding_id, Case.case_id)
+            .join(case_findings, case_findings.c.case_id == Case.case_id)
+            .where(
+                case_findings.c.finding_id == any_(text_array(ids)),
+                Case.status != "closed",
+            )
+            .order_by(case_findings.c.finding_id, Case.created_at.desc())
+        ).all()
+    holding: Dict[str, str] = {}
+    for finding_id, case_id in rows:
+        holding.setdefault(finding_id, case_id)
+    return holding
 
 
 def _attach_finding(case_id: str, finding_id: str) -> bool:
@@ -840,6 +871,7 @@ class Orchestrator:
         ]
         detections = [r for r in rows if r.get("kind") == "detection"]
         findings = self._hydrate_detection_findings(detections)
+        holding = self._open_case_plan(list(findings)) if findings else {}
         plan = self._overlap_plan(list(findings.values())) if findings else ({}, {})
         launchable = []
         for row in rows:
@@ -847,7 +879,7 @@ class Orchestrator:
                 row["_finding"] = findings.get(row.get("finding_id"))
                 finding = row["_finding"]
                 if finding is not None and self._merge_if_overlaps(
-                    finding, row.get("id"), plan
+                    finding, row.get("id"), plan, holding
                 ):
                     continue
             launchable.append(row)
@@ -866,8 +898,24 @@ class Orchestrator:
             return overlaps, {}
         return overlaps, self._overlapping_case_ids(wanted)
 
+    def _open_case_plan(self, finding_ids: List[str]) -> Optional[Dict[str, str]]:
+        """``_open_cases_holding`` for these findings in one read; None when it failed."""
+        try:
+            return _open_cases_holding(finding_ids)
+        except Exception as e:
+            logger.error(
+                "Failed to read open cases for %d findings; leaving them queued: %s",
+                len(finding_ids),
+                e,
+            )
+            return None
+
     def _merge_if_overlaps(
-        self, finding: Dict, trigger_id: Optional[int], plan=None
+        self,
+        finding: Dict,
+        trigger_id: Optional[int],
+        plan=None,
+        holding: Any = _UNPLANNED,
     ) -> bool:
         """True when this row is not launching this tick (merged, or held).
 
@@ -878,10 +926,30 @@ class Orchestrator:
         Overlap with only caseless live runs (hunts, legacy) is not a merge:
         False, so the row proceeds to Claim and opens its own Case.
 
-        ``plan`` is the tick's ``_overlap_plan``; without one (the check at
-        launch) this finding gets its own. A failed lookup holds.
+        A finding already on a not-closed Case merges into it even when that
+        Case's investigation has finished and the overlap lookup no longer
+        names it (#2245). A closed Case does not count: the finding reopens.
+
+        ``plan`` is the tick's ``_overlap_plan`` and ``holding`` its
+        ``_open_case_plan``; without them (the check at launch) this finding
+        gets its own. A failed lookup holds.
         """
         finding_id = finding.get("finding_id", "unknown")
+        if holding is _UNPLANNED:
+            holding = self._open_case_plan([finding_id])
+        if holding is None:
+            return True
+        open_case = holding.get(finding.get("finding_id"))
+        if open_case:
+            self._count_dedup_prevented()
+            self._decide_trigger(
+                trigger_id,
+                state="merged",
+                reason="finding_on_open_case",
+                merged_into=open_case,
+            )
+            return True
+
         overlaps, case_ids = plan if plan is not None else self._overlap_plan([finding])
         overlapping = overlaps.get(finding.get("finding_id"), [])
         if overlapping is None:
@@ -896,9 +964,7 @@ class Orchestrator:
             return False
         if outcome is _Overlap.HOLD:
             return True
-        self.stats["dedup_prevented"] += 1
-        if _dedup_prevented is not None:
-            _dedup_prevented.add(1)
+        self._count_dedup_prevented()
         self._decide_trigger(
             trigger_id,
             state="merged",
@@ -906,6 +972,11 @@ class Orchestrator:
             merged_into=merged_into,
         )
         return True
+
+    def _count_dedup_prevented(self) -> None:
+        self.stats["dedup_prevented"] += 1
+        if _dedup_prevented is not None:
+            _dedup_prevented.add(1)
 
     async def _process_intake_row(
         self, row: Dict, shutdown_event: asyncio.Event
