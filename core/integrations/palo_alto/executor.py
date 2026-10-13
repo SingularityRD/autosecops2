@@ -16,9 +16,13 @@ validate  parses the target and refuses anything that is not a single,
 execute   reads the IP's registered tags (before_state), returns ``noop`` when
           the requested state already holds, otherwise registers/unregisters
           and reads the tags again (after_state).
-verify    reads the registered tags and compares with what the action wants.
+verify    reads the registered tags and compares with what the action wants:
+          ``block_ip`` wants the tag present and ``unblock_ip`` absent, and a
+          reverse (``reverse_of`` set) wants the opposite of its type.
 reverse   restores before_state: unregisters a tag this action added, and
-          leaves alone a tag that was already there.
+          leaves alone a tag that was already there. Reversing a ``noop``
+          changes nothing. Reversing an ``unblock_ip`` re-registers the tag, so
+          it is held to every check a ``block_ip`` is.
 
 Not wired into any registry here; ``build_executor(config)`` builds one.
 """
@@ -33,7 +37,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from datetime import timedelta
 from typing import Any, Optional, Union
-from xml.sax.saxutils import quoteattr
+from xml.sax.saxutils import escape, quoteattr
 
 from core.integrations.palo_alto.client import (
     PanApiError,
@@ -104,6 +108,10 @@ def _host_address(target: str) -> IPAddress:
     text = str(target).strip()
     if not text:
         raise ValueError("target is empty")
+    if "%" in text:
+        # An IPv6 zone index names an interface on *this* host; it means
+        # nothing to the firewall and must never reach its XML.
+        raise ValueError(f"target {target!r} carries an IPv6 scope id")
     if "/" in text:
         try:
             net = ipaddress.ip_network(text, strict=False)
@@ -181,6 +189,16 @@ class PaloAltoExecutor:
         assert ttl is not None
         return max(1, math.ceil(ttl.total_seconds()))
 
+    @staticmethod
+    def _wants_registered(action: TypedAction) -> bool:
+        """Whether ``action`` leaves the tag registered.
+
+        ``block_ip`` registers and ``unblock_ip`` unregisters; a reverse row
+        (``reverse_of`` set) carries the original's type and goes the other way.
+        """
+        forward = action.action_type == BLOCK_IP
+        return forward if action.reverse_of is None else not forward
+
     def _refusals(self, action: TypedAction) -> tuple[list[str], bool]:
         """Why ``action`` must not run, and whether it needs a human anyway."""
         if action.action_type not in self.action_types:
@@ -189,10 +207,15 @@ class PaloAltoExecutor:
             ip = _host_address(action.target)
         except ValueError as exc:
             return [str(exc)], False
-        if action.action_type == UNBLOCK_IP:
+        if not self._wants_registered(action):
             # Removing our tag cannot cut anyone off; any single host will do.
             return [], False
+        return self._block_refusals(ip, action)
 
+    def _block_refusals(
+        self, ip: IPAddress, action: TypedAction
+    ) -> tuple[list[str], bool]:
+        """Every check a registration (a block) must pass."""
         reasons: list[str] = []
         needs_human = False
         if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
@@ -251,7 +274,7 @@ class PaloAltoExecutor:
         """The tags the firewall has registered on ``ip`` (sorted)."""
         cmd = (
             "<show><object><registered-ip><ip>"
-            f"{ip}"
+            f"{escape(str(ip))}"
             "</ip></registered-ip></object></show>"
         )
         root = self._call({"type": "op", "cmd": cmd})
@@ -275,7 +298,7 @@ class PaloAltoExecutor:
         return (
             "<uid-message><version>2.0</version><type>update</type><payload>"
             f"<{verb}><entry ip={quoteattr(str(ip))}><tag>"
-            f"<member{attr}>{self.tag}</member>"
+            f"<member{attr}>{escape(self.tag)}</member>"
             f"</tag></entry></{verb}>"
             "</payload></uid-message>"
         )
@@ -381,16 +404,26 @@ class PaloAltoExecutor:
                 error="; ".join(reasons),
             )
         ip = _host_address(action.target)
-        want = action.action_type == BLOCK_IP
-        return self._apply(ip, want, self._ttl_seconds(action), action.action_type)
+        verb = (
+            action.action_type
+            if action.reverse_of is None
+            else f"reverse {action.action_type}"
+        )
+        return self._apply(
+            ip, self._wants_registered(action), self._ttl_seconds(action), verb
+        )
 
     def reverse(self, action: TypedAction, result: ExecResult) -> ExecResult:
-        """Restore ``result.before_state``.
+        """Undo ``result``, restoring its ``before_state``.
 
-        A block that found the tag already registered (noop) leaves it; a
-        block that added it removes it. An unblock re-registers with the
-        action's ttl (else the default), since the remaining lifetime of the
-        removed registration is not known.
+        A block that found the tag already registered (``noop``) changed
+        nothing, so its reverse changes nothing either: it never registers a
+        fresh tag, even when the prior one has since expired. A block that
+        added the tag removes it. An unblock re-registers with the action's
+        ttl (else the default), since the remaining lifetime of the removed
+        registration is not known; that re-registration is a block, so it must
+        pass every block check (management IP, protected ranges, private
+        ranges, ttl) as they stand now.
         """
         if action.action_type not in self.action_types:
             return ExecResult(
@@ -404,6 +437,13 @@ class PaloAltoExecutor:
             return ExecResult(
                 status="failed", message="reverse refused", error=str(exc)
             )
+        verb = f"reverse {action.action_type}"
+        if result.status == "noop":
+            return ExecResult(
+                status="noop",
+                message=f"{verb}: the original action changed nothing; nothing to undo",
+                external_ref=self._external_ref(ip),
+            )
         before = result.before_state
         if before is None or "registered" not in before:
             if result.status == "failed":
@@ -411,7 +451,7 @@ class PaloAltoExecutor:
                 # changed nothing.
                 return ExecResult(
                     status="noop",
-                    message=f"reverse {action.action_type}: the original action changed nothing",
+                    message=f"{verb}: the original action changed nothing",
                     external_ref=self._external_ref(ip),
                 )
             return ExecResult(
@@ -420,9 +460,25 @@ class PaloAltoExecutor:
                 error="the original result carries no before_state to restore",
             )
         want = bool(before["registered"])
-        return self._apply(
-            ip, want, self._ttl_seconds(action), f"reverse {action.action_type}"
-        )
+        forward = action.action_type == BLOCK_IP
+        if want == forward:
+            # before_state already matched what the original asked for, so the
+            # original cannot have changed anything.
+            return ExecResult(
+                status="noop",
+                message=f"{verb}: the original action changed nothing; nothing to undo",
+                external_ref=self._external_ref(ip),
+            )
+        if want:
+            reasons, _ = self._block_refusals(ip, action)
+            if reasons:
+                return ExecResult(
+                    status="failed",
+                    message="reverse refused by validate",
+                    error="; ".join(reasons),
+                    external_ref=self._external_ref(ip),
+                )
+        return self._apply(ip, want, self._ttl_seconds(action), verb)
 
     # ------------------------------------------------------------------ #
     # verify
@@ -438,6 +494,11 @@ class PaloAltoExecutor:
             ip = _host_address(action.target)
         except ValueError as exc:
             return VerifyResult(status="unknown", message=str(exc))
+        if result.status == "noop" and result.after_state is None:
+            # A reverse with nothing to undo: it claims no effect to look for.
+            return VerifyResult(
+                status="verified", message=result.message or "nothing to undo"
+            )
         try:
             tags = self.registered_tags(ip)
         except PanApiError as exc:
@@ -446,7 +507,7 @@ class PaloAltoExecutor:
                 message=f"could not read registered tags: {exc.message}",
             )
         observed = self._state(ip, tags)
-        want = action.action_type == BLOCK_IP
+        want = self._wants_registered(action)
         if observed["registered"] == want:
             state = "registered" if want else "not registered"
             return VerifyResult(
@@ -466,6 +527,11 @@ def _ttl_from_config(config: Mapping[str, Any]) -> timedelta:
     raw = config.get("default_ttl_seconds")
     if raw is None or raw == "":
         return timedelta(seconds=DEFAULT_TTL_SECONDS)
+    if isinstance(raw, bool):
+        # int(True) == 1: a stray boolean must not become a 1-second block.
+        raise PanConfigError(f"default_ttl_seconds {raw!r} is not an integer")
+    if isinstance(raw, float) and not raw.is_integer():
+        raise PanConfigError(f"default_ttl_seconds {raw!r} is not an integer")
     try:
         seconds = int(raw)
     except (TypeError, ValueError):

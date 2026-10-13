@@ -16,8 +16,8 @@ keser. Kayıt commit gerektirmez, `timeout` ile kendiliğinden sona erer ve
 
 | `action_type` | Ne yapar | Geri alınabilir | Geri alma (`reverse`) |
 |---|---|---|---|
-| `block_ip` | IP'ye `autosecops-block` etiketini `timeout=<TTL sn>` ile kaydeder (`register`) | evet | Etiketi bu eylem eklediyse `unregister`; zaten varsa (noop) dokunmaz |
-| `unblock_ip` | IP'den etiketi kaldırır (`unregister`) | evet | Etiketi eylemin TTL'iyle (yoksa varsayılan) yeniden kaydeder |
+| `block_ip` | IP'ye `autosecops-block` etiketini `timeout=<TTL sn>` ile kaydeder (`register`) | evet | Etiketi bu eylem eklediyse `unregister`; özgün eylem `noop` ise geri alma da `noop` (hiçbir istek atmaz, süresi dolmuş etiketi yeniden eklemez) |
+| `unblock_ip` | IP'den etiketi kaldırır (`unregister`) | evet | Etiketi eylemin TTL'iyle (yoksa varsayılan) yeniden kaydeder; bu bir engelleme olduğundan önce `block_ip`'in tüm `validate` kuralları (yönetim IP'si, `protected_cidrs`, özel aralıklar, TTL) uygulanır, reddedilirse geri alma `failed` döner. Özgün eylem `noop` ise geri alma `noop` |
 
 - **TTL:** varsayılan 24 saat (`86400` sn); `default_ttl_seconds` ile
   değiştirilir, eylemin `ttl`'i önceliklidir. PAN-OS üst sınırı 30 gündür
@@ -32,7 +32,12 @@ keser. Kayıt commit gerektirmez, `timeout` ile kendiliğinden sona erer ve
   `after_state` değişiklikten sonra yeniden okunur (okunamazsa `None`).
 - **verify:** kayıtlı etiketleri tekrar sorgular. `block_ip` için etiket
   varsa, `unblock_ip` için yoksa `verified`; aksi halde `failed` (uyuşmazlık);
-  güvenlik duvarı okunamazsa `unknown`.
+  güvenlik duvarı okunamazsa `unknown`. Geri alma satırında (`reverse_of`
+  dolu; tür ve hedef özgün eylemle aynı) beklenen yön terstir: `block_ip`
+  geri alması etiketin yokluğunu, `unblock_ip` geri alması varlığını doğrular.
+  Hiçbir şeyi geri almayan `noop` geri alma `verified` sayılır.
+- **XML:** `op` ve `uid-message` komutlarına giren her değer XML-kaçışlıdır;
+  IPv6 kapsam kimliği (`fe80::1%eth0`) içeren hedef her adımda reddedilir.
 
 ## validate kuralları (güvenlik duvarına hiç istek atmaz)
 
@@ -192,8 +197,9 @@ lisansı) yapın:
    doğrulayın. (Laboratuvarda belgeleme aralığı kullanılıyorsa,
    `allowed_internal_cidrs: ["203.0.113.0/24"]` gerekir.)
 5. Aynı eylemi tekrar `execute` edin: `noop` dönmeli, yazma isteği gitmemeli.
-6. `ex.reverse(a, r)` → `executed`; etiket ve DAG üyeliği kalkmalı, trafik
-   geri gelmeli. `verify` için `unblock_ip` eylemiyle `verified` görülmeli.
+6. `ra = a.model_copy(update={"reverse_of": "lab-1"})`; `u = ex.reverse(ra, r)`
+   → `executed`; etiket ve DAG üyeliği kalkmalı, trafik geri gelmeli.
+   `ex.verify(ra, u)` → `verified`.
 7. TTL testi: kısa bir `ttl` ile engelleyip süre dolduğunda kaydın kendiliğinden
    silindiğini doğrulayın.
 8. Negatif testler: `10.0.0.1`, yönetim IP'si, `0.0.0.0/0` ve

@@ -9,8 +9,10 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 import asyncio
+import ipaddress
 import json
 import logging
+from xml.sax.saxutils import escape
 
 # Unused here since the shared client makes the calls, but the module stays
 # reachable as ``tool.httpx``: tests patch ``tool.httpx.get``, which is the
@@ -72,13 +74,23 @@ async def handle_call_tool(name: str, arguments: dict | None):
             ip = args.get("ip")
             if not ip:
                 return result({"error": "ip required"})
+            # The ip lands in an xpath and an XML element, and the reason in
+            # an XML element: accept only a plain address (no IPv6 scope id)
+            # and escape the free text.
+            try:
+                if "%" in str(ip):
+                    raise ValueError
+                ip = str(ipaddress.ip_address(str(ip).strip()))
+            except ValueError:
+                return result({"error": "ip must be a single IP address"})
+            reason = escape(str(args.get("reason") or "security"))
             # Add to EDL or address group
             resp = conn.get(
                 {
                     "type": "config",
                     "action": "set",
                     "xpath": f"/config/devices/entry/vsys/entry[@name='vsys1']/address/entry[@name='blocked-{ip}']",
-                    "element": f"<ip-netmask>{ip}/32</ip-netmask><description>Blocked: {args.get('reason', 'security')}</description>",
+                    "element": f"<ip-netmask>{ip}/32</ip-netmask><description>Blocked: {reason}</description>",
                 }
             )
             # httpx doesn't follow redirects, so a 3xx here means the configured

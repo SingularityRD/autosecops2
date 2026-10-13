@@ -8,6 +8,7 @@ round trip rather than call by call.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import xml.etree.ElementTree as ET
 from datetime import timedelta
@@ -593,3 +594,154 @@ def test_api_key_is_not_in_transport_error_text(sleeps, caplog):
     assert result.status == "failed"
     assert API_KEY not in caplog.text
     assert API_KEY not in (result.error or "")
+
+
+# --------------------------------------------------------------------- #
+# verifier findings (round 3)
+# --------------------------------------------------------------------- #
+
+
+def _reverse_row(action: TypedAction) -> TypedAction:
+    """The reverse row the response service builds: same type/target, reverse_of set."""
+    return action.model_copy(update={"reverse_of": "act-original"})
+
+
+def test_verify_of_a_block_reverse_wants_the_tag_absent(firewall, sleeps):
+    """Finding 1: verify honours reverse_of, so a reversed block verifies."""
+    ex = _executor(sleeps)
+    action = _block()
+    result = ex.execute(action)
+    reverse_row = _reverse_row(action)
+    undone = ex.reverse(reverse_row, result)
+    assert undone.status == "executed"
+    assert firewall.tags[PUBLIC_V4] == set()
+
+    verified = ex.verify(reverse_row, undone)
+    assert verified.status == "verified", verified
+    # ...and a reverse that did not stick is still caught.
+    firewall.tags[PUBLIC_V4] = {DEFAULT_TAG}
+    assert ex.verify(reverse_row, undone).status == "failed"
+
+
+def test_verify_of_an_unblock_reverse_wants_the_tag_present(firewall, sleeps):
+    firewall.tags[PUBLIC_V4] = {DEFAULT_TAG}
+    ex = _executor(sleeps)
+    action = TypedAction(action_type="unblock_ip", target=PUBLIC_V4)
+    result = ex.execute(action)
+    reverse_row = _reverse_row(action)
+    undone = ex.reverse(reverse_row, result)
+    assert undone.status == "executed"
+    assert ex.verify(reverse_row, undone).status == "verified"
+
+
+@pytest.mark.parametrize(
+    "overrides, target",
+    [
+        ({"hostname": "185.220.101.9"}, "185.220.101.9"),  # management IP
+        ({"protected_cidrs": "185.220.101.0/24"}, PUBLIC_V4),
+        ({}, "10.1.2.3"),  # private, not allow-listed
+    ],
+)
+def test_reverse_of_unblock_runs_the_block_checks(firewall, sleeps, overrides, target):
+    """Finding 2: re-registering on reverse is a block and is refused like one."""
+    ex = _executor(sleeps, **overrides)
+    action = TypedAction(action_type="unblock_ip", target=target)
+    assert ex.validate(action).allowed  # unblocking anything is allowed
+    # What execute recorded when it removed the tag.
+    state = {
+        "ip": target,
+        "tag": DEFAULT_TAG,
+        "registered": True,
+        "tags": [DEFAULT_TAG],
+    }
+    result = ExecResult(
+        status="executed",
+        before_state=state,
+        after_state={**state, "registered": False, "tags": []},
+    )
+    writes = 0
+    reverse_row = _reverse_row(action)
+    assert not ex.validate(reverse_row).allowed
+    undone = ex.reverse(reverse_row, result)
+    assert undone.status == "failed"
+    assert "range" in undone.error or "private" in undone.error
+    assert len(firewall.writes()) == writes
+    assert firewall.requests == []
+
+
+def test_reverse_of_a_block_is_allowed_even_for_a_now_protected_ip(firewall, sleeps):
+    """Removing a tag is never refused by the block checks."""
+    ex = _executor(sleeps)
+    action = _block()
+    result = ex.execute(action)
+    later = _executor(sleeps, protected_cidrs=f"{PUBLIC_V4}/32")
+    reverse_row = _reverse_row(action)
+    assert later.validate(reverse_row).allowed
+    assert later.reverse(reverse_row, result).status == "executed"
+    assert firewall.tags[PUBLIC_V4] == set()
+
+
+def test_reverse_of_a_noop_block_never_registers_after_expiry(firewall, sleeps):
+    """Finding 3: the prior tag expired in between; the reverse must not add one."""
+    firewall.tags[PUBLIC_V4] = {DEFAULT_TAG}
+    ex = _executor(sleeps)
+    action = _block()
+    result = ex.execute(action)
+    assert result.status == "noop"
+    firewall.tags[PUBLIC_V4] = set()  # the firewall timed the old tag out
+
+    reverse_row = _reverse_row(action)
+    undone = ex.reverse(reverse_row, result)
+    assert undone.status == "noop"
+    assert firewall.writes() == []
+    assert firewall.tags[PUBLIC_V4] == set()
+    assert ex.verify(reverse_row, undone).status == "verified"
+
+
+def test_reverse_of_a_noop_unblock_never_registers(firewall, sleeps):
+    ex = _executor(sleeps)
+    action = TypedAction(action_type="unblock_ip", target=PUBLIC_V4)
+    result = ex.execute(action)
+    assert result.status == "noop"
+    undone = ex.reverse(_reverse_row(action), result)
+    assert undone.status == "noop"
+    assert firewall.writes() == []
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["fe80::1%eth0", "2a01:4f8::1%1", "2a01:4f8::1%</ip><x>", "fe80::1%25eth0/128"],
+)
+def test_ipv6_scope_ids_are_refused_everywhere(firewall, sleeps, target):
+    """Finding 4: a zone index is refused and never reaches the firewall."""
+    ex = _executor(sleeps)
+    for action_type in ("block_ip", "unblock_ip"):
+        action = TypedAction(action_type=action_type, target=target)
+        verdict = ex.validate(action)
+        assert not verdict.allowed
+        assert "scope id" in verdict.reasons[0]
+        assert ex.execute(action).status == "failed"
+        assert ex.verify(action, ExecResult(status="executed")).status == "unknown"
+        assert ex.reverse(action, ExecResult(status="executed")).status == "failed"
+    assert firewall.requests == []
+
+
+def test_op_and_uid_xml_values_are_escaped(firewall, sleeps):
+    """Every value in the op/uid XML is escaped; the commands stay well-formed."""
+    ex = _executor(sleeps)
+    ex.execute(_block())
+    for req in firewall.requests:
+        ET.fromstring(req["cmd"])  # parses: nothing leaked markup into it
+    op = next(r for r in firewall.requests if r["type"] == "op")
+    assert ET.fromstring(op["cmd"]).findtext(".//ip") == PUBLIC_V4
+    # The executor's own escaping holds even for a value the tag regex would
+    # never let through.
+    ex.tag = "a<b&c"
+    msg = ex._uid_message("register", ipaddress.ip_address(PUBLIC_V4), 60)
+    assert ET.fromstring(msg).findtext(".//member") == "a<b&c"
+
+
+@pytest.mark.parametrize("value", [True, False, 1.5])
+def test_default_ttl_seconds_rejects_bool_and_fractions(sleeps, value):
+    with pytest.raises(PanConfigError):
+        _executor(sleeps, default_ttl_seconds=value)
