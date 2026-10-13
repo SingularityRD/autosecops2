@@ -21,6 +21,22 @@ fail the test until the file is regenerated *on purpose*::
 
 and the diff of the JSON file is what a reviewer reads. The model assumes
 ``DEV_MODE`` is off (DEV_MODE grants everything by design).
+
+The matrix does not depend on the environment it is generated in:
+
+* routers are taken from ``services.api.discovery`` and mounted on a scratch
+  app with **every feature flag on** (``RouterMeta.enabled`` ignored), so a
+  flag-gated router (the Darktrace and Cloudflare webhook receivers) always has
+  rows; those rows carry ``"flag": "<predicate>"`` -- with the flag off the
+  router is not mounted at all and the rows simply do not exist;
+* paths are written without ``VIGIL_CONTEXT_PATH``;
+* the frontend (StaticFiles mounts, the context-path redirect) is excluded by
+  rule, so whether ``clients/web/build`` exists does not matter.
+
+The agent-layer shared-secret gate (``core.agents.internal_auth.authorise``) is
+modelled as ``internal-token``: a user's login is not that token, so every
+built-in role is ``deny``. Remove the call from an /internal handler and its row
+turns to ``none``/``allow`` and the ratchet fails.
 """
 
 from __future__ import annotations
@@ -162,6 +178,10 @@ _INLINE_DYNAMIC = re.compile(
     r"\b(?:_require_permission|_require|check_permission)\(\s*[\w\.]+\s*,\s*(?!\")"
     r"(?![A-Z][A-Z_]+\s*\))(\w+)\s*\)"
 )
+# ``core.agents.internal_auth.authorise(header, what)``: the agent-layer token.
+_INTERNAL_TOKEN = re.compile(r"(?<![\w.])authorise\(")
+# An inbound receiver's HMAC check over the raw body (webhook shared secret).
+_SHARED_SECRET = re.compile(r"\bhmac\.compare_digest\(")
 _INLINE_HELPERS = {
     "require_settings_admin(": "settings.write",
     "require_integrations_admin(": "integrations.write",
@@ -174,6 +194,8 @@ class Gate:
 
     public: bool = False
     service_key: bool = False
+    internal_token: bool = False
+    shared_secret: bool = False
     authenticated: bool = False
     # Permissions checked by a dependency (enforced before the handler runs).
     dep_permissions: List[str] = field(default_factory=list)
@@ -189,6 +211,10 @@ class Gate:
         parts: List[str] = []
         if self.service_key:
             parts.append("service-key")
+        if self.internal_token:
+            parts.append("internal-token")
+        if self.shared_secret:
+            parts.append("webhook-hmac")
         if self.authenticated:
             parts.append("login")
         parts += [f"perm:{p}" for p in self.dep_permissions]
@@ -224,6 +250,7 @@ _CHECKERS = {
     "require_permission",
     "require_settings_admin",
     "require_integrations_admin",
+    "authorise",
 }
 HELPER_DEPTH = 2
 
@@ -261,13 +288,13 @@ def _reachable_source(endpoint, depth: int = HELPER_DEPTH) -> str:
     return "\n".join(chunks)
 
 
-def route_gate(route, method: str, public_patterns) -> Gate:
+def route_gate(route, method: str, public_patterns, path: Optional[str] = None) -> Gate:
     from fnmatch import fnmatch
 
     from core.auth.current_user import get_current_user
 
     gate = Gate()
-    path = getattr(route, "path_format", None) or route.path
+    path = path or getattr(route, "path_format", None) or route.path
     dependant = getattr(route, "dependant", None)
     calls = [d.call for d in _dependencies(dependant)]
     gate.authenticated = any(c is get_current_user for c in calls)
@@ -290,6 +317,10 @@ def route_gate(route, method: str, public_patterns) -> Gate:
     for needle, perm in _INLINE_HELPERS.items():
         if needle in src and perm not in gate.inline_permissions:
             gate.inline_permissions.append(perm)
+    if _INTERNAL_TOKEN.search(src):
+        gate.internal_token = True
+    elif _SHARED_SECRET.search(src):
+        gate.shared_secret = True
     for perm in _INLINE_LITERAL.findall(src):
         if perm not in gate.inline_permissions:
             gate.inline_permissions.append(perm)
@@ -309,6 +340,8 @@ def route_gate(route, method: str, public_patterns) -> Gate:
     if (
         not gate.authenticated
         and not gate.service_key
+        and not gate.internal_token
+        and not gate.shared_secret
         and any(path == p or fnmatch(path, p) for p in public_patterns)
     ):
         gate.public = True
@@ -318,8 +351,12 @@ def route_gate(route, method: str, public_patterns) -> Gate:
 def role_outcome(gate: Gate, grants: Dict[str, bool], role_id: str) -> str:
     if gate.public:
         return ALLOW
-    if gate.service_key and not gate.authenticated:
-        return DENY  # a user's login is not the inbound key
+    if (gate.service_key or gate.internal_token or gate.shared_secret) and not (
+        gate.authenticated
+    ):
+        # A user's login is not the inbound key, the agent-layer token or the
+        # webhook's shared secret.
+        return DENY
     if not gate.authenticated:
         # Not public and no login: the route makes no decision of its own.
         return ALLOW
@@ -351,28 +388,118 @@ DYNAMIC_NOTES = {
 }
 
 
-def compute_matrix(app=None, public_patterns=None) -> Dict[str, Dict[str, Any]]:
-    if app is None or public_patterns is None:
-        from services.api.main import PUBLIC_API_PATHS
-        from services.api.main import app as main_app
+def _strip_context(path: str, context_path: str) -> str:
+    if context_path and (path == context_path or path.startswith(context_path + "/")):
+        return path[len(context_path):] or "/"
+    return path
 
-        app = app or main_app
-        public_patterns = public_patterns or PUBLIC_API_PATHS
-    grants = load_role_grants()
-    rows: Dict[str, Dict[str, Any]] = {}
-    for route in iter_routes(app):
+
+def is_frontend_route(route) -> bool:
+    """The SPA's static mounts and the context-path redirect: not API surface.
+
+    Excluded by rule so the matrix does not depend on whether a frontend build
+    (``clients/web/build``) or a context path exists where it is generated.
+    """
+    from starlette.staticfiles import StaticFiles
+
+    if isinstance(getattr(route, "app", None), StaticFiles):
+        return True
+    endpoint = getattr(route, "endpoint", None)
+    return getattr(endpoint, "__name__", "") in FRONTEND_ENDPOINTS
+
+
+FRONTEND_ENDPOINTS = frozenset({"redirect_to_trailing_slash"})
+
+
+def route_inventory(
+    main_app=None, context_path: Optional[str] = None, discover: bool = True
+):
+    """``[(route, path, flag)]`` for every API route, independent of the env.
+
+    Discovered routers are mounted on a scratch app, each with its feature flag
+    forced on and no context path; ``flag`` names the ``RouterMeta.enabled``
+    predicate (``None`` when always mounted). Routes the main module registers
+    itself (health, metrics, docs, the MCP mount) come from the main app, with
+    the context path stripped and the frontend removed.
+    """
+    import dataclasses
+
+    from fastapi import FastAPI
+
+    from services.api import discovery
+    from services.api import main as api_main
+
+    main_app = main_app or api_main.app
+    if context_path is None:
+        context_path = api_main._CONTEXT_PATH if main_app is api_main.app else ""
+
+    import logging
+
+    out: List[Tuple[Any, str, Optional[str]]] = []
+    discovered = set()
+    real_specs = discovery.load_router_specs
+    disc_log = logging.getLogger(discovery.__name__)
+    was_disabled, disc_log.disabled = disc_log.disabled, True
+    for name, router, meta in real_specs() if discover else ():
+        flag = getattr(meta.enabled, "__name__", None) if meta.enabled else None
+        forced = dataclasses.replace(meta, enabled=lambda: True)
+        scratch = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
+        discovery.load_router_specs = lambda _s=(name, router, forced): [_s]
+        try:
+            discovery.mount_routers(
+                scratch, context_path="", auth_dependency=api_main.AUTH_DEPENDENCY
+            )
+        finally:
+            discovery.load_router_specs = real_specs
+        for route in iter_routes(scratch):
+            discovered.add(getattr(route, "endpoint", None))
+            path = getattr(route, "path_format", None) or route.path
+            out.append((route, path, flag))
+    disc_log.disabled = was_disabled
+
+    for route in iter_routes(main_app):
         if not isinstance(getattr(route, "path", None), str):
             continue
+        endpoint = getattr(route, "endpoint", None)
+        if endpoint is not None and endpoint in discovered:
+            continue
+        if is_frontend_route(route):
+            continue
+        # A Mount's path_format carries a "{path}" tail; its prefix is the key.
+        path = route.path if not route_methods(route) else (
+            getattr(route, "path_format", None) or route.path
+        )
+        out.append((route, _strip_context(path, context_path), None))
+    return out
+
+
+MOUNT_NOTES = {
+    "McpSurfaceGate": "The mounted app decides: the MCP surface toggle plus the "
+    "caller's bearer token (services/api/mcp_surface.py), not a role check here.",
+}
+
+
+def compute_matrix(app=None, public_patterns=None) -> Dict[str, Dict[str, Any]]:
+    if public_patterns is None:
+        from services.api.main import PUBLIC_API_PATHS
+
+        public_patterns = PUBLIC_API_PATHS
+    grants = load_role_grants()
+    rows: Dict[str, Dict[str, Any]] = {}
+    # An explicit app (tests) is taken as-is; the default is the real API.
+    for route, path, flag in route_inventory(app, discover=app is None):
         methods = route_methods(route)
         if not methods:
-            # A Mount (static files, sub-app): no method table.
-            rows[f"MOUNT {route.path}"] = {
-                "gate": "mount",
-                **{r: ALLOW for r in BUILTIN_ROLES},
+            # A Mount (sub-app): no method table; the sub-app gates itself.
+            kind = type(getattr(route, "app", None)).__name__
+            rows[f"MOUNT {path}"] = {
+                "gate": f"mount:{kind}",
+                **{r: CONDITIONAL for r in BUILTIN_ROLES},
+                "note": MOUNT_NOTES.get(kind, "gated by the mounted app itself"),
             }
             continue
         for method in methods:
-            gate = route_gate(route, method, public_patterns)
+            gate = route_gate(route, method, public_patterns, path=path)
             row: Dict[str, Any] = {"gate": gate.describe()}
             for role in BUILTIN_ROLES:
                 row[role] = role_outcome(gate, grants[role], role)
@@ -380,7 +507,9 @@ def compute_matrix(app=None, public_patterns=None) -> Dict[str, Dict[str, Any]]:
                 row["note"] = DYNAMIC_NOTES.get(
                     gate.dynamic, f"permission computed from '{gate.dynamic}'"
                 )
-            rows[route_key(route, method)] = row
+            if flag:
+                row["flag"] = flag
+            rows[f"{method} {path}"] = row
     return dict(sorted(rows.items()))
 
 
@@ -395,6 +524,9 @@ def write_matrix(rows: Dict[str, Dict[str, Any]], path: Path = MATRIX_FILE) -> N
             "`PYTHONPATH=. python -m tests.security.route_matrix --write`; "
             "checked by tests/security/test_route_role_matrix.py. Each row is "
             "'METHOD path' -> gate + outcome per built-in role (DEV_MODE off). "
+            "Generated with every feature flag on: a row with 'flag' exists only "
+            "while that RouterMeta.enabled predicate is true. Paths exclude "
+            "VIGIL_CONTEXT_PATH; frontend static routes are excluded. "
             "Review every changed row: a new 'allow' is a privilege grant."
         ),
         "roles": list(BUILTIN_ROLES),

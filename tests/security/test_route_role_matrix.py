@@ -185,3 +185,138 @@ def test_dependency_gated_route_enforces_the_matrix(key, gate, row, monkeypatch)
                 f"{key}: {role_id} is 'allow' in the matrix but was refused 403: "
                 f"{resp.text[:160]}"
             )
+
+
+# --- environment independence & the internal-token gate (round-5 fixes) ------
+
+
+def test_flag_gated_routers_have_rows_whatever_the_flag(monkeypatch):
+    """Feature flags off or on, the matrix is the same file.
+
+    Every router whose ``RouterMeta.enabled`` predicate exists is listed with
+    ``"flag"`` on its rows; forcing every predicate to False (the default env)
+    must not drop them, and forcing True must not add any.
+    """
+    import dataclasses
+
+    from services.api import discovery
+
+    real = discovery.load_router_specs
+    specs = real()
+    gated = {getattr(m.enabled, "__name__", None) for _, _, m in specs if m.enabled}
+    assert gated, "expected at least one feature-gated router (webhook receivers)"
+    committed = rm.load_matrix()
+    flags_in_matrix = {r["flag"] for r in committed.values() if "flag" in r}
+    assert flags_in_matrix == gated, (flags_in_matrix, gated)
+
+    for value in (False, True):
+
+        def pinned(pred, _v=value):
+            def predicate():
+                return _v
+
+            predicate.__name__ = pred.__name__  # same flag name, other value
+            return predicate
+
+        def forced():
+            return [
+                (n, r, dataclasses.replace(m, enabled=pinned(m.enabled)) if m.enabled else m)
+                for n, r, m in specs
+            ]
+
+        monkeypatch.setattr(discovery, "load_router_specs", forced)
+        new, gone, changed = rm.diff(committed, rm.compute_matrix())
+        assert not (new or gone or changed), (value, new, gone, changed)
+    monkeypatch.setattr(discovery, "load_router_specs", real)
+
+
+def test_frontend_and_context_path_do_not_change_the_matrix(tmp_path):
+    """Static mounts and the context-path redirect are excluded by rule, and
+    the context path is stripped, so neither a frontend build nor
+    VIGIL_CONTEXT_PATH changes a row."""
+    from fastapi import FastAPI
+    from fastapi.responses import RedirectResponse
+    from starlette.staticfiles import StaticFiles
+
+    from services.api.main import PUBLIC_API_PATHS
+
+    fake = FastAPI()
+    fake.mount("/vigil/static", StaticFiles(directory=tmp_path), name="static")
+
+    @fake.get("/vigil", include_in_schema=False)
+    async def redirect_to_trailing_slash():
+        return RedirectResponse(url="/vigil/")
+
+    @fake.get("/vigil/api/health")
+    async def health():
+        return {}
+
+    paths = [p for _, p, _ in rm.route_inventory(main_app=fake, context_path="/vigil", discover=False)]
+    assert "/api/health" in paths
+    assert not any("static" in p for p in paths)
+    assert "/vigil" not in paths and "/" not in paths
+    route = next(r for r, p, _ in rm.route_inventory(
+        main_app=fake, context_path="/vigil", discover=False) if p == "/api/health")
+    gate = rm.route_gate(route, "GET", PUBLIC_API_PATHS, path="/api/health")
+    assert gate.public
+
+
+def test_internal_routes_are_gated_by_the_agent_token():
+    rows = rm.load_matrix()
+    internal = {k: r for k, r in rows.items() if k.split(" ", 1)[1].startswith("/internal/")}
+    assert internal, "no /internal routes found"
+    for key, row in internal.items():
+        assert "internal-token" in row["gate"], f"{key} lost its internal-token gate"
+        for role in rm.BUILTIN_ROLES:
+            assert row[role] == rm.DENY, (key, role)
+
+
+def test_removing_authorise_changes_the_row():
+    """The ratchet sees the token check: a handler without ``authorise`` reads
+    as ungated (allow for every role), so dropping the call diffs the file."""
+    from typing import Optional
+
+    from fastapi import FastAPI, Header
+
+    from core.agents.internal_auth import authorise
+
+    fake = FastAPI()
+
+    @fake.get("/internal/with")
+    async def with_token(authorization: Optional[str] = Header(default=None)):
+        authorise(authorization, "probe")
+        return {}
+
+    @fake.get("/internal/without")
+    async def without_token(authorization: Optional[str] = Header(default=None)):
+        return {}
+
+    rows = rm.compute_matrix(app=fake, public_patterns=frozenset())
+    assert rows["GET /internal/with"]["gate"] == "internal-token"
+    assert all(rows["GET /internal/with"][r] == rm.DENY for r in rm.BUILTIN_ROLES)
+    assert rows["GET /internal/without"]["gate"] == "none"
+    assert all(rows["GET /internal/without"][r] == rm.ALLOW for r in rm.BUILTIN_ROLES)
+
+
+def test_a_user_session_is_not_the_internal_token(monkeypatch):
+    """Runtime proof for the 'deny' cells on internal-token rows: whatever a
+    logged-in user presents (their own bearer JWT), ``authorise`` refuses it,
+    and an unconfigured secret fails closed (503), never open."""
+    from fastapi import HTTPException
+
+    from core.agents.internal_auth import authorise
+
+    monkeypatch.setattr(
+        "core.agents.internal_auth.get_secret",
+        lambda name: "w43-probe-token" if name == "AGENT_INTERNAL_TOKEN" else None,
+    )
+    for presented in (None, "", "Bearer eyJhbGciOiJIUzI1NiJ9.admin.session", "w43-probe-token"):
+        with pytest.raises(HTTPException) as exc:
+            authorise(presented, "probe")
+        assert exc.value.status_code == 401, presented
+    authorise("Bearer w43-probe-token", "probe")  # the token itself passes
+
+    monkeypatch.setattr("core.agents.internal_auth.get_secret", lambda name: None)
+    with pytest.raises(HTTPException) as exc:
+        authorise("Bearer anything", "probe")
+    assert exc.value.status_code == 503

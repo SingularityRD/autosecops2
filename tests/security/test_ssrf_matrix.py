@@ -16,6 +16,13 @@ in one resolution), and dangerous schemes. Each must be refused. It then pins
 the two protections the address check cannot provide on its own: redirects are
 not followed, and a rebinding second answer cannot move the connection.
 
+Outbound URL inputs that do **not** go through ``url_safety`` are listed in
+``UNGUARDED_OUTBOUND`` below (findings F-3 in
+docs/security/w4.3-redteam-findings.md). Where such a surface has a weaker
+check of its own (stored LLM ``base_url`` shape check, the Bifrost stock-host
+comparison), that check is driven here too, and the gap it leaves -- the
+metadata address passes -- is pinned so a real fix is noticed.
+
 Resolution is stubbed (``_FakeGetaddrinfo``) so the suite is deterministic and
 makes no network call; numeric-literal IPs are left to resolve locally (pure
 parsing, no DNS).
@@ -205,3 +212,88 @@ def test_provider_discovery_disables_redirects():
     assert clients, "expected httpx.AsyncClient usage in discovery.py"
     for args in clients:
         assert "follow_redirects=False" in args, args
+
+
+# --- surfaces outside url_safety (round-5 coverage) --------------------------
+
+# (file, outbound input, what guards it today). Each is a finding (F-3): the
+# URL reaches httpx/requests with no address check. The test below fails when a
+# file starts using url_safety, so the entry moves into ENTRY_POINTS above.
+UNGUARDED_OUTBOUND = {
+    "services/api/routers/jira_export.py": (
+        "stored Jira url; POST /api/cases/{id}/export/jira (cases.read) posts to "
+        "it with follow_redirects=True"
+    ),
+    "core/integrations/splunk/client.py": "stored Splunk server_url",
+    "core/integrations/elastic/client.py": "stored Elasticsearch/Kibana url",
+    "core/integrations/opensearch/client.py": "stored OpenSearch/Dashboards url",
+    "core/integrations/crowdstrike/client.py": "stored CrowdStrike base_url",
+    "core/integrations/vstrike/client.py": "stored/env VStrike base_url",
+    "core/integrations/palo_alto/client.py": "stored PAN-OS hostname (base_url_for)",
+    "services/api/routers/llm_providers.py": (
+        "stored LLM base_url: shape check only (scheme/userinfo/fragment); the "
+        "address is checked at discovery time, not when Bifrost uses it"
+    ),
+    "core/llm/bifrost/admin.py": (
+        "custom OpenAI-compatible base_url pushed to Bifrost network_config; only "
+        "compared against the stock OpenAI hosts, ollama sync skips the IP gate"
+    ),
+}
+
+
+@pytest.mark.parametrize("path", sorted(UNGUARDED_OUTBOUND))
+def test_unguarded_outbound_inventory_is_current(path):
+    src = (REPO / path).read_text()
+    assert "validate_provider_url" not in src and "resolve_allowed_addresses" not in src, (
+        f"{path} now calls url_safety: move it from UNGUARDED_OUTBOUND into "
+        "ENTRY_POINTS and drive it with the payload corpus"
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/passwd",
+        "gopher://127.0.0.1:6379/_INFO",
+        "ftp://internal.attacker.test/",
+        "javascript:alert(1)",
+        "http://user:pw@public.ok.test/",
+        "http://public.ok.test/#frag",
+        "http:///nohost",
+    ],
+)
+def test_stored_llm_base_url_shape_check_rejects(url):
+    from fastapi import HTTPException
+
+    from services.api.routers.llm_providers import _validate_provider_base_url_shape
+
+    with pytest.raises(HTTPException) as exc:
+        _validate_provider_base_url_shape(url)
+    assert exc.value.status_code == 400
+
+
+def test_stored_llm_base_url_shape_check_does_not_block_metadata():
+    """Pins finding F-3: the save-time check is shape-only by design (self-hosted
+    Ollama on RFC1918 is legitimate), so the metadata address is stored. When a
+    fix makes this raise, flip the assertion and drop the entry from
+    UNGUARDED_OUTBOUND."""
+    from services.api.routers.llm_providers import _validate_provider_base_url_shape
+
+    _validate_provider_base_url_shape("http://169.254.169.254/latest")
+
+
+def test_bifrost_never_overrides_the_stock_openai_host():
+    from core.llm.bifrost.admin import _STOCK_OPENAI_HOSTS, _custom_openai_base_url
+
+    assert _STOCK_OPENAI_HOSTS
+    for host in _STOCK_OPENAI_HOSTS:
+        assert _custom_openai_base_url(f"https://{host}/v1") is None
+    assert _custom_openai_base_url("https://llm.corp.test/v1") == "https://llm.corp.test"
+
+
+def test_bifrost_custom_base_url_has_no_address_check():
+    """Pins finding F-3: a stored custom base_url pointing at the metadata
+    address is handed to Bifrost unchanged."""
+    from core.llm.bifrost.admin import _custom_openai_base_url
+
+    assert _custom_openai_base_url("http://169.254.169.254/v1") == "http://169.254.169.254"
