@@ -184,6 +184,7 @@ async def _through_webhook(processor, payload):
 
     from core.ingestion.handoff import envelope
     from core.ingestion.spool import IngestSpool
+    from core.ingestion.store_outcome import CREATED, StoreOutcome
     from services.daemon.config import PollingConfig
     from services.daemon.poller import DataPoller
 
@@ -209,9 +210,9 @@ async def _through_webhook(processor, payload):
             assert resp.status == 200
 
         async def stored(_finding):
-            return True
+            return StoreOutcome(status=CREATED)
 
-        processor._store_with_retry = stored
+        processor._store_spooled = stored
         for entry in spool.claim(100):
             item = envelope(entry.finding, entry.source)
             item["spool"] = entry
