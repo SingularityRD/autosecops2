@@ -20,7 +20,7 @@ from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional
 
 from opentelemetry.metrics import Observation
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from core.response.config import (
@@ -33,7 +33,7 @@ from core.response.policy import PolicyConfig
 from core.storage.config_service import get_config_service
 from core.storage.connection import get_db_manager
 from core.storage.models import ApprovalAction as ApprovalActionRow
-from core.storage.models import Investigation, WorkflowRun
+from core.storage.models import Investigation, Role, User, WorkflowRun
 from core.telemetry import get_meter
 from core.time import utcnow
 
@@ -149,6 +149,90 @@ class PendingAction:
 
 class SecondApproverConflict(ValueError):
     """The two-person rule's second approval came from the first approver."""
+
+
+class SecondApproverRoleConflict(SecondApproverConflict):
+    """The second approver holds the first approver's role, or a role is unknown.
+
+    Raised only for types in ``PolicyConfig.distinct_role_types`` (W3.2).
+    """
+
+
+def second_approver_detail(error: SecondApproverConflict) -> str:
+    """The 409 / tool error text for a refused second approval."""
+    if isinstance(error, SecondApproverRoleConflict):
+        return "A second approver with a different role must give the second approval"
+    return "A different person must give the second approval"
+
+
+# approval_decisions (61_approval_decisions.sql): one row per decision with the
+# decider's role at that moment. Written in a savepoint: an install that has not
+# applied the file still decides, and the report falls back to current roles.
+_INSERT_DECISION = text("""
+    INSERT INTO approval_decisions (action_id, step, actor, actor_role_id, actor_role)
+    VALUES (:action_id, :step, :actor, :role_id, :role)
+    """)
+_FIRST_ROLE = text("""
+    SELECT actor_role_id, actor_role FROM approval_decisions
+    WHERE action_id = :action_id AND step = 'first_approval'
+    ORDER BY id DESC LIMIT 1
+    """)
+_decisions_warned = False
+
+
+def role_of(session, username: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """``(role_id, role name)`` of the account named ``username`` (case-insensitive).
+
+    ``(None, None)`` for a name that is no account (an agent, ``analyst``).
+    """
+    if not username or not username.strip():
+        return None, None
+    row = session.execute(
+        select(User.role_id, Role.name)
+        .join(Role, Role.role_id == User.role_id)
+        .where(func.lower(User.username) == username.strip().lower())
+        .limit(1)
+    ).first()
+    return (row[0], row[1]) if row else (None, None)
+
+
+def _record_decision(
+    session, action_id: str, step: str, actor: str, role: tuple
+) -> None:
+    global _decisions_warned
+    try:
+        with session.begin_nested():
+            session.execute(
+                _INSERT_DECISION,
+                {
+                    "action_id": action_id,
+                    "step": step,
+                    "actor": (actor or "")[:100],
+                    "role_id": role[0],
+                    "role": role[1],
+                },
+            )
+    except SQLAlchemyError as e:
+        if not _decisions_warned:
+            logger.warning(
+                "approval_decisions not written (apply 61_approval_decisions.sql): %s",
+                type(e).__name__,
+            )
+            _decisions_warned = True
+
+
+def _first_approver_role(
+    session, action_id: str, first_approver: str
+) -> tuple[Optional[str], Optional[str]]:
+    """The first approver's role as recorded at their decision, else as now."""
+    try:
+        with session.begin_nested():
+            row = session.execute(_FIRST_ROLE, {"action_id": action_id}).first()
+        if row and row[0]:
+            return row[0], row[1]
+    except SQLAlchemyError:
+        pass
+    return role_of(session, first_approver)
 
 
 def _iso(value: Optional[datetime]) -> Optional[str]:
@@ -490,7 +574,12 @@ class ApprovalService:
         needs two approvals: the first records ``approved_by`` and leaves the
         row pending; the second, from a different user (case-insensitively),
         records ``second_approver`` and approves it. The first approver
-        approving again raises ``SecondApproverConflict``.
+        approving again raises ``SecondApproverConflict``. For a type in
+        ``PolicyConfig.distinct_role_types`` (W3.2) the second approver must
+        also hold a different role from the first (the first's role as recorded
+        at their approval), else ``SecondApproverRoleConflict``; an approver
+        whose role cannot be found is refused the same way. Every decision is
+        recorded in ``approval_decisions`` with the decider's role.
         """
         policy = self.policy_config()
         try:
@@ -508,10 +597,14 @@ class ApprovalService:
                     )
                     return _row_to_pending(row)
                 if policy.needs_second_approver(row.action_type):
+                    role = role_of(session, approved_by)
                     if not row.approved_by:
                         row.approved_at = utcnow()
                         row.approved_by = approved_by
                         session.flush()
+                        _record_decision(
+                            session, action_id, "first_approval", approved_by, role
+                        )
                         pending = _row_to_pending(row)
                         logger.info(
                             "Action %s first approval by %s; a second approver is required",
@@ -527,9 +620,27 @@ class ApprovalService:
                             f"{approved_by} already approved {action_id}; "
                             "a different person must give the second approval"
                         )
+                    if policy.needs_distinct_role(row.action_type):
+                        first_role = _first_approver_role(
+                            session, action_id, row.approved_by
+                        )
+                        if role[0] is None or first_role[0] is None:
+                            raise SecondApproverRoleConflict(
+                                f"the role of {row.approved_by if first_role[0] is None else approved_by} "
+                                f"is unknown; {row.action_type} needs approvers of two different roles"
+                            )
+                        if role[0] == first_role[0]:
+                            raise SecondApproverRoleConflict(
+                                f"{approved_by} holds the first approver's role "
+                                f"({first_role[1] or first_role[0]}); {row.action_type} "
+                                "needs a second approver of a different role"
+                            )
                     row.second_approver = approved_by
                     row.status = ActionStatus.APPROVED.value
                     session.flush()
+                    _record_decision(
+                        session, action_id, "second_approval", approved_by, role
+                    )
                     pending = _row_to_pending(row)
                     logger.info(
                         "Action %s second approval by %s", action_id, approved_by
@@ -539,6 +650,13 @@ class ApprovalService:
                 row.approved_at = utcnow()
                 row.approved_by = approved_by
                 session.flush()
+                _record_decision(
+                    session,
+                    action_id,
+                    "approve",
+                    approved_by,
+                    role_of(session, approved_by),
+                )
                 pending = _row_to_pending(row)
             logger.info("Action %s approved by %s", action_id, approved_by)
             return pending
@@ -572,6 +690,13 @@ class ApprovalService:
                 row.approved_by = rejected_by
                 row.approved_at = utcnow()
                 session.flush()
+                _record_decision(
+                    session,
+                    action_id,
+                    "reject",
+                    rejected_by,
+                    role_of(session, rejected_by),
+                )
                 pending = _row_to_pending(row)
             logger.info(
                 "Action %s rejected by %s: %s",
