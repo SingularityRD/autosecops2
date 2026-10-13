@@ -1,0 +1,78 @@
+name: Upgrade path
+
+# Vigil 0.7.1 -> AutoSecOps 2.0 (W4.5): restore the committed 0.7.1 database
+# (tests/fixtures/upgrade/vigil-0.7.1.sql), run scripts/upgrade_database.py,
+# and require the result to equal a fresh install, keep every 0.7.1 row, and
+# survive a second run. The unit half holds the 0.7.1 init files frozen.
+#
+# Canonical repo only, like ci-cd.yml; uses no repository secrets.
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upgrade-from-071:
+    name: Upgrade - 0.7.1 snapshot to this release
+    if: github.repository == 'SingularityRD/autosecops2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: deeptempo_test
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    env:
+      TESTING: "true"
+      DEV_MODE: "false"
+      # The tests create and drop their own scratch databases on this server.
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: deeptempo_test
+      DATABASE_URL: postgresql://test:test@localhost:5432/deeptempo_test
+      # A missing server or client tool is a failure here, not a skip.
+      UPGRADE_TEST_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.lock
+
+      # The dump is plain SQL from pg_dump 16; the runner's psql/pg_dump must
+      # be at least the server's major version.
+      - name: Install PostgreSQL 16 client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+
+      - name: Frozen 0.7.1 init files and fixture hygiene
+        run: pytest tests/unit/test_upgrade_database.py -v --no-cov
+
+      - name: Upgrade a 0.7.1 database
+        run: pytest tests/integration/test_upgrade_from_071.py -v --no-cov
