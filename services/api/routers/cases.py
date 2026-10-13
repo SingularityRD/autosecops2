@@ -30,9 +30,10 @@ from core.cases.case_sla_service import CaseSLAService, SlaOutcome
 from core.cases.case_state import case_run_refs
 from core.documents.extract import ACCEPTED_TYPES, DocumentRefused, spool_upload
 from core.reporting.report_service import REPORTLAB_AVAILABLE, ReportService
+from core.response.action_timeline import case_action_timeline
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
 from core.storage.database_data_service import DatabaseDataService
-from core.storage.models import User
+from core.storage.models import Case, User
 from core.storage.schemas import (
     CaseCommentSchema,
     CaseEscalationSchema,
@@ -45,6 +46,7 @@ from core.storage.schemas import (
     CaseWatcherSchema,
 )
 from core.storage.schemas.case_api import (
+    CaseActionTimelineResponse,
     CaseCommentsResponse,
     CaseEscalationsResponse,
     CasePurgeResponse,
@@ -711,6 +713,20 @@ async def get_case_record(case_id: str, session: UnitOfWorkSession):
         "investigation_id": investigation_id,
         "rows": merge_record(events, audits),
     }
+
+
+@router.get("/{case_id}/actions/timeline", response_model=CaseActionTimelineResponse)
+async def get_case_action_timeline(case_id: str, session: UnitOfWorkSession):
+    """Response actions on this case, newest first, each with its lifecycle.
+
+    Read-only: proposed (by whom, the approval gate's rule), approved (and the
+    second approver), executed, verified, expiry, reversal, and a summary of
+    the before/after state. ``can_revert`` reports the row's state; reverting
+    is ``POST /api/response/actions/{id}/revert`` and its own permission.
+    """
+    if session.get(Case, case_id) is None:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return case_action_timeline(session, case_id)
 
 
 @router.post(

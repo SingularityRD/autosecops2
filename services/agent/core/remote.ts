@@ -1,4 +1,4 @@
-import type { RegisteredTool, ToolPrincipal, ToolResult } from "../contracts/tool.js";
+import type { RegisteredTool, ToolApproval, ToolPrincipal, ToolResult } from "../contracts/tool.js";
 import type { ToolDispatch } from "./seams.js";
 
 export interface RemoteOptions {
@@ -67,7 +67,13 @@ export function deadline(timeoutMs: number, signal?: AbortSignal): Deadline {
 export function remoteDispatch(options: RemoteOptions): ToolDispatch {
   const call = options.fetch ?? globalThis.fetch;
   return {
-    invoke: async (tool: RegisteredTool, args: Record<string, unknown>, signal?: AbortSignal, agentId?: string): Promise<ToolResult> => {
+    invoke: async (
+      tool: RegisteredTool,
+      args: Record<string, unknown>,
+      signal?: AbortSignal,
+      agentId?: string,
+      approval?: ToolApproval,
+    ): Promise<ToolResult> => {
       // A tool the registry answers itself never leaves the process: every call routes
       // through this dispatch, so a local implementation was otherwise unreachable.
       if (tool.local) return tool.invoke(args);
@@ -92,6 +98,9 @@ export function remoteDispatch(options: RemoteOptions): ToolDispatch {
               // The agent rides the call, not the dispatch options: one
               // dispatch serves every phase of a compose run (#1560).
               ...(agentId === undefined ? {} : { agent_id: agentId }),
+              // Only on a gated call a person approved; the far side refuses a
+              // gated tool that arrives without one.
+              ...(approval === undefined ? {} : { approval }),
             }),
             signal: held.signal,
           });

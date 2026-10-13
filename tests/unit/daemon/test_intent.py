@@ -210,6 +210,11 @@ def test_intent_report_include_same_lists_every_key(offline_config, monkeypatch)
 
 
 def test_from_env_records_env_and_default_sources(offline_config, monkeypatch):
+    # The "default" half needs the knob absent, not merely unset in CI: a shell
+    # that sourced .env exports DAEMON_AUTO_TRIAGE and pydantic counts it as set.
+    for name in list(os.environ):
+        if name.upper().startswith(("DAEMON_", "ORCHESTRATOR_")):
+            monkeypatch.delenv(name)
     monkeypatch.setenv("DAEMON_CONFIDENCE_THRESHOLD", "0.75")
     config = DaemonConfig.from_env()
     assert config.sources["response.confidence_threshold"] == "env"

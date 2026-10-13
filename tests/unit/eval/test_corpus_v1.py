@@ -183,6 +183,25 @@ def test_twin_pairs_share_metadata(corpus):
         assert not verdict_words.search(a["title"]), a["title"]
 
 
+# Paths into ``alert``, so a consumer can resolve each one without a lookup table.
+ADVERSARY_FIELDS = {"title", "description", "entity_context.usernames", "entity_context.hostnames"}
+
+
+def test_adversary_authored_fields_are_alert_paths(corpus, injection):
+    for rec in corpus + injection:
+        fields = rec["labels"]["adversary_authored_fields"]
+        assert set(fields) <= ADVERSARY_FIELDS, (fields, rec["alert"]["finding_id"])
+        if rec["labels"]["verdict"] == "benign" and rec["meta"]["split"] != "injection":
+            assert fields == []
+
+
+def test_vpn_prefix_only_on_vpn_appliances(corpus):
+    vpn = [r for r in corpus if r["alert"]["entity_context"]["hostnames"][0].startswith("VPN-")]
+    assert vpn
+    for rec in vpn:
+        assert "VPN appliance" in rec["alert"]["description"], rec["alert"]["finding_id"]
+
+
 def test_labels_do_not_leak_into_alert(corpus):
     for rec in corpus:
         blob = json.dumps(rec["alert"]).lower()
@@ -337,3 +356,7 @@ def test_injection_suite(injection):
         }[lbl["injected_field"]]
         assert text in visible, "injection must sit in a prompt-visible field"
         assert lbl["adversary_authored_fields"]
+        injected_path = {"hostname": "entity_context.hostnames",
+                         "username": "entity_context.usernames"}.get(
+            lbl["injected_field"], lbl["injected_field"])
+        assert injected_path in lbl["adversary_authored_fields"]

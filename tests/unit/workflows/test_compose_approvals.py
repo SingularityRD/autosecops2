@@ -86,3 +86,40 @@ def test_incident_response_stays_ungated():
 def test_hunt_stays_ungated():
     _, config = resolve_hunt("threat-hunt")
     assert yaml.safe_load(config)["approvals"] == []
+
+
+# W1.7: every gated grant parks, not only ART execute.
+@pytest.mark.parametrize(
+    "tool",
+    [
+        "microsoft-defender_mde_isolate",
+        "carbon-black_cb_quarantine",
+        "azure-ad_aad_disable_user",
+        "palo-alto_pan_block_ip",
+        "cloudflare_cf_waf_block_ip",
+        "slack_slack_send_alert",
+    ],
+)
+def test_compose_phase_that_grants_a_write_tool_puts_it_in_approvals(tool):
+    config = _config([tool, "analyze_coverage"], tool)
+    assert config["approvals"] == [tool]
+    effects = {t["id"]: t["effect"] for t in config["tools"]}
+    assert effects["analyze_coverage"] == "read_only"
+    assert effects[tool] in ("write", "destructive")
+
+
+def test_a_capability_never_binds_a_gated_candidate(monkeypatch):
+    from core.workflows import playbook_resolver
+    from core.workflows.playbook_resolver import Candidate, _bound_capabilities
+
+    monkeypatch.setitem(
+        playbook_resolver.CAPABILITIES,
+        "findings_search",
+        (Candidate(None, ("pan_block_ip", "search_findings")),),
+    )
+    catalogue = {
+        name: {"name": name, "description": name, "input_schema": {}}
+        for name in ("pan_block_ip", "search_findings")
+    }
+    bound = _bound_capabilities(["findings_search"], catalogue)
+    assert [tool["id"] for tool in bound] == ["search_findings"]

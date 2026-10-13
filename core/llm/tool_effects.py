@@ -1,0 +1,548 @@
+"""What every tool does to the world: the one table every surface reads.
+
+Each tool AutoSecOps can reach is declared here with an **effect class**:
+
+``read_only``
+    Reads and answers. Nothing anywhere changes.
+``records``
+    Writes AutoSecOps's own records only (cases, notes, IOCs, an export file,
+    a run's own trace). Reversible bookkeeping inside this product; never an
+    outside change. Never inferred from a name: only a tool listed here is one.
+``approval``
+    Puts a request in the approval queue (``create_approval_action``). This is
+    the gate itself: it changes nothing but the queue, and a person releases it.
+``decision``
+    Decides a queued approval (``approve_action`` / ``reject_action``). Only a
+    bound human principal holding the approve permission may; the tool refuses
+    an agent itself (``core.agents.tool_registry``).
+``write``
+    Changes or sends something outside AutoSecOps (posts a message, submits a
+    sample to a sandbox). Gated.
+``destructive``
+    Containment or an irreversible outside action (isolate a host, block an IP,
+    disable a user, run an attack technique). Gated.
+
+``write`` and ``destructive`` are :data:`GATED`: such a tool runs only through
+the approval pipeline -- a checkpoint a person answers -- on every surface.
+Chat has no resume path, so it never reaches one; compose / investigate park on
+it (``config.approvals``); ``/internal/tools/invoke`` refuses it without an
+approved checkpoint; hunts and root-cause bind read capabilities only.
+
+A name that is not in the table falls back to a verb heuristic which defaults
+to the most restrictive class: only a name that plainly reads (a read lead verb
+and no write or destructive verb) is ``read_only``; anything else is
+``destructive``.
+
+The agent layer (TypeScript) reads the same table through a generated mirror,
+``services/agent/contracts/tool-effects.ts``; a ratchet holds the two equal.
+Regenerate with ``python -m core.llm.tool_effects --write``.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Iterable, List, Mapping, Optional, Tuple
+
+READ_ONLY = "read_only"
+RECORDS = "records"
+APPROVAL = "approval"
+DECISION = "decision"
+WRITE = "write"
+DESTRUCTIVE = "destructive"
+
+EFFECTS: Tuple[str, ...] = (READ_ONLY, RECORDS, APPROVAL, DECISION, WRITE, DESTRUCTIVE)
+
+# Runs only once a person approves it, on every surface.
+GATED = frozenset({WRITE, DESTRUCTIVE})
+
+MANIFEST_SOURCE = "manifest"
+HEURISTIC_SOURCE = "heuristic"
+
+
+@dataclass(frozen=True)
+class Effect:
+    """A tool's class and where it came from (the table, or the fallback)."""
+
+    effect: str
+    source: str
+
+    @property
+    def gated(self) -> bool:
+        return self.effect in GATED
+
+
+# --- the table --------------------------------------------------------------
+
+# Built-in backend tools (core.llm.tool_schemas.ALL_TOOLS) and chat's two
+# integration tools. ``call_integration_tool`` is a proxy: /internal/tools/invoke
+# classifies the call it stands for, and chat only resolves read-class ones.
+BUILTIN: Dict[str, str] = {
+    "analyze_coverage": READ_ONLY,
+    "search_detections": READ_ONLY,
+    "identify_gaps": READ_ONLY,
+    "get_coverage_stats": READ_ONLY,
+    "get_detection_count": READ_ONLY,
+    "lint_detections": READ_ONLY,
+    "check_detection_candidate": READ_ONLY,
+    "reconstruct_run": READ_ONLY,
+    "list_findings": READ_ONLY,
+    "search_findings": READ_ONLY,
+    "get_findings_stats": READ_ONLY,
+    "get_finding": READ_ONLY,
+    "list_cases": READ_ONLY,
+    "get_case": READ_ONLY,
+    "case_records": READ_ONLY,
+    "create_case": RECORDS,
+    "add_finding_to_case": RECORDS,
+    "update_case": RECORDS,
+    "add_resolution_step": RECORDS,
+    "list_completed_hunts": READ_ONLY,
+    "list_learning_episodes": READ_ONLY,
+    "export_learning_episodes": RECORDS,
+    "replay_hunt": READ_ONLY,
+    "get_technique_rollup": READ_ONLY,
+    "lookup_indicators": READ_ONLY,
+    "propose_feed_hunts": READ_ONLY,
+    "list_pending_approvals": READ_ONLY,
+    "get_approval_action": READ_ONLY,
+    "approve_action": DECISION,
+    "reject_action": DECISION,
+    "get_approval_stats": READ_ONLY,
+    "recall_entity": READ_ONLY,
+    "check_hunt_coverage": READ_ONLY,
+    "read_skill": READ_ONLY,
+    "find_integration_tools": READ_ONLY,
+    "call_integration_tool": READ_ONLY,
+}
+
+# AutoSecOps's own MCP server (tools/mcp/vigil.py): what /mcp serves, and what
+# the registry carries unprefixed.
+VIGIL_MCP: Dict[str, str] = {
+    "list_findings": READ_ONLY,
+    "get_finding": READ_ONLY,
+    "list_completed_hunts": READ_ONLY,
+    "replay_hunt": READ_ONLY,
+    "get_technique_rollup": READ_ONLY,
+    "list_cases": READ_ONLY,
+    "get_case": READ_ONLY,
+    "create_case": RECORDS,
+    "update_case": RECORDS,
+    "add_finding_to_case": RECORDS,
+    "remove_finding_from_case": RECORDS,
+    "add_case_activity": RECORDS,
+    "add_case_timeline_entry": RECORDS,
+    "add_case_mitre_techniques": RECORDS,
+    "add_resolution_step": RECORDS,
+    "bulk_add_findings_to_case": RECORDS,
+    "create_case_from_killchain": RECORDS,
+    "add_case_comment": RECORDS,
+    "get_case_comments": READ_ONLY,
+    "add_case_evidence": RECORDS,
+    "add_case_ioc": RECORDS,
+    "bulk_add_iocs": RECORDS,
+    "get_case_iocs": READ_ONLY,
+    "add_case_task": RECORDS,
+    "update_case_task": RECORDS,
+    "get_case_tasks": READ_ONLY,
+    "link_related_cases": RECORDS,
+    "escalate_case": RECORDS,
+    "close_case": RECORDS,
+    "create_approval_action": APPROVAL,
+    "list_approval_actions": READ_ONLY,
+    "get_approval_action": READ_ONLY,
+    "approve_action": DECISION,
+    "reject_action": DECISION,
+}
+
+# The in-repo integration servers (core/integrations/<vendor>/tool.py), by the
+# server name mcp-config.json gives them. The registry flattens a tool to
+# ``{server}_{tool}``, so both spellings are classified.
+INTEGRATIONS: Dict[str, Dict[str, str]] = {
+    "alienvault-otx": {
+        "otx_check_ip": READ_ONLY,
+        "otx_check_domain": READ_ONLY,
+        "otx_check_hash": READ_ONLY,
+    },
+    "anyrun": {
+        "anyrun_get_report": READ_ONLY,
+        "anyrun_search_hash": READ_ONLY,
+    },
+    "atomic-red-team": {
+        # Runs an attack technique on a host.
+        "atomic_red_team_execute": DESTRUCTIVE,
+    },
+    "azure-ad": {
+        "aad_get_user": READ_ONLY,
+        "aad_disable_user": DESTRUCTIVE,
+        "aad_get_sign_ins": READ_ONLY,
+    },
+    "cape-sandbox": {
+        # A submission hands a sample to a third party and detonates it.
+        "cape_submit_file": WRITE,
+        "cape_submit_url": WRITE,
+        "cape_get_report": READ_ONLY,
+        "cape_get_iocs": READ_ONLY,
+        "cape_get_pcap": READ_ONLY,
+        "cape_list_tasks": READ_ONLY,
+        "cape_search_hash": READ_ONLY,
+        "cape_task_status": READ_ONLY,
+    },
+    "carbon-black": {
+        "cb_get_alerts": READ_ONLY,
+        "cb_search_device": READ_ONLY,
+        "cb_quarantine": DESTRUCTIVE,
+    },
+    "cloudflare": {
+        "cf_waf_block_ip": DESTRUCTIVE,
+        # Lifting a block is as much a change to the edge as placing one.
+        "cf_waf_unblock_ip": DESTRUCTIVE,
+        "cf_gateway_block_domain": DESTRUCTIVE,
+        "cf_access_revoke_session": DESTRUCTIVE,
+        "cf_lookup_ip_threat": READ_ONLY,
+        "cf_lookup_domain_threat": READ_ONLY,
+    },
+    "elastic": {
+        "elastic_search_logs": READ_ONLY,
+        "elastic_search_by_ioc": READ_ONLY,
+        "elastic_get_indices": READ_ONLY,
+        "elastic_get_detection_alerts": READ_ONLY,
+    },
+    "hybrid-analysis": {
+        "ha_search_hash": READ_ONLY,
+        "ha_get_report": READ_ONLY,
+    },
+    "ip-geolocation": {
+        "geolocate_ip": READ_ONLY,
+        "geolocate_batch": READ_ONLY,
+    },
+    "microsoft-defender": {
+        "mde_get_alerts": READ_ONLY,
+        "mde_get_machine": READ_ONLY,
+        "mde_isolate": DESTRUCTIVE,
+    },
+    "microsoft-teams": {
+        "teams_send_alert": WRITE,
+    },
+    "misp": {
+        "misp_search_ioc": READ_ONLY,
+        "misp_get_events": READ_ONLY,
+    },
+    "opensearch": {
+        "opensearch_search_logs": READ_ONLY,
+        "opensearch_search_by_ioc": READ_ONLY,
+        "opensearch_get_indices": READ_ONLY,
+        "opensearch_get_findings": READ_ONLY,
+    },
+    "palo-alto": {
+        "pan_block_ip": DESTRUCTIVE,
+        "pan_get_threats": READ_ONLY,
+    },
+    "slack": {
+        "slack_send_alert": WRITE,
+    },
+    "splunk-selfhosted": {
+        "splunk_generate_spl": READ_ONLY,
+        # A search, bound as telemetry_search.
+        "splunk_execute": READ_ONLY,
+        "splunk_search_ip": READ_ONLY,
+        "splunk_search_host": READ_ONLY,
+        "splunk_nl_search": READ_ONLY,
+    },
+    "url-analysis": {
+        "analyze_url": READ_ONLY,
+        "extract_iocs": READ_ONLY,
+    },
+    "vstrike": {
+        "vstrike_get_asset_topology": READ_ONLY,
+        "vstrike_list_adjacent_assets": READ_ONLY,
+        "vstrike_get_blast_radius": READ_ONLY,
+        "vstrike_get_segment_findings": READ_ONLY,
+        "vstrike_node_search": READ_ONLY,
+        "vstrike_node_drift_get": READ_ONLY,
+        "vstrike_storyline_list": READ_ONLY,
+        "vstrike_storyline_events_get": READ_ONLY,
+        "vstrike_legend_run_list": READ_ONLY,
+        "vstrike_legend_run_results_get": READ_ONLY,
+        "vstrike_network_graph_get": READ_ONLY,
+        # View state of the operator's own embedded console, nothing upstream.
+        "vstrike_ui_legend_apply": READ_ONLY,
+        "vstrike_ui_rightpanel_focus": READ_ONLY,
+    },
+}
+
+# Third-party servers a capability binds to (playbook_resolver.CAPABILITIES),
+# by the flattened name the registry reports. Unverifiable from this repo, so
+# only the search and lookup tools a read capability prefers are listed.
+THIRD_PARTY: Dict[str, str] = {
+    "splunk_run_splunk_search": READ_ONLY,
+    "splunk_search": READ_ONLY,
+    "splunk_oneshot_search": READ_ONLY,
+    "azure-sentinel_query": READ_ONLY,
+    "azure-sentinel_run_query": READ_ONLY,
+    "azure-sentinel_search": READ_ONLY,
+    "gcp-secops_search_security_events": READ_ONLY,
+    "gcp-secops_search": READ_ONLY,
+    "crowdstrike_falcon_search_detects": READ_ONLY,
+    "crowdstrike_query": READ_ONLY,
+    "crowdstrike_search": READ_ONLY,
+    "virustotal_get_ip_report": READ_ONLY,
+    "virustotal_get_domain_report": READ_ONLY,
+}
+
+# Tools the agent layer answers in its own process. A run's own trace is its
+# record; expand only rewrites the hunt's own scope.
+LOCAL: Dict[str, str] = {
+    "expand": READ_ONLY,
+    "record": RECORDS,
+    "finish": RECORDS,
+    # The tally workflow's counter: in-memory, per run.
+    "bump": READ_ONLY,
+}
+
+
+def _flatten(server: str, tool: str) -> str:
+    return f"{server}_{tool}"
+
+
+def _build() -> Dict[str, str]:
+    table: Dict[str, str] = {}
+
+    def put(name: str, effect: str) -> None:
+        if effect not in EFFECTS:
+            raise ValueError(f"{name}: unknown effect {effect!r}")
+        held = table.get(name)
+        if held is not None and held != effect:
+            raise ValueError(f"{name} is declared both {held} and {effect}")
+        table[name] = effect
+
+    for source in (BUILTIN, VIGIL_MCP, THIRD_PARTY, LOCAL):
+        for name, effect in source.items():
+            put(name, effect)
+    for server, tools in INTEGRATIONS.items():
+        for name, effect in tools.items():
+            put(name, effect)
+            put(_flatten(server, name), effect)
+    # splunk backs two servers (descriptor mcp_server_names): the same tool.py
+    # answers under either name.
+    for name, effect in INTEGRATIONS["splunk-selfhosted"].items():
+        put(_flatten("splunk", name), effect)
+    return table
+
+
+TOOL_EFFECTS: Mapping[str, str] = _build()
+
+
+# --- the fallback -----------------------------------------------------------
+
+# Direct-action verbs: calling one changes the world and a later read cannot
+# undo it.
+DESTRUCTIVE_VERBS = frozenset(
+    {
+        "isolate",
+        "unisolate",
+        "contain",
+        "quarantine",
+        "block",
+        "unblock",
+        "kill",
+        "terminate",
+        "shutdown",
+        "disable",
+        "deactivate",
+        "suspend",
+        "delete",
+        "remove",
+        "purge",
+        "wipe",
+        "revoke",
+        "ban",
+        "remediate",
+        "detonate",
+        "reset",
+        "release",
+    }
+)
+
+# Verbs that change or send something without destroying it.
+WRITE_VERBS = frozenset(
+    {
+        "create",
+        "update",
+        "set",
+        "add",
+        "send",
+        "post",
+        "put",
+        "patch",
+        "write",
+        "submit",
+        "upload",
+        "run",
+        "execute",
+        "exec",
+        "start",
+        "stop",
+        "restart",
+        "trigger",
+        "invoke",
+        "assign",
+        "apply",
+        "push",
+        "merge",
+        "modify",
+        "edit",
+        "enable",
+        "notify",
+        "rename",
+        "restore",
+        "rollback",
+        "approve",
+        "reject",
+        "escalate",
+        "install",
+        "deploy",
+    }
+)
+
+# Lead verbs that only read.
+READ_VERBS = frozenset(
+    {
+        "get",
+        "list",
+        "search",
+        "describe",
+        "fetch",
+        "query",
+        "show",
+        "read",
+        "lookup",
+        "count",
+        "stats",
+        "status",
+        "check",
+        "find",
+        "analyze",
+        "identify",
+        "lint",
+        "validate",
+        "explain",
+        "summarize",
+        "inspect",
+        "view",
+        "extract",
+        "geolocate",
+        "enrich",
+        "retrieve",
+    }
+)
+
+
+def heuristic(name: str) -> str:
+    """The class of a name the table does not hold, erring restrictive.
+
+    A destructive verb anywhere is ``destructive`` and a write verb anywhere is
+    ``write``, whatever leads. Otherwise a read verb leading the name, or in its
+    first three tokens -- room for a server and a vendor prefix,
+    ``acme-edr_xdr_get_host`` -- is ``read_only``; a destructive-looking noun
+    after it (``get_isolation_status``) is not a verb. Everything else is
+    ``destructive``: a name that says nothing is not evidence that the tool
+    does nothing.
+    """
+    tokens = [t for t in name.lower().split("_") if t]
+    if any(t in DESTRUCTIVE_VERBS for t in tokens):
+        return DESTRUCTIVE
+    if any(t in WRITE_VERBS for t in tokens):
+        return WRITE
+    if any(t in READ_VERBS for t in tokens[:3]):
+        return READ_ONLY
+    return DESTRUCTIVE
+
+
+# --- the lookups ------------------------------------------------------------
+
+
+def classify(name: str) -> Effect:
+    """The effect of ``name``: from the table when listed, else the fallback."""
+    effect = TOOL_EFFECTS.get(name)
+    if effect is not None:
+        return Effect(effect, MANIFEST_SOURCE)
+    return Effect(heuristic(name), HEURISTIC_SOURCE)
+
+
+def effect_of(name: str) -> str:
+    return classify(name).effect
+
+
+def is_gated(name: str) -> bool:
+    """True when ``name`` may run only once a person approves it."""
+    return effect_of(name) in GATED
+
+
+def gated_ids(names: Iterable[str]) -> List[str]:
+    """The names among ``names`` that need an approval, in their order."""
+    return [name for name in names if is_gated(name)]
+
+
+def integration_tool_names(server: str) -> List[str]:
+    return list(INTEGRATIONS.get(server, {}))
+
+
+def server_for(name: str) -> Optional[str]:
+    """The in-repo server a flattened integration name belongs to, if any."""
+    for server, tools in INTEGRATIONS.items():
+        for tool in tools:
+            if name == _flatten(server, tool):
+                return server
+    return None
+
+
+# --- the TypeScript mirror --------------------------------------------------
+
+MIRROR_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "services"
+    / "agent"
+    / "contracts"
+    / "tool-effects.ts"
+)
+
+
+def render_mirror() -> str:
+    """The generated TypeScript module, byte for byte."""
+    lines = [
+        "// GENERATED by `python -m core.llm.tool_effects --write` from",
+        "// core/llm/tool_effects.py, the one table of what each tool does to the",
+        "// world. Do not edit by hand: a ratchet holds this file equal to that one.",
+        "",
+        f"export const EFFECTS = {json.dumps(list(EFFECTS))} as const;",
+        "",
+        "export type Effect = (typeof EFFECTS)[number];",
+        "",
+        "// Runs only once a person approves it, on every surface.",
+        f"export const GATED: ReadonlySet<Effect> = new Set<Effect>({json.dumps(sorted(GATED))});",
+        "",
+        "export const TOOL_EFFECTS: Readonly<Record<string, Effect>> = {",
+    ]
+    for name in sorted(TOOL_EFFECTS):
+        lines.append(f"  {json.dumps(name)}: {json.dumps(TOOL_EFFECTS[name])},")
+    lines += ["};", ""]
+    return "\n".join(lines)
+
+
+def main(argv: List[str]) -> int:
+    rendered = render_mirror()
+    if "--write" in argv:
+        MIRROR_PATH.write_text(rendered, encoding="utf-8")
+        return 0
+    current = MIRROR_PATH.read_text(encoding="utf-8") if MIRROR_PATH.exists() else ""
+    if current != rendered:
+        sys.stderr.write(f"{MIRROR_PATH} is stale; run with --write\n")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
