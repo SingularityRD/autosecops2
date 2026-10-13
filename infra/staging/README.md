@@ -13,7 +13,7 @@ Bulut API anahtarı gerekmez; hiçbir gizli değer depoya girmez.
 | İşletim sistemi | Ubuntu 22.04 LTS | Ubuntu 24.04 LTS |
 | vCPU / RAM | 4 / 12 GB | 8 / 16 GB |
 | Disk | 60 GB | 100 GB (imajlar + model + PV) |
-| Ağ | 80/tcp açık (konsol), dışarıya HTTPS (GitHub, Docker Hub, get.k3s.io, get.helm.sh, ollama.com) | |
+| Ağ | 80/tcp açık (konsol), dışarıya HTTPS (GitHub, Docker Hub, raw.githubusercontent.com, get.helm.sh, ollama.com) | |
 
 Depo özelse VM'ye salt okunur bir **deploy key** ekleyin ve
 `STAGING_REPO_URL`'yi SSH adresi yapın (`git@github.com:SingularityRD/autosecops2.git`).
@@ -34,8 +34,12 @@ Yaptıkları:
 
 1. apt paketleri: `curl git jq python3 openssl docker.io` (imaj kurulumu için Docker).
 2. **k3s** (sabit `K3S_VERSION`, Traefik ingress ve local-path depolama dahil);
-   kubeconfig `0600`, yalnızca root okur.
-3. **Helm** (sabit `HELM_VERSION`; tarball `sha256sum` ile doğrulanır).
+   kubeconfig `0600`, yalnızca root okur. Kurulum betiği `get.k3s.io`'dan değil,
+   o sürümün GitHub etiketinden (`raw.githubusercontent.com/k3s-io/k3s/<sürüm>/install.sh`),
+   k3s ikilisi o sürümün GitHub sürüm sayfasından iner; ikisi de root olarak
+   çalışmadan önce depoda sabitlenmiş sha256 değerleriyle (`lib/pins.sh`) doğrulanır.
+3. **Helm** (sabit `HELM_VERSION`; tarball `lib/pins.sh`'deki sha256 ile doğrulanır,
+   aynı sunucudan indirilen `.sha256sum` dosyasına güvenilmez).
 4. İsteğe bağlı **yerel imaj kayıt defteri** (`STAGING_LOCAL_REGISTRY=1`):
    `127.0.0.1:5000`'de `registry:2` ve k3s `registries.yaml` aynası. Kapalıyken
    (varsayılan) imajlar doğrudan k3s containerd'ye aktarılır.
@@ -46,6 +50,18 @@ Yaptıkları:
    - `admin.env` — ilk yönetici hesabı (`STAGING_ADMIN_USER/EMAIL/PASSWORD`, parola rastgele)
 7. systemd: `autosecops-staging-nightly.timer` (her gece 02:30 UTC ±15 dk) ve
    `autosecops-staging-replay.timer` (05:00 UTC ±10 dk), ikisi de `Persistent=true`.
+   Birim dosyaları şablondur (`@STAGING_SRC_DIR@` vb.); `bootstrap.sh` bunları
+   o çalıştırmadaki `STAGING_SRC_DIR` / `STAGING_ETC_DIR` / `STAGING_STATE_DIR`
+   ile doldurarak kurar.
+
+Sürüm/sağlama toplamı sabitleri `lib/pins.sh`'dedir. `K3S_VERSION` ya da
+`HELM_VERSION` değiştirilirse ilgili `*_SHA256*` değerleri de verilmelidir;
+verilmezse `bootstrap.sh` hiçbir şey indirmeden durur. Konteyner imajları
+(`manifests/llm.yaml`, `REGISTRY_IMAGE`) tam sürüm etiketiyle sabitlidir;
+özet (digest) sabitleme, imaj kayıt defterlerine bu depoyu hazırlayan ortamdan
+erişilemediği için yapılmadı. VM'de `docker buildx imagetools inspect <imaj>`
+ile özeti alıp ör. `REGISTRY_IMAGE=docker.io/library/registry:2.8.3@sha256:<özet>`
+verilebilir.
 
 Konsola giriş: `http://<STAGING_HOST>/`, kullanıcı ve parola
 `/etc/autosecops-staging/admin.env` içinde (`sudo cat` ile okuyun).
@@ -57,11 +73,11 @@ Konsola giriş: `http://<STAGING_HOST>/`, kullanıcı ve parola
 
 | Adım | Ne yapar |
 |---|---|
-| update | `git fetch` + `reset --hard origin/main` + `git clean`; ardından **güncellenmiş** `nightly.sh --no-update` ile kendini yeniden başlatır |
+| update | `git fetch` + `reset --hard origin/main` + `git clean`; ardından **güncellenmiş** `nightly.sh --no-update` ile kendini yeniden başlatır (`exec` başarısız olursa `last-run.json` `step=exec` ile `fail` olur) |
 | build | `Dockerfile.{backend,daemon,agent}` → `<kayıt>/autosecops/vigil-<bileşen>:<commit 12 hane>`; yerel kayıt defterine `push` ya da `k3s ctr images import` |
 | chart | `helm dependency build`, `helm lint`, `helm template` (şablon hatası kurulumdan önce yakalanır) |
 | llm | `manifests/llm.yaml`: Ollama (PVC'li) + Bifrost (yalnızca Ollama sağlayıcısı), ikisi de yalnızca ClusterIP; `ollama pull $STAGING_LOCAL_MODEL` |
-| helm | `helm upgrade --install --atomic --wait` (`values-staging.yaml` + `/etc/autosecops-staging/secrets.yaml` + imaj etiketleri + `STAGING_HOST`); başarısızsa Helm önceki sürüme döner |
+| helm | `helm upgrade --install --atomic --wait` (`values-staging.yaml` + `/etc/autosecops-staging/secrets.yaml` + imaj etiketleri + `STAGING_HOST`); başarısızsa Helm önceki sürüme döner. **İlk kurulumda** ingress kapalı kurulur (`ingress.enabled=false`), ilk yönetici (`admin.env`) yalnızca `127.0.0.1` port-forward üzerinden oluşturulur, `/var/lib/autosecops-staging/admin-bootstrapped` yazılır ve ardından ingress açılır: ağdaki biri `POST /api/auth/bootstrap` ile yönetici hesabını önce kapamaz |
 | register-model | `lib/register_local_model.py` backend pod'unda: Bifrost katalog eşitlemesi, `bifrost-ollama` sağlayıcısı varsayılan ve `default_model=$STAGING_LOCAL_MODEL`; daemon ve llm-worker yeniden başlatılır |
 | smoke | `smoke.sh` (aşağıda) |
 | seed | `seed-demo.sh` (aşağıda) |
@@ -142,7 +158,7 @@ içindir; model kalitesinin resmî ölçümü `python -m evalkit` ile yapılır
 | `SMOKE_TRIAGE_TIMEOUT` | `900` | triage için en çok bekleme (sn) |
 
 Ortam değişkeniyle ayrıca: `K3S_VERSION` (`v1.31.4+k3s1`), `HELM_VERSION`
-(`v3.16.4`), `STAGING_HELM_TIMEOUT` (`20m`), `SMOKE_SKIP_TRIAGE=1` (modelsiz
+(`v3.16.4`) ve sağlama toplamları (`lib/pins.sh`), `STAGING_HELM_TIMEOUT` (`20m`), `SMOKE_SKIP_TRIAGE=1` (modelsiz
 kutuda triage adımını atla), `DRY_RUN=1` (yalnız `bootstrap.sh`: plan yaz).
 
 ## Sorun giderme

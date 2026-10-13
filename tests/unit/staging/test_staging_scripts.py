@@ -61,10 +61,28 @@ def test_expected_files_exist():
         "replay.sh", "values-staging.yaml", "staging.env.example",
         "manifests/llm.yaml", "lib/common.sh", "lib/api.sh", "lib/cluster.sh",
         "lib/corpus_to_findings.py", "lib/replay_report.py", "lib/register_local_model.py",
-        "systemd/autosecops-staging-nightly.service", "systemd/autosecops-staging-nightly.timer",
+        "lib/pins.sh", "systemd/autosecops-staging-nightly.service", "systemd/autosecops-staging-nightly.timer",
         "systemd/autosecops-staging-replay.service", "systemd/autosecops-staging-replay.timer",
     ):
         assert (STAGING / rel).is_file(), rel
+
+
+LIB_FILES = {
+    "api.sh", "cluster.sh", "common.sh", "pins.sh",
+    "corpus_to_findings.py", "register_local_model.py", "replay_report.py",
+}
+
+
+@pytest.mark.skipif(not (REPO / ".git").exists(), reason="not a git checkout (e.g. git archive export)")
+def test_lib_dir_is_tracked_by_git():
+    """Root .gitignore has a Python-template `lib/` rule; infra/staging/lib must
+    be negated out of it or a clean clone has no helpers and every script fails."""
+    r = _run(["git", "ls-files", "infra/staging/lib"], env=os.environ, cwd=REPO)
+    assert r.returncode == 0, r.stderr
+    tracked = {Path(line).name for line in r.stdout.splitlines()}
+    assert LIB_FILES <= tracked, sorted(LIB_FILES - tracked)
+    r = _run(["git", "check-ignore", "-q", "infra/staging/lib/new_helper.sh"], env=os.environ, cwd=REPO)
+    assert r.returncode == 1, "new files under infra/staging/lib would be ignored"
 
 
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
@@ -155,10 +173,31 @@ def test_systemd_units():
     assert "OnCalendar=" in timer and "Persistent=true" in timer
     assert "Unit=autosecops-staging-nightly.service" in timer
     svc = (STAGING / "systemd" / "autosecops-staging-nightly.service").read_text()
-    assert "ExecStart=/opt/autosecops-staging/src/infra/staging/nightly.sh" in svc
+    # templates: bootstrap.sh fills in the paths it set up
+    assert "ExecStart=@STAGING_SRC_DIR@/infra/staging/nightly.sh" in svc
+    assert "/opt/autosecops-staging" not in svc
     assert "Type=oneshot" in svc
     rsvc = (STAGING / "systemd" / "autosecops-staging-replay.service").read_text()
-    assert "ExecStart=/opt/autosecops-staging/src/infra/staging/replay.sh" in rsvc
+    assert "ExecStart=@STAGING_SRC_DIR@/infra/staging/replay.sh" in rsvc
+    for unit in (svc, rsvc):
+        for var in ("STAGING_SRC_DIR", "STAGING_ETC_DIR", "STAGING_STATE_DIR"):
+            assert f"Environment={var}=@{var}@" in unit
+
+
+def test_bootstrap_renders_units_with_custom_src_dir(tmp_path):
+    """Units must run the checkout bootstrap made, not a hard-coded /opt path."""
+    sysd = tmp_path / "systemd"
+    sysd.mkdir()
+    custom = tmp_path / "custom-src"
+    env = _env(tmp_path, DRY_RUN="1", STAGING_SRC_DIR=str(custom), SYSTEMD_DIR=str(sysd))
+    r = _run(["bash", str(STAGING / "bootstrap.sh")], env)
+    assert r.returncode == 0, r.stderr
+    assert f"ExecStart={custom}/infra/staging/nightly.sh" in r.stdout
+    assert f"ExecStart={custom}/infra/staging/replay.sh" in r.stdout
+    assert f"Environment=STAGING_ETC_DIR={tmp_path / 'etc'}" in r.stdout
+    assert "@STAGING_" not in r.stdout
+    assert "/opt/autosecops-staging" not in r.stdout
+    assert list(sysd.iterdir()) == []  # dry run writes nothing
 
 
 # --------------------------------------------------------------------------
@@ -173,9 +212,74 @@ def test_bootstrap_dry_run_plans_and_writes_nothing(tmp_path):
     out = r.stdout + r.stderr
     for needle in ("k3s", "helm", "autosecops-staging-nightly.timer", "secrets.yaml", "admin.env"):
         assert needle in out, needle
-    assert "sha256sum" in out  # helm download is verified
+    # downloads come from pinned URLs and are checked against committed sha256s
+    assert "get.k3s.io" not in out
+    assert "raw.githubusercontent.com/k3s-io/k3s/v1.31.4%2Bk3s1/install.sh" in out
+    assert "releases/download/v1.31.4%2Bk3s1/k3s" in out
+    assert "INSTALL_K3S_SKIP_DOWNLOAD=true" in out
+    pins = (STAGING / "lib" / "pins.sh").read_text()
+    for var in ("K3S_INSTALL_SH_SHA256", "K3S_BIN_SHA256_amd64", "HELM_SHA256_amd64"):
+        sha = pins.split(f"{var}:=", 1)[1][:64]
+        assert len(sha) == 64 and all(c in "0123456789abcdef" for c in sha), var
+    assert f"sha256 check /tmp/autosecops-k3s/install.sh == {pins.split('K3S_INSTALL_SH_SHA256:=', 1)[1][:64]}" in out
+    assert ".sha256sum" not in out  # helm is checked against the pin, not a fetched sum
+    assert "sha256 check /tmp/autosecops-helm/helm-v3.16.4-linux-" in out
     assert not (tmp_path / "etc").exists()
     assert not (tmp_path / "state").exists()
+
+
+def test_bootstrap_refuses_unpinned_k3s_version(tmp_path):
+    env = _env(tmp_path, DRY_RUN="1", K3S_VERSION="v1.99.0+k3s1",
+               PATH=f"{_no_k3s_path(tmp_path)}")
+    r = _run(["bash", str(STAGING / "bootstrap.sh")], env)
+    assert r.returncode != 0
+    assert "K3S_INSTALL_SH_SHA256" in r.stderr
+    assert "curl" not in r.stdout  # refused before downloading anything
+
+
+def test_verify_sha256(tmp_path):
+    f = tmp_path / "blob"
+    f.write_bytes(b"hello\n")
+    good = "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+    script = (f'source "{STAGING}/lib/common.sh"; source "{STAGING}/lib/pins.sh"; '
+              'verify_sha256 "$1" "$2" && echo OK')
+    ok = _run(["bash", "-c", script, "_", str(f), good], _env(tmp_path))
+    assert ok.returncode == 0 and "OK" in ok.stdout, ok.stderr
+    bad = _run(["bash", "-c", script, "_", str(f), "0" * 64], _env(tmp_path))
+    assert bad.returncode != 0 and "uyuşmuyor" in bad.stderr
+    empty = _run(["bash", "-c", script, "_", str(f), ""], _env(tmp_path))
+    assert empty.returncode != 0 and "sabitlenmiş sha256 yok" in empty.stderr
+
+
+def _no_k3s_path(tmp_path: Path) -> str:
+    """PATH without a k3s binary, so ensure_k3s always plans an install."""
+    return ":".join(p for p in os.environ["PATH"].split(":")
+                    if not (Path(p) / "k3s").exists())
+
+
+def test_write_once_is_atomic_and_rejects_empty(tmp_path):
+    """write_once generates to a temp file, refuses an empty/failed result and
+    leaves no partial file behind; a good result lands 0600."""
+    etc = tmp_path / "etc"
+    etc.mkdir()
+    fn = 'eval "$(sed -n "/^write_once()/,/^}}/p" "{0}/bootstrap.sh")"; '.format(STAGING)
+    base = f'source "{STAGING}/lib/common.sh"; {fn}'
+    for gen in ("empty_gen() {{ :; }}", "empty_gen() {{ echo partial; return 1; }}"):
+        script = base + gen.format() + '; write_once "$1" empty_gen'
+        r = _run(["bash", "-c", script, "_", str(etc / "secrets.yaml")], _env(tmp_path))
+        assert r.returncode != 0, gen
+        assert list(etc.iterdir()) == [], gen
+    # a failing secret source must not produce a file with empty secrets
+    gens = 'eval "$(sed -n "/^gen_secrets_yaml()/,/^}}/p" "{0}/bootstrap.sh")"; '.format(STAGING)
+    script = base + gens + 'gen_secret() { return 1; }; write_once "$1" gen_secrets_yaml'
+    r = _run(["bash", "-c", script, "_", str(etc / "secrets.yaml")], _env(tmp_path))
+    assert r.returncode != 0 and list(etc.iterdir()) == []
+    script = base + 'good_gen() { echo "a: 1"; }; write_once "$1" good_gen'
+    r = _run(["bash", "-c", script, "_", str(etc / "secrets.yaml")], _env(tmp_path))
+    assert r.returncode == 0, r.stderr
+    assert (etc / "secrets.yaml").read_text() == "a: 1\n"
+    assert stat.S_IMODE(os.stat(etc / "secrets.yaml").st_mode) == 0o600
+    assert [p.name for p in etc.iterdir()] == ["secrets.yaml"]
 
 
 def test_bootstrap_does_not_overwrite_existing_config(tmp_path):
@@ -417,6 +521,10 @@ case "$(basename "$0") $*" in
 esac
 # swallow stdin for `kubectl exec -i ... python -` and `k3s ctr images import -`
 case " $* " in *" - "*) cat >/dev/null ;; esac
+# record whether the instance still has no admin when helm installs
+if [ "$(basename "$0") $1" = "helm upgrade" ] && [ -n "${STAGING_BASE_URL:-}" ]; then
+  printf 'bootstrap-state %s\\n' "$(curl -s --max-time 2 "$STAGING_BASE_URL/api/auth/bootstrap" || true)" >> "$STUB_LOG"
+fi
 if [ -n "${STUB_FAIL:-}" ] && [ "$(basename "$0") $1" = "$STUB_FAIL" ]; then exit 1; fi
 exit 0
 """
@@ -464,8 +572,19 @@ def test_nightly_full_run_with_stubs(tmp_path, nightly_env):
         assert f"Dockerfile.{comp} -t staging.local/autosecops/vigil-{comp}:0123456789ab" in joined
     assert joined.count("k3s ctr -n k8s.io images import -") == 3
     # chart rendered before install; install is atomic with staging values + VM secrets
-    helm_install = next(c for c in calls if c.startswith("helm upgrade --install"))
-    assert calls.index(next(c for c in calls if c.startswith("helm template"))) < calls.index(helm_install)
+    installs = [i for i, c in enumerate(calls) if c.startswith("helm upgrade --install")]
+    assert len(installs) == 2, installs
+    first, second = (calls[i] for i in installs)
+    assert calls.index(next(c for c in calls if c.startswith("helm template"))) < installs[0]
+    # first install: ingress OFF and no admin yet; the admin is created over the
+    # loopback port-forward before the second install turns the ingress on
+    assert first.rstrip().endswith("--atomic --wait --timeout 20m")
+    assert "--set ingress.enabled=false" in first
+    assert '"required": true' in calls[installs[0] + 1] or '"required":true' in calls[installs[0] + 1]
+    assert "ingress.enabled=false" not in second
+    assert '"required": false' in calls[installs[1] + 1] or '"required":false' in calls[installs[1] + 1]
+    assert (tmp_path / "state" / "admin-bootstrapped").is_file()
+    helm_install = second
     for needle in ("--atomic", "--wait", "values-staging.yaml", str(tmp_path / "etc" / "secrets.yaml"),
                    "backend.image.tag=0123456789ab", "agentServe.image.tag=0123456789ab",
                    "global.imageRegistry=staging.local",
@@ -489,6 +608,32 @@ def test_nightly_full_run_with_stubs(tmp_path, nightly_env):
         assert any(f.startswith("smoke-") for f in api.state.findings)
     assert "docker build" not in log.read_text()
     assert "helm upgrade" not in log.read_text()
+
+
+def test_nightly_existing_admin_single_install(tmp_path, nightly_env):
+    """Once the first admin is recorded, upgrades keep the ingress on throughout."""
+    src, env, log = nightly_env
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "admin-bootstrapped").write_text("x\n")
+    with FakeApi(triage_after=0) as api:
+        env["STAGING_BASE_URL"] = api.url
+        r = _run([str(src / "infra" / "staging" / "nightly.sh"), "--no-update"], env, timeout=180)
+    assert r.returncode == 0, r.stderr
+    installs = [c for c in log.read_text().splitlines() if c.startswith("helm upgrade --install")]
+    assert len(installs) == 1 and "ingress.enabled=false" not in installs[0]
+
+
+def test_nightly_exec_failure_records_status(tmp_path, nightly_env):
+    """The EXIT trap stays armed across exec: if the updated nightly.sh cannot
+    be exec'd, last-run.json still says fail at step exec."""
+    src, env, log = nightly_env
+    script = src / "infra" / "staging" / "nightly.sh"
+    script.chmod(0o644)  # run via bash; the exec of the same path then fails
+    r = _run(["bash", str(script)], env)
+    assert r.returncode != 0
+    status = json.loads((tmp_path / "state" / "last-run.json").read_text())
+    assert status["result"] == "fail" and status["step"] == "exec"
+    assert "NIGHTLY: FAIL" in r.stderr
 
 
 def test_nightly_local_registry_pushes(tmp_path, nightly_env):

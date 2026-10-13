@@ -14,7 +14,11 @@
 #   2. helm dependency build + lint + template (render check)
 #   3. kubectl apply manifests/llm.yaml (Ollama + Bifrost), pull the model
 #   4. helm upgrade --install --atomic --wait with values-staging.yaml and
-#      $STAGING_ETC_DIR/secrets.yaml
+#      $STAGING_ETC_DIR/secrets.yaml. Until the first admin exists the release
+#      is installed with the ingress OFF: the first admin is created through a
+#      loopback port-forward (admin.env credentials), recorded in
+#      $STAGING_STATE_DIR/admin-bootstrapped, and only then is the ingress
+#      turned on. Nobody on the network can race us to POST /api/auth/bootstrap.
 #   5. register the local model as the default provider, restart daemon/worker
 #   6. smoke.sh (health, login, ingest, triage), then seed-demo.sh
 #   7. write $STAGING_STATE_DIR/last-run.json; exit non-zero on any failure
@@ -40,11 +44,14 @@ export STAGING_LOCAL_MODEL
 
 # shellcheck source=lib/cluster.sh
 source "$STAGING_LIB_DIR/cluster.sh"
+# shellcheck source=lib/api.sh
+source "$STAGING_LIB_DIR/api.sh"
 
 CHART="$STAGING_SRC_DIR/infra/helm/vigil"
 RUN_STEP="init"
 RUN_SHA=""
 RUN_STARTED="$(date -u +%FT%TZ)"
+ADMIN_MARKER="$STAGING_STATE_DIR/admin-bootstrapped"
 
 image_registry() {
   if [ "$STAGING_LOCAL_REGISTRY" = "1" ]; then
@@ -145,11 +152,26 @@ deploy_llm() {
   kc exec deploy/ollama -- ollama pull "$STAGING_LOCAL_MODEL" >/dev/null
 }
 
+# deploy_release [extra helm args...]
 deploy_release() {
   RUN_STEP="helm"
-  log "helm upgrade --install $STAGING_RELEASE ($RUN_SHA)"
+  log "helm upgrade --install $STAGING_RELEASE ($RUN_SHA) $*"
   helm upgrade --install "$STAGING_RELEASE" "$CHART" -n "$STAGING_NAMESPACE" --create-namespace \
-    "${HELM_VALUES[@]}" --atomic --wait --timeout "$STAGING_HELM_TIMEOUT"
+    "${HELM_VALUES[@]}" "$@" --atomic --wait --timeout "$STAGING_HELM_TIMEOUT"
+}
+
+admin_bootstrapped() { [ -f "$ADMIN_MARKER" ]; }
+
+# Create the first admin over a loopback port-forward (idempotent: an instance
+# that already has users answers required=false), then record it.
+ensure_first_admin() {
+  RUN_STEP="admin"
+  start_port_forward
+  api_wait_up 300 || die "/api/health yanıt vermiyor (HTTP $API_STATUS)"
+  api_ensure_admin || die "ilk yönetici oluşturulamadı"
+  stop_port_forward
+  printf '%s\n' "$(date -u +%FT%TZ) $RUN_SHA" >"$ADMIN_MARKER"
+  log "ilk yönetici hazır; ingress açılabilir"
 }
 
 register_model() {
@@ -170,6 +192,10 @@ deploy() {
   RUN_SHA="$(git -C "$STAGING_SRC_DIR" rev-parse --short=12 HEAD)"
   [[ "$STAGING_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die "geçersiz STAGING_HOST: $STAGING_HOST"
   [ -f "$STAGING_ETC_DIR/secrets.yaml" ] || die "$STAGING_ETC_DIR/secrets.yaml yok (önce bootstrap.sh)"
+  if [ -z "${STAGING_ADMIN_PASSWORD:-}" ]; then
+    [ -f "$STAGING_ETC_DIR/admin.env" ] || die "$STAGING_ETC_DIR/admin.env yok (önce bootstrap.sh)"
+    load_env_file "$STAGING_ETC_DIR/admin.env"
+  fi
   local reg
   reg="$(image_registry)"
   HELM_VALUES=(
@@ -194,9 +220,17 @@ deploy() {
     build_images
     render_chart
     deploy_llm
-    deploy_release
+    if admin_bootstrapped; then
+      deploy_release
+    else
+      # First install: no ingress until the first admin exists.
+      deploy_release --set ingress.enabled=false
+      ensure_first_admin
+      deploy_release
+    fi
     register_model
   fi
+  admin_bootstrapped || ensure_first_admin
 
   RUN_STEP="port-forward"
   start_port_forward
@@ -218,8 +252,17 @@ main() {
   if [ "${1:-}" != "--no-update" ]; then
     trap on_exit EXIT
     update_checkout
-    trap - EXIT
-    exec "$STAGING_SRC_DIR/infra/staging/nightly.sh" --no-update
+    # The EXIT trap stays armed: a successful exec replaces this process
+    # without running it; a failed one returns (execfail; errexit must be off
+    # or bash exits 127 skipping the trap) and die records the failure in
+    # last-run.json.
+    RUN_STEP="exec"
+    local next="$STAGING_SRC_DIR/infra/staging/nightly.sh"
+    shopt -s execfail
+    set +e
+    exec "$next" --no-update
+    set -e
+    die "güncellenmiş nightly.sh çalıştırılamadı: $next"
   fi
   deploy
 }

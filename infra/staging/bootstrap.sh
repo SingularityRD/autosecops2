@@ -8,8 +8,11 @@
 #
 # What it sets up:
 #   - apt packages: curl, git, jq, python3, openssl, docker.io (image builds)
-#   - k3s (pinned K3S_VERSION; Traefik ingress, local-path storage)
-#   - helm (pinned HELM_VERSION, sha256-verified tarball)
+#   - k3s (pinned K3S_VERSION; Traefik ingress, local-path storage). The
+#     installer comes from that version's tag on GitHub and the k3s binary from
+#     its release; both are checked against sha256 values committed in
+#     lib/pins.sh before anything runs as root.
+#   - helm (pinned HELM_VERSION, tarball checked against lib/pins.sh)
 #   - optional local registry on 127.0.0.1:5000 (STAGING_LOCAL_REGISTRY=1)
 #   - repo checkout at $STAGING_SRC_DIR (default /opt/autosecops-staging/src)
 #   - $STAGING_ETC_DIR (default /etc/autosecops-staging), mode 0700:
@@ -17,19 +20,20 @@
 #       secrets.yaml  Helm values with generated DB password / JWT key / agent token
 #       admin.env     generated first-admin credentials for smoke/seed/replay
 #     Existing files are never overwritten.
-#   - systemd: autosecops-staging-nightly.timer and -replay.timer, enabled
+#   - systemd: autosecops-staging-nightly.timer and -replay.timer, enabled;
+#     the units are rendered with this run's STAGING_SRC_DIR / STAGING_ETC_DIR /
+#     STAGING_STATE_DIR
 #
-# Env (defaults): K3S_VERSION [v1.31.4+k3s1], HELM_VERSION [v3.16.4],
-#   REGISTRY_IMAGE [docker.io/library/registry:2.8.3], plus anything in
+# Env (defaults in lib/pins.sh): K3S_VERSION, HELM_VERSION, REGISTRY_IMAGE and
+#   their *_SHA256* checksums, plus anything in
 #   staging.env.example (read from $STAGING_ETC_DIR/staging.env when present).
 # shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 # shellcheck source=lib/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
-: "${K3S_VERSION:=v1.31.4+k3s1}"
-: "${HELM_VERSION:=v3.16.4}"
-: "${REGISTRY_IMAGE:=docker.io/library/registry:2.8.3}"
+# shellcheck source=lib/pins.sh
+source "$STAGING_LIB_DIR/pins.sh"
 : "${SYSTEMD_DIR:=/etc/systemd/system}"
 : "${K3S_REGISTRIES_FILE:=/etc/rancher/k3s/registries.yaml}"
 export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
@@ -77,6 +81,9 @@ ensure_packages() {
   run systemctl enable --now docker
 }
 
+# URL-encode the "+" in k3s versions (v1.31.4+k3s1) for GitHub paths.
+k3s_ref() { printf '%s' "${K3S_VERSION//+/%2B}"; }
+
 ensure_k3s() {
   local have=""
   if command -v k3s >/dev/null 2>&1; then
@@ -87,13 +94,35 @@ ensure_k3s() {
     return 0
   fi
   log "k3s ${have:-yok} -> $K3S_VERSION"
-  local installer=/tmp/autosecops-k3s-install.sh
-  is_dry_run || installer="$(mktemp)"
-  run curl -sfL --retry 3 -o "$installer" https://get.k3s.io
+  local a bin_name bin_sha tmp ref
+  a="$(arch)"
+  bin_name=k3s
+  [ "$a" = "amd64" ] || bin_name="k3s-$a"
+  bin_sha="$(pinned_sha K3S_BIN_SHA256 "$a")"
+  ref="$(k3s_ref)"
+  # Refuse before downloading anything when a pin is missing (e.g. an
+  # overridden K3S_VERSION without its checksums).
+  [[ "$K3S_INSTALL_SH_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "K3S_INSTALL_SH_SHA256 sabitlenmemiş ($K3S_VERSION; lib/pins.sh)"
+  [[ "$bin_sha" =~ ^[0-9a-f]{64}$ ]] || die "K3S_BIN_SHA256_$a sabitlenmemiş ($K3S_VERSION; lib/pins.sh)"
+  tmp=/tmp/autosecops-k3s
+  is_dry_run || tmp="$(mktemp -d)"
+  # Installer from the pinned tag (not the moving get.k3s.io), binary from the
+  # pinned release; both verified against committed checksums.
+  run curl -sfL --retry 3 -o "$tmp/install.sh" "https://raw.githubusercontent.com/k3s-io/k3s/$ref/install.sh"
+  run curl -sfL --retry 3 -o "$tmp/$bin_name" "https://github.com/k3s-io/k3s/releases/download/$ref/$bin_name"
+  if is_dry_run; then
+    printf '+ sha256 check %s/install.sh == %s\n' "$tmp" "$K3S_INSTALL_SH_SHA256"
+    printf '+ sha256 check %s/%s == %s\n' "$tmp" "$bin_name" "$bin_sha"
+  else
+    verify_sha256 "$tmp/install.sh" "$K3S_INSTALL_SH_SHA256"
+    verify_sha256 "$tmp/$bin_name" "$bin_sha"
+  fi
+  run install -m 0755 "$tmp/$bin_name" /usr/local/bin/k3s
+  # INSTALL_K3S_SKIP_DOWNLOAD: the installer uses the verified binary above.
   # 0600 kubeconfig: only root (the nightly unit) reads cluster-admin creds.
-  run env INSTALL_K3S_VERSION="$K3S_VERSION" INSTALL_K3S_EXEC="server --write-kubeconfig-mode 0600" \
-    sh "$installer"
-  is_dry_run || rm -f "$installer"
+  run env INSTALL_K3S_SKIP_DOWNLOAD=true INSTALL_K3S_VERSION="$K3S_VERSION" \
+    INSTALL_K3S_EXEC="server --write-kubeconfig-mode 0600" sh "$tmp/install.sh"
+  is_dry_run || rm -rf "$tmp"
   run k3s kubectl wait --for=condition=Ready node --all --timeout=180s
 }
 
@@ -108,14 +137,19 @@ ensure_helm() {
   fi
   log "helm ${have:-yok} -> $HELM_VERSION"
   local a tarball tmp
+  local want
   a="$(arch)"
   tarball="helm-${HELM_VERSION}-linux-${a}.tar.gz"
+  want="$(pinned_sha HELM_SHA256 "$a")"
+  [[ "$want" =~ ^[0-9a-f]{64}$ ]] || die "HELM_SHA256_$a sabitlenmemiş ($HELM_VERSION; lib/pins.sh)"
   tmp=/tmp/autosecops-helm
   is_dry_run || tmp="$(mktemp -d)"
   run curl -sfL --retry 3 -o "$tmp/$tarball" "https://get.helm.sh/$tarball"
-  run curl -sfL --retry 3 -o "$tmp/$tarball.sha256sum" "https://get.helm.sh/$tarball.sha256sum"
-  if ! is_dry_run; then
-    (cd "$tmp" && sha256sum -c "$tarball.sha256sum") || die "helm sha256 doğrulaması başarısız"
+  # Checked against the committed pin, not a .sha256sum fetched from the same host.
+  if is_dry_run; then
+    printf '+ sha256 check %s/%s == %s\n' "$tmp" "$tarball" "$want"
+  else
+    verify_sha256 "$tmp/$tarball" "$want"
   fi
   run tar -xzf "$tmp/$tarball" -C "$tmp"
   run install -m 0755 "$tmp/linux-${a}/helm" /usr/local/bin/helm
@@ -174,26 +208,42 @@ write_once() {
     printf '+ write %s (0600, generated)\n' "$path"
     return 0
   fi
-  (umask 077; "$gen" >"$path")
-  chmod 0600 "$path"
+  # Generate next to the target, check it, then rename: a failed or empty
+  # generator never leaves a half-written file that later runs would keep.
+  local tmp
+  tmp="$(umask 077; mktemp "$path.tmp.XXXXXX")"
+  if ! (umask 077; "$gen" >"$tmp") || [ ! -s "$tmp" ]; then
+    rm -f "$tmp"
+    die "$(basename "$path") üretilemedi"
+  fi
+  chmod 0600 "$tmp"
+  mv -f "$tmp" "$path"
   log "$(basename "$path"): oluşturuldu"
 }
 
 gen_staging_env() { cat "$STAGING_DIR/staging.env.example"; }
 
+# Secrets are generated before anything is printed, so a failing generator
+# returns non-zero instead of emitting an empty value (write_once then refuses).
 gen_secrets_yaml() {
+  local pg jwt agent
+  pg="$(gen_secret 24)" && [ -n "$pg" ] || return 1
+  jwt="$(gen_secret 64)" && [ -n "$jwt" ] || return 1
+  agent="$(gen_secret 48)" && [ -n "$agent" ] || return 1
   printf '# Generated by bootstrap.sh on %s. Do not commit.\n' "$(date -u +%FT%TZ)"
   printf 'secrets:\n'
-  printf '  postgresPassword: "%s"\n' "$(gen_secret 24)"
-  printf '  jwtSecretKey: "%s"\n' "$(gen_secret 64)"
-  printf '  agentInternalToken: "%s"\n' "$(gen_secret 48)"
+  printf '  postgresPassword: "%s"\n' "$pg"
+  printf '  jwtSecretKey: "%s"\n' "$jwt"
+  printf '  agentInternalToken: "%s"\n' "$agent"
 }
 
 gen_admin_env() {
+  local pw
+  pw="$(gen_secret 24)" && [ -n "$pw" ] || return 1
   printf '# Generated by bootstrap.sh on %s. Do not commit.\n' "$(date -u +%FT%TZ)"
   printf 'STAGING_ADMIN_USER=%s\n' "$STAGING_ADMIN_USER"
   printf 'STAGING_ADMIN_EMAIL=%s\n' "$STAGING_ADMIN_EMAIL"
-  printf 'STAGING_ADMIN_PASSWORD=%s\n' "$(gen_secret 24)"
+  printf 'STAGING_ADMIN_PASSWORD=%s\n' "$pw"
 }
 
 ensure_config() {
@@ -204,17 +254,39 @@ ensure_config() {
   write_once "$STAGING_ETC_DIR/admin.env" gen_admin_env
 }
 
+# render_unit <file>: substitute @STAGING_SRC_DIR@ / @STAGING_ETC_DIR@ /
+# @STAGING_STATE_DIR@ so the units run the checkout and config this bootstrap
+# set up, wherever they are.
+render_unit() {
+  local d
+  for d in "$STAGING_SRC_DIR" "$STAGING_ETC_DIR" "$STAGING_STATE_DIR"; do
+    [[ "$d" =~ ^/[A-Za-z0-9._/-]+$ ]] || die "systemd için geçersiz yol: $d"
+  done
+  sed -e "s|@STAGING_SRC_DIR@|$STAGING_SRC_DIR|g" \
+      -e "s|@STAGING_ETC_DIR@|$STAGING_ETC_DIR|g" \
+      -e "s|@STAGING_STATE_DIR@|$STAGING_STATE_DIR|g" "$1"
+}
+
 ensure_systemd() {
-  local unit changed=0
+  local unit changed=0 rendered
+  rendered="$(mktemp -d)"
   for unit in "$STAGING_DIR"/systemd/*.service "$STAGING_DIR"/systemd/*.timer; do
-    local dest
+    local dest out
     dest="$SYSTEMD_DIR/$(basename "$unit")"
-    if [ -f "$dest" ] && cmp -s "$unit" "$dest"; then
+    out="$rendered/$(basename "$unit")"
+    render_unit "$unit" >"$out"
+    if [ -f "$dest" ] && cmp -s "$out" "$dest"; then
       continue
     fi
-    run install -m 0644 "$unit" "$dest"
+    if is_dry_run; then
+      printf '+ install %s -> %s:\n' "$(basename "$unit")" "$dest"
+      sed 's/^/    /' "$out"
+    else
+      install -m 0644 "$out" "$dest"
+    fi
     changed=1
   done
+  rm -rf "$rendered"
   if [ "$changed" = "1" ]; then
     run systemctl daemon-reload
   fi
