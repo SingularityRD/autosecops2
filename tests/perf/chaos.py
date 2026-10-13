@@ -37,9 +37,11 @@ Scenarios:
                  one is restarted: the holder of the leader advisory lock
                  (``pg_locks`` key (1287, 3900), the session's
                  ``application_name`` names the instance) must change within
-                 ``CHAOS_TAKEOVER_BOUND`` seconds (default 30) and, on the
-                 local target, a surviving daemon's /health must say
-                 ``role=leader``. The takeover time is reported. Skipped when
+                 ``CHAOS_TAKEOVER_BOUND`` seconds (default 30); that time is
+                 reported (``takeover_seconds``). On the local target the
+                 moment a surviving daemon's /health says ``role=leader`` is
+                 also recorded (informational: the health endpoint stalls
+                 while the new leader starts its loops). Skipped when
                  W3.9 is not in the checkout; ``--scenario all`` on the local
                  target runs it on its own two-daemon stack when it is.
 ``slow_vendor``  model provider answers after ``CHAOS_SLOW_SECONDS`` (20);
@@ -520,6 +522,9 @@ class ScenarioResult:
     takeover_bound: Optional[float] = None
     leader_before: Optional[str] = None
     leader_after: Optional[str] = None
+    # Local target: seconds from the kill until a surviving daemon's /health
+    # said role=leader (informational; None if not seen in the fault window).
+    leader_health_seconds: Optional[float] = None
     # Set when the scenario hits a known, not-yet-fixed product defect.
     known_issue: Optional[str] = None
 
@@ -638,10 +643,7 @@ def run_scenario(
             # Before the killed leader is restarted: the standby must take
             # over on its own, or the restart would hide a failed election.
             took, res.leader_after = wait_takeover(
-                engine,
-                res.leader_before,
-                res.takeover_bound,
-                confirm=getattr(target, "takeover_confirmed", None),
+                engine, res.leader_before, res.takeover_bound
             )
             res.takeover_seconds = took
             if took is None:
@@ -652,6 +654,23 @@ def run_scenario(
                 mark("takeover NOT observed")
             else:
                 mark(f"takeover after {took:.2f}s by {res.leader_after}")
+                # Informational: when the new leader's /health says so. Its
+                # health endpoint stalls while it starts its components, so
+                # this is later than the lock change and does not gate.
+                confirm = getattr(target, "takeover_confirmed", None)
+                if confirm is not None:
+                    rest = fault - (time.time() - window.inject_at)
+                    seen, _ = wait_takeover(
+                        engine,
+                        None,
+                        max(1.0, rest),
+                        confirm=confirm,
+                        holder=lambda _e: "any",
+                        poll=1.0,
+                    )
+                    res.leader_health_seconds = (
+                        None if seen is None else round(took + seen, 2)
+                    )
         time.sleep(max(0.0, fault - (time.time() - window.inject_at)))
         for action in scenario.heal:
             mark(f"heal {action}")

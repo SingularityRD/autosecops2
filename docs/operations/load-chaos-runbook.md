@@ -169,9 +169,28 @@ Yorumlama:
 Her senaryo, `--rate` hızında `pre + fault + post` saniye yük gönderir,
 `pre` saniye sonra arızayı enjekte eder, `fault` saniye sonra iyileştirir ve
 her kabul edilen bulgunun kurtarma sınırı içinde karara bağlanmasını bekler.
-Geçme koşulu: kayıp 0, çift satır 0, karara bağlanmamış 0, kurtarma ≤ sınır ve
-senaryonun kendi kontrolleri. Komutu tanımlanmamış senaryo **atlanır**
-(SKIP), taklit edilmez.
+Geçme koşulu: kayıp 0, çift satır 0, **çift işleme** ≤ eşik (varsayılan 0),
+karara bağlanmamış 0, kurtarma ≤ sınır ve senaryonun kendi kontrolleri.
+Komutu tanımlanmamış senaryo **atlanır** (SKIP), taklit edilmez.
+
+- **Çift işleme** (`double_processed`): kararı (verdict) çoktan verilmiş bir
+  bulgu için sonradan yeni bir `alert_lane_decisions` satırı yazılması (son
+  karar zamanı > karar anı + 2 sn saat payı). `findings.finding_id` birincil
+  anahtar olduğu için "çift satır" yapısal olarak 0'dır; aynı bulgunun iki kez
+  işlenmesini bu sayı yakalar. Uçuştaki (henüz karara bağlanmamış) bulgunun
+  yeniden yönlendirilmesi en-az-bir-kez işlemedir, `re_decided` olarak yalnızca
+  raporlanır. Eşik: `CHAOS_MAX_DOUBLE` (tümü) ya da
+  `CHAOS_MAX_DOUBLE_<SENARYO>`.
+- **İlk triage zamanı:** yeniden triage `ai_triage.timestamp`'i ezer. Ölçüm her
+  yoklamada (3 sn) okunan ilk değeri saklar ve gecikmeyi ilk karara göre
+  hesaplar; değeri değişen bulgular `retriaged` olarak sayılır. Çözünürlük
+  yoklama aralığıdır.
+- **Bilinen hata — `pg_restart`:** W0.12 (`wp/w0.12-ingest-durability`, kalıcı
+  webhook spool'u) birleşene kadar Postgres kesintisinde kabul edilmiş
+  bulgular kaybolur ve senaryo `FAIL (KNOWN, see reasons)` yazar. İddia
+  gevşetilmez: W0.12 içeren bir sürümde `pg_restart` **kayıp 0** ile PASS
+  vermelidir; vermiyorsa bu bir gerilemedir (regresyon). pytest'te senaryo
+  W0.12 yokken katı `xfail`, varken normal testtir.
 
 Arızalar staging'de kabuk komutlarıyla verilir:
 
@@ -211,9 +230,29 @@ export CHAOS_CMD_DAEMON_START="kubectl -n $NS rollout status sts/autosecops-daem
 > üreticisinin bağlantı hatası görüp yeniden denemesine yol açar (beklenen
 > davranış).
 
-Daemon sıcak yedeği (W3.9 birleştikten sonra; `daemon.leaderElection.enabled=true`,
-iki kopya). Lider öldürülür, takipçi devralmalıdır; Service yalnızca hazır
-pod'a yönlendirir, takipçi webhook'ta 503 döner ve yük üreticisi yeniden dener:
+Daemon sıcak yedeği (W3.9; `daemon.leaderElection.enabled=true`, iki kopya).
+Lider öldürülür, takipçi devralmalıdır.
+
+> **Takipçi pod'u da hazırdır (Ready) ve trafik alır.** Takipçinin `/health`'i
+> 200 döner (`"role": "standby"`), dolayısıyla Service onu uç noktalardan
+> çıkarmaz; takipçiye düşen webhook istekleri **503 + `Retry-After`** alır.
+> Yük üreticisi 503'ü yeniden dener (ve birden fazla `--webhook`/
+> `LOADTEST_WEBHOOK_URLS` verilmişse sıradakine geçer), bu yüzden bu 503'ler
+> kayıp değildir; `results.json` → `client.final_status` ve
+> `retried_requests` içinde görünür. Gerçek bir gönderici (SIEM) de 503'te
+> yeniden denemelidir — denemiyorsa iki kopyalı kurulumda bulgu kaybeder.
+
+Senaryo, öldürülen lider yeniden başlatılmadan **önce** devralmayı doğrular:
+lider danışma kilidinin (`pg_locks`, anahtar `(1287, 3900)`) sahibi oturumun
+`application_name`'i (`vigil-daemon-lock:<örnek>`) `CHAOS_TAKEOVER_BOUND`
+(varsayılan 30 sn ≥ kira 15 + yeniden deneme 2) içinde değişmelidir. Ölçülen
+süre `takeover_seconds` (sonuç tablosunda "Takeover (s)") olarak raporlanır.
+Yerel hedefte hayatta kalan daemon'un `/health`'inin `role=leader` dediği an da
+`leader_health_seconds` olarak kaydedilir; bu yalnızca bilgidir, çünkü yeni
+lider döngülerini başlatırken sağlık uç noktası onlarca saniye yanıt
+vermeyebilir (bu makinede ~17 sn görüldü). Devralma görülmezse senaryo FAIL'dir; yeniden başlatma bunu
+gizleyemez. Kilit sorgusu `LOADTEST_DB_URL` kullanıcısının `pg_locks` ve
+`pg_stat_activity`'yi okumasını gerektirir (aynı veritabanı kullanıcısı yeter).
 
 ```bash
 LEADER=$(for p in autosecops-daemon-0 autosecops-daemon-1; do
@@ -221,6 +260,11 @@ LEADER=$(for p in autosecops-daemon-0 autosecops-daemon-1; do
 export CHAOS_CMD_LEADER_KILL="kubectl -n $NS delete pod $LEADER --grace-period=0 --force"
 export CHAOS_CMD_LEADER_RESTART="kubectl -n $NS rollout status sts/autosecops-daemon --timeout=300s"
 ```
+
+Yerelde `--scenario all`, W3.9 depoda varsa `daemon_kill_standby`'ı iki
+daemon'lu ayrı bir yığında kendiliğinden çalıştırır (diğer senaryolar tek
+daemon'lu yığında kalır). `--no-standby` bunu kapatır (senaryo SKIP);
+`--standby` tüm senaryoları iki daemon'lu yığında koşturur.
 
 Çalıştırma (her senaryo ayrı süreç; sonuçlar `results.json` / `results.md`):
 
@@ -253,10 +297,10 @@ CHAOS_TESTS=1 CHAOS_TARGET=staging PERF_OUT_DIR=$OUT \
 |---|---|---|
 | `llm_outage` | Bulgular yazılmaya devam eder; kural şeridi karar vermeye devam eder; model şeridindekiler birikir (`ai_triage_error`), kesici açılır; iyileştirmeden sonra backfill hepsini triage eder | kural şeridi bulguları arıza içinde karara bağlanır; birikim (backlog) arıza süresince artar |
 | `llm_timeout` | Aynı; çağrılar `DAEMON_TRIAGE_TIMEOUT` ile kesilir | aynı |
-| `pg_restart` | Webhook 200 verip bellekteki kuyruğa alır; yazma yeniden denenir (`_STORE_ATTEMPTS`); kesinti uzarsa yazma bırakılır | kayıp 0 |
+| `pg_restart` | W0.12 öncesi: webhook 200 verip bellekteki kuyruğa alır, kesinti uzarsa yazma bırakılır (bilinen FAIL). W0.12 sonrası: bulgu diskteki spool'a yazılır ve Postgres dönünce yeniden oynatılır | kayıp 0 (W0.12 sonrası zorunlu) |
 | `redis_restart` | Tekilleştirme anahtarları ve LLM kuyruğundaki işler kaybolur; bulgular veritabanında olduğu için backfill tamamlar | kayıp 0, çift satır 0 |
 | `daemon_kill` | Bellekteki devir kuyruğu kaybolur; yeniden başlayan daemon yazılmış ama karara bağlanmamış bulguları backfill ile tamamlar | kayıp 0 |
-| `daemon_kill_standby` | Takipçi kira süresi (`DAEMON_LEADER_LEASE_SECONDS`) içinde lider olur | kayıp 0, kurtarma ≤ sınır |
+| `daemon_kill_standby` | Takipçi kira süresi (`DAEMON_LEADER_LEASE_SECONDS`) + yeniden deneme içinde lider olur; takipçi o ana kadar webhook'ta 503 döner, yük üreticisi yeniden dener | lider kilidinin sahibi, eski lider yeniden başlatılmadan önce `CHAOS_TAKEOVER_BOUND` içinde değişir; kayıp 0, çift işleme 0, kurtarma ≤ sınır |
 | `slow_vendor` | Alım yavaşlamaz; triage gecikir | webhook kabul p95 < 2 sn |
 
 Sonuçta `results.md` tablosu, bu runbook'un sonundaki kayıt şablonuna
@@ -314,6 +358,6 @@ Küçük model şeridi p95:   … sn (n=…)      hedef < 60 sn    PASS/FAIL
 Verdict run p95:          … / n/a          hedef < 10 dk
 Kayıp:                    …                hedef 0
 Kaos:                     llm_outage …, llm_timeout …, pg_restart …, redis_restart …,
-                          daemon_kill …, daemon_kill_standby …, slow_vendor …
+                          daemon_kill …, daemon_kill_standby … (devralma … sn), slow_vendor …
 Açılan iş paketleri:      …
 ```
