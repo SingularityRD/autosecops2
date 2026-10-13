@@ -23,15 +23,17 @@ HUNT_RUN_KIND = "hunt"
 INVESTIGATE_RUN_KIND = "investigate"
 ROOT_CAUSE_RUN_KIND = "root_cause"
 ADJUDICATE_RUN_KIND = "adjudicate"
-# hunt and adjudicate drive the hypothesis loop. root_cause does not: it traces
-# backward on its own workflow, so a gate on "is this the hunt loop?" must not
+# One uncertain alert, a small budget, one contract verdict at the end (W2.1).
+VERDICT_RUN_KIND = "verdict"
+# hunt, adjudicate and verdict drive the hypothesis loop. root_cause does not: it
+# traces backward on its own workflow, so a gate on "is this the hunt loop?" must not
 # catch it. Everything that asks is_hunt_like reads this set.
-HUNT_LIKE_RUN_KINDS = frozenset({HUNT_RUN_KIND, ADJUDICATE_RUN_KIND})
+HUNT_LIKE_RUN_KINDS = frozenset({HUNT_RUN_KIND, ADJUDICATE_RUN_KIND, VERDICT_RUN_KIND})
 WORKFLOW_SCHEME = "workflow:"
 
 
 def is_hunt_like(run_kind: Optional[str]) -> bool:
-    """True when a run_kind drives the hunt hypothesis loop (hunt, adjudicate)."""
+    """True when a run_kind drives the hunt hypothesis loop (hunt, adjudicate, verdict)."""
     return run_kind in HUNT_LIKE_RUN_KINDS
 
 

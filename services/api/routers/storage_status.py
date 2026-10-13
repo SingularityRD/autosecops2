@@ -252,7 +252,7 @@ def reconnect_database(current_user: User = Depends(get_current_active_user)):
 def _schema_message(schema: dict) -> str:
     state = schema["state"]
     if state == "empty":
-        return "Connected. The database has no Vigil tables yet - initialize the schema to use it."
+        return "Connected. The database has no AutoSecOps tables yet - initialize the schema to use it."
     if state == "drifted":
         return (
             "Connected, but the database schema is out of date and the app will "
@@ -313,7 +313,7 @@ def init_schema(current_user: User = Depends(get_current_active_user)):
         raise HTTPException(
             status_code=409,
             detail=(
-                "Database has an out-of-date Vigil schema. create_all cannot alter "
+                "Database has an out-of-date AutoSecOps schema. create_all cannot alter "
                 "existing tables - run scripts/migrate_schema.py against it instead. "
                 f"Missing columns: {before['missing_columns']}"
             ),

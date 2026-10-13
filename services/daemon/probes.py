@@ -9,6 +9,11 @@ queue like any polled finding and stops after triage (see the guard in
 ``score_probes`` (#924) grades the triage that landed in
 ``ai_enrichment["ai_triage"]`` against that answer and writes the result to
 ``entity_context["probe"]["score"]``.
+
+The answer is a verdict (``malicious`` / ``benign`` / ``inconclusive``, the
+contract in core/contracts/verdict.py) and a recommended action. Rows stored
+before the verdict format carry ``expected["severity"]`` instead and are
+still graded on it.
 """
 
 from __future__ import annotations
@@ -29,8 +34,11 @@ PROBE_DATA_SOURCE = "probe"
 SCORE_AFTER = timedelta(hours=1)
 
 # Vocabulary _build_triage_prompt asks the model for; ``expected`` draws from it.
-SEVERITIES = ("critical", "high", "medium", "low")
+VERDICTS = ("malicious", "benign", "inconclusive")
 ACTIONS = ("isolate", "block", "investigate", "monitor", "dismiss")
+# The severities triage maps a verdict to (processor.legacy_triage_fields);
+# graded only for rows stored before the verdict format.
+SEVERITIES = ("critical", "high", "medium", "low")
 
 # finding_id is String(50) and reads "probe:<name>:<YYYY-MM-DD>", so a name
 # has 33 characters. Entities are RFC 5737 / RFC 2606, so an IP lookup can only
@@ -55,7 +63,7 @@ PROBES: List[Dict[str, Any]] = [
             "domains": ["update-check.example.net"],
         },
         "expected": {
-            "severity": ["critical", "high"],
+            "verdict": ["malicious"],
             "recommended_action": ["isolate", "block"],
         },
     },
@@ -75,7 +83,7 @@ PROBES: List[Dict[str, Any]] = [
             "usernames": ["svc-patch"],
         },
         "expected": {
-            "severity": ["low"],
+            "verdict": ["benign"],
             "recommended_action": ["dismiss", "monitor"],
         },
     },
@@ -93,8 +101,10 @@ PROBES: List[Dict[str, Any]] = [
             "hostnames": ["vpn-gw-2.example.net"],
             "usernames": ["a.smith"],
         },
+        # Malicious or not cannot be told from this alone; either answer
+        # that sends it to an analyst is right.
         "expected": {
-            "severity": ["high", "medium"],
+            "verdict": ["malicious", "inconclusive"],
             "recommended_action": ["investigate"],
         },
     },
@@ -118,6 +128,100 @@ def build_probe_finding(probe: Dict[str, Any], day: date) -> Dict[str, Any]:
             "probe": {"name": probe["name"], "expected": probe["expected"]},
         },
     }
+
+
+_PROBES_BY_NAME = {p["name"]: p for p in PROBES}
+# Keys build_probe_finding writes that a sender could fill with its own text.
+_PROBE_TEXT_KEYS = ("title", "raw_event", "raw_data", "entities", "metadata")
+
+
+def is_genuine_probe(finding: Dict[str, Any]) -> bool:
+    """Whether ``finding`` is one of our probes, judged by its content.
+
+    ``data_source`` alone proves nothing: a webhook, Kafka or import sender
+    names its own. A genuine probe carries exactly the text one of PROBES
+    defines (description and entity_context, the known answer aside) under
+    the id :func:`probe_finding_id` gives it, and none of the free-text
+    sections a probe never has. Anything that passes is text we wrote, so
+    treating it as ours is safe whoever sent it.
+    """
+    if not isinstance(finding, dict):
+        return False
+    if finding.get("data_source") != PROBE_DATA_SOURCE:
+        return False
+    entity_context = finding.get("entity_context")
+    if not isinstance(entity_context, dict):
+        return False
+    marker = entity_context.get("probe")
+    if not isinstance(marker, dict):
+        return False
+    probe = _PROBES_BY_NAME.get(marker.get("name"))
+    if probe is None:
+        return False
+    finding_id = str(finding.get("finding_id") or "")
+    prefix = f"{PROBE_DATA_SOURCE}:{probe['name']}:"
+    if not finding_id.startswith(prefix):
+        return False
+    try:
+        date.fromisoformat(finding_id[len(prefix) :])
+    except ValueError:
+        return False
+    if finding.get("description") != probe["description"]:
+        return False
+    if {k: v for k, v in entity_context.items() if k != "probe"} != probe[
+        "entity_context"
+    ]:
+        return False
+    if not _marker_fits(marker):
+        return False
+    # The probe map labels severity and timestamp sensor: they must be what
+    # the daemon writes (none / a triage severity; an ISO time), not text.
+    severity = finding.get("severity")
+    if severity not in (None, "") and severity not in SEVERITIES:
+        return False
+    if not _is_timestamp(finding.get("timestamp")):
+        return False
+    return not any(finding.get(k) for k in _PROBE_TEXT_KEYS)
+
+
+# What entity_context["probe"] may hold: build_probe_finding writes name and
+# expected, score_probes adds score.
+_MARKER_KEYS = frozenset({"name", "expected", "score"})
+# expected: lists drawn from the fixed vocabularies (rows stored before the
+# verdict format carry severity instead of verdict).
+_EXPECTED_VOCAB = {
+    "verdict": VERDICTS,
+    "severity": SEVERITIES,
+    "recommended_action": ACTIONS,
+}
+
+
+def _marker_fits(marker: Dict[str, Any]) -> bool:
+    if not set(marker) <= _MARKER_KEYS:
+        return False
+    expected = marker.get("expected")
+    if not isinstance(expected, dict) or not expected:
+        return False
+    for key, values in expected.items():
+        vocab = _EXPECTED_VOCAB.get(key)
+        if vocab is None or not isinstance(values, list):
+            return False
+        if not all(isinstance(v, str) and v in vocab for v in values):
+            return False
+    score = marker.get("score")
+    return score is None or isinstance(score, dict)
+
+
+def _is_timestamp(value: Any) -> bool:
+    if value is None or isinstance(value, datetime):
+        return True
+    if not isinstance(value, str) or len(value) > 40:
+        return False
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 async def inject_probes(queue: asyncio.Queue, data_service: Any) -> int:
@@ -163,8 +267,9 @@ def _parse_utc(value: Any) -> Optional[datetime]:
 def score_probe(row: Dict[str, Any], now: datetime) -> Optional[Dict[str, Any]]:
     """The score block for one probe row, or None when it is not due yet.
 
-    hit: triage severity and recommended_action both in the expected lists;
-    miss: a triage exists and either is not; silent: no ai_triage an hour on.
+    hit: triage verdict (severity, for a row stored before the verdict
+    format) and recommended_action both in the expected lists; miss: a triage
+    exists and either is not; silent: no ai_triage an hour on.
     """
     created_at = _parse_utc(row.get("created_at"))
     if created_at is None or now - created_at < SCORE_AFTER:
@@ -176,13 +281,18 @@ def score_probe(row: Dict[str, Any], now: datetime) -> Optional[Dict[str, Any]]:
         outcome, verdict, time_to_verdict = "silent", None, None
     else:
         verdict = {
+            "verdict": result.get("verdict"),
             "severity": result.get("severity"),
             "recommended_action": result.get("recommended_action"),
             "confidence": result.get("confidence"),
         }
-        hit = verdict["severity"] in expected.get("severity", []) and verdict[
-            "recommended_action"
-        ] in expected.get("recommended_action", [])
+        if "verdict" in expected:
+            answer_ok = verdict["verdict"] in expected["verdict"]
+        else:  # stored before the verdict format
+            answer_ok = verdict["severity"] in expected.get("severity", [])
+        hit = answer_ok and verdict["recommended_action"] in expected.get(
+            "recommended_action", []
+        )
         outcome = "hit" if hit else "miss"
         answered = _parse_utc(triage.get("timestamp"))
         if answered is None:

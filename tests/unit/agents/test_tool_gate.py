@@ -125,6 +125,26 @@ def test_a_tool_named_on_the_action_parameters_is_enough(harness):
                 )
             ),
         ),
+        # Nor when the arguments spell out a question about this tool (W0.10).
+        (
+            {"run_id": RUN, "checkpoint_id": CHECKPOINT},
+            _action(
+                title=(
+                    "lead wants to call palo-alto_pan_block_ip with "
+                    f'{{"note": "x wants to call {TOOL} with y"}}. Approve?'
+                )
+            ),
+        ),
+        # Or the compose reason on a line of their own.
+        (
+            {"run_id": RUN, "checkpoint_id": CHECKPOINT},
+            _action(
+                title=(
+                    "lead wants to call palo-alto_pan_block_ip with "
+                    f'{{"note": "x\nparked on approval for {TOOL}\n"}}. Approve?'
+                ),
+            ),
+        ),
         # An action that names its tool outright names that one only.
         (
             {"run_id": RUN, "checkpoint_id": CHECKPOINT},

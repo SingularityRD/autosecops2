@@ -963,6 +963,9 @@ export class HuntController {
       if (bound !== null) {
         this.terminate("budget_terminated", "an operator accepted the stop at the budget checkpoint");
       } else {
+        // Recorded so the verdict run does not read this ending as the controller
+        // accepting whatever CONCLUDE the lead last proposed: it may have refused it.
+        this.ledger.patch("hunt", this.ledger.projection.hunt.hunt_id, { operator_concluded: true });
         this.terminate("completed", `an operator asked the hunt to conclude on what it had: ${standingOf(this.ledger.projection.hunt)}`);
       }
       return true;
@@ -1237,6 +1240,12 @@ export class HuntController {
             closed_reason: `parked to the backlog: below the priority floor of ${this.termination.priority_floor} when the hunt ended`,
           });
         }
+        // The CONCLUDE that asked for this review is the one accepted. Checkpoints
+        // journaled before decision_id was carried name none; nothing is decided
+        // while the hunt is parked on the review, so the latest CONCLUDE is that one.
+        this.acceptConclude(
+          typeof payload["decision_id"] === "string" ? payload["decision_id"] : this.latestConcludeId(),
+        );
         this.terminate(
           payload["outcome"] as HuntOutcome,
           `${directive.actor} approved the conclusion at checkpoint ${checkpoint.checkpoint_id}`,
@@ -1349,7 +1358,11 @@ export class HuntController {
     const verdict = terminationVerdict(this.ledger.projection, iteration, this.termination, this.verdicts);
     if (verdict.outcome === null) return this.park();
 
-    this.concludeWith(verdict, `the termination predicate passed as the budget ran out at iteration ${iteration}`);
+    this.concludeWith(
+      verdict,
+      `the termination predicate passed as the budget ran out at iteration ${iteration}`,
+      this.latestConcludeId(),
+    );
     return `concluded as ${verdict.outcome} on the last of the budget`;
   }
 
@@ -1358,6 +1371,10 @@ export class HuntController {
   parkOnRefusal(reason: string): string {
     const hunt = this.ledger.projection.hunt;
     if (hunt.status !== "active") return this.suspendedBecause();
+    if (this.terminatesOnBudget()) {
+      this.terminate("budget_terminated", reason);
+      return `ended: ${reason} (on_budget: terminate)`;
+    }
     this.ledger.patch("hunt", hunt.hunt_id, {
       status: "parked",
       parked_at: new Date().toISOString(),
@@ -1371,6 +1388,10 @@ export class HuntController {
   private park(): string {
     const hunt = this.ledger.projection.hunt;
     const reason = boundReason(hunt);
+    if (this.terminatesOnBudget()) {
+      this.terminate("budget_terminated", reason);
+      return `ended: ${reason} (on_budget: terminate)`;
+    }
 
     // Not a checkpoint, though it is a question: Run.settled() reads an unresolved one
     // as "no call may proceed", which no extension could then lift. parked_reason holds it.
@@ -2179,6 +2200,8 @@ export class HuntController {
   private concludeOrRefuse(iteration: number): string {
     const verdict = terminationVerdict(this.ledger.projection, iteration, this.termination, this.verdicts);
 
+    // Journaled before this call, so the latest decision is the CONCLUDE being judged.
+    const decisionId = this.latestConcludeId();
     if (verdict.outcome === null) {
       const refusal = `CONCLUDE refused: ${verdict.blocked_by}`;
       journalNote(this.ledger, `${refusal}. Resolve it before recommending CONCLUDE again.`);
@@ -2196,18 +2219,26 @@ export class HuntController {
         outcome: verdict.outcome,
         park: verdict.park.map((question) => question.question_id),
         reason: `the termination predicate passed at iteration ${iteration}`,
+        decision_id: decisionId,
       },
     );
     if (parked) return `awaiting review of the conclusion at checkpoint ${checkpoint.checkpoint_id}`;
 
     this.autoResolved(checkpoint, "checkpoint policy verdict_review=auto");
-    this.concludeWith(verdict, `the termination predicate passed at iteration ${iteration}`);
+    this.concludeWith(verdict, `the termination predicate passed at iteration ${iteration}`, decisionId);
     return `concluded as ${verdict.outcome}`;
   }
 
   // What a passing verdict does, wherever it was asked for. One writer, so the
   // budget checkpoint and a CONCLUDE cannot disagree about what concluding means.
-  private concludeWith(verdict: TerminationVerdict & { outcome: HuntOutcome }, reason: string): void {
+  // acceptedConclude names the CONCLUDE decision the predicate passed on, when one
+  // asked; it is journaled so the verdict run records that proposal and no other.
+  private concludeWith(
+    verdict: TerminationVerdict & { outcome: HuntOutcome },
+    reason: string,
+    acceptedConclude: string | null,
+  ): void {
+    this.acceptConclude(acceptedConclude);
     // Below the floor and never pulled: these are the backlog deliverable, and
     // closing them here is what makes "done" mean the frontier was cleared.
     for (const question of verdict.park) {
@@ -2217,6 +2248,17 @@ export class HuntController {
       });
     }
     this.terminate(verdict.outcome, reason);
+  }
+
+  // The latest decision when it is a CONCLUDE, else null.
+  private latestConcludeId(): string | null {
+    const last = this.ledger.projection.decisions.at(-1);
+    return last?.decision.action === "CONCLUDE" ? last.decision_id : null;
+  }
+
+  private acceptConclude(decisionId: string | null): void {
+    if (decisionId === null) return;
+    this.ledger.patch("hunt", this.ledger.projection.hunt.hunt_id, { accepted_conclude: decisionId });
   }
 
   // Unresolved hypotheses become inconclusive, never disproven: the hunt
@@ -2246,6 +2288,11 @@ export class HuntController {
   // beside one would be a second copy that can disagree with it.
   private finalize(): void {
     this.ledger.append({ kind: "finalize", payload: buildReport(this.ledger.projection) });
+  }
+
+  // Read off the journaled spec, so a resumed run ends the way it started.
+  private terminatesOnBudget(): boolean {
+    return this.ledger.projection.hunt.spec.on_budget === "terminate";
   }
 
   private budgetExhausted(): boolean {

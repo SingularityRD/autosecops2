@@ -25,6 +25,7 @@ from core.workflows.workflows_service import (
     HUNT_RUN_KIND,
     INVESTIGATE_RUN_KIND,
     ROOT_CAUSE_RUN_KIND,
+    VERDICT_RUN_KIND,
     WorkflowDefinition,
     WorkflowsService,
     is_hunt_like,
@@ -81,9 +82,14 @@ def pricing() -> Dict[str, Any]:
 LEAD_TOOLS = {
     HUNT_RUN_KIND: ("expand",),
     ADJUDICATE_RUN_KIND: ("expand",),
+    VERDICT_RUN_KIND: ("expand",),
     ROOT_CAUSE_RUN_KIND: ("telemetry_search", "record", "finish"),
 }
-LEAD_NAMES = {HUNT_RUN_KIND: "Hunt lead", ADJUDICATE_RUN_KIND: "Adjudication lead"}
+LEAD_NAMES = {
+    HUNT_RUN_KIND: "Hunt lead",
+    ADJUDICATE_RUN_KIND: "Adjudication lead",
+    VERDICT_RUN_KIND: "Verdict lead",
+}
 # A single agent is a role, not one of the Agents tab's built-ins.
 SINGLE_LEAD = "Lead analyst"
 HANDOFF_IR = {
@@ -200,7 +206,9 @@ def _budgets(definition: WorkflowDefinition) -> Dict[str, Any]:
 
     kind = definition.run_kind
     if is_hunt_like(kind):
-        max_iterations, max_cost_usd, max_wall_ms = hunt_defaults()
+        max_iterations, max_cost_usd, max_wall_ms = (
+            resolver.verdict_budgets() if kind == VERDICT_RUN_KIND else hunt_defaults()
+        )
         return {
             "max_iterations": max_iterations,
             "max_cost_usd": max_cost_usd,
