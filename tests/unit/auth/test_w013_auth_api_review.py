@@ -388,3 +388,45 @@ def test_manager_may_rename_an_admin_under_w19_model(as_manager):
     )
     assert admin.full_name == "A"
     assert reason is None and old is None
+
+
+# --- Round 5: R5, CSRF enforced by default in Helm ----------------------------
+
+_REPO = __import__("pathlib").Path(__file__).resolve().parents[3]
+
+
+def test_helm_enforces_csrf_by_default():
+    import yaml
+
+    values = yaml.safe_load(
+        (_REPO / "infra" / "helm" / "vigil" / "values.yaml").read_text()
+    )
+    env = values["config"]
+    assert env["VIGIL_CSRF_ENABLED"] == "true"
+    assert env["VIGIL_CSRF_REPORT_ONLY"] == "false"
+
+
+def test_web_client_sends_no_mutating_raw_fetch():
+    """Enforcement is only safe because every state-changing call from the
+    console carries X-CSRF-Token: axios via its interceptor, fetch only via
+    streamFetch. A raw fetch() with a mutating method would be refused."""
+    import re
+
+    src = _REPO / "clients" / "web" / "src"
+    offenders = []
+    for path in list(src.rglob("*.ts")) + list(src.rglob("*.tsx")):
+        rel = path.relative_to(src).as_posix()
+        if ".test." in rel or rel.startswith("services/generated/"):
+            continue
+        if rel == "services/api.ts":
+            continue  # streamFetch itself
+        text = path.read_text(encoding="utf-8")
+        for m in re.finditer(r"(?<![\w.])fetch\(", text):
+            window = text[m.end() : m.end() + 400]
+            close = window.find("})")
+            window = window if close < 0 else window[:close]
+            if re.search(r"method:\s*['\"](POST|PUT|PATCH|DELETE)", window, re.I) or (
+                "JSON_POST" in window
+            ):
+                offenders.append(f"{rel}:{text.count(chr(10), 0, m.start()) + 1}")
+    assert offenders == [], offenders
