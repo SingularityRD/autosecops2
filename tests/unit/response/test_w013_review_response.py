@@ -105,18 +105,12 @@ def test_every_registered_executor_type_is_an_action_type():
     # can never run; keep the enum in step with the executors. Each executor
     # is built from a configuration and registered, so a set of types fixed
     # per instance (Palo Alto, Entra) is checked as the registry sees it.
-    from core.integrations.azure_ad.executor import (
-        build_executor as build_entra,
-    )
-    from core.integrations.cloudflare.executor import (
-        build_executor as build_cloudflare,
-    )
+    from core.integrations.azure_ad.executor import build_executor as build_entra
+    from core.integrations.cloudflare.executor import build_executor as build_cloudflare
     from core.integrations.microsoft_defender.executor import (
         build_executor as build_defender,
     )
-    from core.integrations.palo_alto.executor import (
-        build_executor as build_palo_alto,
-    )
+    from core.integrations.palo_alto.executor import build_executor as build_palo_alto
 
     executors = (
         build_entra({"token_provider": lambda: "t"}, sleep=lambda _s: None),
@@ -402,9 +396,7 @@ class _StateFake(_Fake):
 
     def verify(self, action, result):
         if result.status == "noop" and action.reverse_of is None:
-            return VerifyResult(
-                status="verified" if self.still_in_effect else "failed"
-            )
+            return VerifyResult(status="verified" if self.still_in_effect else "failed")
         return VerifyResult(status="verified")
 
     def reverse(self, action, result):

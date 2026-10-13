@@ -953,10 +953,9 @@ class AutonomousResponseService:
             actor,
             reason,
         )
-        already_undone = (
-            bool((claim.parameters or {}).get("supersedes"))
-            and self._original_no_longer_in_effect(executor, original)
-        )
+        already_undone = bool(
+            (claim.parameters or {}).get("supersedes")
+        ) and self._original_no_longer_in_effect(executor, original)
         if already_undone:
             # The superseded claimant may have been slow, not dead: its
             # reverse landed. Running it again would act on a state someone

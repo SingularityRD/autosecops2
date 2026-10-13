@@ -1196,9 +1196,7 @@ class ApprovalService:
         try:
             db = get_db_manager()
             with db.session_scope() as session:
-                row = session.get(
-                    ApprovalActionRow, reverse_id, with_for_update=True
-                )
+                row = session.get(ApprovalActionRow, reverse_id, with_for_update=True)
                 if row is None or row.reverse_of is None:
                     return None
                 now = utcnow()
