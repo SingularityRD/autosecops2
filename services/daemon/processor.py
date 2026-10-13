@@ -7,6 +7,7 @@ import math
 import re
 import time
 import unicodedata
+from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import ValidationError
@@ -25,6 +26,9 @@ from core.federation.provenance import (
 )
 from core.ingestion.ack import settle_ack
 from core.ingestion.dedup import RedisDedupSet
+from core.ingestion.handoff import envelope, put_or_shutdown
+from core.ingestion.spool import IngestSpool, SpoolEntry
+from core.ingestion.spool import count as spool_count
 from core.lanes.alert_lanes import (
     ENRICHMENT_KEY,
     LaneDecision,
@@ -59,6 +63,16 @@ BACKFILL_SOURCE = "backfill"
 # Not a re-queue — the dedup key is what lets a later poll try again.
 _STORE_ATTEMPTS = 3
 _STORE_RETRY_BACKOFF = 0.2  # seconds
+
+# Spooled (webhook) findings are never dropped (W0.12): after the in-place
+# retries above, the entry goes back to the spool and the spool feeder pauses
+# for a backoff that doubles per consecutive failed store, up to the cap.
+_SPOOL_BACKOFF_BASE = 0.5  # seconds
+_SPOOL_BACKOFF_MAX = 10.0  # seconds
+# An entry whose store failed this many times *while the database answered*
+# is not an outage but a finding the store refuses: set aside under dead/.
+_SPOOL_POISON_ATTEMPTS = 5
+_SPOOL_CLAIM_BATCH = 64
 
 _FENCE = re.compile(r"<\s*/?\s*alert_data\s*>", re.IGNORECASE)
 
@@ -370,6 +384,23 @@ def _reasoning(verdict: Verdict) -> str:
     )
 
 
+# Keys only an earlier analysis writes. On a finding from the backfill sweep
+# they came from our own database; on any other they came from the sender.
+_PRIOR_ANALYSIS_KEYS = ("ai_enrichment", "verdict", "prior_verdict")
+
+
+def drop_payload_analysis(finding: Dict[str, Any], source: Optional[str]) -> None:
+    """Remove analysis fields the processor writes from a finding it did not
+    read back itself. ``triage_confidence`` / ``recommended_action`` /
+    ``enrichment`` in a webhook or Kafka payload must not drive response,
+    lane risk or the prompt's THIRD_PARTY group as if AutoSecOps wrote them."""
+    for key in _AI_ANALYSIS_KEYS:
+        finding.pop(key, None)
+    if source != BACKFILL_SOURCE:
+        for key in _PRIOR_ANALYSIS_KEYS:
+            finding.pop(key, None)
+
+
 def legacy_triage_fields(verdict: Verdict) -> Dict[str, Any]:
     """The ``ai_triage["result"]`` fields downstream readers use, from a verdict.
 
@@ -430,6 +461,15 @@ class FindingProcessor:
         # W2.2 alert lanes; a no-op unless ALERT_LANES_ENABLED.
         self.alert_lanes = LaneHook()
 
+        # W0.12: the webhook's durable spool (attach_spool); None without one.
+        self.spool: Optional[IngestSpool] = None
+        self._spool_wake: Optional[asyncio.Event] = None
+        self._store_failures = 0
+        self._store_paused_until = 0.0
+        # Finding ids being stored or triaged right now (by count); the
+        # backfill sweep skips them so a finding is not triaged twice.
+        self._inflight: Counter = Counter()
+
         # Caps concurrent background AI enrichment (not the ingest/store path).
         self._semaphore = asyncio.Semaphore(config.max_concurrent_tasks)
         # Bounds the number of *pending* enrich tasks (backpressure): when full,
@@ -452,6 +492,10 @@ class FindingProcessor:
             "sanitization_flagged": 0,
             "import_not_responded": 0,
             "store_dropped": 0,
+            "store_retried": 0,
+            "spool_quarantined": 0,
+            "spool_replay_skipped": 0,
+            "backfill_skipped_inflight": 0,
         }
 
     def _sanitize_finding(self, finding: Dict[str, Any], source: Optional[str]) -> None:
@@ -499,6 +543,10 @@ class FindingProcessor:
                 "patterns": sorted(set(patterns)),
             },
         )
+
+    def attach_spool(self, spool: Optional[IngestSpool]) -> None:
+        """Take webhook findings from ``spool`` (opened by the caller)."""
+        self.spool = spool
 
     def set_response_queue(self, queue: asyncio.Queue):
         """Set the queue for findings requiring response."""
@@ -588,15 +636,22 @@ class FindingProcessor:
 
         # Backfill sweeper: enriches findings that were stored but never enriched.
         backfill = asyncio.create_task(self._backfill_loop(shutdown_event))
+        extra = []
+        if self.spool is not None:
+            extra.append(asyncio.create_task(self._spool_feeder(shutdown_event)))
 
         # Wait for shutdown
         await shutdown_event.wait()
 
         pending = list(self._enrich_tasks)
-        for task in [*workers, backfill, *pending]:
+        for task in [*workers, backfill, *extra, *pending]:
             task.cancel()
 
-        await asyncio.gather(*workers, backfill, *pending, return_exceptions=True)
+        # Spool entries not stored by now stay on disk and replay on the
+        # next start; nothing to flush here.
+        await asyncio.gather(
+            *workers, backfill, *extra, *pending, return_exceptions=True
+        )
         logger.info("Finding processor stopped")
 
     async def _process_worker(self, worker_id: int, shutdown_event: asyncio.Event):
@@ -630,6 +685,7 @@ class FindingProcessor:
                 dedup=item.get("dedup"),
                 dedup_key=item.get("dedup_key"),
                 ack=item.get("ack"),
+                spool_entry=item.get("spool"),
             )
         else:
             logger.warning(f"Unknown item type: {item_type}")
@@ -641,16 +697,37 @@ class FindingProcessor:
         dedup: Optional[RedisDedupSet] = None,
         dedup_key: Optional[str] = None,
         ack: Optional["asyncio.Future[bool]"] = None,
+        spool_entry: Optional[SpoolEntry] = None,
     ):
         """Store a finding immediately; triage + enrich it in the background.
 
         ``ack`` (if the producer sent one) is settled as soon as the store
         outcome is known, and as not-stored on any other exit, including
         cancellation, so a producer never advances past an unstored finding.
+
+        A ``spool_entry`` (webhook) is never dropped: it leaves the spool once
+        stored, and goes back to it otherwise (W0.12).
         """
         finding_id = finding.get("finding_id", "unknown")
         logger.debug(f"Processing finding {finding_id} from {source}")
+        self._inflight[finding_id] += 1
+        try:
+            if spool_entry is not None:
+                await self._process_spooled(finding, source, spool_entry)
+            else:
+                await self._process_unspooled(finding, source, dedup, dedup_key, ack)
+        finally:
+            self._inflight_done(finding_id)
 
+    async def _process_unspooled(
+        self,
+        finding: Dict[str, Any],
+        source: Optional[str],
+        dedup: Optional[RedisDedupSet],
+        dedup_key: Optional[str],
+        ack: Optional["asyncio.Future[bool]"],
+    ) -> None:
+        finding_id = finding.get("finding_id", "unknown")
         try:
             # Issue #87: scan ingested finding for prompt-injection patterns
             # before any of its content reaches the LLM. Detect-only in v1;
@@ -685,6 +762,197 @@ class FindingProcessor:
         finally:
             settle_ack(ack, False)  # no-op when already settled as stored
 
+    async def _process_spooled(
+        self, finding: Dict[str, Any], source: Optional[str], entry: SpoolEntry
+    ) -> None:
+        """Store a spooled finding; on failure give it back, never drop it."""
+        spool = self.spool
+        finding_id = entry.finding_id
+        stored = False
+        try:
+            try:
+                self._sanitize_finding(finding, source)
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"Sanitization hook error (non-fatal): {e}")
+
+            # Replayed after a restart: the row may have been stored (and
+            # triaged) before the stop. Then only the spool entry is left;
+            # an unenriched row is the backfill's, not a second triage here.
+            if entry.replayed and await self._already_stored(finding_id):
+                stored = True
+                self._store_succeeded()
+                if spool is not None:
+                    spool.done(entry)
+                self.stats["spool_replay_skipped"] += 1
+                spool_count("replay_skipped")
+                return
+
+            if not await self._store_with_retry(finding):
+                await self._spooled_store_failed(entry)
+                return
+            stored = True
+            self._store_succeeded()
+            if spool is not None:
+                spool.done(entry)
+            self.stats["processed"] += 1
+            logger.info(
+                f"Stored finding {finding_id} (severity: {finding.get('severity')})"
+            )
+            await self._spawn_enrich(finding, source)
+        except asyncio.CancelledError:
+            if not stored and spool is not None:
+                spool.release(entry)  # still on disk; replayed if we stop now
+            raise
+        except Exception as e:
+            logger.error("Error processing finding %s: %s", finding_id, e)
+            self.stats["errors"] += 1
+            if not stored and spool is not None:
+                spool.release(entry)
+
+    async def _already_stored(self, finding_id: str) -> bool:
+        if not self._data_service:
+            return False
+        try:
+            row = await asyncio.to_thread(self._data_service.get_finding, finding_id)
+        except Exception:  # noqa: BLE001 - unknown: let the store decide
+            return False
+        return bool(row)
+
+    def _store_succeeded(self) -> None:
+        if self._store_failures:
+            logger.warning(
+                "Finding store recovered after %d failed attempt(s)",
+                self._store_failures,
+            )
+        self._store_failures = 0
+        self._store_paused_until = 0.0
+
+    async def _spooled_store_failed(self, entry: SpoolEntry) -> None:
+        """Back off the spool feeder; quarantine a finding the store refuses."""
+        self.stats["store_retried"] += 1
+        spool_count("store_retries")
+        self._store_failures += 1
+        delay = min(
+            _SPOOL_BACKOFF_MAX,
+            _SPOOL_BACKOFF_BASE * (2 ** min(self._store_failures - 1, 16)),
+        )
+        self._store_paused_until = max(
+            self._store_paused_until, time.monotonic() + delay
+        )
+        entry.failures += 1
+        if self._store_failures == 1 or self._store_failures % 50 == 0:
+            logger.error(
+                "Storing finding %s failed (%d in a row); it stays in the ingest "
+                "spool and is retried in %.1fs",
+                entry.finding_id,
+                self._store_failures,
+                delay,
+            )
+        spool = self.spool
+        if spool is None:
+            return
+        # Without a data service the failure is ours, not the finding's.
+        if self._data_service is not None and await self._database_answers():
+            entry.reachable_failures += 1
+            if entry.reachable_failures >= _SPOOL_POISON_ATTEMPTS:
+                reason = (
+                    f"store refused {entry.reachable_failures} times while the "
+                    "database was reachable"
+                )
+                try:
+                    await asyncio.to_thread(spool.quarantine, entry, reason)
+                except OSError as e:
+                    logger.error("Could not quarantine %s: %s", entry.finding_id, e)
+                    spool.release(entry)
+                    return
+                self.stats["spool_quarantined"] += 1
+                spool_count("quarantined")
+                logger.error(
+                    "Finding %s set aside under %s/dead: %s",
+                    entry.finding_id,
+                    spool.directory,
+                    reason,
+                )
+                return
+        spool.release(entry)
+
+    @staticmethod
+    async def _database_answers() -> bool:
+        """True when the platform database answers ``SELECT 1``."""
+
+        def ping() -> bool:
+            from sqlalchemy import text
+
+            from core.storage.connection import get_db_manager
+
+            manager = get_db_manager()
+            if manager.engine is None:
+                manager.initialize()
+            with manager.engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            return True
+
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(ping), timeout=10)
+        except Exception:  # noqa: BLE001 - unreachable is the answer
+            return False
+
+    async def _spool_feeder(self, shutdown_event: asyncio.Event) -> None:
+        """Move spooled findings into the hand-off, oldest first.
+
+        Pauses while the store is backing off; blocks (backpressure) on a
+        full hand-off. Entries claimed but not handed off when shutdown comes
+        stay on disk.
+        """
+        spool = self.spool
+        if spool is None:
+            return
+        loop = asyncio.get_running_loop()
+        wake = self._spool_wake = asyncio.Event()
+
+        def _ready() -> None:
+            try:
+                loop.call_soon_threadsafe(wake.set)
+            except RuntimeError:  # loop closed
+                pass
+
+        spool.on_ready = _ready
+        try:
+            while not shutdown_event.is_set():
+                pause = self._store_paused_until - time.monotonic()
+                if pause > 0:
+                    try:
+                        await asyncio.wait_for(shutdown_event.wait(), timeout=pause)
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+                wake.clear()
+                entries = spool.claim(_SPOOL_CLAIM_BATCH)
+                if not entries:
+                    try:
+                        await asyncio.wait_for(wake.wait(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+                for n, entry in enumerate(entries):
+                    item = envelope(entry.finding, entry.source)
+                    item["spool"] = entry
+                    if not await put_or_shutdown(
+                        self.input_queue, item, shutdown_event
+                    ):
+                        for rest in entries[n:]:
+                            spool.release(rest)
+                        return
+        except asyncio.CancelledError:
+            raise
+        finally:
+            spool.on_ready = None
+
+    def _inflight_done(self, finding_id: str) -> None:
+        self._inflight[finding_id] -= 1
+        if self._inflight[finding_id] <= 0:
+            del self._inflight[finding_id]
+
     async def _spawn_enrich(
         self, finding: Dict[str, Any], source: Optional[str] = None
     ):
@@ -692,13 +960,20 @@ class FindingProcessor:
         then run enrichment in the background. Bounds pending enrich tasks so a burst
         or backfill can't pile up unbounded coroutines. Single choke point shared by
         the ingest path and the backfill sweeper."""
-        await self._enrich_slots.acquire()
+        finding_id = finding.get("finding_id", "unknown")
+        self._inflight[finding_id] += 1
+        try:
+            await self._enrich_slots.acquire()
+        except BaseException:
+            self._inflight_done(finding_id)
+            raise
         task = asyncio.create_task(self._enrich_in_background(finding, source))
         self._enrich_tasks.add(task)
 
         def _done(t: asyncio.Task) -> None:
             self._enrich_tasks.discard(t)
             self._enrich_slots.release()
+            self._inflight_done(finding_id)
 
         task.add_done_callback(_done)
 
@@ -709,6 +984,11 @@ class FindingProcessor:
         is capped by the semaphore and short-circuited by the breaker; response
         evaluation always runs on whatever severity we have."""
         finding_id = finding.get("finding_id", "unknown")
+        # Triage output a sender put on its own payload is not this run's:
+        # when triage is skipped (a rules lane, an enqueued verdict run, a
+        # failed or disabled triage) it would otherwise reach the responder
+        # and be stored as the AI's analysis.
+        drop_payload_analysis(finding, source)
         # W2.2 lane: rules / small model / verdict. Only this run's decision is
         # trusted; an ``alert_lane`` arriving in the payload is never honoured.
         lane = await self.alert_lanes(finding)
@@ -837,6 +1117,14 @@ class FindingProcessor:
                 logger.warning(f"Enrichment backfill query failed: {e}")
                 continue
 
+            # W0.12: a finding still being stored or triaged (queued for a
+            # slot, waiting on the model) is not "missing" its triage yet.
+            fresh = [f for f in batch if f.get("finding_id") not in self._inflight]
+            skipped = len(batch) - len(fresh)
+            if skipped:
+                self.stats["backfill_skipped_inflight"] += skipped
+                logger.debug("Enrichment backfill: %d finding(s) in flight", skipped)
+            batch = fresh
             if not batch:
                 continue
 
@@ -847,6 +1135,8 @@ class FindingProcessor:
             for finding in batch:
                 if shutdown_event.is_set():
                     break
+                if finding.get("finding_id") in self._inflight:
+                    continue  # picked up meanwhile (the cap wait can be long)
                 await self._spawn_enrich(finding, BACKFILL_SOURCE)  # blocks on the cap
 
     async def _store_with_retry(self, finding: Dict[str, Any]) -> bool:

@@ -54,6 +54,25 @@ class ProcessingConfig:
 
 
 @dataclass
+class IngestSpoolConfig:
+    """Durable spool behind the webhook's 200 (W0.12, core/ingestion/spool.py)."""
+
+    enabled: bool = True
+    directory: str = ""  # empty: <VIGIL_DIR>/spool/webhook
+    max_findings: int = 10_000
+    max_mb: int = 128
+
+    def resolved_directory(self):
+        from pathlib import Path
+
+        from core.config import vigil_path
+
+        if self.directory.strip():
+            return Path(self.directory.strip())
+        return vigil_path("spool", "webhook")
+
+
+@dataclass
 class EscalationConfig:
     enabled: bool = True
     escalate_severities: List[str] = field(default_factory=lambda: ["critical", "high"])
@@ -133,6 +152,7 @@ class DaemonConfig:
     orchestrator: OrchestratorConfig = field(default_factory=OrchestratorConfig)
     llm_queue: LLMQueueConfig = field(default_factory=LLMQueueConfig)
     kafka: KafkaConfig = field(default_factory=KafkaConfig)
+    spool: IngestSpoolConfig = field(default_factory=IngestSpoolConfig)
 
     # Logging
     log_level: str = "INFO"
@@ -175,6 +195,11 @@ class DaemonConfig:
         config.processing.enrich_backfill_max_age_hours = (
             settings.daemon_enrich_backfill_max_age_hours
         )
+
+        config.spool.enabled = settings.daemon_ingest_spool_enabled
+        config.spool.directory = settings.daemon_ingest_spool_dir
+        config.spool.max_findings = max(1, settings.daemon_ingest_spool_max_findings)
+        config.spool.max_mb = max(1, settings.daemon_ingest_spool_max_mb)
 
         config.response = ResponseConfig.from_settings(settings)
 

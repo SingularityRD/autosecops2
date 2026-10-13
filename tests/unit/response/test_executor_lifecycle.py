@@ -29,8 +29,12 @@ from core.response.executors.base import (
 )
 from core.response.policy import ActionPolicy, PolicyConfig
 from core.time import utcnow
+from tests.unit.response._autonomy import autonomous_everywhere  # noqa: F401
 
-pytestmark = pytest.mark.external_service
+pytestmark = [
+    pytest.mark.external_service,
+    pytest.mark.usefixtures("autonomous_everywhere"),
+]
 
 
 class _Block:
@@ -160,7 +164,8 @@ class TestIrreversibleNeverAuto:
     def test_a_row_that_overstates_reversibility_is_not_executed_unapproved(self):
         revoke = _Block("access_revoke", reversible=False, ttl=None)
         service = _service(revoke)
-        # The creator claims reversible with a high confidence: auto-approved.
+        # The creator claims reversible with a high confidence. Since W3.1 the
+        # autonomy tier already holds it (access_revoke is never autonomous)...
         row = _create(
             service.approval_service,
             ActionType.ACCESS_REVOKE,
@@ -168,8 +173,18 @@ class TestIrreversibleNeverAuto:
             confidence=0.99,
             reversibility=Reversibility.REVERSIBLE,
         )
-        assert row.status == ActionStatus.APPROVED.value
-        assert row.approved_by is None
+        assert row.status == ActionStatus.PENDING.value
+        assert row.requires_approval is True
+        # ...and a row approved with nobody's name (written past the service)
+        # is still refused by the dispatcher.
+        from core.storage.connection import get_db_manager
+        from core.storage.models import ApprovalAction as Row
+
+        with get_db_manager().session_scope() as session:
+            stored = session.get(Row, row.action_id)
+            stored.status = ActionStatus.APPROVED.value
+            stored.requires_approval = False
+        assert service.approval_service.get_action(row.action_id).approved_by is None
 
         assert service.execute_approved_actions() == []
         service._dispatch(service.approval_service.get_action(row.action_id))
