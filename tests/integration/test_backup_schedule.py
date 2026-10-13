@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import uuid
@@ -18,6 +19,14 @@ from core.backup.create import LOCK_CLASSID, LOCK_OBJID, SKIPPED_MESSAGE
 from core.backup.schedule import Destination, _forget
 
 pytestmark = pytest.mark.integration
+
+# restic is a host tool the CI image installs. Without it these tests cannot
+# run at all; skip on a developer box, but never in CI (CI set), where a
+# missing restic must still fail.
+needs_restic = pytest.mark.skipif(
+    shutil.which("restic") is None and not os.environ.get("CI"),
+    reason="restic is not installed (required in CI)",
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRATCH_DB = "vigil_test_backup_schedule"
@@ -135,6 +144,7 @@ def _run_due(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
 
 @needs_db
 @pytest.mark.database
+@needs_restic
 def test_due_destination_is_tagged_and_the_other_is_left_alone(
     scratch_db, tmp_path: Path
 ):
@@ -218,6 +228,7 @@ def test_due_destination_is_tagged_and_the_other_is_left_alone(
     assert status["snapshot_id"] == snaps[0]["id"]
 
 
+@needs_restic
 def test_local_retention_drops_scheduled_and_keeps_pre_upgrade(tmp_path: Path):
     root = tmp_path / "retain"
     root.mkdir()
@@ -281,6 +292,7 @@ def test_local_retention_drops_scheduled_and_keeps_pre_upgrade(tmp_path: Path):
 
 @needs_db
 @pytest.mark.database
+@needs_restic
 def test_locked_run_logs_the_skip_and_does_not_dump(scratch_db, tmp_path: Path):
     root = tmp_path / "lock"
     state = root / "state"

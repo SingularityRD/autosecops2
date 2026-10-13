@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import TYPE_CHECKING, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from core.config import validate_settings_or_exit
+from services.daemon.leadership import LeadershipLost
 
 if TYPE_CHECKING:
     from services.daemon.config import DaemonConfig
@@ -77,6 +79,8 @@ class SOCDaemon:
         self._metrics_server = None
         self._mcp_client = None
         self._case_automation = None
+        # Hot standby (W3.9): set by run() when leader election is on.
+        self._leadership = None
 
         logger.info("SOC Daemon initialized")
 
@@ -159,7 +163,8 @@ class SOCDaemon:
             response=response_service,
         )
 
-        if self.config.metrics.enabled:
+        # With leader election the health server is already up (standby).
+        if self.config.metrics.enabled and self._metrics_server is None:
             self._metrics_server = MetricsServer(self.config.metrics)
 
         self._case_automation = build_case_automation()
@@ -182,7 +187,7 @@ class SOCDaemon:
         logger.info("All components initialized")
 
     async def run(self):
-        """Run the daemon."""
+        """Run the daemon (as leader or standby when leader election is on)."""
         logger.info("Starting SOC Daemon...")
         self._running = True
 
@@ -192,9 +197,6 @@ class SOCDaemon:
             # Windows doesn't support add_signal_handler
             logger.warning("Signal handlers not supported on this platform")
 
-        await self._init_components()
-
-        # Start all component tasks
         tasks = []
 
         def start(name: str, component, label: str):
@@ -204,6 +206,107 @@ class SOCDaemon:
                 self._metrics_server.register_task(name, task)
             tasks.append(task)
             logger.info("%s started", label)
+
+        leading = True
+        if self._leader_election_enabled():
+            leading = await self._await_leadership(start)
+
+        if leading:
+            if self._leadership is not None:
+                # The heartbeat thread is already beating (started on
+                # acquisition); this only turns a lost lease into shutdown.
+                watch = asyncio.create_task(self._watch_leadership())
+                tasks.append(watch)
+            try:
+                await self._start_components(start)
+            except LeadershipLost as exc:
+                logger.critical("Not starting components: %s", exc)
+                self._shutdown_event.set()
+
+        # Wait for shutdown signal (or loss of leadership)
+        await self._shutdown_event.wait()
+
+        logger.info("Shutting down daemon components...")
+
+        # Cancel all tasks
+        for task in tasks:
+            task.cancel()
+
+        demoted = self._leadership is not None and self._leadership.lost
+        if demoted:
+            # Bounded: the new leader is already running; a component stuck in
+            # a blocking call must not hold this process up.
+            if tasks:
+                await asyncio.wait(tasks, timeout=10)
+        else:
+            # Wait for tasks to complete
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        self._running = False
+
+        if self._leadership is not None:
+            if demoted:
+                self._exit_demoted()
+            # Components are stopped: hand over now rather than at lease expiry.
+            await self._leadership.release()
+
+        # Flush and shut down OTEL providers
+        try:
+            from core.telemetry import shutdown_telemetry
+
+            shutdown_telemetry()
+        except Exception as e:
+            logger.warning("Telemetry shutdown error (non-fatal): %s", e)
+
+        logger.info("SOC Daemon shutdown complete")
+
+    @staticmethod
+    def _leader_election_enabled() -> bool:
+        from core.config import get_settings
+
+        return bool(get_settings().daemon_leader_election_enabled)
+
+    async def _await_leadership(self, start) -> bool:
+        """Serve as standby until the leader lock is ours; False on shutdown."""
+        from core.config import get_settings
+        from services.daemon.leadership import StandbyWebhook, build_daemon_leadership
+        from services.daemon.metrics import MetricsServer
+
+        self._leadership = await asyncio.to_thread(build_daemon_leadership)
+        if self.config.metrics.enabled:
+            # Up before the election so the probes pass while standby.
+            self._metrics_server = MetricsServer(self.config.metrics)
+            self._metrics_server.leadership = self._leadership
+            start("metrics", self._metrics_server, "Metrics server")
+
+        standby = None
+        if self.config.polling.webhook_enabled:
+            standby = StandbyWebhook(
+                get_settings().daemon_bind_host, self.config.polling.webhook_port
+            )
+            await standby.start()
+        try:
+            return await self._leadership.wait_for_leadership(self._shutdown_event)
+        finally:
+            if standby is not None:
+                # Frees the port for the real webhook in DataPoller.
+                await standby.stop()
+
+    async def _start_components(self, start) -> None:
+        leadership = self._leadership
+        if leadership is not None:
+            leadership.ensure_leader()
+            unguarded = start
+
+            def start(name: str, component, label: str):
+                # Init may have outlasted the lease: never start a component
+                # (vendor actions, Kafka, schedules) once it is gone.
+                leadership.ensure_leader()
+                unguarded(name, component, label)
+
+        await self._init_components()
+        if leadership is not None:
+            leadership.ensure_leader()
 
         if self._poller:
             start("poller", self._poller, "Data poller")
@@ -228,8 +331,9 @@ class SOCDaemon:
         if self._case_automation:
             start("case_automation", self._case_automation, "Case automation")
 
-        if self._metrics_server:
+        if self._metrics_server and self._leadership is None:
             start("metrics", self._metrics_server, "Metrics server")
+        if self._metrics_server:
             logger.info(
                 "Health :%d, prometheus :%d",
                 self._metrics_server.health_port,
@@ -238,29 +342,27 @@ class SOCDaemon:
 
         logger.info("SOC Daemon fully operational")
 
-        # Wait for shutdown signal
-        await self._shutdown_event.wait()
+    async def _watch_leadership(self) -> None:
+        """Heartbeat the lock; on loss, stop everything (run() then exits 75)."""
+        await self._leadership.hold(self._shutdown_event)
+        if self._leadership.lost:
+            self._shutdown_event.set()
 
-        logger.info("Shutting down daemon components...")
+    def _exit_demoted(self) -> None:
+        """Exit without the interpreter's orderly shutdown.
 
-        # Cancel all tasks
-        for task in tasks:
-            task.cancel()
+        A heartbeat or DB call may be stuck in a worker thread, and
+        asyncio.run would wait on it; the process must be gone instead.
+        """
+        from services.daemon.leadership import DEMOTED_EXIT_CODE
 
-        # Wait for tasks to complete
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-        self._running = False
-
-        # Flush and shut down OTEL providers
-        try:
-            from core.telemetry import shutdown_telemetry
-
-            shutdown_telemetry()
-        except Exception as e:
-            logger.warning("Telemetry shutdown error (non-fatal): %s", e)
-
-        logger.info("SOC Daemon shutdown complete")
+        logger.critical(
+            "Exiting with %d after losing leadership (%s)",
+            DEMOTED_EXIT_CODE,
+            self._leadership.lost_reason,
+        )
+        logging.shutdown()
+        os._exit(DEMOTED_EXIT_CODE)
 
     async def stop(self):
         """Stop the daemon gracefully."""

@@ -1,0 +1,207 @@
+{{- if .Values.backup.enabled }}
+{{- /*
+Scheduled pg_dump of the platform database (files/backup/pg-backup.sh):
+verified custom-format dumps on a PVC with keep-last / max-age retention, and
+optionally a copy of each new dump in an S3-compatible bucket.
+RPO = the schedule interval; restore steps: docs/operations/rpo-rto.md.
+*/ -}}
+{{- $b := .Values.backup }}
+{{- if and (not $b.persistence.enabled) (not $b.objectStore.enabled) }}
+{{- fail "backup.enabled needs backup.persistence.enabled or backup.objectStore.enabled (otherwise every dump is thrown away)" }}
+{{- end }}
+{{- if and $b.objectStore.enabled (not $b.objectStore.bucket) }}
+{{- fail "backup.objectStore.bucket is required when backup.objectStore.enabled=true" }}
+{{- end }}
+{{- $fullname := printf "%s-backup" (include "vigil.fullname" .) | trunc 52 | trimSuffix "-" }}
+{{- $claim := $b.persistence.existingClaim | default $fullname }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-script
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vigil.componentLabels" (dict "context" . "component" "backup") | nindent 4 }}
+data:
+  pg-backup.sh: |
+{{ .Files.Get "files/backup/pg-backup.sh" | indent 4 }}
+{{- if and $b.persistence.enabled (not $b.persistence.existingClaim) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vigil.componentLabels" (dict "context" . "component" "backup") | nindent 4 }}
+  annotations:
+    # Dumps outlive the release: helm uninstall does not delete this claim.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    {{- toYaml $b.persistence.accessModes | nindent 4 }}
+  {{- if $b.persistence.storageClassName }}
+  storageClassName: {{ $b.persistence.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $b.persistence.size }}
+{{- end }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vigil.componentLabels" (dict "context" . "component" "backup") | nindent 4 }}
+spec:
+  schedule: {{ $b.schedule | quote }}
+  # A dump still running when the next one is due: skip the new one.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ $b.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ $b.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ $b.backoffLimit }}
+      activeDeadlineSeconds: {{ $b.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            {{- include "vigil.componentLabels" (dict "context" . "component" "backup") | nindent 12 }}
+          annotations:
+            checksum/script: {{ .Files.Get "files/backup/pg-backup.sh" | sha256sum }}
+            {{- with $b.podAnnotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "vigil.serviceAccountName" . }}
+          {{- include "vigil.imagePullSecrets" . | nindent 10 }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70  # postgres user in the alpine image
+            runAsGroup: 70
+            fsGroup: 70
+            seccompProfile:
+              type: RuntimeDefault
+          {{- if $b.objectStore.enabled }}
+          # The dump runs first; the upload container starts only once it succeeded.
+          initContainers:
+          {{- else }}
+          containers:
+          {{- end }}
+            - name: pg-dump
+              image: "{{ $b.image.repository }}:{{ $b.image.tag }}"
+              imagePullPolicy: {{ $b.image.pullPolicy | default "IfNotPresent" }}
+              command: ["/bin/sh", "/scripts/pg-backup.sh"]
+              env:
+                - name: PGHOST
+                  value: {{ include "vigil.postgres.host" . | quote }}
+                - name: PGPORT
+                  value: {{ include "vigil.postgres.port" . | quote }}
+                - name: PGDATABASE
+                  value: {{ include "vigil.postgres.database" . | quote }}
+                - name: PGUSER
+                  value: {{ include "vigil.postgres.username" . | quote }}
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "vigil.postgres.passwordSecret" . }}
+                      key: {{ include "vigil.postgres.passwordSecretKey" . }}
+                - name: PGSSLMODE
+                  value: {{ $b.sslMode | default "prefer" | quote }}
+                - name: BACKUP_DIR
+                  value: /backup
+                - name: BACKUP_KEEP_LAST
+                  value: {{ $b.keepLast | toString | quote }}
+                - name: BACKUP_RETENTION_DAYS
+                  value: {{ $b.retentionDays | toString | quote }}
+              resources:
+                {{- toYaml $b.resources | nindent 16 }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: backup
+                  mountPath: /backup
+                - name: tmp
+                  mountPath: /tmp
+          {{- if $b.objectStore.enabled }}
+          containers:
+            - name: upload
+              image: "{{ $b.objectStore.image.repository }}:{{ $b.objectStore.image.tag }}"
+              imagePullPolicy: {{ $b.objectStore.image.pullPolicy | default "IfNotPresent" }}
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  latest="$(cat /backup/LATEST)"
+                  dest="s3://${BUCKET}/${PREFIX:+${PREFIX}/}"
+                  set -- --only-show-errors
+                  if [ -n "${ENDPOINT_URL}" ]; then set -- "$@" --endpoint-url "${ENDPOINT_URL}"; fi
+                  aws s3 cp "$@" "/backup/${latest}.sha256" "${dest}${latest}.sha256"
+                  aws s3 cp "$@" "/backup/${latest}" "${dest}${latest}"
+                  echo "pg-backup: uploaded ${latest} to ${dest}"
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: BUCKET
+                  value: {{ $b.objectStore.bucket | quote }}
+                - name: PREFIX
+                  value: {{ $b.objectStore.prefix | quote }}
+                - name: ENDPOINT_URL
+                  value: {{ $b.objectStore.endpointUrl | quote }}
+                {{- if $b.objectStore.region }}
+                - name: AWS_REGION
+                  value: {{ $b.objectStore.region | quote }}
+                {{- end }}
+              {{- if $b.objectStore.existingSecret }}
+              envFrom:
+                - secretRef:
+                    name: {{ $b.objectStore.existingSecret }}
+              {{- end }}
+              resources:
+                {{- toYaml $b.resources | nindent 16 }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          {{- end }}
+          volumes:
+            - name: scripts
+              configMap:
+                name: {{ $fullname }}-script
+            - name: backup
+              {{- if $b.persistence.enabled }}
+              persistentVolumeClaim:
+                claimName: {{ $claim }}
+              {{- else }}
+              emptyDir: {}
+              {{- end }}
+            - name: tmp
+              emptyDir: {}
+          {{- with $b.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $b.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $b.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}
