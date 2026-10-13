@@ -312,6 +312,16 @@ class Settings(BaseSettings):
     daemon_probes_enabled: bool = True
     daemon_probe_interval: int = 3600
     daemon_cleanup_retention_days: int = 90
+    # Alert lanes (W2.2, core/lanes/alert_lanes.py): rules / small model / verdict
+    # run per finding, thresholds from INTENT.md alert_lanes. Off: no-op.
+    alert_lanes_enabled: bool = False
+    # Enqueue verdict runs for high-risk findings (needs the verdict run kind's
+    # enqueuer wired in); off degrades them to the small-model lane, marked deferred.
+    alert_lanes_verdict_enabled: bool = False
+    # Cheaper / local triage model for low-difficulty findings (e.g. an Ollama
+    # provider behind Bifrost). Both empty: the normal triage model.
+    alert_lanes_small_provider: str = ""
+    alert_lanes_small_model: str = ""
     # Separate from cleanup_retention_days on purpose: that only ages out the
     # episodic read log, while an unanswered containment proposal goes stale
     # in days (#675).

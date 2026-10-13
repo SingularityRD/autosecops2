@@ -8,6 +8,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from core.ingestion.ack import settle_ack
 from core.ingestion.dedup import RedisDedupSet
+from core.lanes.alert_lanes import (
+    ENRICHMENT_KEY,
+    LaneDecision,
+    LaneHook,
+    lane_triage_target,
+    wants_llm_triage,
+)
 from core.llm.outage import report_outage, report_recovered
 from core.time import utcnow
 from services.daemon.config import ProcessingConfig, ResponseConfig
@@ -116,6 +123,8 @@ class FindingProcessor:
         # Built on the first store and reused: its constructor health-checks
         # the database and logs, which should not happen once per finding.
         self._ingestion_service = None
+        # W2.2 alert lanes; a no-op unless ALERT_LANES_ENABLED.
+        self.alert_lanes = LaneHook()
 
         # Caps concurrent background AI enrichment (not the ingest/store path).
         self._semaphore = asyncio.Semaphore(config.max_concurrent_tasks)
@@ -396,13 +405,16 @@ class FindingProcessor:
         is capped by the semaphore and short-circuited by the breaker; response
         evaluation always runs on whatever severity we have."""
         finding_id = finding.get("finding_id", "unknown")
+        # W2.2 lane: rules / small model / verdict. Only this run's decision is
+        # trusted; an ``alert_lane`` arriving in the payload is never honoured.
+        lane = await self.alert_lanes(finding)
 
         want_llm = self.config.auto_triage_enabled or self.config.auto_enrich_enabled
         if want_llm and time.monotonic() >= self._enrich_paused_until:
             async with self._semaphore:
                 try:
                     triaged_ok = True
-                    if self.config.auto_triage_enabled:
+                    if self.config.auto_triage_enabled and wants_llm_triage(lane):
                         finding = await self._triage_finding(finding)
                         # _triage_finding sets ai_triage only when the gateway answered.
                         triaged_ok = bool(finding.get("ai_triage"))
@@ -411,7 +423,7 @@ class FindingProcessor:
                         finding = await self._enrich_finding(finding)
 
                     if self._data_service:
-                        await self._update_finding(finding)
+                        await self._update_finding(finding, lane)
 
                     # Count "enriched" once, only when enrichment actually
                     # produced data (the sole increment — _enrich_finding no
@@ -562,7 +574,9 @@ class FindingProcessor:
             logger.error(f"Failed to store finding: {e}")
             return False
 
-    async def _update_finding(self, finding: Dict[str, Any]):
+    async def _update_finding(
+        self, finding: Dict[str, Any], lane: Optional[LaneDecision] = None
+    ):
         """Persist only what triage/enrich produced — severity, status, and the
         cached AI analysis. This is a targeted partial update: the in-memory copy
         carries transient, source-derived keys (raw_event, entity context, etc.)
@@ -578,6 +592,8 @@ class FindingProcessor:
         if finding.get("status"):
             updates["status"] = finding["status"]
         ai_enrichment = {k: finding[k] for k in _AI_ANALYSIS_KEYS if k in finding}
+        if lane is not None:  # W2.2: this run's lane decision, never the payload's
+            ai_enrichment[ENRICHMENT_KEY] = lane.to_enrichment()
         if ai_enrichment:
             updates["ai_enrichment"] = ai_enrichment
 
@@ -705,6 +721,8 @@ REASONING: [Brief explanation]
         from core.llm.providers.registry import get_registry
         from core.llm.target import component_fallback, model_for, provider_for
 
+        if (small := lane_triage_target()) is not None:  # W2.2 small-model lane
+            return small
         provider_id, model = None, None
         try:
             resolved = get_registry().resolve_model_for_component("triage")
