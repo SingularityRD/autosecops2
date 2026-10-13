@@ -20,6 +20,7 @@ from core.integrations.integration_bridge_service import IntegrationBridgeServic
 from core.integrations.mcp.registry import MCPRegistry
 from core.platform.demo_data_service import DemoDataService
 from core.response.approval_service import ApprovalService
+from core.response.autonomous_response_service import AutonomousResponseService
 from core.workflows.custom_workflow_service import CustomWorkflowService
 from core.workflows.workflow_ai_generator import WorkflowAIGenerator
 from core.workflows.workflow_run_service import WorkflowRunService
@@ -28,6 +29,10 @@ from core.workflows.workflows_service import WorkflowsService
 
 def provide_approvals(request: Request) -> ApprovalService:
     return request.app.state.approvals
+
+
+def provide_response(request: Request) -> AutonomousResponseService:
+    return request.app.state.response
 
 
 def provide_workflows(request: Request) -> WorkflowsService:

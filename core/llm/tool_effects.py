@@ -41,6 +41,7 @@ Regenerate with ``python -m core.llm.tool_effects --write``.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -404,6 +405,14 @@ WRITE_VERBS = frozenset(
         "escalate",
         "install",
         "deploy",
+        # Move data out of or into the tenant: not a read, whatever follows.
+        "export",
+        "import",
+        "share",
+        "transfer",
+        "copy",
+        "move",
+        "forward",
     }
 )
 
@@ -440,23 +449,86 @@ READ_VERBS = frozenset(
 )
 
 
+_WORD = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+")
+_ALL_VERBS = DESTRUCTIVE_VERBS | WRITE_VERBS | READ_VERBS
+# Server and vendor prefixes a tool name may lead with, in front of its verb.
+_PREFIX_SEGMENTS = 2
+_SHORT_PREFIX = 4  # vendor abbreviations: mde, cb, pan, aad, xdr, otx, jira
+
+
+def _words(segment: str) -> List[str]:
+    """``getHostStatus`` / ``get-host`` / ``get`` -> lower-case words."""
+    return [w.lower() for w in _WORD.findall(segment)]
+
+
+def _known_namespaces() -> frozenset:
+    """Integration server ids and the vendor prefix their tools lead with."""
+    names = set()
+    vendor_tools = list(THIRD_PARTY)
+    for server, tools in INTEGRATIONS.items():
+        names.add(server.lower())
+        vendor_tools.extend(tools)
+    for tool in vendor_tools:
+        head = tool.split("_", 1)[0]
+        if "_" in tool and head:
+            names.add(head.lower())
+    return frozenset(n for n in names if not (set(_words(n)) & _ALL_VERBS))
+
+
+_KNOWN_NAMESPACES = _known_namespaces()
+
+
+def _is_prefix(segment: str, position: int) -> bool:
+    """Whether ``segment`` at ``position`` reads as a server or vendor prefix.
+
+    The first segment may be any non-verb: the registry flattens every MCP tool
+    to ``{server}_{tool}``, so it is the server name (``shodan_search_host``).
+    A second one must look like a vendor prefix -- hyphenated, a known
+    namespace, or a short abbreviation -- so an unknown word there
+    (``acme_frobnicate_get``) is taken for the verb, not skipped.
+    """
+    words = _words(segment)
+    if not words or any(w in _ALL_VERBS for w in words[:1]):
+        return False
+    if position == 0:
+        return True
+    return (
+        "-" in segment
+        or segment.lower() in _KNOWN_NAMESPACES
+        or len(segment) <= _SHORT_PREFIX
+    )
+
+
 def heuristic(name: str) -> str:
     """The class of a name the table does not hold, erring restrictive.
 
-    A destructive verb anywhere is ``destructive`` and a write verb anywhere is
-    ``write``, whatever leads. Otherwise a read verb leading the name, or in its
-    first three tokens -- room for a server and a vendor prefix,
-    ``acme-edr_xdr_get_host`` -- is ``read_only``; a destructive-looking noun
-    after it (``get_isolation_status``) is not a verb. Everything else is
-    ``destructive``: a name that says nothing is not evidence that the tool
-    does nothing.
+    The name is split into words on ``_``, ``-`` and camelCase, so
+    ``get_hostAndIsolate`` and ``list-users-delete`` show their verbs. A
+    destructive verb anywhere is ``destructive`` and a write verb anywhere is
+    ``write``, whatever leads. Otherwise the name is ``read_only`` only when
+    its leading verb reads: the first word after at most two server or vendor
+    prefixes (``shodan_search_host``, ``acme-edr_xdr_get_host``; see
+    :func:`_is_prefix`, and a prefix is never a verb). A read word further in
+    (``acme_frobnicate_get``) is not the verb, and a
+    destructive-looking noun after a read verb (``get_isolation_status``) is
+    not one either. Everything else is ``destructive``: a name that says
+    nothing is not evidence that the tool does nothing.
     """
-    tokens = [t for t in name.lower().split("_") if t]
-    if any(t in DESTRUCTIVE_VERBS for t in tokens):
+    segments = [seg for seg in name.split("_") if seg]
+    words = [w for seg in segments for w in _words(seg)]
+    if any(w in DESTRUCTIVE_VERBS for w in words):
         return DESTRUCTIVE
-    if any(t in WRITE_VERBS for t in tokens):
+    if any(w in WRITE_VERBS for w in words):
         return WRITE
-    if any(t in READ_VERBS for t in tokens[:3]):
+    skipped = 0
+    while (
+        skipped < _PREFIX_SEGMENTS
+        and skipped < len(segments) - 1
+        and _is_prefix(segments[skipped], skipped)
+    ):
+        skipped += 1
+    lead = _words(segments[skipped]) if skipped < len(segments) else []
+    if lead and lead[0] in READ_VERBS:
         return READ_ONLY
     return DESTRUCTIVE
 

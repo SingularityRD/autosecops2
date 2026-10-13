@@ -299,3 +299,56 @@ def test_an_outcome_for_a_delivery_taken_over_meanwhile_is_dropped(
     assert row["status"] == "delivered"
     assert row["attempts"] == 1
     assert row["response_status"] == 200
+
+
+def test_a_stale_outcome_arriving_before_the_newer_one_is_dropped(
+    webhook_tables, secrets_store, allow_loopback, receiver
+):
+    """The other ordering: the stale claim's result lands first."""
+    _endpoint(receiver)
+    hooks.enqueue_event("case.sla_warning", "e-late-first", {}, now=T0)
+    (claimed,) = hooks.claim_due_deliveries(now=T0)
+    later = T0 + timedelta(seconds=hooks.CLAIM_LEASE_SECONDS + 1)
+    (again,) = hooks.claim_due_deliveries(now=later)
+
+    # The first sender's late failure arrives before the second's success.
+    hooks.record_attempt(
+        claimed, hooks.SendResult("retry", 500, "HTTP 500"), max_attempts=8, now=later
+    )
+    (row,) = _deliveries()
+    assert row["status"] == "pending"
+    assert row["attempts"] == 0
+    assert row["response_status"] is None
+
+    # The newer claim's outcome is still recorded.
+    status = hooks.record_attempt(
+        again, hooks.SendResult(hooks.DELIVERED, 200), max_attempts=8, now=later
+    )
+    assert status == hooks.DELIVERED
+    (row,) = _deliveries()
+    assert row["status"] == "delivered"
+    assert row["attempts"] == 1
+    assert row["response_status"] == 200
+
+
+def test_a_stale_outcome_is_dropped_after_a_requeue_resets_attempts(
+    webhook_tables, secrets_store, allow_loopback, receiver
+):
+    """A requeue puts attempts back to 0: the count alone would match again."""
+    endpoint, _ = _endpoint(receiver)
+    hooks.enqueue_event("case.sla_warning", "e-aba", {}, now=T0)
+    (stale,) = hooks.claim_due_deliveries(now=T0)
+    later = T0 + timedelta(seconds=hooks.CLAIM_LEASE_SECONDS + 1)
+    (again,) = hooks.claim_due_deliveries(now=later)
+    hooks.record_attempt(
+        again, hooks.SendResult(hooks.FAILED, 404, "HTTP 404"), max_attempts=8, now=later
+    )
+    (row,) = _deliveries()
+    assert hooks.requeue_delivery(endpoint["id"], row["id"], now=later) is not None
+
+    hooks.record_attempt(
+        stale, hooks.SendResult(hooks.DELIVERED, 200), max_attempts=8, now=later
+    )
+    (row,) = _deliveries()
+    assert row["status"] == "pending"
+    assert row["attempts"] == 0

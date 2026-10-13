@@ -77,7 +77,13 @@ def _assignments(monkeypatch, assigned):
 
 @pytest.mark.parametrize(
     "workflow_id",
-    ["threat-hunt", "shadow-adjudication", "incident-response", "root-cause-analysis"],
+    [
+        "threat-hunt",
+        "shadow-adjudication",
+        "alert-verdict",
+        "incident-response",
+        "root-cause-analysis",
+    ],
 )
 def test_every_kind_answers_every_key_and_an_empty_one_says_why(workflow_id):
     report = _file(workflow_id)
@@ -90,7 +96,7 @@ def test_every_kind_answers_every_key_and_an_empty_one_says_why(workflow_id):
         assert not empty or note, key
     # Only a hunt-like kind has capabilities to miss and a rate to warn of.
     assert (HUNT_ONLY_KEYS <= set(report)) == (
-        workflow_id in {"threat-hunt", "shadow-adjudication"}
+        workflow_id in {"threat-hunt", "shadow-adjudication", "alert-verdict"}
     )
 
 
@@ -119,8 +125,32 @@ def test_only_a_hunt_can_hand_off_to_incident_response():
     handoff = [r["name"] for r in _file("threat-hunt")["permissions"]]
     adjudicate = [r["name"] for r in _file("shadow-adjudication")["permissions"]]
 
+    verdict = [r["name"] for r in _file("alert-verdict")["permissions"]]
+
     assert "HANDOFF_IR" in handoff
     assert "HANDOFF_IR" not in adjudicate
+    assert "HANDOFF_IR" not in verdict
+
+
+# A verdict run is the hunt loop at triage scale: its own lead, two helpers, the
+# critic, and the small budget settings give it rather than a hunt's.
+def test_a_verdict_names_its_lead_and_its_small_ceilings(monkeypatch):
+    from core.workflows import playbook_resolver
+
+    monkeypatch.setattr(playbook_resolver, "verdict_budgets", lambda: (3, 0.5, 60_000))
+    report = _file("alert-verdict")
+
+    assert report["roles"]["lead"] == {"name": "Verdict lead", "tools": ["expand"]}
+    assert [h["agent"] for h in report["roles"]["helpers"]] == [
+        "threat_hunter",
+        "threat_intel",
+    ]
+    assert report["roles"]["reviewer"] == {"name": "Critic", "tools": []}
+    assert report["budgets"] == {
+        "max_iterations": 3,
+        "max_cost_usd": 0.5,
+        "max_wall_ms": 60_000,
+    }
 
 
 def test_an_unbound_capability_is_marked(monkeypatch):
