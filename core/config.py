@@ -282,6 +282,13 @@ class Settings(BaseSettings):
     daemon_triage_timeout: int = 60
     daemon_enrich_max_inflight: int = 50
     daemon_handoff_queue_maxsize: int = 1000
+    # W0.12 ingest spool: the webhook answers 200 only once a finding is
+    # fsync'd here; replayed after a restart. Empty dir: <VIGIL_DIR>/spool/webhook.
+    # Disabled: the webhook answers 200 only after the row is stored, else 503.
+    daemon_ingest_spool_enabled: bool = True
+    daemon_ingest_spool_dir: str = ""
+    daemon_ingest_spool_max_findings: int = 10000
+    daemon_ingest_spool_max_mb: int = 128
     daemon_enrich_backfill: bool = True
     daemon_enrich_backfill_interval: int = 300
     daemon_enrich_backfill_batch: int = 50

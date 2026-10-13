@@ -5,7 +5,8 @@ dedup key that was marked at enqueue, on the same ``RedisDedupSet`` instance.
 
 Federation and Kafka hold their cursor/offset until the store is acked
 (test_ack_before_advance), so an unmarked id is queued again on the re-read.
-The webhook does not: the HTTP response has already moved.
+The webhook acknowledges into the durable ingest spool instead (W0.12): its
+findings are never dropped, see the last test.
 """
 
 from __future__ import annotations
@@ -22,9 +23,10 @@ from aiohttp import ClientConnectorError, ClientSession
 from core.config import get_settings
 from core.ingestion.dedup import RedisDedupSet
 from core.ingestion.handoff import envelope
+from core.ingestion.spool import IngestSpool
 from services.daemon.config import PollingConfig, ProcessingConfig
 from services.daemon.poller import DataPoller
-from services.daemon.processor import FindingProcessor, _STORE_ATTEMPTS
+from services.daemon.processor import _STORE_ATTEMPTS, FindingProcessor
 
 pytestmark = pytest.mark.unit
 
@@ -199,24 +201,33 @@ async def test_a_probe_without_a_dedup_key_is_dropped_quietly(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_webhook_does_not_redeliver(monkeypatch, caplog):
-    """The 200 moves before the store is attempted."""
+async def test_a_webhook_finding_whose_store_fails_stays_spooled(
+    monkeypatch, caplog, tmp_path
+):
+    """W0.12: the 200 means "in the spool"; a failed store never drops it.
+
+    (Before W0.12 the 200 meant "in memory", and a failed store dropped the
+    finding after the sender had moved on: the W4.1 pg_restart loss.)
+    """
     _dead_redis(monkeypatch)
     processor = _processor(monkeypatch)
-    ingest = _Ingest(_down())
+    monkeypatch.setattr(processor, "_database_answers", _never)
+    ingest = _Ingest(_down() + [True])
     _patch_ingest(monkeypatch, ingest)
     caplog.set_level(logging.ERROR)
 
-    # Webhook: the handler has already answered 200 by the time we store.
+    spool = IngestSpool(tmp_path)
+    spool.open()
+    processor.attach_spool(spool)
     poller = _poller(monkeypatch)
+    poller.set_spool(spool)
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         poller.config.webhook_port = sock.getsockname()[1]
-    disabled = set()
 
     class _Config:
         def get_disabled_integration_ids(self):
-            return disabled
+            return set()
 
     shutdown = asyncio.Event()
     server = asyncio.create_task(poller._run_webhook_server(shutdown))
@@ -231,16 +242,34 @@ async def test_webhook_does_not_redeliver(monkeypatch, caplog):
                 status = response.status
         assert status == 200
         assert body == {"status": "ok", "ingested": 1}
-        assert await poller._webhook_dedup.is_processed("wh-1") is True
 
-        await _drain(processor, poller._output_queue)
-        assert processor.stats["store_dropped"] == 1
-        assert await poller._webhook_dedup.is_processed("wh-1") is False
-        # Nothing in the webhook path asks the sender to try again.
-        assert poller._output_queue.empty()
+        # The database is down: every in-place attempt fails.
+        [entry] = spool.claim(1)
+        await processor._process_item(
+            {**envelope(entry.finding, "webhook"), "spool": entry}
+        )
+        assert processor.stats["store_dropped"] == 0
+        assert processor.stats["store_retried"] == 1
+        assert len(spool) == 1  # still on disk, back in line
+        assert await poller._webhook_dedup.is_processed("wh-1") is True
+        assert "stays in the ingest spool" in caplog.text
+
+        # The database is back: the same entry is stored and leaves the spool.
+        [entry] = spool.claim(1)
+        await processor._process_item(
+            {**envelope(entry.finding, "webhook"), "spool": entry}
+        )
+        assert processor.stats["processed"] == 1
+        assert len(spool) == 0
+        assert ingest.finding_ids == ["wh-1"] * (_STORE_ATTEMPTS + 1)
     finally:
         shutdown.set()
         await server
+        spool.close()
+
+
+async def _never() -> bool:
+    return False
 
 
 async def _post_when_up(session: ClientSession, port: int):
