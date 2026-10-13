@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, Optional
 
 from core.coordination.leader import (
     PgLeaderLock,
+    UnsupportedServerError,
     connect_args_from_engine,
     install_connection_fence,
     make_instance_id,
@@ -115,6 +116,9 @@ class DaemonLeadership:
         while not stop.is_set():
             try:
                 got = await asyncio.to_thread(self.lock.try_acquire)
+            except UnsupportedServerError:
+                # Waiting cannot fix this; crash so the pod status shows it.
+                raise
             except Exception as exc:  # noqa: BLE001 - DB down: keep waiting
                 logger.warning("Leader lock attempt failed: %s", exc)
                 got = False
@@ -183,7 +187,9 @@ class DaemonLeadership:
         _set_gauge(0)
 
 
-def build_daemon_leadership(settings: Any = None, engine: Any = None) -> DaemonLeadership:
+def build_daemon_leadership(
+    settings: Any = None, engine: Any = None
+) -> DaemonLeadership:
     """Leadership for this process from settings, on the platform DB engine."""
     import psycopg2
 

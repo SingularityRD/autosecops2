@@ -56,7 +56,46 @@ def test_like_escape():
 
 def test_lease_must_be_positive():
     with pytest.raises(ValueError):
-        PgLeaderLock(lambda **_: None, key=KEY, group=GROUP, instance_id="i", lease_seconds=0)
+        PgLeaderLock(
+            lambda **_: None, key=KEY, group=GROUP, instance_id="i", lease_seconds=0
+        )
+
+
+class _OldServer:
+    """A psycopg2-like connection to PostgreSQL 13."""
+
+    autocommit = False
+    closed = False
+
+    def cursor(self):
+        conn = self
+
+        class Cur:
+            def execute(self, sql, params=None):
+                conn.last = sql
+
+            def fetchone(self):
+                return (130012,)
+
+            def close(self):
+                pass
+
+        return Cur()
+
+    def close(self):
+        self.closed = True
+
+
+def test_server_older_than_14_is_refused():
+    from core.coordination.leader import UnsupportedServerError
+
+    conn = _OldServer()
+    lock = PgLeaderLock(
+        lambda **_: conn, key=KEY, group=GROUP, instance_id="i", lease_seconds=5
+    )
+    with pytest.raises(UnsupportedServerError):
+        lock.try_acquire()
+    assert conn.closed and not lock.held
 
 
 def test_fence_ignores_non_postgres_connections():

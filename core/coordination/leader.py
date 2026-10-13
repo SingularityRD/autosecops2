@@ -71,6 +71,10 @@ WHERE datname = current_database()
 """
 
 
+class UnsupportedServerError(RuntimeError):
+    """The server cannot enforce the lease (PostgreSQL older than 14)."""
+
+
 class FencedError(RuntimeError):
     """This process does not hold the leader lock, so it may not open a connection."""
 
@@ -160,7 +164,7 @@ class PgLeaderLock:
             cur.execute("SELECT current_setting('server_version_num')::int")
             version = int(cur.fetchone()[0])
             if version < MIN_SERVER_VERSION_NUM:
-                raise RuntimeError(
+                raise UnsupportedServerError(
                     f"leader election needs PostgreSQL 14+ (server is {version})"
                 )
             # Server side: a frozen or partitioned holder loses the lock after
@@ -298,7 +302,9 @@ def install_connection_fence(lock: PgLeaderLock) -> Callable[[], None]:
         try:
             cur = dbapi_connection.cursor()
             # Name first: the sweep must see this session from here on.
-            cur.execute("SELECT set_config('application_name', %s, false)", (lock.data_name,))
+            cur.execute(
+                "SELECT set_config('application_name', %s, false)", (lock.data_name,)
+            )
             holder = check_holder(cur, lock.key)
             cur.close()
             dbapi_connection.commit()

@@ -71,9 +71,7 @@ def _postgres_available() -> bool:
 
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.skipif(
-        not _postgres_available(), reason="requires a local PostgreSQL"
-    ),
+    pytest.mark.skipif(not _postgres_available(), reason="requires a local PostgreSQL"),
 ]
 
 
@@ -251,6 +249,7 @@ def test_kill_leader_standby_takes_over(pair):
     a.proc.send_signal(signal.SIGKILL)
     led_at = _wait_new_leader(b, RETRY + SLACK)
 
+    print(f"takeover after SIGKILL: {led_at - killed_at:.2f}s")
     assert led_at - killed_at <= RETRY + SLACK
     _assert_fenced(db, a.instance_id, b.instance_id)
 
@@ -264,6 +263,7 @@ def test_graceful_shutdown_hands_over(pair):
     assert a.proc.wait(timeout=30) == 0
     led_at = _wait_new_leader(b, RETRY + SLACK)
 
+    print(f"takeover after SIGTERM: {led_at - stopped_at:.2f}s")
     assert led_at - stopped_at <= RETRY + SLACK
     _assert_fenced(db, a.instance_id, b.instance_id)
 
@@ -278,8 +278,10 @@ def test_paused_leader_is_fenced_and_exits(pair):
     a.proc.send_signal(signal.SIGSTOP)
     try:
         led_at = _wait_new_leader(b, LEASE + RETRY + SLACK)
-        # The lease is server-side: b cannot lead before it runs out.
-        assert led_at - paused_at >= LEASE - 1.0
+        # The lease is server-side and counts from a's last heartbeat, which
+        # was at most lease / 3 before the pause: b cannot lead sooner.
+        print(f"takeover after SIGSTOP: {led_at - paused_at:.2f}s (lease {LEASE}s)")
+        assert led_at - paused_at >= LEASE * 2 / 3 - 0.5
         assert led_at - paused_at <= LEASE + RETRY + SLACK
         _wait_for(lambda: _rows(db, b.instance_id), 30, "the new leader's writes")
         # The takeover terminated the frozen process's pooled sessions.
@@ -312,6 +314,7 @@ def test_partitioned_leader_is_fenced_and_exits(pair):
     cut_at = time.monotonic()
 
     led_at = _wait_new_leader(b, RETRY + SLACK)
+    print(f"takeover after lock session loss: {led_at - cut_at:.2f}s")
     assert led_at - cut_at <= RETRY + SLACK
     # The old process notices on its next heartbeat (lease / 3) and exits.
     assert a.proc.wait(timeout=LEASE + SLACK) == 75

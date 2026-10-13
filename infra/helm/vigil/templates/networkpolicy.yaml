@@ -224,6 +224,11 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "vigil.componentSelectorLabels" (dict "context" . "component" "db-init") | nindent 14 }}
+        {{- if .Values.backup.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "vigil.componentSelectorLabels" (dict "context" . "component" "backup") | nindent 14 }}
+        {{- end }}
         {{- /* Both: serve's readiness probe is a query, so omitting it here does
                not degrade the Deployment, it stops it rolling out. */}}
         {{- if .Values.agentWorker.enabled }}
