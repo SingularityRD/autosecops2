@@ -1,0 +1,1213 @@
+{
+  "_about": "Reviewed outbound call sites. Maintained by tests/airgap/egress_scan.py --write and checked by tests/airgap/test_egress_inventory.py. See tests/airgap/README.md.",
+  "sites": [
+    {
+      "site": "core/agents/projections.py",
+      "category": "internal",
+      "kinds": {
+        "httpx": 5
+      },
+      "switches": {
+        "AGENT_URL": "internal"
+      },
+      "note": "Backend -> agent service (Node) read/write projections."
+    },
+    {
+      "site": "core/cases/notification_dispatcher.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 1,
+        "host:slack.com": 1
+      },
+      "gates": [
+        "integration:slack"
+      ],
+      "note": "Case notifications to Slack; sent only when the 'slack' integration is enabled with credentials. The air-gap profile enables none."
+    },
+    {
+      "site": "core/detections/detection_rules_service.py",
+      "category": "operator-action",
+      "kinds": {
+        "exec:git": 2,
+        "host:github.com": 4
+      },
+      "gates": [
+        "operator-action:detection rule source add/sync"
+      ],
+      "note": "git clone of SigmaHQ/Splunk/Elastic rule repos happens only when an operator adds or syncs a git source; startup only seeds 'not_cloned' entries. Air-gap: use local-path sources."
+    },
+    {
+      "site": "core/documents/extract.py",
+      "category": "gated",
+      "kinds": {
+        "ocr-data-download": 1
+      },
+      "switches": {
+        "TESSDATA_PREFIX": "set"
+      },
+      "note": "LiteParse OCR fetches Tesseract language data on first OCR unless TESSDATA_PREFIX holds it. Ship eng.traineddata in that folder."
+    },
+    {
+      "site": "core/ingestion/kafka_consumer_service.py",
+      "category": "gated",
+      "kinds": {
+        "kafka": 1
+      },
+      "switches": {
+        "KAFKA_ENABLED": "off"
+      },
+      "note": "Kafka ingestion consumer; brokers are operator-configured."
+    },
+    {
+      "site": "core/ingestion/kafka_router.py",
+      "category": "internal",
+      "kinds": {
+        "aiohttp": 1
+      },
+      "switches": {
+        "DAEMON_HEALTH_HOST": "internal"
+      },
+      "note": "API reads Kafka status from the daemon's local /status endpoint."
+    },
+    {
+      "site": "core/integrations/_base/aad_token.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 1,
+        "host:login.microsoftonline.com": 1
+      },
+      "gates": [
+        "integration:azure_ad"
+      ],
+      "note": "Entra ID token fetch for Azure AD / Defender connectors; runs only when one is enabled."
+    },
+    {
+      "site": "core/integrations/alienvault_otx/tool.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 3,
+        "host:otx.alienvault.com": 1
+      },
+      "gates": [
+        "integration:alienvault_otx",
+        "mcp-server:alienvault-otx"
+      ],
+      "note": "Vendor connector; runs only when the 'alienvault_otx' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/anyrun/tool.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 2,
+        "host:api.any.run": 2
+      },
+      "gates": [
+        "integration:anyrun",
+        "mcp-server:anyrun"
+      ],
+      "note": "Vendor connector; runs only when the 'anyrun' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/aws_security_hub/ingestion.py",
+      "category": "gated",
+      "kinds": {
+        "aws-sdk": 2
+      },
+      "gates": [
+        "integration:aws_security_hub"
+      ],
+      "note": "Vendor connector; runs only when the 'aws_security_hub' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/azure_ad/client.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 1,
+        "host:graph.microsoft.com": 2
+      },
+      "gates": [
+        "integration:azure_ad"
+      ],
+      "note": "Shared Microsoft Graph client used by the Entra ID tool and executor; runs only when the 'azure_ad' integration is enabled with credentials. The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/azure_ad/tool.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 3,
+        "host:graph.microsoft.com": 4
+      },
+      "gates": [
+        "integration:azure_ad",
+        "mcp-server:azure-ad"
+      ],
+      "note": "Vendor connector; runs only when the 'azure_ad' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/azure_sentinel/ingestion.py",
+      "category": "gated",
+      "kinds": {
+        "azure-sdk": 2
+      },
+      "gates": [
+        "integration:azure_sentinel"
+      ],
+      "note": "Vendor connector; runs only when the 'azure_sentinel' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/cape_sandbox/tool.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 7
+      },
+      "gates": [
+        "integration:cape_sandbox",
+        "mcp-server:cape-sandbox"
+      ],
+      "note": "Vendor connector; runs only when the 'cape_sandbox' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/carbon_black/tool.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 3
+      },
+      "gates": [
+        "integration:carbon_black",
+        "mcp-server:carbon-black"
+      ],
+      "note": "Vendor connector; runs only when the 'carbon_black' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/cloudflare/tool.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 6,
+        "host:api.cloudflare.com": 1
+      },
+      "gates": [
+        "integration:cloudflare",
+        "mcp-server:cloudflare"
+      ],
+      "note": "Vendor connector; runs only when the 'cloudflare' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/crowdstrike/client.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 1,
+        "host:api.crowdstrike.com": 1
+      },
+      "gates": [
+        "integration:crowdstrike",
+        "mcp-server:crowdstrike"
+      ],
+      "note": "Vendor connector; runs only when the 'crowdstrike' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/elastic/client.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 2
+      },
+      "gates": [
+        "integration:elastic",
+        "mcp-server:elastic"
+      ],
+      "note": "Vendor connector; runs only when the 'elastic' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/extension/session_service.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 2
+      },
+      "gates": [
+        "integration:extension-connector"
+      ],
+      "note": "Browser-extension connector session; refuses unless the connector integration is enabled and its URL is trusted."
+    },
+    {
+      "site": "core/integrations/hybrid_analysis/tool.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 2,
+        "host:www.hybrid-analysis.com": 2
+      },
+      "gates": [
+        "integration:hybrid_analysis",
+        "mcp-server:hybrid-analysis"
+      ],
+      "note": "Vendor connector; runs only when the 'hybrid_analysis' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/ip_geolocation/tool.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 1,
+        "host:ip-api.com": 1
+      },
+      "gates": [
+        "integration:ip_geolocation",
+        "mcp-server:ip-geolocation"
+      ],
+      "note": "Calls ip-api.com (plain HTTP). Runs only when the ip-geolocation MCP server is enabled; off by default."
+    },
+    {
+      "site": "core/integrations/mcp/client.py",
+      "category": "gated",
+      "kinds": {
+        "mcp-client": 3
+      },
+      "switches": {
+        "MCP_AUTO_CONNECT_ON_STARTUP": "off"
+      },
+      "gates": [
+        "mcp-server:*"
+      ],
+      "note": "MCP client; connects only to enabled servers, lazily. Each server's own egress is listed under mcp-config.json#<server>."
+    },
+    {
+      "site": "core/integrations/microsoft_defender/ingestion.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 2,
+        "host:api.securitycenter.microsoft.com": 2,
+        "host:login.microsoftonline.com": 1
+      },
+      "gates": [
+        "integration:microsoft_defender"
+      ],
+      "note": "Vendor connector; runs only when the 'microsoft_defender' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/microsoft_defender/tool.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 3,
+        "host:api.securitycenter.microsoft.com": 2
+      },
+      "gates": [
+        "integration:microsoft_defender",
+        "mcp-server:microsoft-defender"
+      ],
+      "note": "Vendor connector; runs only when the 'microsoft_defender' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/microsoft_teams/tool.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 1,
+        "host:schema.org": 1
+      },
+      "gates": [
+        "integration:microsoft_teams",
+        "mcp-server:microsoft-teams"
+      ],
+      "note": "Vendor connector; runs only when the 'microsoft_teams' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/misp/tool.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 2
+      },
+      "gates": [
+        "integration:misp",
+        "mcp-server:misp"
+      ],
+      "note": "Vendor connector; runs only when the 'misp' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/opensearch/client.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 2
+      },
+      "gates": [
+        "integration:opensearch",
+        "mcp-server:opensearch"
+      ],
+      "note": "Vendor connector; runs only when the 'opensearch' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/outbound_webhooks.py",
+      "category": "operator-action",
+      "kinds": {
+        "aiohttp": 1
+      },
+      "gates": [
+        "operator-action:webhook endpoint configured"
+      ],
+      "note": "Outbound webhook delivery; only to endpoints an admin registers via /api/webhook-endpoints, SSRF-checked by url_safety. Air-gap: register only in-network receivers or none."
+    },
+    {
+      "site": "core/integrations/palo_alto/tool.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 2
+      },
+      "gates": [
+        "integration:palo_alto",
+        "mcp-server:palo-alto"
+      ],
+      "note": "Vendor connector; runs only when the 'palo_alto' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/slack/tool.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 1,
+        "host:slack.com": 1
+      },
+      "gates": [
+        "integration:slack",
+        "mcp-server:slack"
+      ],
+      "note": "Vendor connector; runs only when the 'slack' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/integrations/splunk/client.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 1
+      },
+      "gates": [
+        "integration:splunk"
+      ],
+      "note": "Customer SIEM; reached only when the Splunk integration is configured (its host must be internal or allowlisted)."
+    },
+    {
+      "site": "core/integrations/vstrike/client.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 4
+      },
+      "gates": [
+        "integration:vstrike",
+        "mcp-server:vstrike"
+      ],
+      "note": "Vendor connector; runs only when the 'vstrike' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
+    },
+    {
+      "site": "core/llm/bifrost/admin.py",
+      "category": "internal",
+      "kinds": {
+        "httpx": 6
+      },
+      "switches": {
+        "BIFROST_URL": "internal"
+      },
+      "note": "Bifrost admin API."
+    },
+    {
+      "site": "core/llm/bifrost/costs.py",
+      "category": "internal",
+      "kinds": {
+        "httpx": 2
+      },
+      "switches": {
+        "BIFROST_URL": "internal"
+      },
+      "note": "Bifrost logs/costs API."
+    },
+    {
+      "site": "core/llm/bifrost/mirror.py",
+      "category": "internal",
+      "kinds": {
+        "httpx": 1
+      },
+      "switches": {
+        "BIFROST_URL": "internal"
+      },
+      "note": "Bifrost config mirror."
+    },
+    {
+      "site": "core/llm/cost/estimator.py",
+      "category": "known-gap",
+      "kinds": {
+        "model-data-download": 2
+      },
+      "note": "tiktoken (not in requirements) would download BPE files from openaipublic.blob.core.windows.net on first use; without it the char heuristic is used. If installed, pre-seed TIKTOKEN_CACHE_DIR."
+    },
+    {
+      "site": "core/llm/providers/clients.py",
+      "category": "internal",
+      "kinds": {
+        "llm-sdk": 2
+      },
+      "switches": {
+        "BIFROST_URL": "internal",
+        "ANTHROPIC_BASE_URL": "off"
+      },
+      "note": "Anthropic/OpenAI SDK clients point at Bifrost unless ANTHROPIC_BASE_URL overrides it."
+    },
+    {
+      "site": "core/llm/providers/discovery.py",
+      "category": "operator-action",
+      "kinds": {
+        "httpx": 4,
+        "host:api.anthropic.com": 1,
+        "host:api.openai.com": 1
+      },
+      "gates": [
+        "operator-action:provider key validation / model discovery"
+      ],
+      "note": "Lists models from api.anthropic.com/api.openai.com only when an operator adds or tests a provider key; Ollama discovery uses OLLAMA_URL."
+    },
+    {
+      "site": "core/llm/providers/recovery.py",
+      "category": "internal",
+      "kinds": {
+        "httpx": 1,
+        "exec:docker": 1
+      },
+      "switches": {
+        "BIFROST_URL": "internal"
+      },
+      "note": "Local Bifrost health probe and docker restart; enabled only when BIFROST_URL is loopback."
+    },
+    {
+      "site": "core/llm/router/router.py",
+      "category": "internal",
+      "kinds": {
+        "llm-sdk": 2
+      },
+      "switches": {
+        "BIFROST_URL": "internal"
+      },
+      "note": "LLM router; every model call goes to Bifrost's /v1."
+    },
+    {
+      "site": "core/platform/email_service.py",
+      "category": "gated",
+      "kinds": {
+        "smtp": 1
+      },
+      "switches": {
+        "VIGIL_EMAIL_BACKEND": "=console",
+        "SMTP_HOST": "off"
+      },
+      "note": "SMTP backend only when VIGIL_EMAIL_BACKEND=smtp."
+    },
+    {
+      "site": "core/platform/medic_last_seen.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 1
+      },
+      "switches": {
+        "VIGIL_MEDIC_ENABLED": "off"
+      },
+      "note": "Medic API heartbeat."
+    },
+    {
+      "site": "core/platform/monitoring.py",
+      "category": "gated",
+      "kinds": {
+        "sentry": 1
+      },
+      "switches": {
+        "SENTRY_DSN": "off"
+      },
+      "note": "Sentry error reporting; inert without a DSN."
+    },
+    {
+      "site": "core/platform/ollama_supervisor.py",
+      "category": "internal",
+      "kinds": {
+        "httpx": 1
+      },
+      "switches": {
+        "OLLAMA_URL": "internal"
+      },
+      "note": "Local Ollama health."
+    },
+    {
+      "site": "core/platform/service_manager.py",
+      "category": "operator-action",
+      "kinds": {
+        "exec:docker": 4
+      },
+      "gates": [
+        "operator-action:service start/stop from the console"
+      ],
+      "note": "docker compose start/stop of local services; may pull images if absent. Air-gap: images preloaded."
+    },
+    {
+      "site": "core/platform/url_safety.py",
+      "category": "local-only",
+      "kinds": {
+        "dns": 2
+      },
+      "note": "DNS resolution of an operator-entered URL to refuse private targets (SSRF guard); uses the host resolver only. Also resolves webhook endpoint hosts once and pins the connection to the checked address."
+    },
+    {
+      "site": "core/storage/db_proxy.py",
+      "category": "operator-action",
+      "kinds": {
+        "ssh": 1
+      },
+      "gates": [
+        "operator-action:database proxy configured in Settings"
+      ],
+      "note": "SSH tunnel to an operator-entered bastion; off unless a DB proxy is configured."
+    },
+    {
+      "site": "core/storage/s3_service.py",
+      "category": "operator-action",
+      "kinds": {
+        "aws-sdk": 3
+      },
+      "gates": [
+        "operator-action:S3 ingestion source configured"
+      ],
+      "note": "boto3 to the S3 endpoint of an operator-created ingestion source."
+    },
+    {
+      "site": "core/telemetry.py",
+      "category": "gated",
+      "kinds": {
+        "otel-exporter": 4
+      },
+      "switches": {
+        "VIGIL_OTEL_ENABLED": "off",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "internal"
+      },
+      "note": "OTLP exporter; inert unless VIGIL_OTEL_ENABLED."
+    },
+    {
+      "site": "core/threat_intel/threat_feed_service.py",
+      "category": "gated",
+      "kinds": {
+        "taxii": 1
+      },
+      "gates": [
+        "integration:cloudforce_one"
+      ],
+      "note": "TAXII feed poll; only when the cloudforce_one integration is enabled with a server URL."
+    },
+    {
+      "site": "infra/docker/bifrost/config.json#anthropic",
+      "category": "gated",
+      "kinds": {
+        "provider:api.anthropic.com": 1
+      },
+      "switches": {
+        "ANTHROPIC_API_KEY": "off"
+      },
+      "note": "Seeded Bifrost provider; dials the public API only with a key. Use a local OpenAI-compatible/Ollama provider instead."
+    },
+    {
+      "site": "infra/docker/bifrost/config.json#gemini",
+      "category": "gated",
+      "kinds": {
+        "provider:generativelanguage.googleapis.com": 1
+      },
+      "switches": {
+        "GEMINI_API_KEY": "off"
+      },
+      "note": "Seeded Bifrost provider; dials the public API only with a key. Use a local OpenAI-compatible/Ollama provider instead."
+    },
+    {
+      "site": "infra/docker/bifrost/config.json#openai",
+      "category": "gated",
+      "kinds": {
+        "provider:api.openai.com": 1
+      },
+      "switches": {
+        "OPENAI_API_KEY": "off"
+      },
+      "note": "Seeded Bifrost provider; dials the public API only with a key. Use a local OpenAI-compatible/Ollama provider instead."
+    },
+    {
+      "site": "infra/docker/bifrost/config.json#vertex",
+      "category": "gated",
+      "kinds": {
+        "provider:aiplatform.googleapis.com": 1
+      },
+      "switches": {
+        "GOOGLE_APPLICATION_CREDENTIALS": "off"
+      },
+      "note": "Seeded Bifrost provider; dials the public API only with a key. Use a local OpenAI-compatible/Ollama provider instead."
+    },
+    {
+      "site": "mcp-config.json#aws-security",
+      "category": "gated",
+      "kinds": {
+        "exec:uvx": 1
+      },
+      "switches": {
+        "UV_OFFLINE": "on"
+      },
+      "gates": [
+        "mcp-server:aws-security"
+      ],
+      "note": "Catalogue MCP server, disabled until an operator enables it."
+    },
+    {
+      "site": "mcp-config.json#azure-sentinel",
+      "category": "gated",
+      "kinds": {
+        "exec:npx": 1,
+        "mcp-remote": 1,
+        "host:sentinelmcp.microsoft.com": 1
+      },
+      "switches": {
+        "NPM_CONFIG_OFFLINE": "on"
+      },
+      "gates": [
+        "mcp-server:azure-sentinel"
+      ],
+      "note": "Catalogue MCP server, disabled until an operator enables it."
+    },
+    {
+      "site": "mcp-config.json#cribl-stream",
+      "category": "gated",
+      "kinds": {
+        "exec:npx": 1
+      },
+      "switches": {
+        "NPM_CONFIG_OFFLINE": "on"
+      },
+      "gates": [
+        "mcp-server:cribl-stream"
+      ],
+      "note": "Catalogue MCP server, disabled until an operator enables it."
+    },
+    {
+      "site": "mcp-config.json#crowdstrike",
+      "category": "gated",
+      "kinds": {
+        "exec:uvx": 1,
+        "host:api.crowdstrike.com": 1
+      },
+      "switches": {
+        "UV_OFFLINE": "on"
+      },
+      "gates": [
+        "mcp-server:crowdstrike"
+      ],
+      "note": "Catalogue MCP server, disabled until an operator enables it."
+    },
+    {
+      "site": "mcp-config.json#firecrawl",
+      "category": "gated",
+      "kinds": {
+        "exec:npx": 1
+      },
+      "switches": {
+        "NPM_CONFIG_OFFLINE": "on"
+      },
+      "gates": [
+        "mcp-server:firecrawl"
+      ],
+      "note": "Catalogue MCP server, disabled until an operator enables it."
+    },
+    {
+      "site": "mcp-config.json#gcp-scc",
+      "category": "gated",
+      "kinds": {
+        "exec:uvx": 1
+      },
+      "switches": {
+        "UV_OFFLINE": "on"
+      },
+      "gates": [
+        "mcp-server:gcp-scc"
+      ],
+      "note": "Catalogue MCP server, disabled until an operator enables it."
+    },
+    {
+      "site": "mcp-config.json#gcp-secops",
+      "category": "gated",
+      "kinds": {
+        "exec:uvx": 1
+      },
+      "switches": {
+        "UV_OFFLINE": "on"
+      },
+      "gates": [
+        "mcp-server:gcp-secops"
+      ],
+      "note": "Catalogue MCP server, disabled until an operator enables it."
+    },
+    {
+      "site": "mcp-config.json#gcp-threat-intel",
+      "category": "gated",
+      "kinds": {
+        "exec:uvx": 1
+      },
+      "switches": {
+        "UV_OFFLINE": "on"
+      },
+      "gates": [
+        "mcp-server:gcp-threat-intel"
+      ],
+      "note": "Catalogue MCP server, disabled until an operator enables it."
+    },
+    {
+      "site": "mcp-config.json#github",
+      "category": "gated",
+      "kinds": {
+        "exec:npx": 1
+      },
+      "switches": {
+        "NPM_CONFIG_OFFLINE": "on"
+      },
+      "gates": [
+        "mcp-server:github"
+      ],
+      "note": "Catalogue MCP server, disabled until an operator enables it."
+    },
+    {
+      "site": "mcp-config.json#jira",
+      "category": "gated",
+      "kinds": {
+        "exec:npx": 1,
+        "mcp-remote": 1,
+        "host:mcp.atlassian.com": 1
+      },
+      "switches": {
+        "NPM_CONFIG_OFFLINE": "on"
+      },
+      "gates": [
+        "mcp-server:jira"
+      ],
+      "note": "Catalogue MCP server, disabled until an operator enables it."
+    },
+    {
+      "site": "mcp-config.json#joe-sandbox",
+      "category": "gated",
+      "kinds": {
+        "exec:uv": 1
+      },
+      "switches": {
+        "UV_OFFLINE": "on"
+      },
+      "gates": [
+        "mcp-server:joe-sandbox"
+      ],
+      "note": "Catalogue MCP server, disabled until an operator enables it."
+    },
+    {
+      "site": "mcp-config.json#loglm",
+      "category": "gated",
+      "kinds": {
+        "exec:npx": 1,
+        "mcp-remote": 1
+      },
+      "switches": {
+        "NPM_CONFIG_OFFLINE": "on"
+      },
+      "gates": [
+        "mcp-server:loglm"
+      ],
+      "note": "Catalogue MCP server, disabled until an operator enables it."
+    },
+    {
+      "site": "mcp-config.json#okta",
+      "category": "gated",
+      "kinds": {
+        "exec:docker": 1
+      },
+      "gates": [
+        "mcp-server:okta"
+      ],
+      "note": "Catalogue MCP server, disabled until an operator enables it."
+    },
+    {
+      "site": "mcp-config.json#pagerduty",
+      "category": "gated",
+      "kinds": {
+        "exec:uvx": 1,
+        "host:api.pagerduty.com": 1
+      },
+      "switches": {
+        "UV_OFFLINE": "on"
+      },
+      "gates": [
+        "mcp-server:pagerduty"
+      ],
+      "note": "Catalogue MCP server, disabled until an operator enables it."
+    },
+    {
+      "site": "mcp-config.json#security-detections",
+      "category": "gated",
+      "kinds": {
+        "exec:npx": 1
+      },
+      "switches": {
+        "NPM_CONFIG_OFFLINE": "on"
+      },
+      "note": "Default-enabled MCP server launched with `npx -y`: without NPM_CONFIG_OFFLINE it would fetch the package from registry.npmjs.org on first tool call. Pre-cache it on the install image."
+    },
+    {
+      "site": "mcp-config.json#sentinelone",
+      "category": "gated",
+      "kinds": {
+        "exec:uvx": 1,
+        "exec:git": 1,
+        "host:github.com": 1
+      },
+      "switches": {
+        "UV_OFFLINE": "on"
+      },
+      "gates": [
+        "mcp-server:sentinelone"
+      ],
+      "note": "Catalogue MCP server, disabled until an operator enables it."
+    },
+    {
+      "site": "mcp-config.json#shodan",
+      "category": "gated",
+      "kinds": {
+        "exec:npx": 1
+      },
+      "switches": {
+        "NPM_CONFIG_OFFLINE": "on"
+      },
+      "gates": [
+        "mcp-server:shodan"
+      ],
+      "note": "Catalogue MCP server, disabled until an operator enables it."
+    },
+    {
+      "site": "mcp-config.json#splunk",
+      "category": "gated",
+      "kinds": {
+        "exec:npx": 1,
+        "mcp-remote": 1
+      },
+      "switches": {
+        "NPM_CONFIG_OFFLINE": "on"
+      },
+      "gates": [
+        "mcp-server:splunk"
+      ],
+      "note": "Catalogue MCP server, disabled until an operator enables it."
+    },
+    {
+      "site": "mcp-config.json#virustotal",
+      "category": "gated",
+      "kinds": {
+        "exec:npx": 1
+      },
+      "switches": {
+        "NPM_CONFIG_OFFLINE": "on"
+      },
+      "gates": [
+        "mcp-server:virustotal"
+      ],
+      "note": "Catalogue MCP server, disabled until an operator enables it."
+    },
+    {
+      "site": "services/agent/core/answers.ts",
+      "category": "internal",
+      "kinds": {
+        "fetch": 2
+      },
+      "switches": {
+        "VIGIL_RUNS_URL": "internal",
+        "VIGIL_PLAYBOOKS_URL": "internal",
+        "VIGIL_PRICING_URL": "internal",
+        "VIGIL_TOOLS_URL": "internal"
+      },
+      "note": "Agent service -> backend /internal/* endpoints."
+    },
+    {
+      "site": "services/agent/core/checkpoints.ts",
+      "category": "internal",
+      "kinds": {
+        "fetch": 2
+      },
+      "switches": {
+        "VIGIL_RUNS_URL": "internal",
+        "VIGIL_PLAYBOOKS_URL": "internal",
+        "VIGIL_PRICING_URL": "internal",
+        "VIGIL_TOOLS_URL": "internal"
+      },
+      "note": "Agent service -> backend /internal/* endpoints."
+    },
+    {
+      "site": "services/agent/core/playbooks.ts",
+      "category": "internal",
+      "kinds": {
+        "fetch": 2
+      },
+      "switches": {
+        "VIGIL_RUNS_URL": "internal",
+        "VIGIL_PLAYBOOKS_URL": "internal",
+        "VIGIL_PRICING_URL": "internal",
+        "VIGIL_TOOLS_URL": "internal"
+      },
+      "note": "Agent service -> backend /internal/* endpoints."
+    },
+    {
+      "site": "services/agent/core/prices.ts",
+      "category": "internal",
+      "kinds": {
+        "fetch": 2
+      },
+      "switches": {
+        "VIGIL_RUNS_URL": "internal",
+        "VIGIL_PLAYBOOKS_URL": "internal",
+        "VIGIL_PRICING_URL": "internal",
+        "VIGIL_TOOLS_URL": "internal"
+      },
+      "note": "Agent service -> backend /internal/* endpoints."
+    },
+    {
+      "site": "services/agent/core/recall.ts",
+      "category": "internal",
+      "kinds": {
+        "fetch": 2
+      },
+      "switches": {
+        "VIGIL_RUNS_URL": "internal",
+        "VIGIL_PLAYBOOKS_URL": "internal",
+        "VIGIL_PRICING_URL": "internal",
+        "VIGIL_TOOLS_URL": "internal"
+      },
+      "note": "Agent service -> backend /internal/* endpoints."
+    },
+    {
+      "site": "services/agent/core/remote.ts",
+      "category": "internal",
+      "kinds": {
+        "fetch": 2
+      },
+      "switches": {
+        "VIGIL_RUNS_URL": "internal",
+        "VIGIL_PLAYBOOKS_URL": "internal",
+        "VIGIL_PRICING_URL": "internal",
+        "VIGIL_TOOLS_URL": "internal"
+      },
+      "note": "Agent service -> backend /internal/* endpoints."
+    },
+    {
+      "site": "services/agent/core/vk.ts",
+      "category": "internal",
+      "kinds": {
+        "fetch": 2
+      },
+      "switches": {
+        "VIGIL_RUNS_URL": "internal",
+        "VIGIL_PLAYBOOKS_URL": "internal",
+        "VIGIL_PRICING_URL": "internal",
+        "VIGIL_TOOLS_URL": "internal"
+      },
+      "note": "Agent service -> backend /internal/* endpoints."
+    },
+    {
+      "site": "services/agent/harness.ts",
+      "category": "internal",
+      "kinds": {
+        "llm-sdk": 1
+      },
+      "switches": {
+        "BIFROST_URL": "internal",
+        "ANTHROPIC_BASE_URL": "off"
+      },
+      "note": "Agent's Anthropic SDK client goes to Bifrost."
+    },
+    {
+      "site": "services/agent/workflows/compose/mirror.ts",
+      "category": "internal",
+      "kinds": {
+        "fetch": 2
+      },
+      "switches": {
+        "VIGIL_RUNS_URL": "internal"
+      },
+      "note": "Agent run mirror to the backend."
+    },
+    {
+      "site": "services/api/routers/bifrost_config.py",
+      "category": "internal",
+      "kinds": {
+        "httpx": 1
+      },
+      "switches": {
+        "BIFROST_URL": "internal"
+      },
+      "note": "Console -> Bifrost config proxy."
+    },
+    {
+      "site": "services/api/routers/claude.py",
+      "category": "internal",
+      "kinds": {
+        "httpx": 1
+      },
+      "switches": {
+        "AGENT_URL": "internal"
+      },
+      "note": "Chat stream relayed to the local agent service."
+    },
+    {
+      "site": "services/api/routers/jira_export.py",
+      "category": "operator-action",
+      "kinds": {
+        "httpx": 2
+      },
+      "gates": [
+        "operator-action:export case to Jira"
+      ],
+      "note": "Only on an explicit export with JIRA_URL configured."
+    },
+    {
+      "site": "services/daemon/orchestrator.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 1,
+        "host:slack.com": 1
+      },
+      "switches": {
+        "DAEMON_SLACK_ENABLED": "off"
+      },
+      "note": "Slack notification for daemon events."
+    },
+    {
+      "site": "services/daemon/processor.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 3,
+        "host:www.virustotal.com": 2,
+        "host:api.shodan.io": 1
+      },
+      "gates": [
+        "integration:virustotal",
+        "integration:shodan"
+      ],
+      "note": "Auto-enrichment calls VirusTotal/Shodan only when those integrations are enabled."
+    },
+    {
+      "site": "services/daemon/responder.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 2,
+        "host:slack.com": 1,
+        "host:events.pagerduty.com": 1
+      },
+      "switches": {
+        "DAEMON_ESCALATION_ENABLED": "off",
+        "DAEMON_SLACK_ENABLED": "off",
+        "DAEMON_PAGERDUTY_ENABLED": "off"
+      },
+      "note": "Escalation to Slack/PagerDuty."
+    },
+    {
+      "site": "services/daemon/sandbox_poller.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 5,
+        "host:www.hybrid-analysis.com": 1,
+        "host:api.any.run": 1
+      },
+      "switches": {
+        "JOE_SANDBOX_ENABLED": "off",
+        "CAPE_SANDBOX_ENABLED": "off",
+        "HYBRID_ANALYSIS_ENABLED": "off",
+        "ANYRUN_ENABLED": "off"
+      },
+      "note": "Sandbox result polling."
+    },
+    {
+      "site": "services/daemon/sandbox_submitter.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 4,
+        "host:www.hybrid-analysis.com": 1,
+        "host:api.any.run": 1
+      },
+      "switches": {
+        "JOE_SANDBOX_ENABLED": "off",
+        "CAPE_SANDBOX_ENABLED": "off",
+        "HYBRID_ANALYSIS_ENABLED": "off",
+        "ANYRUN_ENABLED": "off"
+      },
+      "note": "Sandbox auto-submission."
+    },
+    {
+      "site": "services/medic/api/ready.py",
+      "category": "gated",
+      "kinds": {
+        "http.client": 1
+      },
+      "switches": {
+        "VIGIL_MEDIC_ENABLED": "off"
+      },
+      "note": "Medic (self-healing) component; not started unless Medic is enabled. Probes local services."
+    },
+    {
+      "site": "services/medic/api/server.py",
+      "category": "gated",
+      "kinds": {
+        "socket": 1,
+        "dns": 1
+      },
+      "switches": {
+        "VIGIL_MEDIC_ENABLED": "off"
+      },
+      "note": "Medic (self-healing) component; not started unless Medic is enabled. Probes local services."
+    },
+    {
+      "site": "services/medic/app/policy_probe.py",
+      "category": "gated",
+      "kinds": {
+        "dns": 1
+      },
+      "switches": {
+        "VIGIL_MEDIC_ENABLED": "off"
+      },
+      "note": "Medic (self-healing) component; not started unless Medic is enabled. Probes local services."
+    },
+    {
+      "site": "services/medic/sensors/http_ready.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 1
+      },
+      "switches": {
+        "VIGIL_MEDIC_ENABLED": "off"
+      },
+      "note": "Medic (self-healing) component; not started unless Medic is enabled. Probes local services."
+    },
+    {
+      "site": "services/medic_dockerproxy/cli.py",
+      "category": "gated",
+      "kinds": {
+        "dns": 1,
+        "http.client": 1
+      },
+      "switches": {
+        "VIGIL_MEDIC_ENABLED": "off"
+      },
+      "note": "Medic (self-healing) component; not started unless Medic is enabled. Probes local services."
+    },
+    {
+      "site": "services/medic_gateway/cli.py",
+      "category": "gated",
+      "kinds": {
+        "dns": 1,
+        "http.client": 1,
+        "socket": 1
+      },
+      "switches": {
+        "VIGIL_MEDIC_ENABLED": "off"
+      },
+      "note": "Medic (self-healing) component; not started unless Medic is enabled. Probes local services."
+    },
+    {
+      "site": "services/medic_gateway/server.py",
+      "category": "gated",
+      "kinds": {
+        "http.client": 1
+      },
+      "switches": {
+        "VIGIL_MEDIC_ENABLED": "off"
+      },
+      "note": "Medic (self-healing) component; not started unless Medic is enabled. Probes local services."
+    }
+  ]
+}

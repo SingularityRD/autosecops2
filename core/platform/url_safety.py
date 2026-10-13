@@ -98,6 +98,73 @@ def _is_blocked_ip(ip_str: str) -> Tuple[bool, str]:
     return False, ""
 
 
+class UnresolvableHostError(UrlSafetyError):
+    """The host did not resolve. Transient, unlike a refused address."""
+
+
+def parse_networks(
+    raw: str,
+) -> Tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """Parse a comma-separated CIDR list (``"10.0.0.0/8, 127.0.0.1/32"``).
+
+    Raises ``ValueError`` on an entry that is not a network, so a typo in an
+    allow-list fails loudly instead of quietly allowing nothing.
+    """
+    networks = []
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if part:
+            networks.append(ipaddress.ip_network(part, strict=False))
+    return tuple(networks)
+
+
+def _in_networks(ip_str: str, networks: Iterable) -> bool:
+    ip = ipaddress.ip_address(ip_str)
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    return any(ip.version == net.version and ip in net for net in networks)
+
+
+def resolve_allowed_addresses(
+    host: str, port: int, *, allowed_networks: Iterable = ()
+) -> list[str]:
+    """Resolve ``host`` and return its addresses, refusing any blocked one.
+
+    For a caller that then connects to exactly these addresses (resolve, check,
+    connect to what was checked), so a second DNS answer cannot swap in an
+    internal address between the check and the connection.
+
+    Every address must pass: one blocked address in the answer refuses the
+    host, rather than connecting to whichever one happens to be tried first.
+    ``allowed_networks`` lets an administrator reach a private range on
+    purpose; the cloud-metadata address stays refused even then.
+    """
+    networks = tuple(allowed_networks)
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError) as exc:
+        raise UnresolvableHostError(f"could not resolve host: {host}") from exc
+    addresses: list[str] = []
+    for info in infos:
+        addr = str(info[4][0]).split("%", 1)[0]  # drop an IPv6 zone id
+        if addr in addresses:
+            continue
+        blocked, reason = _is_blocked_ip(addr)
+        if (
+            blocked
+            and reason != "cloud metadata address"
+            and _in_networks(addr, networks)
+        ):
+            blocked = False
+        if blocked:
+            raise UrlSafetyError(f"resolved address {addr} is disallowed: {reason}")
+        addresses.append(addr)
+    if not addresses:
+        raise UnresolvableHostError(f"could not resolve host: {host}")
+    return addresses
+
+
 def validate_provider_url(
     url: str,
     *,
