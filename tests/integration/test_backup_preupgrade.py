@@ -20,6 +20,7 @@ from test_backup_restore import (
     _restore,
     _run,
     _url,
+    needs_restic,
 )
 from test_backup_restore import pytestmark as _restore_marks
 
@@ -140,6 +141,7 @@ def _manifest(env: dict[str, str], repo: Path, passphrase: Path) -> dict:
     return json.loads(dump)
 
 
+@needs_restic
 def test_snapshot_records_the_stamp_and_restores_on_the_old_release(instance):
     env, repo, passphrase, _ = instance
 
@@ -182,6 +184,7 @@ def test_unusable_destinations_file_fails_instead_of_skipping(instance):
     assert SKIP in proc.stderr
 
 
+@needs_restic
 def test_failed_snapshot_names_the_override_and_the_override_skips_it(instance):
     env, repo, _, _ = instance
     other = repo.parent / "other-pass"

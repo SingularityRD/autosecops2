@@ -18,7 +18,7 @@ from evalkit.backends import (
 from evalkit.corpus import DEFAULT_SUITES, load_suite
 from evalkit.report import build_report
 from evalkit.runner import run_cases
-from evalkit.triage import build_prompt, prompt_hash, prompt_version
+from evalkit.triage import apply_result, build_prompt, prompt_hash, prompt_version
 
 
 def _run(cases, backend):
@@ -35,14 +35,20 @@ def test_stub_is_deterministic_and_in_prompt_format():
     prompt = build_prompt(case.alert)
     a = stub_answer(prompt)
     assert a == stub_answer(prompt)
-    keys = [line.split(":", 1)[0] for line in a.strip().splitlines()]
-    assert keys == [
-        "SEVERITY",
-        "CONFIDENCE",
-        "CATEGORY",
-        "RECOMMENDED_ACTION",
-        "REASONING",
-    ]
+    assert set(json.loads(a)) == {
+        "verdict",
+        "confidence",
+        "category",
+        "cited_fields",
+        "gaps",
+        "recommended_action",
+    }
+    # The daemon's own parser takes it as a verdict, not a parse failure.
+    finding = apply_result(case.alert, a)
+    assert not any(
+        "could not" in g or "not a JSON" in g or "did not match" in g
+        for g in finding["ai_triage"]["verdict"]["gaps"]
+    )
 
 
 def test_replay_matches_stub(tmp_path):

@@ -25,6 +25,7 @@ import { errorFields, logger } from "../../core/log.js";
 import { registryOf } from "../../core/registry.js";
 import { toolsFrom } from "../../tools/remote.js";
 import { grantsOf } from "../lead/workflow.js";
+import { journalVerdict } from "./verdict.js";
 
 const log = logger("agent.hunt");
 
@@ -195,6 +196,10 @@ export async function runHunt(harness: Harness<HuntKinds>, options: HuntOptions)
       if (error instanceof BudgetRefused) {
         const note = controller.parkOnRefusal(error.message);
         await ledger.flush();
+        // A run configured to end at its ceiling (on_budget: terminate) has ended.
+        if (ledger.projection.hunt.status === "terminal") {
+          return await end(harness, options, ledger, "budget_exhausted", note, controller, narrator);
+        }
         return await parked(harness, options, ledger, note);
       }
       if (error instanceof HuntAlreadyTerminal) return report(ledger, "completed", error.message);
@@ -258,6 +263,9 @@ async function end(
   // Idempotent -- outcome precedence leaves an already-terminated hunt as it stands.
   controller.terminate(huntOutcomeOf(outcome), reason);
   await ledger.flush();
+  // Before the terminal: the terminal is what the lease and the API take as "over",
+  // so a reader that sees it can read the verdict.
+  await journalVerdict(harness.state, options.run_id, options.run_kind, ledger.projection);
   const built = buildReport(ledger.projection);
   const narrative = await narrate(harness, options, ledger.projection, built, narrator);
   if ((await harness.state.terminal(options.run_id)) === null) {

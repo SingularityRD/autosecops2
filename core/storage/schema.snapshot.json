@@ -2879,6 +2879,32 @@
       "nullable": true
     }
   },
+  "regulatory_clock_heads": {
+    "broken_at": {
+      "data_type": "integer",
+      "nullable": true
+    },
+    "case_id": {
+      "data_type": "character varying(50)",
+      "nullable": false
+    },
+    "row_hash": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "seq": {
+      "data_type": "integer",
+      "nullable": false
+    },
+    "tenant_id": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "updated_at": {
+      "data_type": "timestamp with time zone",
+      "nullable": false
+    }
+  },
   "regulatory_report_drafts": {
     "body": {
       "data_type": "jsonb",
