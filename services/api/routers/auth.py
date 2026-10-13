@@ -40,7 +40,12 @@ from core.auth.token_blacklist import (
     is_token_revoked,
     revoke_all_for_user,
 )
-from core.compliance.audit_export import record_auth_event
+from core.compliance.audit_export import (
+    arecord_auth_event,
+    audit_export_on,
+    failed_login_fields,
+    record_auth_event,
+)
 from core.config import get_settings
 from core.platform.email_service import send_email
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
@@ -313,9 +318,13 @@ def login(
             payload.username_or_email, payload.password, session
         )
     except AccountLockedError as exc:
-        record_auth_event(
-            request, "login", outcome="locked", actor=payload.username_or_email
-        )
+        if audit_export_on(request):
+            record_auth_event(
+                request,
+                "login",
+                outcome="locked",
+                **failed_login_fields(request, payload.username_or_email, session),
+            )
         retry_after = max(1, int((exc.locked_until - utcnow()).total_seconds()))
         raise HTTPException(
             status_code=status.HTTP_423_LOCKED,
@@ -324,9 +333,13 @@ def login(
         )
 
     if not user:
-        record_auth_event(
-            request, "login", outcome="failure", actor=payload.username_or_email
-        )
+        if audit_export_on(request):
+            record_auth_event(
+                request,
+                "login",
+                outcome="failure",
+                **failed_login_fields(request, payload.username_or_email, session),
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username/email or password",
@@ -454,7 +467,7 @@ async def logout(
     clear_auth_cookies(response)
 
     logger.info(f"User logged out: {current_user.username}")
-    record_auth_event(
+    await arecord_auth_event(
         request, "logout", actor=current_user.username, actor_id=current_user.user_id
     )
     return {"message": "Logged out successfully"}
@@ -706,7 +719,7 @@ async def change_password(
 
         clear_auth_cookies(response)
         logger.info(f"Password changed for user: {current_user.username}")
-        record_auth_event(
+        await arecord_auth_event(
             request,
             "password_change",
             actor=current_user.username,
@@ -987,7 +1000,7 @@ async def password_reset_confirm(
             )
 
         logger.info("Password reset completed for user: %s", user.username)
-        record_auth_event(
+        await arecord_auth_event(
             request, "password_reset", actor=user.username, actor_id=user.user_id
         )
         return {"message": "Password reset successfully"}

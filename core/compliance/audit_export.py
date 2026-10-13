@@ -20,7 +20,10 @@ over plain TCP/UDP for labs, with structured data; or HTTPS POST of JSON or CEF.
 Delivery is **at-least-once**. Each (destination, source) pair has a durable
 cursor that is committed only after the destination accepted the batch, so a
 restart re-reads whatever was in flight; every event carries a stable ``id``
-for the receiver to deduplicate on. A failed delivery is retried with capped,
+for the receiver to deduplicate on. On Postgres the database cursors page in
+transaction-id order and never pass the oldest transaction still running, so
+a row committed late by a long transaction is waited for, not skipped (see
+``_DbSource``). A failed delivery is retried with capped,
 jittered exponential backoff and never dropped; the reader feeds a bounded
 queue, so a dead receiver stalls reading instead of growing memory.
 
@@ -36,6 +39,7 @@ import asyncio
 import contextlib
 import fcntl
 import hashlib
+import hmac
 import ipaddress
 import json
 import logging
@@ -69,6 +73,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import DateTime, Integer, String, bindparam, text
 from sqlalchemy.orm import Session
 
+from core.platform.url_safety import (
+    blocked_reason,
+    ip_in_networks,
+    parse_networks,
+)
 from core.telemetry_sanitizer import _SECRET_VALUE_PATTERNS, SensitiveAttributeScrubber
 from core.version import __version__
 
@@ -215,8 +224,9 @@ class AuditExportConfig(_Strict):
         5.0,
         ge=0,
         le=300,
-        description="Rows younger than this are left for the next poll, so a "
-        "transaction that commits late is not skipped by the cursor.",
+        description="Non-Postgres databases only (tests): rows younger than "
+        "this are left for the next poll. On Postgres the cursor is bounded by "
+        "the oldest running transaction instead, so no wait is needed.",
     )
     max_backoff_s: float = Field(60.0, ge=0.1, le=3600)
     spool_max_bytes: int = Field(256 * 1024 * 1024, ge=1024 * 1024, le=10 * 1024**3)
@@ -237,40 +247,72 @@ class AuditExportConfig(_Strict):
         ).hexdigest()
 
 
-# Cloud metadata and other addresses no SIEM lives at.
-_LINK_LOCAL_NAMES = frozenset({"metadata.google.internal", "metadata"})
+# Metadata host names; the addresses are url_safety.CLOUD_METADATA_ADDRESSES.
+_METADATA_NAMES = frozenset(
+    {"metadata.google.internal", "metadata", "metadata.azure.internal"}
+)
+# Where a customer SIEM or a local relay may legitimately live, on top of the
+# public internet: loopback, RFC 1918, carrier-grade NAT (VPN overlays) and
+# IPv6 unique-local. Link-local, multicast, unspecified, reserved and the
+# metadata addresses (even inside these ranges) stay refused — see
+# ``core.platform.url_safety``, which every check here goes through.
+SIEM_NETWORKS = parse_networks(
+    "127.0.0.0/8, ::1/128, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, "
+    "100.64.0.0/10, fc00::/7"
+)
 
 
-def _reserved(ip: ipaddress._BaseAddress) -> bool:
-    return ip.is_link_local or ip.is_multicast or ip.is_unspecified
+def _egress_refusal(addr: str) -> Optional[str]:
+    """Why ``addr`` may not be dialled, or None. ``url_safety`` decides."""
+    reason = blocked_reason(addr)
+    if reason is None:
+        return None
+    if reason == "cloud metadata address":
+        return reason
+    try:
+        if ip_in_networks(addr, SIEM_NETWORKS):
+            return None
+    except ValueError:
+        pass
+    return reason
 
 
 def refuse_reserved_literal(host: str) -> None:
-    """Refuse a host that is a link-local/metadata address on its face."""
-    if host.lower() in _LINK_LOCAL_NAMES:
+    """Refuse (at config time) a host that is a forbidden address on its face."""
+    if host.lower().rstrip(".") in _METADATA_NAMES:
         raise ValueError("metadata hosts are not a valid destination")
     try:
-        ip = ipaddress.ip_address(host.strip("[]"))
+        ipaddress.ip_address(host.strip("[]").split("%", 1)[0])
     except ValueError:
         return
-    if _reserved(ip):
-        raise ValueError("link-local, multicast or unspecified address refused")
+    reason = _egress_refusal(host.strip("[]").split("%", 1)[0])
+    if reason:
+        raise ValueError(f"{reason} refused")
 
 
 def resolve_egress(host: str, port: int) -> list[str]:
-    """Resolve ``host`` and refuse it if any address is link-local or reserved.
+    """Resolve ``host`` once and return the addresses to dial — and only those.
 
-    Loopback and private ranges stay allowed: a customer SIEM or a local relay
-    usually lives there. The literal check runs at config time; this one runs
-    at connect time, so a name that later resolves to the metadata service is
-    still refused.
+    Every address in the answer must pass (one forbidden address refuses the
+    host). Callers connect to the returned IPs, never to the name again, so a
+    second DNS answer cannot swap in the metadata service between this check
+    and the connection (DNS rebinding). Loopback, private, CGNAT and ULA stay
+    allowed: a customer SIEM or a local relay usually lives there.
     """
-    refuse_reserved_literal(host)
-    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    addresses = []
+    try:
+        refuse_reserved_literal(host)
+    except ValueError as exc:
+        raise DeliveryError("egress_refused") from exc
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError) as exc:
+        raise DeliveryError("dns_failed") from exc
+    addresses: list[str] = []
     for info in infos:
-        addr = info[4][0]
-        if _reserved(ipaddress.ip_address(addr.split("%")[0])):
+        addr = str(info[4][0]).split("%", 1)[0]
+        if addr in addresses:
+            continue
+        if _egress_refusal(addr):
             raise DeliveryError("egress_refused")
         addresses.append(addr)
     if not addresses:
@@ -343,29 +385,245 @@ _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _PII_KEYS = frozenset(
     {"email", "phone", "full_name", "ssn", "national_id", "tckn", "address"}
 )
-_KEY_SPLIT = re.compile(r"[._\-]")
-# Credentials the span scrubber's list does not name on their own.
-_EXTRA_SECRET_SEGMENTS = frozenset(
-    {"token", "otp", "mfa_code", "mfa_secret", "recovery_codes", "passphrase"}
+_KEY_SPLIT = re.compile(r"[._\-\s/]+")
+_CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+# A key whose segments (split on ``. _ - /`` and camelCase) include one of
+# these holds a credential. Single words match one segment; the compound
+# names match as a contiguous run (``x.webhook_url``, ``webhookUrl``).
+_SECRET_WORDS = frozenset(
+    {
+        "password",
+        "passwd",
+        "pwd",
+        "passphrase",
+        "secret",
+        "secrets",
+        "token",
+        "credential",
+        "credentials",
+        "creds",
+        "pin",
+        "sig",
+        "signature",
+        "otp",
+        "totp",
+        "cookie",
+        "cookies",
+        "apikey",
+        "dsn",
+        "jwt",
+        "bearer",
+        "authorization",
+        "privatekey",
+        "sas",
+    }
 )
+_SECRET_PHRASES = tuple(
+    tuple(p.split("_"))
+    for p in (
+        "api_key",
+        "access_key",
+        "secret_key",
+        "private_key",
+        "signing_key",
+        "encryption_key",
+        "master_key",
+        "account_key",
+        "shared_access_key",
+        "client_secret",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "auth_token",
+        "session_id",
+        "session_key",
+        "webhook_url",
+        "database_url",
+        "db_url",
+        "redis_url",
+        "broker_url",
+        "mongo_url",
+        "mongodb_uri",
+        "connection_string",
+        "conn_str",
+        "set_cookie",
+        "mfa_code",
+        "mfa_secret",
+        "recovery_codes",
+    )
+)
+# Leaf names that are a credential only on their own (``auth`` alone, not
+# ``auth_scheme``).
+_SECRET_LEAVES = frozenset({"auth", "pass", "key_material"})
+
+
+def key_segments(path: str) -> list[str]:
+    """``details.webhookUrl`` -> ``["details", "webhook", "url"]``."""
+    return [s for s in _KEY_SPLIT.split(_CAMEL.sub("_", path).lower()) if s]
+
+
+def secret_key(path: str) -> bool:
+    """Whether a dict key (or dotted path) names a credential."""
+    segments = key_segments(path)
+    if not segments:
+        return False
+    if segments[-1] in _SECRET_LEAVES or _SECRET_WORDS.intersection(segments):
+        return True
+    for phrase in _SECRET_PHRASES:
+        n = len(phrase)
+        for i in range(len(segments) - n + 1):
+            if tuple(segments[i : i + n]) == phrase:
+                return True
+    return False
+
+
+# -- free text ---------------------------------------------------------------
+
+_KEY_WORDS = (
+    r"(?:password|passwd|pwd|passphrase|secret|client[_-]?secret|"
+    r"api[_-]?key|apikey|access[_-]?key|secret[_-]?key|private[_-]?key|"
+    r"signing[_-]?key|encryption[_-]?key|account[_-]?key|master[_-]?key|"
+    r"shared[_-]?access[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|"
+    r"auth[_-]?token|session[_-]?token|session[_-]?id|token|credentials?|creds|"
+    r"pin|sig|signature|x-amz-signature|x-amz-credential|x-amz-security-token|"
+    r"otp|mfa[_-]?code|webhook[_-]?url|database[_-]?url|db[_-]?url|dsn|"
+    r"connection[_-]?string|sas[_-]?token|cookie|auth)"
+)
+# ``password=…``, ``"apiKey": "…"``, ``Pwd={…};``, ``?api_key=…&``. The key may
+# carry a prefix or suffix (``db_password``, ``token_v2``); the value runs to
+# whitespace or a separator, or is a quoted/braced string.
+_KEY_VALUE = re.compile(
+    r"(?i)(?<![A-Za-z0-9])((?:[A-Za-z0-9]+[_.\-])*"
+    + _KEY_WORDS
+    + r"(?:[_.\-][A-Za-z0-9]+)*[\"']?\s*[=:]\s*)"
+    r"(\"[^\"]*\"|'[^']*'|\{[^}]*\}|[^\s;&,\"'<>]+)"
+)
+_AUTH_HEADER = re.compile(
+    r"(?i)\b((?:proxy-)?authorization[\"']?\s*[:=]\s*[\"']?)"
+    r"(?:(basic|bearer|digest|negotiate|ntlm|token|apikey|aws4-hmac-sha256)\s+)?"
+    r"[^\r\n\"']+"
+)
+_SCHEME_CREDENTIAL = re.compile(r"(?i)\b(bearer|basic)\s+([A-Za-z0-9._~+/\-]{8,}=*)")
+_PEM_PRIVATE = re.compile(
+    r"-----BEGIN[ A-Z0-9]*PRIVATE KEY(?: BLOCK)?-----.*?"
+    r"(?:-----END[ A-Z0-9]*PRIVATE KEY(?: BLOCK)?-----|\Z)",
+    re.DOTALL,
+)
+# ``scheme://user:password@host`` (and ``redis://:pw@``, ``mongodb+srv://``):
+# the whole userinfo goes.
+_URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]{1,30}://)[^\s/?#@\"'<>]*@")
+# Webhook URLs whose path is the credential.
+_WEBHOOK_URLS = re.compile(
+    r"(?i)(https?://(?:hooks\.slack\.com/(?:services|workflows|triggers)/|"
+    r"(?:[a-z0-9-]+\.)?discord(?:app)?\.com/api/webhooks/|"
+    r"[a-z0-9.-]*webhook\.office\.com/|"
+    r"[a-z0-9.-]*\.logic\.azure\.com[^\s\"'<>?]*\?))"
+    r"[^\s\"'<>]+"
+)
+# Credentials recognisable by their shape alone.
+_TOKEN_SHAPES = [
+    re.compile(p)
+    for p in (
+        r"\bsk-(?:ant-|proj-|svcacct-|admin-|live-|test-)?[A-Za-z0-9_\-]{16,}",
+        r"\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{10,}",
+        r"\bwhsec_[A-Za-z0-9+/=]{10,}",
+        r"\bgh[pousr]_[A-Za-z0-9]{20,}",
+        r"\bgithub_pat_[A-Za-z0-9_]{20,}",
+        r"\bglpat-[A-Za-z0-9_\-]{20,}",
+        r"\bxox[abposer]-[A-Za-z0-9\-]{10,}",
+        r"\bxapp-[A-Za-z0-9\-]{10,}",
+        r"\bAIza[0-9A-Za-z_\-]{35}",
+        r"\bya29\.[0-9A-Za-z_\-]{20,}",
+        r"\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA|AIPA)[0-9A-Z]{16}\b",
+        r"\bhf_[A-Za-z0-9]{30,}",
+        r"\bnpm_[A-Za-z0-9]{36}\b",
+        r"\bpypi-[A-Za-z0-9_\-]{50,}",
+        r"\bSG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}",
+        r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*",
+    )
+]
 # The sanitizer's patterns match a secret's start (``sk-ant-``, ``AKIA...``, a
 # DSN up to ``@``); a redaction must swallow the rest of that token as well.
 _SECRET_TOKENS = [
     re.compile(p.pattern + r"[^\s\"',;]*", p.flags) for p in _SECRET_VALUE_PATTERNS
 ]
+# An AWS secret access key: 40 characters of base64 with no prefix to go by.
+_AWS_SECRET = re.compile(r"(?<![A-Za-z0-9/+=])[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+=])")
 # Our own hash-chain values: hex by design, not a leaked credential.
 _VERBATIM_HEX = frozenset({"prev_hash", "event_hash", "hash"})
 _HEX = re.compile(r"^[0-9a-fA-F]{32,128}$")
 
 
+def _quoted_redaction(match: "re.Match[str]") -> str:
+    value = match.group(2)
+    if value[:1] in "\"'" and value[-1:] == value[:1] and len(value) >= 2:
+        return f"{match.group(1)}{value[0]}{REDACTED}{value[0]}"
+    return match.group(1) + REDACTED
+
+
+def _auth_header_redaction(match: "re.Match[str]") -> str:
+    scheme = match.group(2)
+    return match.group(1) + (f"{scheme} " if scheme else "") + REDACTED
+
+
+def _looks_random(value: str) -> bool:
+    """Credential-like: mixes cases, or has a digit or a base64 symbol."""
+    body = value.rstrip("=")
+    return (
+        any(c.isdigit() or c in "+/._~-" for c in body)
+        or value.endswith("=")
+        or (any(c.isupper() for c in body[1:]) and any(c.islower() for c in body))
+    )
+
+
+def _scheme_redaction(match: "re.Match[str]") -> str:
+    if not _looks_random(match.group(2)):
+        return match.group(0)  # "basic authentication", "bearer tokens"
+    return f"{match.group(1)} {REDACTED}"
+
+
+def _aws_secret_redaction(match: "re.Match[str]") -> str:
+    value = match.group(0)
+    if (
+        any(c.isupper() for c in value)
+        and any(c.islower() for c in value)
+        and any(c.isdigit() or c in "/+" for c in value)
+    ):
+        return REDACTED
+    return value
+
+
+def redact_text(value: str) -> str:
+    """Cut every credential this module recognises out of free text."""
+    out = _PEM_PRIVATE.sub(REDACTED, value)
+    out = _AUTH_HEADER.sub(_auth_header_redaction, out)
+    out = _WEBHOOK_URLS.sub(lambda m: m.group(1) + REDACTED, out)
+    out = _URL_USERINFO.sub(lambda m: m.group(1) + REDACTED + "@", out)
+    for pattern in _TOKEN_SHAPES:
+        out = pattern.sub(REDACTED, out)
+    out = _SCHEME_CREDENTIAL.sub(_scheme_redaction, out)
+    out = _KEY_VALUE.sub(_quoted_redaction, out)
+    for pattern in _SECRET_TOKENS:
+        out = pattern.sub(REDACTED, out)
+    return _AWS_SECRET.sub(_aws_secret_redaction, out)
+
+
 class Redactor:
     """Scrub secrets (and, by default, PII) from what an event carries.
 
-    Reuses ``core.telemetry_sanitizer``: its sensitive key segments and content
-    keys redact a value outright, and its secret value patterns (JWTs, API key
-    prefixes, DSNs with passwords, long hex tokens, AWS key ids) are cut out of
-    free text. Only ``message``, ``details``, ``user_agent`` and ``actor`` are
-    scrubbed; ids, hashes and enums are ours and are left alone.
+    Key names: ``core.telemetry_sanitizer``'s sensitive segments and content
+    keys, plus :func:`secret_key` (``credentials``, ``access_key``,
+    ``webhook_url``, ``database_url``, ``signing_key``, ``pwd``, ``pin``,
+    ``sig``, ... in snake, kebab, dotted or camel case) redact a value
+    outright. Free text goes through :func:`redact_text`: ``key=value`` and
+    ``"key": "value"`` pairs, ODBC ``Pwd=…;``, URL userinfo and secret query
+    parameters, ``Authorization`` headers and bare Basic/Bearer credentials,
+    PEM private keys, webhook URLs (Slack, Discord, Teams), well-known token
+    shapes (OpenAI, Anthropic, GitHub, GitLab, Slack, Stripe, Google, AWS key
+    ids and secret keys, JWTs, ...) and the sanitizer's own value patterns.
+    Only ``message``, ``details``, ``user_agent`` and ``actor`` are scrubbed;
+    ids, hashes and enums are ours and are left alone.
     """
 
     def __init__(
@@ -388,18 +646,17 @@ class Redactor:
         # Ask the span scrubber with a non-secret value: only its key rules fire.
         if self._scrubber._should_redact(lowered, None):
             return True
-        leaf = lowered.rsplit(".", 1)[-1]
-        segments = set(_KEY_SPLIT.split(lowered))
-        if leaf in _EXTRA_SECRET_SEGMENTS or segments & {"token", "otp"}:
+        if secret_key(path):
             return True
-        if self.redact_pii and (leaf in _PII_KEYS or segments & _PII_KEYS):
-            return True
+        if self.redact_pii:
+            segments = set(key_segments(path))
+            leaf = lowered.rsplit(".", 1)[-1]
+            if leaf in _PII_KEYS or segments & _PII_KEYS:
+                return True
         return False
 
     def text(self, value: str) -> str:
-        out = value
-        for pattern in _SECRET_TOKENS:
-            out = pattern.sub(REDACTED, out)
+        out = redact_text(value)
         if self.redact_pii:
             out = _EMAIL.sub("[REDACTED-EMAIL]", out)
         if out != value:
@@ -454,18 +711,49 @@ class Redactor:
 # ---------------------------------------------------------------------------
 
 
+# Characters a line-oriented receiver may take for the end of a record: CR, LF,
+# VT, FF, NEL (U+0085), LINE SEPARATOR (U+2028) and PARAGRAPH SEPARATOR
+# (U+2029). Any other C0/C1 control or DEL is escaped too, so a value an
+# attacker typed (a login name, a user agent) cannot forge a second record.
+_CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+_NAMED_CONTROL = {"\r": "\\r", "\n": "\\n", "\t": "\\t"}
+
+
+def _escape_control(match: "re.Match[str]") -> str:
+    ch = match.group(0)
+    return _NAMED_CONTROL.get(ch) or f"\\u{ord(ch):04x}"
+
+
+def escape_controls(value: str) -> str:
+    """``\\r``, ``\\n``, ``\\t`` and ``\\uXXXX`` for every line break or control."""
+    return _CONTROL.sub(_escape_control, value)
+
+
+def json_line_safe(text_: str) -> str:
+    """JSON from ``json.dumps(ensure_ascii=False)`` with U+2028/U+2029/NEL
+    escaped as well (json escapes only C0 controls); valid JSON either way."""
+    return (
+        text_.replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+        .replace("\u0085", "\\u0085")
+    )
+
+
 def cef_escape_header(value: Any) -> str:
-    """CEF header field: escape ``\\`` and ``|``; a header cannot hold a newline."""
+    """CEF header field: escape ``\\`` and ``|``. A header has no escape for a
+    line break, so every line break (CR, LF, NEL, U+2028, U+2029) and other
+    control becomes a space."""
     s = "" if value is None else str(value)
     s = s.replace("\\", "\\\\").replace("|", "\\|")
-    return s.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    return _CONTROL.sub(" ", s.replace("\r\n", " "))
 
 
 def cef_escape_ext(value: Any) -> str:
-    """CEF extension value: escape ``\\`` and ``=``, encode CR/LF as ``\\r``/``\\n``."""
+    """CEF extension value: escape ``\\`` and ``=``; line breaks and other
+    controls become ``\\r``/``\\n``/``\\uXXXX``."""
     s = "" if value is None else str(value)
     s = s.replace("\\", "\\\\").replace("=", "\\=")
-    return s.replace("\r", "\\r").replace("\n", "\\n")
+    return escape_controls(s)
 
 
 def _valid_ip(value: Optional[str]) -> Optional[str]:
@@ -529,9 +817,15 @@ def format_cef(ev: AuditEvent, host: str, *, max_details: int = 1024) -> str:
 
 
 def sd_escape(value: Any) -> str:
-    """RFC 5424 §6.3.3 PARAM-VALUE: escape ``"``, ``\\`` and ``]``."""
+    """RFC 5424 §6.3.3 PARAM-VALUE: escape ``"``, ``\\`` and ``]``.
+
+    Line breaks (CR, LF, NEL, U+2028, U+2029) and other controls are written
+    as ``\\r``/``\\n``/``\\uXXXX`` too: RFC 5424 allows them in a PARAM-VALUE,
+    but a receiver that splits on newlines would see a forged second record.
+    """
     s = "" if value is None else str(value)
-    return s.replace("\\", "\\\\").replace('"', '\\"').replace("]", "\\]")
+    s = s.replace("\\", "\\\\").replace('"', '\\"').replace("]", "\\]")
+    return escape_controls(s)
 
 
 def _printable(value: str, limit: int) -> str:
@@ -601,8 +895,10 @@ def format_rfc5424(
         if body == "cef":
             msg = format_cef(event, host)
         else:
-            msg = json.dumps(
-                event.to_dict(host), separators=(",", ":"), ensure_ascii=False
+            msg = json_line_safe(
+                json.dumps(
+                    event.to_dict(host), separators=(",", ":"), ensure_ascii=False
+                )
             )
         return f"{header} {sd} {_BOM}{msg}".encode("utf-8")
 
@@ -740,15 +1036,9 @@ class SyslogTransport(Transport):
 
     async def _connect(self) -> None:
         await self.close()
-        loop = asyncio.get_running_loop()
-        try:
-            addresses = await loop.run_in_executor(
-                None, resolve_egress, self.dest.host, self.dest.port
-            )
-        except DeliveryError:
-            raise
-        except OSError as exc:
-            raise DeliveryError("dns_failed") from exc
+        addresses = await asyncio.to_thread(
+            resolve_egress, self.dest.host, self.dest.port
+        )
         tls = self.dest.protocol == "tls"
         try:
             ctx = self._context() if tls else None
@@ -792,13 +1082,9 @@ class SyslogTransport(Transport):
             raise DeliveryError("connection_closed")
 
     async def _send_udp(self, events: list[AuditEvent]) -> None:
-        loop = asyncio.get_running_loop()
-        try:
-            addresses = await loop.run_in_executor(
-                None, resolve_egress, self.dest.host, self.dest.port
-            )
-        except OSError as exc:
-            raise DeliveryError("dns_failed") from exc
+        addresses = await asyncio.to_thread(
+            resolve_egress, self.dest.host, self.dest.port
+        )
         family = socket.AF_INET6 if ":" in addresses[0] else socket.AF_INET
         sock = socket.socket(family, socket.SOCK_DGRAM)
         try:
@@ -862,7 +1148,9 @@ class HttpTransport(Transport):
             return lines.encode("utf-8"), "text/plain; charset=utf-8"
         data = [ev.to_dict(self.host) for ev in events]
         return (
-            json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode(),
+            json_line_safe(
+                json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+            ).encode(),
             "application/json",
         )
 
@@ -890,18 +1178,27 @@ class HttpTransport(Transport):
             )
         return self._client
 
+    def pinned_request(self, address: str) -> tuple[httpx.URL, dict, dict]:
+        """The URL with its host replaced by ``address``, plus the ``Host``
+        header and the TLS SNI/verification name that keep the original host.
+
+        The client then dials exactly the address :func:`resolve_egress`
+        checked; httpx never resolves the name itself.
+        """
+        url = httpx.URL(self.dest.url)
+        extensions: dict = {}
+        if url.scheme == "https":
+            extensions["sni_hostname"] = url.host
+        host_header = url.netloc.decode("ascii")
+        return url.copy_with(host=address), {"Host": host_header}, extensions
+
     async def send(self, events: list[AuditEvent]) -> None:
         parsed = urlparse(self.dest.url)
-        loop = asyncio.get_running_loop()
-        try:
-            await loop.run_in_executor(
-                None,
-                resolve_egress,
-                parsed.hostname,
-                parsed.port or (443 if parsed.scheme == "https" else 80),
-            )
-        except OSError as exc:
-            raise DeliveryError("dns_failed") from exc
+        addresses = await asyncio.to_thread(
+            resolve_egress,
+            parsed.hostname or "",
+            parsed.port or (443 if parsed.scheme == "https" else 80),
+        )
         try:
             client = self._client_for()
         except (ssl.SSLError, ValueError, OSError) as exc:
@@ -909,18 +1206,28 @@ class HttpTransport(Transport):
         content, ctype = self.body(events)
         headers = self._headers(events[0].id if len(events) == 1 else _batch_id(events))
         headers["Content-Type"] = ctype
-        try:
-            response = await client.post(
-                self.dest.url, content=content, headers=headers
-            )
-        except httpx.ConnectError as exc:
-            if _is_tls_error(exc):
-                raise DeliveryError("tls_handshake_failed") from exc
-            raise DeliveryError("connect_failed") from exc
-        except httpx.TimeoutException as exc:
-            raise DeliveryError("timeout") from exc
-        except httpx.HTTPError as exc:
-            raise DeliveryError("send_failed") from exc
+        response: Optional[httpx.Response] = None
+        last: Optional[BaseException] = None
+        for address in addresses:
+            url, host_header, extensions = self.pinned_request(address)
+            try:
+                response = await client.post(
+                    url,
+                    content=content,
+                    headers={**headers, **host_header},
+                    extensions=extensions,
+                )
+                break
+            except httpx.ConnectError as exc:
+                if _is_tls_error(exc):
+                    raise DeliveryError("tls_handshake_failed") from exc
+                last = exc  # try the next checked address
+            except httpx.TimeoutException as exc:
+                raise DeliveryError("timeout") from exc
+            except httpx.HTTPError as exc:
+                raise DeliveryError("send_failed") from exc
+        if response is None:
+            raise DeliveryError("connect_failed") from last
         if 200 <= response.status_code < 300:
             return
         if response.status_code == 413:
@@ -1282,7 +1589,45 @@ def _naive(value: datetime) -> datetime:
     return as_utc(value).replace(tzinfo=None)
 
 
+# On Postgres every database source pages on the inserting (or last updating)
+# transaction id first. ``xmin`` is the 32-bit id; widened to 64 bits against
+# the snapshot's ``xmax`` (no live row is 2^32 transactions older than that).
+_SNAPSHOT_SQL = (
+    "(SELECT pg_snapshot_xmin(c)::text::bigint AS safe, "
+    "pg_snapshot_xmax(c)::text::bigint AS top FROM pg_current_snapshot() AS c) "
+    "AS snap"
+)
+_FULL_XID = "(((snap.top >> 32) << 32) | (t.xmin::text::bigint))"
+_ROW_XID = (
+    f"(CASE WHEN {_FULL_XID} >= snap.top THEN {_FULL_XID} - 4294967296 "
+    f"ELSE {_FULL_XID} END)"
+)
+
+
 class _DbSource(Source):
+    """A table read in a keyset order that a late commit cannot jump.
+
+    **Postgres** (production): rows are read in ``(xid, key)`` order, where
+    ``xid`` is the row's inserting transaction (``xmin``), and only rows whose
+    transaction is older than ``pg_snapshot_xmin(pg_current_snapshot())`` —
+    the oldest transaction still running — are read at all. Every transaction
+    below that bound has committed or aborted, so nothing can later appear
+    behind the cursor: a transaction that holds a lower id or an older
+    timestamp open for an hour is simply waited for, and the cursor never
+    passes an uncommitted row. ``settle_s`` is not used.
+
+    **Anything else** (SQLite in unit tests, a single writer): rows are read in
+    key order up to ``now - settle_s``.
+
+    Known limits (also in AUDIT_EXPORT.md): a long-running transaction delays
+    export of everything committed after it began (never loses it); the xid
+    filter cannot use an index, so each poll scans the source table; a row
+    that is UPDATEd gets a new ``xmin`` and is read again (``approval_actions``
+    — at-least-once, the event ``id`` is stable); a logical restore into
+    another cluster (new xids) is detected when the cursor is ahead of the
+    transaction counter and re-reads from the start.
+    """
+
     def __init__(
         self,
         session_scope: SessionScope,
@@ -1297,12 +1642,94 @@ class _DbSource(Source):
     def cutoff(self) -> datetime:
         return self.clock() - self.settle
 
+    @staticmethod
+    def _postgres(session: Session) -> bool:
+        return session.get_bind().dialect.name == "postgresql"
+
+    @staticmethod
+    def _snapshot(session: Session) -> tuple[int, int]:
+        """``(xmin, xmax)`` of the current snapshot, as 64-bit ids."""
+        row = session.execute(
+            text(
+                "SELECT pg_snapshot_xmin(c)::text::bigint, "
+                "pg_snapshot_xmax(c)::text::bigint FROM pg_current_snapshot() AS c"
+            )
+        ).one()
+        return int(row[0]), int(row[1])
+
+    def _start_xid(self, session: Session, cursor: dict) -> int:
+        xid = int(cursor.get("xid", 0))
+        _, top = self._snapshot(session)
+        if xid > top:
+            logger.warning(
+                "audit export: the %s cursor is ahead of this database's "
+                "transaction counter (restored or replaced database?); "
+                "re-reading from the start",
+                self.name,
+            )
+            return 0
+        return xid
+
+    def _pg_rows(
+        self,
+        session: Session,
+        cursor: dict,
+        *,
+        table: str,
+        columns: str,
+        keys: list[tuple[str, str, Any]],
+        limit: int,
+        where: str = "",
+        params: Optional[dict] = None,
+        binds: Iterable[Any] = (),
+        types: Optional[dict] = None,
+    ) -> list[dict]:
+        """Rows after ``cursor`` in ``(xid, *keys)`` order, below the safe xid.
+
+        ``keys`` are ``(output column, bind name, cursor value)``. Names are
+        fixed by the subclasses, never user input.
+        """
+        key_cols = ", ".join(f"q.{col}" for col, _, _ in keys)
+        key_binds = ", ".join(f":{bind}" for _, bind, _ in keys)
+        inner = (
+            f"SELECT {columns}, {_ROW_XID} AS _xid "  # nosec B608 - fixed names
+            f"FROM {table} AS t CROSS JOIN {_SNAPSHOT_SQL} "
+            f"WHERE {_ROW_XID} < snap.safe{where}"
+        )
+        stmt = text(
+            f"SELECT * FROM ({inner}) AS q "  # nosec B608 - fixed names
+            f"WHERE (q._xid, {key_cols}) > (:xid, {key_binds}) "
+            f"ORDER BY q._xid, {key_cols} LIMIT :n"
+        )
+        if binds:
+            stmt = stmt.bindparams(*binds)
+        stmt = stmt.columns(_xid=Integer(), **(types or {}))
+        values: dict[str, Any] = {
+            "xid": self._start_xid(session, cursor),
+            "n": limit,
+            **(params or {}),
+        }
+        for _, bind, value in keys:
+            values[bind] = value
+        return [dict(r) for r in session.execute(stmt, values).mappings()]
+
+    def _pg_initial(self, start_from: str, **keys: Any) -> dict:
+        """A first cursor: everything (``beginning``) or what commits from now."""
+        if start_from == "beginning":
+            return {"xid": 0, **keys}
+        with self.session_scope() as session:
+            if not self._postgres(session):
+                return {}
+            safe, _ = self._snapshot(session)
+        return {"xid": safe, **keys}
+
 
 class _IdSource(_DbSource):
-    """A table with an autoincrement id: cursor ``{"id": n}``.
+    """A table with an autoincrement id: cursor ``{"xid": x, "id": n}``.
 
-    Rows are read in id order and the read stops at the first row younger than
-    the settle window, so a lower id still in an open transaction is not passed.
+    On Postgres the order is ``(xid, id)`` below the oldest running
+    transaction (see :class:`_DbSource`). Elsewhere rows are read in id order
+    and the read stops at the first row younger than the settle window.
     """
 
     table: str
@@ -1312,7 +1739,10 @@ class _IdSource(_DbSource):
 
     def initial_cursor(self, start_from: str) -> dict:
         if start_from == "beginning":
-            return {"id": 0}
+            return {"xid": 0, "id": 0}
+        pg = self._pg_initial(start_from, id=0)
+        if pg:
+            return pg
         with self.session_scope() as session:
             top = session.execute(
                 text(f"SELECT MAX({self.id_col}) FROM {self.table}")  # nosec B608
@@ -1320,11 +1750,28 @@ class _IdSource(_DbSource):
         return {"id": int(top or 0)}
 
     def fetch(self, cursor: dict, limit: int) -> list[tuple[AuditEvent, dict]]:
-        stmt = text(
-            f"SELECT {self.columns} FROM {self.table} "  # nosec B608 - fixed names
-            f"WHERE {self.id_col} > :id ORDER BY {self.id_col} LIMIT :n"
-        ).columns(**{self.ts_col: DateTime(), self.id_col: Integer()})
         with self.session_scope() as session:
+            if self._postgres(session):
+                rows = self._pg_rows(
+                    session,
+                    cursor,
+                    table=self.table,
+                    columns=self.columns,
+                    keys=[(self.id_col, "id", int(cursor.get("id", 0)))],
+                    limit=limit,
+                    types={self.ts_col: DateTime(), self.id_col: Integer()},
+                )
+                return [
+                    (
+                        self.event(row),
+                        {"xid": int(row["_xid"]), "id": int(row[self.id_col])},
+                    )
+                    for row in rows
+                ]
+            stmt = text(
+                f"SELECT {self.columns} FROM {self.table} "  # nosec B608 - fixed names
+                f"WHERE {self.id_col} > :id ORDER BY {self.id_col} LIMIT :n"
+            ).columns(**{self.ts_col: DateTime(), self.id_col: Integer()})
             rows = session.execute(
                 stmt, {"id": int(cursor.get("id", 0)), "n": limit}
             ).mappings()
@@ -1409,7 +1856,8 @@ class CaseAuditSource(_IdSource):
 
 
 class AgentEventsSource(_DbSource):
-    """The agent ledger, keyset-paged on ``(ts, run_id, seq)``.
+    """The agent ledger, keyset-paged on ``(xid, run_id, seq)`` on Postgres
+    (``(ts, run_id, seq)`` up to the settle cutoff elsewhere).
 
     Exports the ledger coordinates, kind and hash-chain values, plus the
     payload's top-level scalars (redacted downstream); nested payload content
@@ -1422,12 +1870,63 @@ class AgentEventsSource(_DbSource):
         super().__init__(*args, **kwargs)
         self.kinds = sorted(set(kinds))
 
+    _COLUMNS = (
+        "CAST(run_id AS TEXT) AS run_id, seq, ts, run_kind, kind, "
+        "payload, schema_version, prev_hash, event_hash"
+    )
+
     def initial_cursor(self, start_from: str) -> dict:
         if start_from == "beginning":
-            return {"ts": iso_utc(_EPOCH), "run_id": "", "seq": -1}
+            return {"xid": 0, "ts": iso_utc(_EPOCH), "run_id": "", "seq": -1}
+        pg = self._pg_initial(start_from, run_id="", seq=-1)
+        if pg:
+            return pg
         return {"ts": iso_utc(self.cutoff()), "run_id": "", "seq": -1}
 
+    def _pg_fetch(
+        self, session: Session, cursor: dict, limit: int
+    ) -> list[tuple[AuditEvent, dict]]:
+        binds = []
+        params: dict[str, Any] = {}
+        where = ""
+        if self.kinds:
+            where = " AND kind IN :kinds"
+            binds.append(bindparam("kinds", expanding=True, type_=String()))
+            params["kinds"] = self.kinds
+        rows = self._pg_rows(
+            session,
+            cursor,
+            table="agent_events",
+            columns=self._COLUMNS,
+            keys=[
+                ("run_id", "rid", str(cursor.get("run_id", ""))),
+                ("seq", "seq", int(cursor.get("seq", -1))),
+            ],
+            limit=limit,
+            where=where,
+            params=params,
+            binds=binds,
+            types={"ts": DateTime(timezone=True)},
+        )
+        out = []
+        for row in rows:
+            ts = as_utc(row["ts"])
+            out.append(
+                (
+                    self.event(row, ts),
+                    {
+                        "xid": int(row["_xid"]),
+                        "run_id": row["run_id"],
+                        "seq": row["seq"],
+                    },
+                )
+            )
+        return out
+
     def fetch(self, cursor: dict, limit: int) -> list[tuple[AuditEvent, dict]]:
+        with self.session_scope() as session:
+            if self._postgres(session):
+                return self._pg_fetch(session, cursor, limit)
         kind_filter = ""
         params: dict[str, Any] = {
             "ts": as_utc(cursor["ts"]),
@@ -1502,7 +2001,8 @@ class AgentEventsSource(_DbSource):
 
 
 class ApprovalTransitionSource(_DbSource):
-    """One ``approval_actions`` transition, keyset-paged on ``(<col>, action_id)``.
+    """One ``approval_actions`` transition, keyset-paged on ``(xid, action_id)``
+    on Postgres (``(<col>, action_id)`` up to the settle cutoff elsewhere).
 
     ``approval_actions`` is a mutable row, not a log; each timestamp column that
     is set once marks a transition, and each gets its own cursor.
@@ -1522,11 +2022,51 @@ class ApprovalTransitionSource(_DbSource):
         self.col = self.COLUMNS[transition]
         self.name = f"approvals.{transition}"
 
+    _COLUMNS = (
+        "action_id, action_type, title, target, confidence, "
+        "created_by, status, approved_by, rejection_reason, reversibility, "
+        "workflow_run_id, verify_status, reverse_of, second_approver, parameters"
+    )
+
     def initial_cursor(self, start_from: str) -> dict:
-        start = _EPOCH if start_from == "beginning" else self.cutoff()
-        return {"ts": iso_utc(start), "id": ""}
+        if start_from == "beginning":
+            return {"xid": 0, "ts": iso_utc(_EPOCH), "id": ""}
+        pg = self._pg_initial(start_from, id="")
+        if pg:
+            return pg
+        return {"ts": iso_utc(self.cutoff()), "id": ""}
+
+    def _pg_fetch(
+        self, session: Session, cursor: dict, limit: int
+    ) -> list[tuple[AuditEvent, dict]]:
+        # A transition is a column set once by an UPDATE; that UPDATE's xid is
+        # the row's xmin until the next UPDATE, which makes the row (and so
+        # this transition) come round again — a duplicate, never a loss.
+        rows = self._pg_rows(
+            session,
+            cursor,
+            table="approval_actions",
+            columns=f"{self._COLUMNS}, {self.col} AS at",
+            keys=[("action_id", "id", str(cursor.get("id", "")))],
+            limit=limit,
+            where=f" AND {self.col} IS NOT NULL",
+            types={"at": DateTime()},
+        )
+        out = []
+        for row in rows:
+            at = as_utc(row["at"])
+            out.append(
+                (
+                    self.event(row, at),
+                    {"xid": int(row["_xid"]), "id": row["action_id"]},
+                )
+            )
+        return out
 
     def fetch(self, cursor: dict, limit: int) -> list[tuple[AuditEvent, dict]]:
+        with self.session_scope() as session:
+            if self._postgres(session):
+                return self._pg_fetch(session, cursor, limit)
         col = self.col
         stmt = (
             text(
@@ -1702,8 +2242,10 @@ class Pipeline:
         cfg: AuditExportConfig,
         redactor: Redactor,
         rng: Optional[random.Random] = None,
+        on_dead: Optional[Callable[[], None]] = None,
     ) -> None:
         self.destination = destination
+        self.on_dead = on_dead
         self.transport = transport
         self.sources = sources
         self.cursors = cursors
@@ -1727,6 +2269,24 @@ class Pipeline:
                 self._send_loop(), name=f"audit-send-{self.destination}"
             ),
         ]
+        for task in self._tasks:
+            task.add_done_callback(self._task_done)
+
+    def _task_done(self, task: asyncio.Task) -> None:
+        """A reader or sender that ends while not stopping is a dead pipeline:
+        log why and ask the supervisor to restart it now."""
+        if self._stop.is_set():
+            return
+        exc = None if task.cancelled() else task.exception()
+        self._error(f"task_died:{task.get_name().split('-')[1]}")
+        logger.error(
+            "audit export: %s ended unexpectedly (%s); restarting",
+            task.get_name(),
+            type(exc).__name__ if exc else "no error",
+        )
+        if self.on_dead is not None:
+            with contextlib.suppress(Exception):
+                self.on_dead()
 
     async def stop(self, grace_s: float = 5.0) -> None:
         """Stop reading at once; give the sender ``grace_s`` to commit the
@@ -1749,7 +2309,13 @@ class Pipeline:
 
     @property
     def running(self) -> bool:
-        return any(not t.done() for t in self._tasks)
+        """Both the reader and the sender are alive.
+
+        One without the other is a stalled pipeline (a dead sender leaves the
+        reader blocked on a full queue forever), so the supervisor restarts
+        it; the uncommitted queue is simply read again.
+        """
+        return len(self._tasks) == 2 and all(not t.done() for t in self._tasks)
 
     async def _wait(self, seconds: float) -> bool:
         """Sleep, returning True early if the pipeline is stopping."""
@@ -2088,6 +2654,7 @@ class AuditExportService:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._wake: Optional[asyncio.Event] = None
         self._lock = asyncio.Lock()
+        self._id_key: Optional[bytes] = None
 
     # -- recording (request path) -----------------------------------------
 
@@ -2106,6 +2673,39 @@ class AuditExportService:
                 "audit export: could not spool an auth event (%s)", type(exc).__name__
             )
             return False
+
+    def identifier_digest(self, value: str) -> str:
+        """HMAC-SHA256 of an unauthenticated identifier, keyed per install.
+
+        The key lives in the state directory (0600) and never leaves it, so a
+        SIEM reader cannot confirm a guessed password against the digest.
+        """
+        key = self._identifier_key()
+        return hmac.new(key, value.encode("utf-8", "replace"), "sha256").hexdigest()[
+            :24
+        ]
+
+    def _identifier_key(self) -> bytes:
+        if self._id_key is None:
+            path = self.state_dir / "identifier.key"
+            try:
+                self._id_key = path.read_bytes()
+            except FileNotFoundError:
+                self.state_dir.mkdir(parents=True, exist_ok=True)
+                fd, tmp = tempfile.mkstemp(prefix=".identifier-", dir=self.state_dir)
+                try:
+                    with os.fdopen(fd, "wb") as fh:  # mkstemp: mode 0600
+                        fh.write(os.urandom(32))
+                        fh.flush()
+                        os.fsync(fh.fileno())
+                    try:
+                        os.link(tmp, path)  # atomic; never a half-written key
+                    except FileExistsError:
+                        pass  # another process won the race: use its key
+                finally:
+                    os.unlink(tmp)
+                self._id_key = path.read_bytes()
+        return self._id_key
 
     # -- config -----------------------------------------------------------
 
@@ -2205,6 +2805,7 @@ class AuditExportService:
                 cursors=self.cursors,
                 cfg=cfg,
                 redactor=Redactor(redact_pii=cfg.redact_pii),
+                on_dead=self.wake,
             )
             pipeline.start()
             self.pipelines[dest.name] = pipeline
@@ -2309,6 +2910,68 @@ class AuditExportService:
             },
             "destinations": destinations,
         }
+
+
+def audit_export_on(request: Any) -> bool:
+    """Whether auth events are being spooled (cheap; for guarding lookups)."""
+    try:
+        service = getattr(request.app.state, "audit_export", None)
+        return bool(service is not None and service.spool_enabled)
+    except Exception:  # noqa: BLE001 - no app state means no export
+        return False
+
+
+def failed_login_fields(request: Any, identifier: Any, session: Any) -> dict:
+    """``actor`` fields for a failed login, without leaking what was typed.
+
+    A failed login's identifier is unauthenticated input and is often a
+    password typed into the wrong box. If it names an existing account, the
+    account's username (and id) is exported; otherwise only a keyed digest
+    (stable per installation, so repeated attempts correlate in the SIEM, but
+    not reversible by guessing) and its length.
+    """
+    raw = "" if identifier is None else str(identifier)[:512]
+    try:
+        from core.storage.models import User
+
+        user = (
+            session.query(User)
+            .filter((User.username == raw) | (User.email == raw))
+            .first()
+        )
+        if user is not None:
+            return {"actor": user.username, "actor_id": user.user_id}
+    except Exception as exc:  # noqa: BLE001 - fall back to the digest
+        logger.debug("audit export: login identifier lookup failed (%s)", exc)
+    service = getattr(getattr(request, "app", None), "state", None)
+    service = getattr(service, "audit_export", None)
+    digest = (
+        service.identifier_digest(raw)
+        if service is not None
+        else hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:16]
+    )
+    return {
+        "actor": None,
+        "details": {
+            "unknown_identifier": True,
+            "identifier_digest": digest,
+            "identifier_length": len(raw),
+        },
+    }
+
+
+async def arecord_auth_event(request: Any, action: str, **fields: Any) -> None:
+    """:func:`record_auth_event` for ``async def`` handlers.
+
+    The spool write takes an ``flock`` and ``fsync``s; both block, so they run
+    in a worker thread instead of on the event loop. Never raises.
+    """
+    if request is None or not audit_export_on(request):
+        return
+    try:
+        await asyncio.to_thread(record_auth_event, request, action, **fields)
+    except Exception as exc:  # noqa: BLE001 - auditing must not break the request
+        logger.warning("audit export: auth hook failed (%s)", type(exc).__name__)
 
 
 def record_auth_event(request: Any, action: str, **fields: Any) -> None:

@@ -19,6 +19,19 @@ DEFAULT_ALLOWED_PROVIDER_HOSTS = frozenset(
 )
 
 
+# Instance-metadata endpoints. Refused even inside an administrator's allowed
+# networks and even with ``allow_loopback``: they hand out cloud credentials.
+CLOUD_METADATA_ADDRESSES = frozenset(
+    {
+        "169.254.169.254",  # AWS, GCP, Azure, OpenStack, DigitalOcean, ...
+        "169.254.170.2",  # AWS ECS task metadata / credentials
+        "fd00:ec2::254",  # AWS IMDS over IPv6
+        "100.100.100.200",  # Alibaba Cloud
+        "168.63.129.16",  # Azure WireServer
+    }
+)
+
+
 class UrlSafetyError(ValueError):
     """Raised when a URL fails safety validation."""
 
@@ -81,7 +94,7 @@ def _is_blocked_ip(ip_str: str) -> Tuple[bool, str]:
     if mapped is not None:
         ip = mapped
 
-    if str(ip) in ("169.254.169.254", "fd00:ec2::254"):
+    if str(ip) in CLOUD_METADATA_ADDRESSES:
         return True, "cloud metadata address"
     if ip.is_loopback:
         return True, "loopback address"
@@ -95,7 +108,19 @@ def _is_blocked_ip(ip_str: str) -> Tuple[bool, str]:
         return True, "reserved address"
     if ip.is_unspecified:
         return True, "unspecified address"
+    # Anything else that is not globally routable: carrier-grade NAT
+    # (100.64.0.0/10, where Alibaba's metadata service and many VPN overlays
+    # live), benchmarking 198.18.0.0/15, IETF 192.0.0.0/24 and the like.
+    # ``is_private`` does not cover CGNAT.
+    if not ip.is_global:
+        return True, "non-global address"
     return False, ""
+
+
+def blocked_reason(ip_str: str) -> str | None:
+    """Why ``ip_str`` is refused by default (``None`` if it is not)."""
+    blocked, reason = _is_blocked_ip(ip_str)
+    return reason if blocked else None
 
 
 class UnresolvableHostError(UrlSafetyError):
@@ -116,6 +141,11 @@ def parse_networks(
         if part:
             networks.append(ipaddress.ip_network(part, strict=False))
     return tuple(networks)
+
+
+def ip_in_networks(ip_str: str, networks: Iterable) -> bool:
+    """Whether ``ip_str`` (an IPv4-mapped v6 counts as its v4) is in ``networks``."""
+    return _in_networks(ip_str, networks)
 
 
 def _in_networks(ip_str: str, networks: Iterable) -> bool:

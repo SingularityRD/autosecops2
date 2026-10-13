@@ -35,6 +35,10 @@ BLOCKED_URLS = [
     "http://172.16.0.1/admin?x=",
     "http://192.168.1.1/admin?x=",
     "http://fd00::1/admin",  # private IPv6
+    "http://100.64.0.1/admin",  # carrier-grade NAT (not is_private)
+    "http://100.100.100.200/latest/meta-data",  # Alibaba Cloud metadata
+    "http://198.18.0.1/",  # benchmarking range
+    "http://[fd00:ec2::254]/latest/meta-data",  # AWS IMDS over IPv6
     "file:///etc/passwd",
     "gopher://attacker/",
     "ftp://attacker/",
@@ -99,3 +103,16 @@ def test_allow_loopback_permits_localhost_but_not_metadata():
         validate_provider_url(
             "http://169.254.169.254/latest/meta-data", allow_loopback=True
         )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://100.100.100.200/latest/meta-data",
+        "http://[fd00:ec2::254]/latest/meta-data",
+        "http://169.254.170.2/v2/credentials",
+    ],
+)
+def test_metadata_addresses_blocked_even_with_loopback(url):
+    with pytest.raises(UrlSafetyError, match="metadata"):
+        validate_provider_url(url, allow_loopback=True)

@@ -397,7 +397,11 @@ async def update_user(
                 )
 
         logger.info(f"User updated by {current_user.username}: {user.username}")
-        _record_update(http_request, current_user, user, request, before)
+        if _audit_on(http_request):
+            # The spool write flocks and fsyncs: keep it off the event loop.
+            await asyncio.to_thread(
+                _record_update, http_request, current_user, user, request, before
+            )
         return payload
 
     except HTTPException:
