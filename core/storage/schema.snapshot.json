@@ -443,6 +443,44 @@
       "nullable": true
     }
   },
+  "approval_decisions": {
+    "action_id": {
+      "data_type": "character varying(80)",
+      "nullable": false
+    },
+    "actor": {
+      "data_type": "character varying(100)",
+      "nullable": false
+    },
+    "actor_role": {
+      "data_type": "character varying(100)",
+      "nullable": true
+    },
+    "actor_role_id": {
+      "data_type": "character varying(50)",
+      "nullable": true
+    },
+    "actor_user_id": {
+      "data_type": "character varying(50)",
+      "nullable": true
+    },
+    "decided_at": {
+      "data_type": "timestamp without time zone",
+      "nullable": false
+    },
+    "id": {
+      "data_type": "bigint",
+      "nullable": false
+    },
+    "step": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "tenant_id": {
+      "data_type": "text",
+      "nullable": false
+    }
+  },
   "autonomy_tiers": {
     "action_type": {
       "data_type": "character varying(40)",
