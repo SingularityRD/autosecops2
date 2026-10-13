@@ -177,21 +177,30 @@ def test_explicit_floor_and_slice_all(stub, tmp_path):
     assert ranking["criteria"]["min_recall"] == 0.0
 
 
-def test_rank_refuses_a_nonlocal_gateway(tmp_path):
-    with pytest.raises(ll.NonLocalGateway):
-        el.main(
-            [
-                "rank",
-                "--candidates",
-                "good:1b",
-                "--bifrost-url",
-                "https://gateway.example.com",
-                "--limit",
-                "1",
-                "--out",
-                str(tmp_path),
-            ]
-        )
+@pytest.mark.parametrize(
+    "url", ["https://gateway.example.com", "http://134744072", "http://[2002::1]"]
+)
+def test_rank_refuses_a_nonlocal_gateway_before_any_work(tmp_path, monkeypatch, url):
+    def boom(*a, **kw):
+        raise AssertionError("work started before the gateway check")
+
+    monkeypatch.setattr(el, "load_suites", boom)
+    monkeypatch.setattr(el, "evaluate", boom)
+    code = el.main(
+        [
+            "rank",
+            "--candidates",
+            "good:1b",
+            "--bifrost-url",
+            url,
+            "--limit",
+            "1",
+            "--out",
+            str(tmp_path / "out"),
+        ]
+    )
+    assert code == el.EXIT_NONLOCAL_GATEWAY == 4
+    assert not (tmp_path / "out").exists()
 
 
 def test_bad_arguments(tmp_path):
@@ -229,12 +238,14 @@ def test_rank_ordering():
             "c": m(0.9, 0.85, 1000),
             "d": m(0.5, 0.95, 10),
             "e": m(0.95, 0.99, 10, schema=0.5),
+            # Same F1 as b/c, higher recall: recall breaks an F1 tie before latency.
+            "f": m(0.95, 0.85, 5000),
         },
         min_recall=0.8,
         max_schema_error_rate=0.02,
     )
-    assert [r["model"] for r in rows if r["eligible"]] == ["c", "b", "a"]
-    assert [r["rank"] for r in rows[:3]] == [1, 2, 3]
+    assert [r["model"] for r in rows if r["eligible"]] == ["f", "c", "b", "a"]
+    assert [r["rank"] for r in rows[:4]] == [1, 2, 3, 4]
     assert {r["model"] for r in rows if not r["eligible"]} == {"d", "e"}
 
 

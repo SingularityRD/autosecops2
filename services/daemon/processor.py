@@ -15,6 +15,7 @@ from core.lanes.alert_lanes import (
     lane_triage_target,
     wants_llm_triage,
 )
+from core.llm.local_lane import get_local_lane
 from core.llm.outage import report_outage, report_recovered
 from core.time import utcnow
 from services.daemon.config import ProcessingConfig, ResponseConfig
@@ -757,6 +758,14 @@ REASONING: [Brief explanation]
         rather than swallowed so the caller can persist them on the finding —
         previously a worker failure came back as empty content and the finding
         was stored indistinguishable from a triaged, unremarkable one."""
+        # W2.3: the small-model lane runs on the local (Ollama) lane when one is
+        # configured or eval-selected. Its error stays the finding's error; there
+        # is no fallback to the queue's (possibly cloud) model.
+        if lane_triage_target() is not None and (local := get_local_lane()) is not None:
+            answer = await local.triage(prompt)
+            return (
+                (answer.content, None) if answer.error is None else (None, answer.error)
+            )
         await self._ensure_gateway()
         if self._llm_gateway is None:
             return None, "LLM gateway unavailable"

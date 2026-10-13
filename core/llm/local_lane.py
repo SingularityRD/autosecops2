@@ -18,9 +18,12 @@ triage format. This module is that provider:
 * The model is chosen by eval: ``LOCAL_LANE_MODEL`` when set, else the model
   ``python -m evalkit.local_lane rank --write-selection`` wrote to the selection
   file. Neither: :func:`get_local_lane` returns ``None`` and the lane is off.
-* The lane refuses a gateway that is not local (loopback, private address,
-  dotless service name, ``.local``/``.internal``/``.svc``/``.lan``) unless
+* The lane refuses a gateway that is not local (loopback, RFC 1918, IPv6 ULA,
+  dotless service name, ``.local``/``.internal``/``.svc``/``.lan``; numeric
+  hosts are decoded as the IPv4 literals the resolver sees) unless
   ``LOCAL_LANE_ALLOW_NONLOCAL_GATEWAY`` says otherwise.
+* An answer is accepted only from the model asked for: when Bifrost reports a
+  different model (a fallback it was configured with), the answer is an error.
 
 How W2.2 plugs it in (once merged) is described in ``docs/wp/w2.3.md``: when
 the lane hook selected the small-model lane and :func:`get_local_lane` returns
@@ -187,14 +190,88 @@ _LOCAL_SUFFIXES = (
     ".home.arpa",
 )
 
+# Cloud metadata services: local-looking, but the one place a gateway must
+# never point (credentials live there).
+_METADATA_NAMES = frozenset(
+    {
+        "metadata",
+        "metadata.google.internal",
+        "instance-data",
+        "instance-data.ec2.internal",
+    }
+)
+
+# An explicit allowlist, not ``ip.is_private``: Python's "private" also covers
+# 6to4 (2002::/16), 240.0.0.0/4, 198.18.0.0/15 and 192.0.0.0/24, none of which
+# is this deployment's own network. Link-local is left out entirely: nothing
+# serves a gateway there and 169.254.169.254 / fd00:ec2::254 are metadata.
+_ALLOWED_NETS = tuple(
+    ipaddress.ip_network(n)
+    for n in (
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "::1/128",
+        "fc00::/7",
+    )
+)
+_DENIED_ADDRS = frozenset(
+    ipaddress.ip_address(a) for a in ("169.254.169.254", "fd00:ec2::254")
+)
+
+# What ``inet_aton`` (glibc, and so httpx/getaddrinfo) reads as an IPv4
+# literal: 1-4 dot-separated parts, each decimal, 0x-hex or 0-octal.
+_NUMERIC_HOST = re.compile(r"^[0-9][0-9a-fx]*(\.[0-9][0-9a-fx]*){0,3}$")
+
+
+def _inet_aton(host: str) -> Optional[ipaddress.IPv4Address]:
+    """``host`` decoded the way ``inet_aton`` does (``2130706433``,
+    ``0x7f.1``, ``0177.0.0.1``, ``127.1``), or None if it is not valid."""
+    parts = host.split(".")
+    if not 1 <= len(parts) <= 4:
+        return None
+    nums = []
+    for part in parts:
+        try:
+            if part[:2] == "0x":
+                n = int(part[2:], 16)
+            elif len(part) > 1 and part[0] == "0":
+                n = int(part[1:], 8)
+            else:
+                n = int(part, 10)
+        except ValueError:
+            return None
+        nums.append(n)
+    *head, last = nums
+    if any(n > 0xFF for n in head) or last >= 1 << (8 * (4 - len(head))):
+        return None
+    value = 0
+    for n in head:
+        value = (value << 8) | n
+    value = (value << (8 * (4 - len(head)))) | last
+    return ipaddress.IPv4Address(value)
+
+
+def _ip_is_local(ip: "ipaddress.IPv4Address | ipaddress.IPv6Address") -> bool:
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    if ip in _DENIED_ADDRS:
+        return False
+    return any(ip.version == net.version and ip in net for net in _ALLOWED_NETS)
+
 
 def is_local_endpoint(url: str) -> bool:
     """Whether ``url`` names this machine or the deployment's own network.
 
-    Literal addresses must be loopback, private or link-local. Names must be
-    ``localhost``, a dotless service name (compose / Kubernetes short names) or
-    end in a local-only suffix. No DNS lookup: resolving a name would itself be
-    the egress being guarded against.
+    Literal addresses must be loopback, RFC 1918 or IPv6 ULA (``fc00::/7``);
+    a host that is all digits / hex / dots is an IPv4 literal to the resolver
+    (``http://134744072`` is 8.8.8.8) and is decoded as one, or refused when
+    it does not decode. Names must be ``localhost``, a dotless service name
+    (compose / Kubernetes short names) or end in a local-only suffix, and not
+    name a cloud metadata service. No DNS lookup: resolving a name would itself
+    be the egress being guarded against.
     """
     try:
         host = (urlsplit(url).hostname or "").strip().lower().rstrip(".")
@@ -202,11 +279,18 @@ def is_local_endpoint(url: str) -> bool:
         return False
     if not host:
         return False
+    if "%" in host:  # IPv6 zone id: link-local by construction
+        return False
     try:
-        ip = ipaddress.ip_address(host)
+        return _ip_is_local(ipaddress.ip_address(host))
     except ValueError:
-        return host == "localhost" or "." not in host or host.endswith(_LOCAL_SUFFIXES)
-    return ip.is_loopback or ip.is_private or ip.is_link_local
+        pass
+    if _NUMERIC_HOST.match(host):
+        ip = _inet_aton(host)
+        return ip is not None and _ip_is_local(ip)
+    if host in _METADATA_NAMES:
+        return False
+    return host == "localhost" or "." not in host or host.endswith(_LOCAL_SUFFIXES)
 
 
 class NonLocalGateway(ValueError):
@@ -298,6 +382,22 @@ class LocalModelLane:
         """(provider_type, model) as Bifrost routes it."""
         return PROVIDER_TYPE, self.bare_model
 
+    def answered_by_me(self, reported: str) -> bool:
+        """Whether ``reported`` (the response's ``model``) is this lane's model.
+
+        Bifrost may echo ``ollama/<model>`` or the provider's bare ``<model>``;
+        Ollama adds ``:latest`` to an untagged name. Anything else (or nothing)
+        is another model answering, e.g. a Bifrost fallback chain.
+        """
+        name = reported.strip()
+        if name.startswith(f"{PROVIDER_TYPE}/"):
+            name = name[len(PROVIDER_TYPE) + 1 :]
+        elif "/" in name:
+            return False
+        if name == self.bare_model:
+            return True
+        return ":" not in self.bare_model and name == f"{self.bare_model}:latest"
+
     async def triage(self, prompt: str) -> LaneAnswer:
         started = time.monotonic()
 
@@ -336,6 +436,18 @@ class LocalModelLane:
             "input_tokens": int(result.get("input_tokens") or 0),
             "output_tokens": int(result.get("output_tokens") or 0),
         }
+        answered_by = str(result.get("model") or "").strip()
+        if not self.answered_by_me(answered_by):
+            return LaneAnswer(
+                content=None,
+                model=self.model,
+                latency_ms=elapsed(),
+                error=(
+                    f"model: answer came from {answered_by or 'an unnamed model'!r}, "
+                    f"not {self.model!r}; refusing a gateway fallback"
+                ),
+                **tokens,
+            )
         try:
             obj = parse_assessment(result.get("content"))
         except SchemaError as exc:

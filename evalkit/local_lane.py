@@ -16,7 +16,9 @@ The ``small_lane`` slice approximates what W2.2 routes to the small model: the
 alerts whose severity is not ``critical`` (critical always goes to the verdict
 lane). ``--slice all`` ranks on the whole split.
 
-No candidate is eligible: exit 3 and no selection is written.
+No candidate is eligible: exit 3 and no selection is written. The gateway is
+not local (and ``--allow-nonlocal-gateway`` is off): exit 4 before any case
+runs, the baseline included.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from core.llm.local_lane import SELECTION_FORMAT, LocalModelLane
+from core.llm.local_lane import SELECTION_FORMAT, LocalModelLane, NonLocalGateway
 from core.time import utcnow
 from evalkit.backends import BackendResult, StubBackend
 from evalkit.cli import _git_sha
@@ -49,6 +51,7 @@ SLICES = ("small_lane", "all")
 SMALL_LANE_EXCLUDED_SEVERITIES = frozenset({"critical"})
 SCHEMA_ERROR_PREFIX = "schema:"
 EXIT_NO_ELIGIBLE = 3
+EXIT_NONLOCAL_GATEWAY = 4
 
 
 class LocalLaneBackend:
@@ -229,6 +232,26 @@ def cmd_rank(args: argparse.Namespace) -> int:
 
         args.bifrost_url = get_settings().bifrost_url
 
+    # Every lane is built (and so the gateway checked) before any work: a
+    # non-local gateway or a bad model name fails here, not after the baseline.
+    try:
+        lanes = [
+            LocalModelLane(
+                model,
+                bifrost_url=args.bifrost_url,
+                timeout_s=args.timeout_s,
+                max_tokens=args.max_tokens,
+                allow_nonlocal_gateway=args.allow_nonlocal_gateway,
+            )
+            for model in candidates
+        ]
+    except NonLocalGateway as exc:
+        print(f"evalkit.local_lane: {exc}", file=sys.stderr)
+        return EXIT_NONLOCAL_GATEWAY
+    except ValueError as exc:
+        print(f"evalkit.local_lane: {exc}", file=sys.stderr)
+        return 2
+
     loaded = load_suites([args.suite], verify=not args.no_verify)[args.suite]
     cases = slice_cases(loaded, args.slice)
     if args.limit is not None:
@@ -250,15 +273,8 @@ def cmd_rank(args: argparse.Namespace) -> int:
         source = "explicit"
 
     metrics: Dict[str, Dict[str, Any]] = {}
-    for model in candidates:
-        # The lane itself refuses a non-local gateway: the eval is air-gapped too.
-        lane = LocalModelLane(
-            model,
-            bifrost_url=args.bifrost_url,
-            timeout_s=args.timeout_s,
-            max_tokens=args.max_tokens,
-            allow_nonlocal_gateway=args.allow_nonlocal_gateway,
-        )
+    for lane in lanes:
+        model = lane.bare_model
         backend = LocalLaneBackend(lane)
         results = asyncio.run(evaluate(cases, backend, concurrency=args.concurrency))
         report = build_report(

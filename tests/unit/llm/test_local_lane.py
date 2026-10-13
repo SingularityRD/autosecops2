@@ -163,6 +163,17 @@ def test_rendered_output_parses_through_processor():
         "http://bifrost.vigil.svc.cluster.local:8080",
         "http://host.docker.internal:8080",
         "http://gw.lan",
+        "http://172.31.0.1",
+        "http://[fd12:3456::1]:8080",
+        "http://[::ffff:127.0.0.1]",
+        # Numeric hosts the resolver reads as IPv4 literals (inet_aton forms).
+        "http://2130706433:8080",  # 127.0.0.1
+        "http://0x7f000001",
+        "http://0x7f.1",
+        "http://0177.0.0.1",
+        "http://127.1",
+        "http://10.1",  # 10.0.0.1
+        "http://192.168.0x101",  # 192.168.1.1
     ],
 )
 def test_local_endpoints(url):
@@ -178,10 +189,67 @@ def test_local_endpoints(url):
         "http://ollama.com",
         "not a url",
         "",
+        # Round 3 (1): dotless numeric hosts are IPv4 literals, not service names.
+        "http://134744072",  # 8.8.8.8
+        "http://0x08080808",
+        "http://0x8.0x8.0x8.0x8",
+        "http://010.010.010.010",  # octal: 8.8.8.8
+        "http://8.8.2056",
+        "http://4294967296",  # overflows inet_aton: refused, not a name
+        "http://08",  # invalid octal: refused, not a name
+        "http://0xa9fea9fe",  # 169.254.169.254
+        # Round 3 (2): "private" in Python's sense but not the local network.
+        "http://[2002:c0a8:101::1]",  # 6to4
+        "http://240.0.0.1",
+        "http://198.18.0.1",
+        "http://192.0.0.8",
+        "http://0.0.0.0",
+        "http://172.32.0.1",
+        "http://169.254.169.254",
+        "http://169.254.1.1",
+        "http://[fe80::1]",
+        "http://[fe80::1%25eth0]",
+        "http://[fd00:ec2::254]",
+        "http://[::ffff:8.8.8.8]",
+        "http://[::ffff:169.254.169.254]",
+        "http://metadata.google.internal",
+        "http://metadata",
     ],
 )
 def test_nonlocal_endpoints(url):
     assert not ll.is_local_endpoint(url)
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "2130706433",
+        "134744072",
+        "0x08080808",
+        "0x7f.1",
+        "0177.0.0.1",
+        "127.1",
+        "10.1",
+        "1.2.3",
+        "192.168.0x101",
+        "0",
+        "255.255.255.255",
+        "4294967296",
+        "08",
+        "0x",
+        "256.1.1.1",
+        "1.2.3.256",
+        "1.2.65536",
+        "1.16777216",
+    ],
+)
+def test_numeric_hosts_decode_like_inet_aton(host):
+    try:
+        want = socket.inet_ntoa(socket.inet_aton(host))
+    except OSError:
+        want = None
+    got = ll._inet_aton(host)
+    assert (None if got is None else str(got)) == want
 
 
 def test_lane_refuses_a_nonlocal_gateway_unless_overridden():
@@ -298,6 +366,71 @@ def test_off_schema_answers_are_errors(answer, needle):
         result = asyncio.run(lane.triage(_prompt()))
     assert result.content is None and result.structured is None
     assert result.error.startswith(needle)
+
+
+def _fake(model):
+    async def dispatch(**kwargs):
+        return {"content": json.dumps(VALID), "model": model}
+
+    return dispatch
+
+
+@pytest.mark.parametrize(
+    "configured, reported, ok",
+    [
+        ("qwen2.5:7b", "ollama/qwen2.5:7b", True),
+        ("qwen2.5:7b", "qwen2.5:7b", True),
+        ("llama3.2", "llama3.2:latest", True),
+        ("llama3.2", "ollama/llama3.2:latest", True),
+        ("qwen2.5:7b", "openai/gpt-4o-mini", False),
+        ("qwen2.5:7b", "gpt-4o-mini", False),
+        ("qwen2.5:7b", "ollama/qwen2.5:14b", False),
+        ("qwen2.5:7b", "anthropic/qwen2.5:7b", False),
+        ("qwen2.5:7b", "", False),
+        ("qwen2.5:7b", None, False),
+    ],
+)
+def test_answer_from_another_model_is_refused(configured, reported, ok):
+    lane = ll.LocalModelLane(
+        configured, bifrost_url="http://127.0.0.1:1", dispatch=_fake(reported)
+    )
+    answer = asyncio.run(lane.triage("p"))
+    if ok:
+        assert answer.error is None and answer.structured == VALID
+    else:
+        assert answer.content is None and answer.structured is None
+        assert answer.error.startswith("model:")
+
+
+def test_bifrost_fallback_model_over_http_is_refused():
+    def fallback(body):
+        return (
+            200,
+            {
+                "id": "chatcmpl-stub",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "openai/gpt-4o-mini",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": json.dumps(VALID)},
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            },
+        )
+
+    with StubBifrost(fallback) as stub:
+        lane = ll.LocalModelLane("qwen2.5:7b", bifrost_url=stub.url, timeout_s=120)
+        answer = asyncio.run(lane.triage(_prompt()))
+    assert answer.content is None
+    assert "openai/gpt-4o-mini" in answer.error
 
 
 def test_gateway_error_is_an_error_not_a_fallback():
