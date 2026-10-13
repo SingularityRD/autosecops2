@@ -468,7 +468,8 @@ def test_nightly_full_run_with_stubs(tmp_path, nightly_env):
     assert calls.index(next(c for c in calls if c.startswith("helm template"))) < calls.index(helm_install)
     for needle in ("--atomic", "--wait", "values-staging.yaml", str(tmp_path / "etc" / "secrets.yaml"),
                    "backend.image.tag=0123456789ab", "agentServe.image.tag=0123456789ab",
-                   "global.imageRegistry=staging.local", "ingress.hosts[0].host=demo.example.test",
+                   "global.imageRegistry=staging.local",
+                   'ingress.hosts=[{"host":"demo.example.test","paths":[{"path":"/","pathType":"Prefix"}]}]',
                    "-n autosecops-staging"):
         assert needle in helm_install, needle
     # local model
@@ -519,3 +520,11 @@ def test_nightly_requires_secrets_file(tmp_path, nightly_env):
     (tmp_path / "etc" / "secrets.yaml").unlink()
     r = _run([str(src / "infra" / "staging" / "nightly.sh"), "--no-update"], env)
     assert r.returncode != 0 and "secrets.yaml" in r.stderr
+
+
+def test_nightly_rejects_bad_host(tmp_path, nightly_env):
+    src, env, log = nightly_env
+    (tmp_path / "etc" / "staging.env").write_text("STAGING_HOST='evil\"],\"x\":[\"'\n")
+    r = _run([str(src / "infra" / "staging" / "nightly.sh"), "--no-update"], env)
+    assert r.returncode != 0 and "geçersiz STAGING_HOST" in r.stderr
+    assert "helm" not in log.read_text()

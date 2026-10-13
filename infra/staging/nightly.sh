@@ -168,6 +168,7 @@ deploy() {
   trap on_exit EXIT
 
   RUN_SHA="$(git -C "$STAGING_SRC_DIR" rev-parse --short=12 HEAD)"
+  [[ "$STAGING_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die "geçersiz STAGING_HOST: $STAGING_HOST"
   [ -f "$STAGING_ETC_DIR/secrets.yaml" ] || die "$STAGING_ETC_DIR/secrets.yaml yok (önce bootstrap.sh)"
   local reg
   reg="$(image_registry)"
@@ -181,7 +182,9 @@ deploy() {
     --set "daemon.image.tag=$RUN_SHA"
     --set "agentWorker.image.tag=$RUN_SHA"
     --set "agentServe.image.tag=$RUN_SHA"
-    --set "ingress.hosts[0].host=$STAGING_HOST"
+    # The whole list: `--set ingress.hosts[0].host=` would replace the list
+    # from values-staging.yaml with one that has no paths.
+    --set-json "ingress.hosts=[{\"host\":\"$STAGING_HOST\",\"paths\":[{\"path\":\"/\",\"pathType\":\"Prefix\"}]}]"
   )
   log "commit $RUN_SHA, model $STAGING_LOCAL_MODEL, kayıt defteri $reg"
 
