@@ -57,6 +57,8 @@ COPY --chown=vigil:vigil tools/       ./tools/
 # <cid>:/app/database/init`) and the initdb mount are unaffected.
 COPY --chown=vigil:vigil infra/database/init/ ./database/init/
 COPY --chown=vigil:vigil data/        ./data/
+# Hidden canary alerts (W1.5) replay the eval corpus' held-out test split.
+COPY --chown=vigil:vigil eval/corpus/v1/test.jsonl ./eval/corpus/v1/test.jsonl
 COPY --chown=vigil:vigil VERSION      ./VERSION
 COPY --chown=vigil:vigil setup.cfg    ./setup.cfg
 # Declared intent. .dockerignore excludes *.md except this file.

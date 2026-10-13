@@ -35,6 +35,11 @@ from core.quality.bounds import (
     clopper_pearson_upper,
     reviews_needed,
 )
+from core.storage.canary_exclusion import (
+    canary_table_present,
+    not_canary_case,
+    not_canary_finding,
+)
 from core.storage.models import AIDecisionLog
 from core.time import utcnow
 
@@ -200,8 +205,17 @@ def _insert(
 def load_candidates(
     session: Session, *, since: datetime, until: Optional[datetime] = None
 ) -> list[Candidate]:
-    """Every auto-closed decision logged in ``[since, until)``."""
-    query = session.query(AIDecisionLog).filter(AIDecisionLog.timestamp >= since)
+    """Every auto-closed decision logged in ``[since, until)``.
+
+    Decisions on hidden canaries (W1.5) are not candidates: a canary is a
+    known-malicious replay, and sampling it would put test alerts into the
+    population the Scorecard's bound speaks for.
+    """
+    query = session.query(AIDecisionLog).filter(
+        AIDecisionLog.timestamp >= since,
+        not_canary_finding(session, AIDecisionLog.finding_id),
+        not_canary_case(session, AIDecisionLog.case_id),
+    )
     if until is not None:
         query = query.filter(AIDecisionLog.timestamp < until)
     found = (candidate_from_decision(d) for d in query.all())
@@ -280,6 +294,20 @@ def draw_samples(
     return result
 
 
+# Samples drawn before canary filtering (or whose decision's finding became
+# known as a canary later) stay in qa_samples but out of the queue and the
+# Scorecard. Only when canary_injections exists; otherwise there is none.
+_NOT_CANARY_SQL = """AND NOT EXISTS (
+    SELECT 1 FROM ai_decision_logs cd
+    JOIN canary_injections ci ON ci.finding_id = cd.finding_id
+    WHERE q.subject_kind = 'ai_decision' AND cd.decision_id = q.subject_id
+  )"""
+
+
+def _not_canary_sql(session: Session) -> str:
+    return _NOT_CANARY_SQL if canary_table_present(session) else ""
+
+
 _LIST_SQL = """
 SELECT q.id, q.sampling_kind, q.inclusion_probability, q.subject_kind, q.subject_id,
        q.verdict, q.sampled_at, q.reviewer, q.reviewed_at, q.review_verdict,
@@ -290,6 +318,7 @@ FROM qa_samples q
 LEFT JOIN ai_decision_logs d
        ON q.subject_kind = 'ai_decision' AND d.decision_id = q.subject_id
 WHERE q.tenant_id = :t
+  {not_canary}
   {status}
   {category}
   {kind}
@@ -323,7 +352,14 @@ def list_samples(
         kind_sql = "AND q.sampling_kind = :kind"
         params["kind"] = sampling_kind
     rows = session.execute(
-        text(_LIST_SQL.format(status=status_sql, category=category_sql, kind=kind_sql)),
+        text(
+            _LIST_SQL.format(
+                not_canary=_not_canary_sql(session),
+                status=status_sql,
+                category=category_sql,
+                kind=kind_sql,
+            )
+        ),
         params,
     ).mappings()
     return [dict(r) for r in rows]
@@ -392,7 +428,11 @@ def list_one(
     session: Session, sample_id: int, *, tenant_id: str = DEFAULT_TENANT
 ) -> dict[str, Any]:
     rows = session.execute(
-        text(_LIST_SQL.format(status="AND q.id = :id", category="", kind="")),
+        text(
+            _LIST_SQL.format(
+                not_canary="", status="AND q.id = :id", category="", kind=""
+            )
+        ),
         {"t": tenant_id, "id": sample_id, "limit": 1},
     ).mappings()
     found = [dict(r) for r in rows]
@@ -412,8 +452,9 @@ SELECT COALESCE(verdict->>'category', 'other') AS category,
              AND review_verdict = 'malicious'
        ) AS misses,
        COUNT(*) FILTER (WHERE reviewed_at IS NOT NULL AND agrees IS FALSE) AS disagreements
-FROM qa_samples
+FROM qa_samples q
 WHERE tenant_id = :t AND subject_kind = :k
+  {not_canary}
 GROUP BY 1, 2
 """
 
@@ -432,11 +473,15 @@ def scorecard(
     confidence: float = DEFAULT_CONFIDENCE,
     tenant_id: str = DEFAULT_TENANT,
 ) -> dict[str, Any]:
-    """Per-category FN upper bounds from simple-random reviews only."""
+    """Per-category FN upper bounds from simple-random reviews only.
+
+    Samples of decisions on hidden canaries (W1.5) are left out.
+    """
     empty = {"reviewed": 0, "pending": 0, "misses": 0, "disagreements": 0}
     counts: dict[tuple[str, str], dict[str, int]] = {}
     for r in session.execute(
-        text(_COUNTS_SQL), {"t": tenant_id, "k": SUBJECT_KIND}
+        text(_COUNTS_SQL.format(not_canary=_not_canary_sql(session))),
+        {"t": tenant_id, "k": SUBJECT_KIND},
     ).mappings():
         counts[(r["category"], r["sampling_kind"])] = {
             k: int(r[k]) for k in ("reviewed", "pending", "misses", "disagreements")

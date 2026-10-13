@@ -10,6 +10,7 @@ from typing import Dict, Optional
 
 from sqlalchemy.orm import Session
 
+from core.storage.canary_exclusion import not_canary_case
 from core.storage.models import Case, CaseMetrics, CaseSLA, CaseTask
 from core.storage.unit_of_work import unit_of_work
 from core.time import utcnow
@@ -151,8 +152,12 @@ class CaseMetricsService:
             Dictionary with dashboard metrics
         """
         with unit_of_work(session) as session:
+            # A case made of hidden canaries only (W1.5) is a test, not work.
+            real_case = not_canary_case(session, Case.case_id)
+            real_sla = not_canary_case(session, CaseSLA.case_id)
+
             # Build base query
-            query = session.query(Case)
+            query = session.query(Case).filter(real_case)
 
             if start_date:
                 query = query.filter(Case.created_at >= start_date)
@@ -195,10 +200,10 @@ class CaseMetricsService:
                     avg_resolution_time = total_time / count
 
             # SLA compliance
-            total_with_sla = session.query(CaseSLA).count()
+            total_with_sla = session.query(CaseSLA).filter(real_sla).count()
             sla_met_count = (
                 session.query(CaseSLA)
-                .filter(CaseSLA.resolution_sla_met.is_(True))
+                .filter(CaseSLA.resolution_sla_met.is_(True), real_sla)
                 .count()
             )
 
@@ -209,7 +214,9 @@ class CaseMetricsService:
             # Cases opened per day (last 30 days)
             thirty_days_ago = utcnow() - timedelta(days=30)
             recent_cases = (
-                session.query(Case).filter(Case.created_at >= thirty_days_ago).all()
+                session.query(Case)
+                .filter(Case.created_at >= thirty_days_ago, real_case)
+                .all()
             )
 
             cases_per_day = {}

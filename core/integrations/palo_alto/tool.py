@@ -9,18 +9,23 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 import asyncio
+import ipaddress
 import json
 import logging
+from xml.sax.saxutils import escape
 
-import httpx
+# Unused here since the shared client makes the calls, but the module stays
+# reachable as ``tool.httpx``: tests patch ``tool.httpx.get``, which is the
+# same module object the client calls through.
+import httpx  # noqa: F401
 import mcp.server.stdio
 import mcp.types as types
 from mcp.server import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 
 from core.integrations._base.config import missing, resolve
-from core.integrations._base.tls import tls_verify
 from core.integrations._base.tool_result import run_tool
+from core.integrations.palo_alto.client import PanConnection
 from core.integrations.palo_alto.descriptor import PALO_ALTO
 
 logger = logging.getLogger(__name__)
@@ -55,17 +60,12 @@ async def handle_list_tools():
 
 async def handle_call_tool(name: str, arguments: dict | None):
     config = resolve(PALO_ALTO)
-    api_key = config.get("api_key")
     if missing(config, "hostname", "api_key"):
         return result({"error": "Palo Alto not configured"})
 
-    # The Settings form collects a hostname; PAN-OS is reached over HTTPS.
-    host = str(config.get("hostname")).rstrip("/")
-    url = host if host.startswith(("http://", "https://")) else f"https://{host}"
-    # resolve() always returns every declared field, so a .get(k, True) default
-    # would never fire — verify_ssl is present-but-None when unset.
-    verify = True if config.get("verify_ssl") is None else config.get("verify_ssl")
-    ca_cert_path = config.get("ca_cert_path")
+    # Host, TLS policy and the API key (sent as the X-PAN-KEY header, never in
+    # the URL) come from the client shared with the response executor.
+    conn = PanConnection.from_config(config)
 
     args = arguments or {}
 
@@ -74,18 +74,24 @@ async def handle_call_tool(name: str, arguments: dict | None):
             ip = args.get("ip")
             if not ip:
                 return result({"error": "ip required"})
+            # The ip lands in an xpath and an XML element, and the reason in
+            # an XML element: accept only a plain address (no IPv6 scope id)
+            # and escape the free text.
+            try:
+                if "%" in str(ip):
+                    raise ValueError
+                ip = str(ipaddress.ip_address(str(ip).strip()))
+            except ValueError:
+                return result({"error": "ip must be a single IP address"})
+            reason = escape(str(args.get("reason") or "security"))
             # Add to EDL or address group
-            resp = httpx.get(
-                f"{url}/api/",
-                params={
+            resp = conn.get(
+                {
                     "type": "config",
                     "action": "set",
-                    "key": api_key,
                     "xpath": f"/config/devices/entry/vsys/entry[@name='vsys1']/address/entry[@name='blocked-{ip}']",
-                    "element": f"<ip-netmask>{ip}/32</ip-netmask><description>Blocked: {args.get('reason', 'security')}</description>",
-                },
-                verify=tls_verify(verify, ca_cert_path),
-                timeout=30,
+                    "element": f"<ip-netmask>{ip}/32</ip-netmask><description>Blocked: {reason}</description>",
+                }
             )
             # httpx doesn't follow redirects, so a 3xx here means the configured
             # hostname is wrong. Carry the status or that is undiagnosable.
@@ -99,18 +105,14 @@ async def handle_call_tool(name: str, arguments: dict | None):
             )
 
         elif name == "pan_get_threats":
-            resp = httpx.get(
-                f"{url}/api/",
-                params={
+            conn.get(
+                {
                     # `or 20`: see the aad_get_sign_ins note — a null limit would
                     # reach the wire as "nlogs=" under httpx.
                     "type": "log",
                     "log-type": "threat",
-                    "key": api_key,
                     "nlogs": args.get("limit") or 20,
-                },
-                verify=tls_verify(verify, ca_cert_path),
-                timeout=30,
+                }
             )
             # Parse XML response (simplified)
             return result(
@@ -119,7 +121,7 @@ async def handle_call_tool(name: str, arguments: dict | None):
 
         return result({"error": f"Unknown tool: {name}"})
     except Exception as e:
-        return result({"error": str(e)})
+        return result({"error": conn.redact(e)})
 
 
 async def _on_list_tools(_ctx, _params):

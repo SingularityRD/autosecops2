@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from core.config import is_demo_mode
 from core.exceptions import DatabaseError
+from core.storage.canary_exclusion import drop_canaries
 from core.storage.connection import (
     SchemaDriftError,
     get_db_manager,
@@ -510,6 +511,9 @@ class DatabaseDataService:
     def export_findings(self, output_path: Path, fmt: str = "json") -> bool:
         findings = self.get_findings()
         try:
+            # Hidden canaries (W1.5) never leave the install.
+            if self._db_available and not self._demo_mode:
+                findings = drop_canaries(findings)
             with open(output_path, "w") as f:
                 if fmt == "jsonl":
                     for finding in findings:
