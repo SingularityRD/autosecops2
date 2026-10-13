@@ -39,6 +39,9 @@ REPO = Path(__file__).resolve().parents[3]
 GUIDE = REPO / "docs" / "guide"
 PLANNED = re.compile(r"Planlı\s+—")
 PLANNED_LINE_MAX = 200
+# Where a sentence a marker governs ends.
+SENTENCE_BREAK = re.compile(r"[.;:!?]\s")
+SENTENCE_END = re.compile(r"[.;:!?](?:\s|$)")
 
 # Where a documented name must be found. Docs and tests are excluded so a page
 # cannot vouch for itself; tests/airgap is the egress-proof tooling the install
@@ -392,31 +395,35 @@ def _logical_lines(text: str) -> list[tuple[int, str]]:
 
 
 def _planned_span(line: str, at: int) -> tuple[int, int]:
-    """The segment a ``Planlı —`` marker at ``at`` governs: [start, end)."""
+    """The segment a ``Planlı —`` marker at ``at`` governs: [start, end).
+
+    Inside parentheses: up to the matching ``)``. An unclosed ``(`` does not
+    count, so it cannot hide the rest of the line. In a table row: its cell.
+    Otherwise: its sentence, which ends at ``.``, ``;``, ``:``, ``!`` or ``?``.
+    """
     depth = 0
     for i in range(at - 1, -1, -1):  # the parenthesis the marker sits in
         if line[i] == ")":
             depth += 1
         elif line[i] == "(":
             if depth == 0:
-                close, inner = len(line), 0
+                inner = 0
                 for j in range(i + 1, len(line)):
                     if line[j] == "(":
                         inner += 1
                     elif line[j] == ")":
                         if inner == 0:
-                            close = j + 1
-                            break
+                            return i, j + 1
                         inner -= 1
-                return i, close
+                break  # unclosed: fall back to the cell or the sentence
             depth -= 1
     if line.lstrip().startswith("|"):  # its table cell
         start = line.rfind("|", 0, at) + 1
         end = line.find("|", at)
         return start, len(line) if end < 0 else end
-    starts = [m.end() for m in re.finditer(r"[.;]\s", line[:at])]
-    end = re.search(r"[.;](?:\s|$)", line[at:])
-    return (starts[-1] if starts else 0), (at + end.end() if end else len(line))
+    starts = [m.end() for m in SENTENCE_BREAK.finditer(line[:at])]
+    end = SENTENCE_END.search(line, at)
+    return (starts[-1] if starts else 0), (end.end() if end else len(line))
 
 
 def unplanned(line: str) -> str:
@@ -542,7 +549,11 @@ pytest tests/uydurma/test_yok.py
 
 `UydurmaSinifAdi` ve `uydurma-servis-adi`.
 
-Planlı — `wp/w9.9-ornek`: `PLANLI_AYAR_YOK` burada atlanır.
+Planlı — `wp/w9.9-ornek` `PLANLI_AYAR_YOK` burada atlanır.
+Planlı — `wp/w9.9-ornek` `PLANLI_IKI_NOKTA`: `UYDURMA_IKI_NOKTA_SONRASI` açıktır.
+Planlı — `wp/w9.9-ornek` yok! `UYDURMA_UNLEM_SONRASI` vardır.
+Planlı — `wp/w9.9-ornek` yok? `UYDURMA_SORU_SONRASI` vardır.
+(Planlı — `wp/w9.9-ornek` `PLANLI_KAPANMAMIS` yok; `UYDURMA_KAPANMAMIS_PARANTEZ` vardır
 
 `UYDURMA_PARANTEZ_DISI=1` bugün vardır (Planlı — `wp/w9.9-ornek`, `PLANLI_PARANTEZ`).
 Planlı — `wp/w9.9-ornek`, `PLANLI_CUMLE` yok; ama `UYDURMA_CUMLE_SONRASI` var.
@@ -583,9 +594,20 @@ def test_reconciliation_detects_invented_settings_and_commands(tmp_path):
         "UYDURMA_CUMLE_SONRASI",
         "UYDURMA_TABLO_HUCRESI",
         "UYDURMA_DUZ_METIN_AYARI",
+        "UYDURMA_IKI_NOKTA_SONRASI",
+        "UYDURMA_UNLEM_SONRASI",
+        "UYDURMA_SORU_SONRASI",
+        "UYDURMA_KAPANMAMIS_PARANTEZ",
     ):
         assert needle in problems, (needle, problems)
-    for skipped in ("PLANLI_AYAR_YOK", "PLANLI_PARANTEZ", "PLANLI_CUMLE", "PLANLI_HUCRE"):
+    for skipped in (
+        "PLANLI_AYAR_YOK",
+        "PLANLI_PARANTEZ",
+        "PLANLI_CUMLE",
+        "PLANLI_HUCRE",
+        "PLANLI_IKI_NOKTA",
+        "PLANLI_KAPANMAMIS",
+    ):
         assert skipped not in problems, (skipped, problems)
     assert "JWT_SECRET_KEY" not in problems
 
