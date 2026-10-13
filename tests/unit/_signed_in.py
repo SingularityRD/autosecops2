@@ -12,7 +12,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import core.routing
 from core.auth import current_user
 from core.auth.auth_service import AuthService
 
@@ -24,7 +23,10 @@ def signed_in(monkeypatch):
     monkeypatch.setattr(current_user, "_get_dev_user", lambda session: user)
     # get_current_user asks for the request's unit of work; these suites mount
     # routers without a database, and the stub user needs none.
-    monkeypatch.setattr(core.routing, "unit_of_work", lambda *a, **k: nullcontext())
+    # Patched by name, not imported here: importing core.routing while test
+    # modules are still being collected reorders interpreter shutdown enough
+    # for liteparse's pool finaliser (tests/unit/documents) to abort the run.
+    monkeypatch.setattr("core.routing.unit_of_work", lambda *a, **k: nullcontext())
     monkeypatch.setattr(
         AuthService, "check_permission", staticmethod(lambda *a, **k: True)
     )
