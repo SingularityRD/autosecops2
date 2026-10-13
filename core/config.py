@@ -252,6 +252,14 @@ class Settings(BaseSettings):
     ollama_url: str = "http://localhost:11434"
     default_model: str = "claude-sonnet-4-6"
     ollama_extra_tool_models: str = ""
+    # Local model lane (W2.3): Ollama via Bifrost with schema-constrained output.
+    # Empty model: the one the eval ranking wrote to the selection file; no file,
+    # no lane. The lane refuses a non-local gateway unless explicitly allowed.
+    local_lane_model: str = ""
+    local_lane_selection_file: str = "eval/suites/local_lane/selection.json"
+    local_lane_timeout_s: float = 60.0
+    local_lane_max_tokens: int = 512
+    local_lane_allow_nonlocal_gateway: bool = False
     model_catalog_refresh_interval_s: int = 300
     prompt_injection_block: bool = False
     mcp_auto_connect_on_startup: Optional[bool] = None

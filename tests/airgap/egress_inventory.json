@@ -509,7 +509,7 @@
       "switches": {
         "BIFROST_URL": "internal"
       },
-      "note": "LLM router; every model call goes to Bifrost's /v1."
+      "note": "LLM router; every model call goes to Bifrost's /v1. The local model lane (core/llm/local_lane.py) dispatches through here only, as ollama/<model> with a JSON-schema response_format, and refuses a non-local BIFROST_URL; Bifrost reaches Ollama at OLLAMA_URL."
     },
     {
       "site": "core/platform/email_service.py",
