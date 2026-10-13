@@ -46,8 +46,12 @@ class _Service:
     def list_actions(self, status=None, **_):
         return self._rows
 
+    def claim_execution(self, action_id):
+        return True
+
     def mark_executed(self, action_id, result, **_):
         self.executed.append(action_id)
+        return action_id
 
     def mark_failed(self, action_id, error):
         self.executed.append(action_id)

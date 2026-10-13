@@ -24,6 +24,10 @@ def qa_db(throwaway_database):
 
     with get_db_manager().engine.begin() as conn:
         conn.execute(text(INIT_SQL.read_text(encoding="utf-8")))
+    # The file also creates canary_injections; drop a cached "absent".
+    from core.storage.canary_exclusion import forget_table_presence
+
+    forget_table_presence()
 
     def purge():
         with unit_of_work() as session:

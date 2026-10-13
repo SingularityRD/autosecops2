@@ -3872,6 +3872,11 @@ export interface paths {
         /**
          * Launch Finding Into Intake
          * @description Queue this finding for intake. ``already_queued`` when a queued row exists.
+         *
+         *     A hidden canary (W1.5) is never investigated autonomously: nothing is
+         *     queued and the answer is an ordinary not-queued one, so the response does
+         *     not tell the analyst it was a test. A failed canary lookup queues nothing
+         *     either (fail closed).
          */
         post: operations["post_api_findings_finding_id_intake"];
         delete?: never;
@@ -4952,6 +4957,44 @@ export interface paths {
          */
         get: operations["get_api_qa_scorecard"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/quality/canaries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Canary Summary
+         * @description Catch rate overall, by category and by signal, and the latest canaries.
+         */
+        get: operations["get_api_quality_canaries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/quality/canaries/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Canary Settings */
+        get: operations["get_api_quality_canaries_settings"];
+        /** Put Canary Settings */
+        put: operations["put_api_quality_canaries_settings"];
         post?: never;
         delete?: never;
         options?: never;
@@ -7945,6 +7988,26 @@ export interface components {
         ByStatusResponse: {
             /** Status Breakdown */
             status_breakdown?: components["schemas"]["StatusBreakdownRow"][];
+        };
+        /** CanarySettingsBody */
+        CanarySettingsBody: {
+            /** Enabled */
+            enabled: boolean;
+            /**
+             * Per Day
+             * @default 1
+             */
+            per_day: number;
+            /**
+             * Reason
+             * @description Recorded in the config audit log.
+             */
+            reason?: string | null;
+            /**
+             * Score After Hours
+             * @default 24
+             */
+            score_after_hours: number;
         };
         /**
          * CaseActionEvent
@@ -21312,6 +21375,111 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["QAScorecardResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_quality_canaries: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_quality_canaries_settings: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_api_quality_canaries_settings: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CanarySettingsBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
