@@ -358,6 +358,16 @@ class Settings(BaseSettings):
     orchestrator_workdir: str = "data/investigations"
     orchestrator_dry_run: bool = False
 
+    # Alert verdict runs (W2.1): the hunt loop at triage scale, one uncertain alert
+    # in and one contract verdict out. Off until the daemon routes to it (W2.2), so
+    # enqueue_verdict_run does nothing while this is False. The budget is small by
+    # design -- a verdict run is paid for on every alert that needs one -- and is a
+    # starting point to be tuned by eval, not a measured optimum.
+    verdict_run_enabled: bool = False
+    verdict_run_max_iterations: int = 4
+    verdict_run_max_cost_usd: float = 1.0
+    verdict_run_max_wall_ms: int = 300_000
+
     # Kafka ingestion. Credentials go through the secrets store, not here.
     kafka_enabled: bool = False
     kafka_bootstrap_servers: str = "localhost:9092"
