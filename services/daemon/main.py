@@ -115,6 +115,7 @@ class SOCDaemon:
         )
         from core.response.approval_service import ApprovalService
         from core.response.autonomous_response_service import AutonomousResponseService
+        from core.response.executors.wiring import build_executor_registry
         from core.storage.connection import get_db_manager
         from services.daemon.kafka_ingestor import KafkaIngestor
         from services.daemon.metrics import MetricsServer
@@ -138,19 +139,24 @@ class SOCDaemon:
         self._mcp_client = build_mcp_client()
         set_process_mcp_client(self._mcp_client)
         approvals = ApprovalService(config=self.config.response)
+        # Built once for the daemon, as the API lifespan builds its own.
+        response_service = AutonomousResponseService(
+            approvals=approvals,
+            config=self.config.response,
+            executors=build_executor_registry(),
+        )
 
         self._responder = AutonomousResponder(
             self.config.response,
             self.config.escalation,
-            response_service=AutonomousResponseService(
-                approvals=approvals, config=self.config.response
-            ),
+            response_service=response_service,
             approvals=approvals,
         )
         self._scheduler = TaskScheduler(self.config.scheduler)
         self._orchestrator = Orchestrator(
             self.config.orchestrator,
             approvals=approvals,
+            response=response_service,
         )
 
         if self.config.metrics.enabled:

@@ -5007,6 +5007,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/response/actions/{action_id}/revert": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revert Action
+         * @description Reverse an executed reversible action, then verify it is undone.
+         *
+         *     404: no such action. 409: it is not executed, already reversed, a reverse
+         *     row itself, irreversible, or has no executor. 502: the executor's reverse
+         *     (or its verify) failed; the failed reverse row is kept for the record.
+         *     Sync on purpose: the executor speaks to the vendor synchronously.
+         */
+        post: operations["post_api_response_actions_action_id_revert"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/services": {
         parameters: {
             query?: never;
@@ -11230,6 +11255,32 @@ export interface components {
             config: string;
             /** Playbook */
             playbook: string;
+        };
+        /** RevertRequest */
+        RevertRequest: {
+            /**
+             * Reason
+             * @description Why the action is undone.
+             */
+            reason: string;
+        };
+        /** RevertResponse */
+        RevertResponse: {
+            /** Action Id */
+            action_id: string;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /** Outcome */
+            outcome: string;
+            /** Reverse Action Id */
+            reverse_action_id?: string | null;
+            /** Reversed At */
+            reversed_at?: string | null;
+            /** Verify Status */
+            verify_status?: string | null;
         };
         /** ReviewRequest */
         ReviewRequest: {
@@ -21204,6 +21255,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_response_actions_action_id_revert: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                action_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevertRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevertResponse"];
                 };
             };
             /** @description Validation Error */
