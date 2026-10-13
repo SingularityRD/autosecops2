@@ -1,6 +1,57 @@
 # Changelog
 
-## Upgrade notes (unreleased)
+## 2.0.0 (draft, not tagged)
+
+AutoSecOps 2.0.0 is the first major release of the AutoSecOps hard fork of Vigil
+0.7.1, for regulated-sector (banking, finance, public sector) deployments. The
+`v2.0.0` tag is created only after the GA decision of 30 October 2026; until then
+this entry and the release notes are a draft. Full notes, including the work
+packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.md).
+
+### Why a major
+
+* **images:** release images are published as
+  `ghcr.io/singularityrd/autosecops-{backend,daemon,agent}` instead of
+  `ghcr.io/vigil-soc/vigil-*`. The Helm chart default still points at the old
+  namespace: install with `--set global.imageNamespace=singularityrd/autosecops`
+  (air-gap bundle: `--image-namespace singularityrd/autosecops`).
+* **product:** the product is AutoSecOps everywhere (W0.2).
+* The `/api/v1` contract and the frozen MCP tools are unchanged (see VERSIONING.md).
+
+### Included work packages
+
+W0.1 upstream sync and hard fork, W0.2 brand, W0.3 CI, W0.4/W0.4b agent factory
+and gates, W0.5 contracts (init SQL 46–49), W0.7 eval corpus v1, W0.9 cleanups,
+W1.1 eval harness, W1.5 canary replays, W1.6 QA sampling and scorecard, W1.7 tool
+effect classes, W1.8 outbound webhooks and notification dispatch, W2.2 alert
+lanes (init SQL 56), W2.5 Microsoft Defender executor, W2.6 Entra ID executor,
+W2.7 Palo Alto PAN-OS executor, W2.8 action timeline and revert, W3.3 air-gap
+bundle, W3.4 zero-egress test, W3.8 DORA/NIS2 notification clocks (init SQL 50).
+
+### Not included
+
+W0.6, W0.8, W1.2, W1.3, W1.4, W1.9 (OIDC SSO), W1.10 (audit chain extension),
+W2.1 (verdict run), W2.3, W2.4 (executor registry and action policy), W2.9, W3.1,
+W3.2, W3.5 (retention / KVKK), W3.6 (audit export), W3.7, W3.9, W3.10 (FIPS),
+W3.11, W4.1–W4.6. In particular the 0.7.1 → 2.0 database upgrade path (W4.5) is
+not verified in this release.
+
+### Release engineering (W4.7)
+
+* **release:** `.github/workflows/release.yml` runs on `v*` tags in
+  SingularityRD/autosecops2 only, with least-privilege per-job permissions and
+  every action pinned by commit SHA. It builds the backend, daemon and agent
+  images (amd64 + arm64) and the web console bundle; generates CycloneDX SBOMs
+  from `requirements.lock`, every `package-lock.json` and every image platform;
+  signs images, SBOMs and all release files keylessly with cosign (OIDC token in
+  the signing job only); attaches CycloneDX and SLSA v1 provenance attestations
+  to the images; and drafts the GitHub Release.
+* **release:** `scripts/release/dry-run.sh` rehearses the version, notes, SBOM
+  and checksum steps offline; `scripts/release/verify-release.sh` verifies a
+  downloaded release offline. Customer guide (Turkish):
+  [docs/release/dogrulama.md](docs/release/dogrulama.md).
+
+## Upgrade notes (unreleased upstream changes carried into 2.0.0)
 
 * **console:** Settings › AI models now shows Keys, Spending limit and Advanced as cards under the provider cards, and the Virtual Keys and Operations tabs are gone. Spending limit edits only the one virtual key Vigil sends (ceiling, reset period, requests per minute; raising or removing the ceiling asks you to confirm); creating, listing and deleting other virtual keys is Bifrost's own UI. "Retry a local model that stops responding" moves to Advanced, with its restart and retry-count rows shown while it is on. No API change.
 * **ai-config:** `PUT` and `DELETE /api/ai/config/{component}` now record the signed-in user in `ai_model_configs.updated_by` (returned as `updated_by`) and write one `config_audit_log` row (`config_type` `ai_model`, old and new `{provider_id, model_id}`) when the assignment changes. Settings › AI models replaces the Model Assignment and Custom agents tabs with provider cards and a "Model for each agent" table; changing the Chat (Default) model asks you to confirm.

@@ -49,3 +49,44 @@ so in the PR:
   (`scripts/generate_api_v1_contract.py`).
 - MCP: `scripts/generate_mcp_frozen_tools.py`, checked by
   `tests/unit/api/test_mcp_frozen_tools.py`.
+
+## AutoSecOps 2.0
+
+AutoSecOps 2.0.0 is a major because the release artifacts moved
+(`ghcr.io/singularityrd/autosecops-*` instead of `ghcr.io/vigil-soc/vigil-*`) and
+the product name changed. The frozen surfaces above are unchanged: no `/api/v1`
+operation and no frozen MCP tool was removed or changed incompatibly. The
+legacy `/api/<resource>` aliases are still mounted in 2.0.0; removing them is a
+later major.
+
+## Release tags
+
+The release workflow (`.github/workflows/release.yml`) runs on any `v*` tag in
+SingularityRD/autosecops2 and refuses tags other than `v<VERSION>` and
+`v<VERSION>-rc.<N>`, where `<VERSION>` is the content of the `VERSION` file.
+release-please is not active in this repository, so the steps are manual:
+
+1. **Prepare on `integration`.** Bump `VERSION` and every file
+   `.github/release-please-config.json` lists under `extra-files` (plus
+   `.github/.release-please-manifest.json`); write `CHANGELOG.md` and the
+   release notes `docs/release/<VERSION>.md`.
+   `python3 scripts/release/release_tool.py check-versions` must pass.
+2. **Rehearse offline.** `scripts/release/dry-run.sh --out /tmp/rel --strict-notes`
+   checks versions, checks that every work package marked "Dahil" was merged
+   and none marked "Dahil değil" was, and builds and checksums the lockfile
+   SBOMs. The tag pipeline runs the same checks and fails before building
+   anything if they do not pass.
+3. **Release candidate.** Merge `integration` into `main`, then tag the merge
+   commit `v<VERSION>-rc.<N>` (annotated and signed: `git tag -s`). The
+   workflow publishes images tagged `<VERSION>-rc.<N>` (no `latest`, no
+   `<major>.<minor>`) and a draft prerelease.
+4. **GA.** Only after the GA decision (for 2.0.0: the meeting of 30 October
+   2026) a release manager tags the same commit `v<VERSION>`. The workflow
+   publishes `<VERSION>`, `<major>.<minor>` and `latest`, signs everything and
+   creates a **draft** GitHub Release; the release manager reviews it and
+   publishes it.
+5. **Never move or delete a pushed release tag.** A wrong release is fixed by a
+   new patch version. Signatures stay in the public Sigstore log either way.
+
+Customers verify a release, also offline, with `docs/release/dogrulama.md`
+(Turkish) and the `verify-release.sh` attached to every release.
