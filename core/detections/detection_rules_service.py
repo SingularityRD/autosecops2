@@ -15,8 +15,13 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from core.config import _safe_home, get_settings, vigil_path
+from core.platform.url_safety import (
+    parse_networks,
+    resolve_allowed_addresses,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +66,112 @@ DEFAULT_SOURCES = [
 _CLONE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 LOCAL_ROOTS_ENV = "VIGIL_DETECTION_LOCAL_ROOTS"
+GIT_ALLOWED_CIDRS_ENV = "VIGIL_DETECTION_GIT_ALLOWED_CIDRS"
+
+# --- Git source safety (W0.11) ---------------------------------------------
+# The URL of a git source reaches ``git clone`` on the API host. git treats a
+# value such as ``ext::sh -c ...`` as a transport that runs a command, and one
+# starting with ``-`` as an option (``--upload-pack=...``). So a git source is
+# an ``https://`` URL and nothing else; local rule directories are added as
+# ``type='local'`` sources, which never run git. Every git invocation also
+# carries the restrictions below, so a URL that predates this check (stored in
+# detection_sources.json, or the origin of an existing clone) cannot slip past.
+_GIT_URL_MAX = 2048
+_GIT_CLONE_TIMEOUT = 300
+_GIT_PULL_TIMEOUT = 120
+# fmt: off
+_GIT_SAFE_CONFIG = (
+    "-c", "protocol.allow=never",
+    "-c", "protocol.https.allow=always",
+    "-c", "protocol.ext.allow=never",
+    "-c", "protocol.file.allow=never",
+    "-c", "http.followRedirects=false",
+    "-c", "submodule.recurse=false",
+    "-c", "core.hooksPath=/dev/null",
+)
+# fmt: on
+
+
+def validate_git_url(url: Optional[str]) -> str:
+    """Syntax check for a git source URL. Returns it; raises ValueError.
+
+    Only ``https://host/path``: no other scheme or transport, no credentials,
+    query or fragment, no whitespace or control characters, no leading ``-``.
+    """
+    if not url or not isinstance(url, str):
+        raise ValueError("Git URL is required for type 'git'")
+    if len(url) > _GIT_URL_MAX:
+        raise ValueError("Git URL is too long")
+    if url.startswith("-") or any(c.isspace() or ord(c) < 0x20 for c in url):
+        raise ValueError("Git URL must be a plain https:// URL")
+    try:
+        parts = urlsplit(url)
+        parts.port  # noqa: B018 - raises ValueError on a bad port
+    except ValueError as exc:
+        raise ValueError("Git URL is not a valid URL") from exc
+    if parts.scheme != "https":
+        raise ValueError(
+            "Git URL must start with https:// (add a local directory as a "
+            "'local' source instead)"
+        )
+    if not parts.hostname or parts.hostname.startswith("-"):
+        raise ValueError("Git URL is missing a host")
+    if parts.username is not None or parts.password is not None:
+        raise ValueError("Git URL must not include credentials")
+    if parts.query or parts.fragment:
+        raise ValueError("Git URL must not include a query or fragment")
+    return url
+
+
+def _git_allowed_networks() -> tuple:
+    raw = get_settings().vigil_detection_git_allowed_cidrs
+    try:
+        return parse_networks(raw)
+    except ValueError:
+        logger.error(
+            f"{GIT_ALLOWED_CIDRS_ENV} is not a list of CIDRs; no private git hosts allowed"
+        )
+        return ()
+
+
+def check_git_url(url: Optional[str]) -> List[str]:
+    """``validate_git_url`` plus the SSRF check: the addresses git may connect to.
+
+    The host must resolve, and only to public addresses (or ones inside
+    ``VIGIL_DETECTION_GIT_ALLOWED_CIDRS``; never the cloud-metadata address).
+    Raises ValueError (``UrlSafetyError`` is one).
+    """
+    parts = urlsplit(validate_git_url(url))
+    return resolve_allowed_addresses(
+        parts.hostname, parts.port or 443, allowed_networks=_git_allowed_networks()
+    )
+
+
+def _git_env() -> Dict[str, str]:
+    """Environment for every git subprocess: https only, never prompt."""
+    env = dict(os.environ)
+    env.update(
+        {
+            "GIT_ALLOW_PROTOCOL": "https",
+            "GIT_PROTOCOL_FROM_USER": "0",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_ASKPASS": "",
+            "SSH_ASKPASS": "",
+        }
+    )
+    return env
+
+
+def _pin_resolve(url: str, addresses: List[str]) -> List[str]:
+    """``-c http.curloptResolve=host:port:addr``: git connects to what was checked."""
+    if not addresses:
+        return []
+    parts = urlsplit(url)
+    addr = addresses[0]
+    if ":" in addr:
+        addr = f"[{addr}]"
+    return ["-c", f"http.curloptResolve={parts.hostname}:{parts.port or 443}:{addr}"]
+
 
 # File extensions per format
 FORMAT_EXTENSIONS = {
@@ -321,8 +432,9 @@ class DetectionRulesService:
         source_id = str(uuid.uuid4())[:8]
 
         if source_type == "git":
-            if not url:
-                raise ValueError("Git URL is required for type 'git'")
+            # Refuse anything but a plain https:// URL before it is stored or
+            # reaches git (W0.11); _git_clone repeats this with the SSRF check.
+            url = validate_git_url(url)
             # Derive clone name from URL
             clone_name = url.rstrip("/").split("/")[-1].replace(".git", "")
             if not _CLONE_NAME_RE.match(clone_name):
@@ -557,28 +669,76 @@ class DetectionRulesService:
     # --- Git operations ---
 
     def _git_clone(self, url: str, target_path: str):
-        """Clone a git repository with shallow depth."""
+        """Shallow-clone an https git repository, refusing any other URL."""
+        addresses = check_git_url(url)
+        target_path = self._under(str(self.base_dir), target_path)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Cloning {url} to {target_path}...")
         result = subprocess.run(
-            ["git", "clone", "--quiet", "--depth", "1", url, target_path],
+            [
+                "git",
+                *_GIT_SAFE_CONFIG,
+                *_pin_resolve(url, addresses),
+                "clone",
+                "--quiet",
+                "--depth",
+                "1",
+                "--single-branch",
+                "--no-recurse-submodules",
+                "--",
+                url,
+                target_path,
+            ],
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=_GIT_CLONE_TIMEOUT,
+            env=_git_env(),
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode != 0:
             raise RuntimeError(f"Git clone failed: {result.stderr.strip()}")
         logger.info(f"Successfully cloned {url}")
 
-    def _git_pull(self, repo_path: str):
-        """Pull latest changes in a git repository."""
-        logger.info(f"Pulling updates in {repo_path}...")
+    def _git_remote_url(self, repo_path: str) -> str:
+        """The ``origin`` URL a pull in ``repo_path`` would fetch from."""
         result = subprocess.run(
-            ["git", "pull", "--quiet"],
+            ["git", "config", "--get", "remote.origin.url"],
             cwd=repo_path,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=30,
+            env=_git_env(),
+            stdin=subprocess.DEVNULL,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+
+    def _git_pull(self, repo_path: str):
+        """Pull latest changes, only from an https origin that passes the URL checks."""
+        origin = self._git_remote_url(repo_path)
+        try:
+            addresses = check_git_url(origin)
+        except ValueError as exc:
+            raise ValueError(
+                f"Refusing to pull {repo_path}: its origin is not an allowed "
+                f"https URL ({exc})"
+            ) from exc
+        logger.info(f"Pulling updates in {repo_path}...")
+        result = subprocess.run(
+            [
+                "git",
+                *_GIT_SAFE_CONFIG,
+                *_pin_resolve(origin, addresses),
+                "pull",
+                "--quiet",
+                "--ff-only",
+                "--no-recurse-submodules",
+            ],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=_GIT_PULL_TIMEOUT,
+            env=_git_env(),
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode != 0:
             raise RuntimeError(f"Git pull failed: {result.stderr.strip()}")

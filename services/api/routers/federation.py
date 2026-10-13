@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from core.auth.permissions import permission_gate
 from core.federation import registry as fed_registry
 from core.federation import store as fed_store
 from core.federation.adapters._base import SETTLING_MARGIN
@@ -98,7 +99,7 @@ async def get_settings() -> Dict[str, Any]:
     return fed_store.get_global_settings()
 
 
-@router.put("/settings")
+@router.put("/settings", dependencies=[permission_gate("settings.write")])
 async def put_settings(
     payload: FederationGlobalSettings,
     current_user: User = Depends(get_current_active_user),
@@ -162,7 +163,9 @@ async def list_sources() -> Dict[str, Any]:
     return {"sources": out, "global": global_settings}
 
 
-@router.patch("/sources/{source_id}")
+@router.patch(
+    "/sources/{source_id}", dependencies=[permission_gate("integrations.write")]
+)
 async def patch_source(
     source_id: str, payload: FederationSourcePatch
 ) -> Dict[str, Any]:
@@ -210,7 +213,10 @@ async def patch_source(
     return _enrich_with_adapter(row, global_enabled=fed_store.is_globally_enabled())
 
 
-@router.post("/sources/{source_id}/poll-now")
+@router.post(
+    "/sources/{source_id}/poll-now",
+    dependencies=[permission_gate("integrations.write")],
+)
 async def poll_now(source_id: str) -> Dict[str, Any]:
     if fed_registry.get_adapter(source_id) is None:
         raise HTTPException(status_code=404, detail=f"Unknown source: {source_id}")

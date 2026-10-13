@@ -21,6 +21,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from core.auth.permissions import permission_gate
 from core.config import get_settings
 from core.ingestion.ingestion_jobs import (
     IngestionJob,
@@ -113,7 +114,12 @@ async def _spool_upload(file: UploadFile, suffix: str) -> Path:
     return temp_path
 
 
-@router.post("/upload", response_model=IngestionJobStatus, status_code=202)
+@router.post(
+    "/upload",
+    response_model=IngestionJobStatus,
+    status_code=202,
+    dependencies=[permission_gate("findings.write")],
+)
 async def upload_and_ingest_file(
     file: UploadFile = File(...),
     data_type: str = Form("finding"),
@@ -174,7 +180,11 @@ async def get_ingestion_job(job_id: str):
     return IngestionJobStatus(**job.snapshot())
 
 
-@router.post("/ingest-string", response_model=IngestionStats)
+@router.post(
+    "/ingest-string",
+    response_model=IngestionStats,
+    dependencies=[permission_gate("findings.write")],
+)
 async def ingest_from_string(
     data: str = Form(...), format: str = Form("json"), data_type: str = Form("finding")
 ):
@@ -197,7 +207,11 @@ async def ingest_from_string(
     return IngestionStats(**stats, success=success, message=message)
 
 
-@router.post("/sync-s3-folder", response_model=IngestionStats)
+@router.post(
+    "/sync-s3-folder",
+    response_model=IngestionStats,
+    dependencies=[permission_gate("findings.write")],
+)
 def sync_s3_folder(prefix: Optional[str] = Query(None)):
     """
     Discover and ingest all supported files from an S3 prefix.
@@ -364,7 +378,11 @@ class S3FileIngestRequest(BaseModel):
     key: str
 
 
-@router.post("/s3-file", response_model=IngestionStats)
+@router.post(
+    "/s3-file",
+    response_model=IngestionStats,
+    dependencies=[permission_gate("findings.write")],
+)
 def ingest_s3_file(request: S3FileIngestRequest):
     """
     Download and ingest a single file from S3 by key.
