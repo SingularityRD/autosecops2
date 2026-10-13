@@ -143,7 +143,7 @@ export default function SegregationSection({ notify }: SectionProps) {
                   <td>{r.proposed_by ?? '—'}{r.proposed_role ? ` (${r.proposed_role})` : ''}</td>
                   <td>{r.approved_by ?? '—'}{r.approved_role ? ` (${r.approved_role})` : ''}</td>
                   <td>{r.second_approver ?? '—'}{r.second_role ? ` (${r.second_role})` : ''}</td>
-                  <td>{r.executed_by ?? '—'}</td>
+                  <td>{r.executed_by ?? '—'}{r.execution === 'claimed' ? ' (outcome unrecorded)' : ''}</td>
                   <td>{(r.violations ?? []).map(pretty).join(', ') || 'none'}</td>
                 </tr>
               ))}

@@ -63,6 +63,8 @@ class SegregationRow(BaseModel):
     second_role: Optional[str] = None
     executed_by: Optional[str] = None
     executed_at: Optional[str] = None
+    # executed | failed | claimed (dispatched, outcome unrecorded) | refused | null
+    execution: Optional[str] = None
     reverse_of: Optional[str] = None
     four_eyes: bool = False
     distinct_role: bool = False

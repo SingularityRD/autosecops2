@@ -8,6 +8,23 @@ person held, and every segregation-of-duties violation found. Roles come from
 before the table existed, or by a proposer, who is never recorded there) the
 person's current role is used and ``role_source`` says so.
 
+People are accounts, not spellings: usernames are unique only as written, so
+"Carol" and "carol" can be two accounts. A name resolves to an account by
+``approval_service.account_of`` (exact name, else the only case-insensitive
+match), or by the ``actor_user_id`` recorded at the decision. Two names are
+the same person when they resolve to the same account; when either does not
+resolve to one (an agent name, or one matching several accounts) they are
+compared case-insensitively, which errs towards reporting a violation.
+
+``executed_by`` and ``execution``: the dispatcher claims a row
+(``claim_execution`` stamps ``executed_at``) before it calls the vendor, so
+a forward row with ``executed_at`` set was taken by the dispatcher even while
+its status is still ``approved`` (``execution = claimed``: the change may have
+gone out, its outcome is unrecorded). ``execution`` is ``executed``,
+``failed`` (dispatched, the vendor call failed), ``claimed``, ``refused`` (the
+dispatcher's policy check refused it before any vendor call; nobody executed
+it) or null (never dispatched). A reverse row names who reverted it.
+
 Violations, checked against the response policy in force when the report is
 built:
 
@@ -34,12 +51,12 @@ from collections import Counter
 from datetime import datetime
 from typing import Any, Iterable, Optional
 
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 
+from core.response.approval_service import NO_ACCOUNT, account_of
 from core.response.policy import PolicyConfig
 from core.storage.models import ApprovalAction as ApprovalActionRow
-from core.storage.models import Role, User
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +89,7 @@ CSV_COLUMNS = (
     "second_role",
     "executed_by",
     "executed_at",
+    "execution",
     "reverse_of",
     "four_eyes",
     "distinct_role",
@@ -80,7 +98,7 @@ CSV_COLUMNS = (
 )
 
 _DECISIONS = text("""
-    SELECT action_id, step, actor, actor_role_id, actor_role
+    SELECT action_id, step, actor_user_id, actor_role_id, actor_role
     FROM approval_decisions
     WHERE action_id = ANY(:ids)
     ORDER BY id
@@ -91,8 +109,15 @@ def _key(name: Optional[str]) -> str:
     return (name or "").strip().casefold()
 
 
+#: ``execution_result.error`` prefix of a row the dispatcher refused (no vendor call).
+_REFUSED = "policy_refused:"
+
+
 def _recorded_roles(session, ids: list[str]) -> dict[tuple[str, str], tuple]:
-    """``(action_id, step) -> (role_id, role)`` from approval_decisions; {} if absent."""
+    """``(action_id, step) -> (role_id, role, user_id)`` from approval_decisions.
+
+    {} if the table is absent.
+    """
     if not ids:
         return {}
     try:
@@ -102,23 +127,19 @@ def _recorded_roles(session, ids: list[str]) -> dict[tuple[str, str], tuple]:
         logger.warning("approval_decisions unreadable; using current roles: %s", e)
         return {}
     found: dict[tuple[str, str], tuple] = {}
-    for action_id, step, _actor, role_id, role in rows:
+    for action_id, step, user_id, role_id, role in rows:
         # The latest row per step wins (there is one in practice).
-        found[(action_id, step)] = (role_id, role)
+        found[(action_id, step)] = (role_id, role, user_id)
     return found
 
 
-def _current_roles(session, names: Iterable[str]) -> dict[str, tuple]:
-    """``casefolded username -> (role_id, role)`` for the accounts named."""
-    wanted = sorted({_key(n) for n in names if _key(n)})
-    if not wanted:
-        return {}
-    rows = session.execute(
-        select(func.lower(User.username), User.role_id, Role.name)
-        .join(Role, Role.role_id == User.role_id)
-        .where(func.lower(User.username).in_(wanted))
-    ).all()
-    return {r[0]: (r[1], r[2]) for r in rows}
+def _current_accounts(session, names: Iterable[str]) -> dict[str, tuple]:
+    """``name as written -> (user_id, role_id, role)``; ``NO_ACCOUNT`` if none.
+
+    Keyed by the exact name, never a folded one, so two accounts whose names
+    differ only in case keep their own roles.
+    """
+    return {n: account_of(session, n) for n in sorted({n for n in names if n})}
 
 
 def _iso(value: Optional[datetime]) -> Optional[str]:
@@ -146,7 +167,7 @@ def build_report(
     actions = session.execute(stmt.limit(limit)).scalars().all()
 
     recorded = _recorded_roles(session, [a.action_id for a in actions])
-    current = _current_roles(
+    current = _current_accounts(
         session,
         [
             n
@@ -192,44 +213,76 @@ def _row(
 
     sources: set[str] = set()
 
+    def account(name: Optional[str]) -> tuple:
+        return current.get(name, NO_ACCOUNT) if name else NO_ACCOUNT
+
     def role(step: str, name: Optional[str]) -> tuple:
         if not name:
             return (None, None)
         hit = recorded.get((a.action_id, step))
         if hit and hit[0]:
             sources.add("recorded")
-            return hit
+            return hit[:2]
         sources.add("current")
-        return current.get(_key(name), (None, None))
+        return account(name)[1:]
 
-    proposed_role = (
-        current.get(_key(a.created_by), (None, None)) if a.created_by else (None, None)
-    )
+    def who(step: Optional[str], name: Optional[str]) -> Optional[tuple]:
+        """The account ``name`` stands for at ``step``: ("user", id) or ("name", key)."""
+        if not _key(name):
+            return None
+        hit = recorded.get((a.action_id, step)) if step else None
+        user_id = (hit[2] if hit else None) or account(name)[0]
+        return ("user", user_id) if user_id else ("name", _key(name))
+
+    def same(x: Optional[tuple], y: Optional[tuple], xn, yn) -> bool:
+        if x is None or y is None:
+            return False
+        if x[0] == "user" and y[0] == "user":
+            return x[1] == y[1]
+        # Either is no (single) account: compare the names, folded.
+        return _key(xn) == _key(yn)
+
+    proposed_role: tuple = (None, None)
+    if a.created_by:
+        proposed_role = account(a.created_by)[1:]
+        if proposed_role[0]:
+            # A proposer is never recorded in approval_decisions.
+            sources.add("current")
     if four_eyes and not rejected:
-        approved_role = role("first_approval", a.approved_by)
-        second_role = role("second_approval", a.second_approver)
+        first_step, second_step = "first_approval", "second_approval"
     else:
-        approved_role = role("reject" if rejected else "approve", a.approved_by)
-        second_role = (None, None)
+        first_step, second_step = ("reject" if rejected else "approve"), None
+    approved_role = role(first_step, a.approved_by)
+    second_role = role(second_step, a.second_approver) if second_step else (None, None)
 
+    execution = _execution(a)
     if a.reverse_of:
-        executed_by = a.created_by if a.executed_at else None
-    elif a.status == "executed":
+        executed_by = a.created_by if execution in ("executed", "failed") else None
+    elif execution in ("executed", "failed", "claimed"):
         executed_by = DISPATCHER
     else:
         executed_by = None
 
     violations: list[str] = []
     decided = a.status in _DECIDED
-    proposer = _key(a.created_by)
+    proposer = who(None, a.created_by)
+    first = who(first_step, a.approved_by)
+    second = who(second_step, a.second_approver) if second_step else None
     if (
         decided
         and not a.reverse_of
-        and proposer
-        and proposer in {_key(a.approved_by), _key(a.second_approver)}
+        and (
+            same(proposer, first, a.created_by, a.approved_by)
+            or same(proposer, second, a.created_by, a.second_approver)
+        )
     ):
         violations.append("self_approval")
-    if a.second_approver and _key(a.second_approver) == _key(a.approved_by):
+    if a.second_approver and same(
+        first,
+        second or who(None, a.second_approver),
+        a.approved_by,
+        a.second_approver,
+    ):
         violations.append("same_person")
     if four_eyes and decided and not a.second_approver:
         violations.append("missing_second_approver")
@@ -239,7 +292,7 @@ def _row(
         elif approved_role[0] == second_role[0]:
             violations.append("same_role")
     if (
-        a.status == "executed"
+        execution in ("executed", "failed", "claimed")
         and not a.reverse_of
         and a.requires_approval
         and not a.approved_by
@@ -260,6 +313,7 @@ def _row(
         "second_role": second_role[1] or second_role[0],
         "executed_by": executed_by,
         "executed_at": _iso(a.executed_at),
+        "execution": execution,
         "reverse_of": a.reverse_of,
         "four_eyes": four_eyes,
         "distinct_role": distinct,
@@ -268,6 +322,22 @@ def _row(
         ),
         "violations": violations,
     }
+
+
+def _execution(a: ApprovalActionRow) -> Optional[str]:
+    """How far the row got towards the vendor (see the module docstring)."""
+    if a.status == "executed":
+        return "executed"
+    if a.executed_at is None:
+        return None
+    if a.status == "failed":
+        result = a.execution_result if isinstance(a.execution_result, dict) else {}
+        error = str(result.get("error") or "")
+        return "refused" if error.startswith(_REFUSED) else "failed"
+    if a.status == "approved":
+        # Claimed by claim_execution; mark_executed / mark_failed never ran.
+        return "claimed"
+    return None
 
 
 def _cell(value: Any) -> str:

@@ -11672,6 +11672,8 @@ export interface components {
             executed_at?: string | null;
             /** Executed By */
             executed_by?: string | null;
+            /** Execution */
+            execution?: string | null;
             /**
              * Four Eyes
              * @default false

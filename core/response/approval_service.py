@@ -169,8 +169,9 @@ def second_approver_detail(error: SecondApproverConflict) -> str:
 # decider's role at that moment. Written in a savepoint: an install that has not
 # applied the file still decides, and the report falls back to current roles.
 _INSERT_DECISION = text("""
-    INSERT INTO approval_decisions (action_id, step, actor, actor_role_id, actor_role)
-    VALUES (:action_id, :step, :actor, :role_id, :role)
+    INSERT INTO approval_decisions
+        (action_id, step, actor, actor_user_id, actor_role_id, actor_role)
+    VALUES (:action_id, :step, :actor, :user_id, :role_id, :role)
     """)
 _FIRST_ROLE = text("""
     SELECT actor_role_id, actor_role FROM approval_decisions
@@ -179,25 +180,57 @@ _FIRST_ROLE = text("""
     """)
 _decisions_warned = False
 
+#: ``(user_id, role_id, role name)`` of no account.
+NO_ACCOUNT: tuple[Optional[str], Optional[str], Optional[str]] = (None, None, None)
 
-def role_of(session, username: Optional[str]) -> tuple[Optional[str], Optional[str]]:
-    """``(role_id, role name)`` of the account named ``username`` (case-insensitive).
 
-    ``(None, None)`` for a name that is no account (an agent, ``analyst``).
+def account_of(
+    session, username: Optional[str]
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """``(user_id, role_id, role name)`` of the account named ``username``.
+
+    Usernames are unique only as written ("Carol" and "carol" can be two
+    accounts), so the exact name wins. Failing that, a case-insensitive match
+    counts only when exactly one account has it; two or more are ambiguous
+    and give ``NO_ACCOUNT``, as does a name that is no account (an agent,
+    ``analyst``). Case folding is the database's ``lower()`` on both sides, so
+    the stored name and the asked one fold the same way (Turkish dotted I
+    included).
     """
     if not username or not username.strip():
-        return None, None
-    row = session.execute(
-        select(User.role_id, Role.name)
-        .join(Role, Role.role_id == User.role_id)
-        .where(func.lower(User.username) == username.strip().lower())
-        .limit(1)
-    ).first()
-    return (row[0], row[1]) if row else (None, None)
+        return NO_ACCOUNT
+    name = username.strip()
+    stmt = select(User.user_id, User.role_id, Role.name).outerjoin(
+        Role, Role.role_id == User.role_id
+    )
+    row = session.execute(stmt.where(User.username == name)).first()
+    if row is not None:
+        return row[0], row[1], row[2]
+    rows = session.execute(
+        stmt.where(func.lower(User.username) == func.lower(name)).limit(2)
+    ).all()
+    if len(rows) == 1:
+        return rows[0][0], rows[0][1], rows[0][2]
+    if rows:
+        logger.warning(
+            "%r matches more than one account case-insensitively; no role is used",
+            name,
+        )
+    return NO_ACCOUNT
+
+
+def role_of(session, username: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """``(role_id, role name)`` of the account named ``username`` (``account_of``).
+
+    ``(None, None)`` for a name that is no account, or that only matches
+    several accounts case-insensitively.
+    """
+    _user_id, role_id, role = account_of(session, username)
+    return role_id, role
 
 
 def _record_decision(
-    session, action_id: str, step: str, actor: str, role: tuple
+    session, action_id: str, step: str, actor: str, account: tuple
 ) -> None:
     global _decisions_warned
     try:
@@ -208,8 +241,9 @@ def _record_decision(
                     "action_id": action_id,
                     "step": step,
                     "actor": (actor or "")[:100],
-                    "role_id": role[0],
-                    "role": role[1],
+                    "user_id": account[0],
+                    "role_id": account[1],
+                    "role": account[2],
                 },
             )
     except SQLAlchemyError as e:
@@ -597,13 +631,14 @@ class ApprovalService:
                     )
                     return _row_to_pending(row)
                 if policy.needs_second_approver(row.action_type):
-                    role = role_of(session, approved_by)
+                    account = account_of(session, approved_by)
+                    role = account[1:]
                     if not row.approved_by:
                         row.approved_at = utcnow()
                         row.approved_by = approved_by
                         session.flush()
                         _record_decision(
-                            session, action_id, "first_approval", approved_by, role
+                            session, action_id, "first_approval", approved_by, account
                         )
                         pending = _row_to_pending(row)
                         logger.info(
@@ -639,7 +674,7 @@ class ApprovalService:
                     row.status = ActionStatus.APPROVED.value
                     session.flush()
                     _record_decision(
-                        session, action_id, "second_approval", approved_by, role
+                        session, action_id, "second_approval", approved_by, account
                     )
                     pending = _row_to_pending(row)
                     logger.info(
@@ -655,7 +690,7 @@ class ApprovalService:
                     action_id,
                     "approve",
                     approved_by,
-                    role_of(session, approved_by),
+                    account_of(session, approved_by),
                 )
                 pending = _row_to_pending(row)
             logger.info("Action %s approved by %s", action_id, approved_by)
@@ -695,7 +730,7 @@ class ApprovalService:
                     action_id,
                     "reject",
                     rejected_by,
-                    role_of(session, rejected_by),
+                    account_of(session, rejected_by),
                 )
                 pending = _row_to_pending(row)
             logger.info(

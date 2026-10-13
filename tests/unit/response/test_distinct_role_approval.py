@@ -14,11 +14,14 @@ from sqlalchemy import text
 
 from core.response import segregation
 from core.response.approval_service import (
+    NO_ACCOUNT,
     ActionStatus,
     ActionType,
     ApprovalService,
     SecondApproverConflict,
     SecondApproverRoleConflict,
+    account_of,
+    role_of,
     second_approver_detail,
 )
 from core.response.config import ResponseConfig
@@ -332,3 +335,205 @@ class TestReport:
         line = next(line for line in csv_text.splitlines() if rid in line)
         assert "'=HYPERLINK" in line and "'+cmd" in line
         assert "executed_without_approval" in line
+
+
+# Round 3 fixes: names that differ only in case, claimed rows, the append-only
+# table, the proposer's role source.
+
+
+@pytest.fixture(scope="module")
+def twins(people):
+    """Two accounts whose usernames differ only in case, in different roles."""
+    upper, lower = f"Carol-{TAG}", f"carol-{TAG}"
+    with get_db_manager().session_scope() as s:
+        for user_id, username, role_id in (
+            (f"u-Carol-{TAG}", upper, "r-senior-" + TAG),
+            (f"u-carol-{TAG}", lower, "r-mgr-" + TAG),
+        ):
+            s.add(
+                User(
+                    user_id=user_id,
+                    username=username,
+                    email=f"{username}-{uuid.uuid4().hex[:4]}@test.local",
+                    password_hash="x",
+                    full_name=username,
+                    role_id=role_id,
+                )
+            )
+    return {"upper": upper, "lower": lower, "ambiguous": f"CAROL-{TAG}"}
+
+
+class TestCaseDistinctAccounts:
+    def test_the_exact_name_wins_and_an_ambiguous_one_has_no_role(self, twins):
+        with get_db_manager().session_scope() as s:
+            assert account_of(s, twins["upper"]) == (
+                f"u-Carol-{TAG}",
+                "r-senior-" + TAG,
+                "Senior " + TAG,
+            )
+            assert role_of(s, twins["lower"]) == ("r-mgr-" + TAG, "Manager " + TAG)
+            # Matches both case-insensitively and neither exactly: refused.
+            assert account_of(s, twins["ambiguous"]) == NO_ACCOUNT
+            assert role_of(s, twins["ambiguous"]) == (None, None)
+
+    def test_a_unique_case_insensitive_match_still_resolves(self, people):
+        with get_db_manager().session_scope() as s:
+            assert role_of(s, people["alice"].upper())[0] == "r-senior-" + TAG
+
+    def test_an_ambiguous_second_approver_is_refused(self, people, twins):
+        svc = _svc(distinct_role_types=["disable_user"])
+        row = _create(svc)
+        svc.approve_action(row.action_id, people["alice"])
+        with pytest.raises(SecondApproverRoleConflict):
+            svc.approve_action(row.action_id, twins["ambiguous"])
+
+    def test_decisions_record_the_account(self, people, twins):
+        svc = _svc(distinct_role_types=["disable_user"])
+        row = _create(svc)
+        svc.approve_action(row.action_id, twins["upper"])
+        svc.approve_action(row.action_id, people["mallory"])
+        with get_db_manager().session_scope() as s:
+            users = [
+                r[0]
+                for r in s.execute(
+                    text(
+                        "SELECT actor_user_id FROM approval_decisions "
+                        "WHERE action_id = :a ORDER BY id"
+                    ),
+                    {"a": row.action_id},
+                )
+            ]
+        assert users == [f"u-Carol-{TAG}", f"u-mallory-{TAG}"]
+
+    def test_the_report_keeps_the_two_accounts_apart(self, twins):
+        up, low = twins["upper"], twins["lower"]
+        proposed = _row(created_by=up, approved_by=low)
+        seconded = _row("disable_user", approved_by=up, second_approver=low)
+        merged = _row(
+            "disable_user", approved_by=up, second_approver=twins["ambiguous"]
+        )
+        rows, _ = _report()
+        assert rows[proposed]["violations"] == []
+        assert rows[proposed]["proposed_role"] == "Senior " + TAG
+        assert rows[proposed]["approved_role"] == "Manager " + TAG
+        assert rows[seconded]["violations"] == []
+        assert rows[seconded]["approved_role"] == "Senior " + TAG
+        assert rows[seconded]["second_role"] == "Manager " + TAG
+        # A name that only matches the two ambiguously: no role, and it is
+        # compared by its folded spelling, so it is reported, not cleared.
+        assert "same_person" in rows[merged]["violations"]
+        assert "unknown_role" in rows[merged]["violations"]
+
+    def test_new_usernames_are_unique_case_insensitively(self, people):
+        from core.auth.auth_service import AuthService
+
+        clash = AuthService.create_user(
+            username=people["alice"].upper(),
+            email=f"clash-{TAG}@test.local",
+            password="Sufficiently-long-pass-1",
+            full_name="clash",
+            role_id="r-senior-" + TAG,
+        )
+        assert clash is None
+        ok = AuthService.create_user(
+            username=f"dave-{TAG}",
+            email=f"dave-{TAG}@test.local",
+            password="Sufficiently-long-pass-1",
+            full_name="dave",
+            role_id="r-senior-" + TAG,
+        )
+        assert ok is not None
+
+
+class TestExecution:
+    def test_a_claimed_row_names_the_dispatcher(self, people):
+        claimed = _row(
+            status="approved", approved_by=people["alice"], executed_at=utcnow()
+        )
+        waiting = _row(status="approved", approved_by=people["alice"])
+        rows, _ = _report()
+        assert rows[claimed]["execution"] == "claimed"
+        assert rows[claimed]["executed_by"] == segregation.DISPATCHER
+        assert rows[waiting]["execution"] is None
+        assert rows[waiting]["executed_by"] is None
+
+    def test_a_claimed_row_with_no_approval_is_a_violation(self, people):
+        rid = _row(status="approved", approved_by=None, executed_at=utcnow())
+        rows, _ = _report()
+        assert rows[rid]["violations"] == ["executed_without_approval"]
+
+    def test_failed_and_refused_rows(self, people):
+        failed = _row(
+            status="failed",
+            approved_by=people["alice"],
+            executed_at=utcnow(),
+            execution_result={"error": "vendor said no"},
+        )
+        refused = _row(
+            status="failed",
+            approved_by=people["alice"],
+            executed_at=utcnow(),
+            execution_result={"error": "policy_refused: protected target"},
+        )
+        rows, _ = _report()
+        assert rows[failed]["execution"] == "failed"
+        assert rows[failed]["executed_by"] == segregation.DISPATCHER
+        assert rows[refused]["execution"] == "refused"
+        assert rows[refused]["executed_by"] is None
+
+    def test_claim_execution_then_report(self, people):
+        svc = _svc()
+        svc.force_manual_approval = True
+        row = _create(svc, ActionType.BLOCK_IP)
+        svc.approve_action(row.action_id, people["alice"])
+        assert svc.claim_execution(row.action_id)
+        rows, _ = _report()
+        assert rows[row.action_id]["status"] == "approved"
+        assert rows[row.action_id]["execution"] == "claimed"
+        assert rows[row.action_id]["executed_by"] == segregation.DISPATCHER
+        assert "execution" in segregation.CSV_COLUMNS
+
+
+class TestAppendOnlyAndSources:
+    @pytest.mark.parametrize(
+        "statement",
+        [
+            "UPDATE approval_decisions SET actor = 'x'",
+            "DELETE FROM approval_decisions",
+            "TRUNCATE approval_decisions",
+        ],
+    )
+    def test_decisions_cannot_be_changed(self, people, statement):
+        from sqlalchemy.exc import DBAPIError
+
+        with pytest.raises(DBAPIError, match="append-only"):
+            with get_db_manager().engine.begin() as conn:
+                conn.execute(text(statement))
+
+    def test_the_proposers_current_role_shows_in_role_source(self, people):
+        svc = _svc(distinct_role_types=["disable_user"])
+        row = _create(svc, created_by=people["bob"])
+        svc.approve_action(row.action_id, people["alice"])
+        svc.approve_action(row.action_id, people["mallory"])
+        rows, _ = _report()
+        assert rows[row.action_id]["proposed_role"] == "Senior " + TAG
+        assert rows[row.action_id]["role_source"] == "mixed"
+
+
+def test_dotted_capital_i_folds_the_same_on_both_sides(people):
+    """Both sides fold in the database: "İ" never fails to match itself."""
+    name = f"İlker-{TAG}"
+    with get_db_manager().session_scope() as s:
+        s.add(
+            User(
+                user_id=f"u-ilker-{TAG}",
+                username=name,
+                email=f"ilker-{TAG}@test.local",
+                password_hash="x",
+                full_name="İlker",
+                role_id="r-mgr-" + TAG,
+            )
+        )
+    with get_db_manager().session_scope() as s:
+        assert account_of(s, name)[0] == f"u-ilker-{TAG}"
+        assert account_of(s, name.upper())[0] == f"u-ilker-{TAG}"
