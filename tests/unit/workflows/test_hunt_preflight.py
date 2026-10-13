@@ -306,9 +306,10 @@ def test_the_one_tool_classifier_agrees_with_the_list_form():
         assert changes_for_tools([tool]) == changes_for_tool(tool)
     assert changes_for_tool("get_finding") == "read_only"
     assert changes_for_tool("create_approval_action") == "asks_first"
-    assert changes_for_tool("block_ip") == "on_its_own"
+    # Gated on every surface (W1.7), so it asks first rather than acting alone.
+    assert changes_for_tool("block_ip") == "asks_first"
     # The list is as hands-on as its most hands-on tool, in any order.
-    assert changes_for_tools(tools) == changes_for_tools(tools[::-1]) == "on_its_own"
+    assert changes_for_tools(tools) == changes_for_tools(tools[::-1]) == "asks_first"
     assert changes_for_tools([]) == "read_only"
 
 

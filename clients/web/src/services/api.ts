@@ -151,6 +151,15 @@ export interface NeedsYouItem {
   case_id: string | null
 }
 
+export type CaseActionTimeline = Schema<'CaseActionTimelineResponse'>
+export type CaseActionItem = Schema<'CaseActionTimelineItem'>
+
+/** Acts on an executed response action. The server side may not exist yet: callers handle 404/501. */
+export const responseActionsApi = {
+  revert: (actionId: string, reason: string) =>
+    api.post(`/response/actions/${encodeURIComponent(actionId)}/revert`, { reason }),
+}
+
 export const approvalsApi = {
   list: (params?: {
     status?: string
@@ -172,6 +181,25 @@ export const approvalsApi = {
 
   reject: (actionId: string, reason: string, rejected_by?: string) =>
     api.post(`/approvals/${actionId}/reject`, { reason, rejected_by }),
+}
+
+/** QA sampling of verdicts handled without a person, and the Scorecard (/api/qa). */
+export const qaApi = {
+  scorecard: (params?: { target?: number; confidence?: number }) =>
+    api.get<Schema<'QAScorecardResponse'>>('/qa/scorecard', { params }),
+
+  samples: (params?: {
+    status?: 'pending' | 'reviewed' | 'all'
+    category?: string
+    sampling_kind?: 'simple_random' | 'risk_weighted'
+    limit?: number
+  }) => api.get<Schema<'QASampleList'>>('/qa/samples', { params }),
+
+  review: (sampleId: number, data: Schema<'QAReviewRequest'>) =>
+    api.post<Schema<'QASample'>>(`/qa/samples/${sampleId}/review`, data),
+
+  draw: (data: Schema<'QADrawRequest'>) =>
+    api.post<Schema<'QADrawResponse'>>('/qa/samples/draw', data),
 }
 
 /** how a findings read treats findings naming an analyst-excluded IP */
@@ -347,6 +375,10 @@ export const casesApi = {
   // The merged record. There is no audit-log route; this read replaced it.
   getRecord: (id: string) =>
     api.get<CaseRecordResponse>(`/cases/${id}/record`),
+
+  // Response actions on the case, newest first, each with its lifecycle (W2.8).
+  getActionTimeline: (id: string) =>
+    api.get<CaseActionTimeline>(`/cases/${id}/actions/timeline`),
 
   merge: (targetCaseId: string, sourceCaseId: string) =>
     api.post<Schema<'CaseMergeResponse'>>(`/cases/${targetCaseId}/merge`, {

@@ -101,7 +101,7 @@ def ingest_findings(
     """Receive a batch of VStrike-enriched findings.
 
     For each finding:
-      - If it exists in Vigil, merge VStrike enrichment into
+      - If it exists in AutoSecOps, merge VStrike enrichment into
         `entity_context["vstrike"]` (read-modify-write to avoid clobbering
         other keys) and update MITRE fields if supplied.
       - Otherwise, create it with `data_source="vstrike"` if enough fields

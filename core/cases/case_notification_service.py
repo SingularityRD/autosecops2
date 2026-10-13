@@ -31,6 +31,25 @@ WATCHER_NOTIFICATION_TYPES = frozenset(
     }
 )
 
+# A broadcast row is the case event itself rather than a copy addressed to one
+# person: exactly one per event, written whether or not the case has an
+# assignee or watchers. The dispatcher (core/cases/notification_dispatcher.py)
+# sends it to outbound webhooks and, when enabled, to the Slack channel; the
+# per-person rows next to it go to their recipient. ``event_key`` in the
+# metadata names the event, so the SLA monitor and stale-case detector can tell
+# whether they already raised it.
+BROADCAST_USER_ID = "system:broadcast"
+BROADCAST_CHANNEL = "broadcast"
+BROADCAST_NOTIFICATION_TYPES = frozenset({"sla_warning", "stale_case"})
+
+
+def sla_event_key(case_id: str, sla_type: str, threshold_percent: int) -> str:
+    return f"sla:{case_id}:{sla_type}:{int(threshold_percent)}"
+
+
+def stale_event_key(case_id: str, day: str) -> str:
+    return f"stale:{case_id}:{day}"
+
 
 class CaseNotificationService:
     """Service for managing case notifications."""
@@ -145,6 +164,42 @@ class CaseNotificationService:
 
             return True
 
+    def event_already_raised(self, event_key: str, session: Session) -> bool:
+        """Whether a broadcast row for ``event_key`` exists (sent or not)."""
+        return (
+            session.query(CaseNotification.notification_id)
+            .filter(
+                CaseNotification.user_id == BROADCAST_USER_ID,
+                CaseNotification.notification_metadata["event_key"].astext == event_key,
+            )
+            .first()
+            is not None
+        )
+
+    def create_broadcast(
+        self,
+        notification_type: str,
+        title: str,
+        message: str,
+        event_key: str,
+        case_id: Optional[str] = None,
+        priority: str = "normal",
+        metadata: Optional[Dict] = None,
+        session: Optional[Session] = None,
+    ) -> Optional[CaseNotification]:
+        """Write the one broadcast row for a case event (see BROADCAST_USER_ID)."""
+        return self.create_notification(
+            user_id=BROADCAST_USER_ID,
+            notification_type=notification_type,
+            title=title,
+            message=message,
+            case_id=case_id,
+            delivery_channel=BROADCAST_CHANNEL,
+            priority=priority,
+            metadata={**(metadata or {}), "event_key": event_key},
+            session=session,
+        )
+
     def notify_sla_warning(
         self,
         case_id: str,
@@ -154,6 +209,10 @@ class CaseNotificationService:
     ) -> bool:
         """
         Notify about approaching SLA deadline.
+
+        Writes the broadcast row for the event (webhooks, Slack channel) and a
+        row for the assignee and each watcher. Every row carries the same
+        ``event_key``, which is how the SLA monitor raises each threshold once.
 
         Args:
             case_id: Case ID
@@ -169,25 +228,39 @@ class CaseNotificationService:
             if not case:
                 return False
 
+            urgency = "urgent" if threshold_percent >= 90 else "high"
+            message = (
+                f'Case "{case.title}" has reached {threshold_percent}% '
+                f"of its {sla_type} SLA deadline"
+            )
+            metadata = {
+                "threshold_percent": threshold_percent,
+                "sla_type": sla_type,
+                "event_key": sla_event_key(case_id, sla_type, threshold_percent),
+            }
+
+            self.create_broadcast(
+                notification_type="sla_warning",
+                title=f"SLA Warning: {threshold_percent}% Elapsed",
+                message=message,
+                event_key=metadata["event_key"],
+                case_id=case_id,
+                priority=urgency,
+                metadata=metadata,
+                session=session,
+            )
+
             # Notify assignee if assigned
             if case.assignee:
-                urgency = "urgent" if threshold_percent >= 90 else "high"
-
                 self.create_notification(
                     user_id=case.assignee,
                     notification_type="sla_warning",
                     title=f"SLA Warning: {threshold_percent}% Elapsed",
-                    message=(
-                        f'Case "{case.title}" has reached {threshold_percent}% '
-                        f"of its {sla_type} SLA deadline"
-                    ),
+                    message=message,
                     case_id=case_id,
                     delivery_channel="ui",
                     priority=urgency,
-                    metadata={
-                        "threshold_percent": threshold_percent,
-                        "sla_type": sla_type,
-                    },
+                    metadata=metadata,
                     session=session,
                 )
 
@@ -196,13 +269,41 @@ class CaseNotificationService:
                 case_id=case_id,
                 notification_type="sla_warning",
                 title=f"SLA Warning: {threshold_percent}%",
-                message=(
-                    f'Case "{case.title}" has reached {threshold_percent}% '
-                    f"of its {sla_type} SLA deadline"
-                ),
+                message=message,
+                metadata=metadata,
                 session=session,
             )
 
+            return True
+
+    def notify_stale_case(
+        self, case: Case, day: str, session: Optional[Session] = None
+    ) -> bool:
+        """Raise the stale-case event for ``case`` once per ``day`` (YYYY-MM-DD)."""
+        with unit_of_work(session) as session:
+            event_key = stale_event_key(case.case_id, day)
+            if self.event_already_raised(event_key, session):
+                return False
+            message = f'Case "{case.title}" has had no activity for 7+ days'
+            self.create_broadcast(
+                notification_type="stale_case",
+                title="Stale Case Alert",
+                message=message,
+                event_key=event_key,
+                case_id=case.case_id,
+                session=session,
+            )
+            if case.assignee:
+                self.create_notification(
+                    user_id=case.assignee,
+                    notification_type="stale_case",
+                    title="Stale Case Alert",
+                    message=message,
+                    case_id=case.case_id,
+                    priority="normal",
+                    metadata={"event_key": event_key},
+                    session=session,
+                )
             return True
 
     def notify_watchers(
@@ -213,6 +314,7 @@ class CaseNotificationService:
         message: str,
         priority: str = "normal",
         session: Optional[Session] = None,
+        metadata: Optional[Dict] = None,
     ) -> int:
         """
         Notify all watchers of a case.
@@ -224,6 +326,7 @@ class CaseNotificationService:
             message: Notification message
             priority: Priority level
             session: Database session (optional)
+            metadata: Stored on each watcher's row (optional)
 
         Returns:
             Number of notifications created
@@ -258,6 +361,7 @@ class CaseNotificationService:
                         case_id=case_id,
                         delivery_channel="ui",
                         priority=priority,
+                        metadata=metadata,
                         session=session,
                     )
                     count += 1
