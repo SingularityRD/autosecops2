@@ -196,6 +196,10 @@ GATED_ROUTES = [
         "findings.write",
     ),
     ("POST", "/api/orchestrator/scan-findings", None, "ai_chat.use"),
+    # W0.11 round 5: rewrites historical cost rows; forges / grades AI decisions.
+    ("POST", "/api/analytics/recalculate-cost", None, "settings.write"),
+    ("POST", "/api/ai/decisions", {}, "ai_chat.use"),
+    ("POST", "/api/ai/decisions/d-1/feedback", {}, "findings.write"),
 ]
 
 

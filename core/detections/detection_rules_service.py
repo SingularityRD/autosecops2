@@ -88,6 +88,9 @@ _GIT_SAFE_CONFIG = (
     "-c", "http.followRedirects=false",
     "-c", "submodule.recurse=false",
     "-c", "core.hooksPath=/dev/null",
+    "-c", "core.fsmonitor=false",
+    # An empty value resets the helper list: no stored or prompted credentials.
+    "-c", "credential.helper=",
 )
 # fmt: on
 
@@ -561,18 +564,21 @@ class DetectionRulesService:
         if not source:
             raise ValueError(f"Source not found: {source_id}")
 
+        # local_path comes from detection_sources.json, which predates the
+        # add_source checks: hold it to the same roots before using it.
         if source["type"] == "git":
-            clone_dir = Path(source["local_path"])
-            if not clone_dir.exists():
+            local_path = self._under(str(self.base_dir), source["local_path"])
+            if not Path(local_path).exists():
                 # Not cloned yet, clone it
-                self._git_clone(source["git_url"], source["local_path"])
+                self._git_clone(source["git_url"], local_path)
             else:
-                # Git pull
-                self._git_pull(source["local_path"])
+                self._git_pull(local_path, source["git_url"])
+        else:
+            local_path = self._local_root(source["local_path"])
 
         # Rescan rule count
         source["rule_count"] = self._count_rules(
-            Path(source["local_path"]), source["format"], source.get("subdirectory", "")
+            Path(local_path), source["format"], source.get("subdirectory", "")
         )
         source["last_updated"] = datetime.now().isoformat()
         source["status"] = "ready"
@@ -700,10 +706,20 @@ class DetectionRulesService:
             raise RuntimeError(f"Git clone failed: {result.stderr.strip()}")
         logger.info(f"Successfully cloned {url}")
 
-    def _git_remote_url(self, repo_path: str) -> str:
-        """The ``origin`` URL a pull in ``repo_path`` would fetch from."""
+    # Keys a clone made by _git_clone carries in .git/config. Anything else
+    # (url.*.insteadOf, http.*, include.path, core.sshCommand, ...) could
+    # redirect or reconfigure the fetch, so a clone carrying it is refused.
+    _CLONE_CONFIG_OK = re.compile(
+        r"^(core\.(repositoryformatversion|filemode|bare|logallrefupdates|"
+        r"ignorecase|precomposeunicode|symlinks)"
+        r"|remote\.origin\.(url|fetch)"
+        r"|branch\.[^\s]+\.(remote|merge))$"
+    )
+
+    def _check_clone_config(self, repo_path: str) -> None:
+        """Refuse a clone whose own .git/config holds keys git could act on."""
         result = subprocess.run(
-            ["git", "config", "--get", "remote.origin.url"],
+            ["git", "config", "--local", "--no-includes", "--name-only", "--list"],
             cwd=repo_path,
             capture_output=True,
             text=True,
@@ -711,39 +727,74 @@ class DetectionRulesService:
             env=_git_env(),
             stdin=subprocess.DEVNULL,
         )
-        return result.stdout.strip() if result.returncode == 0 else ""
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Cannot read git config in {repo_path}: {result.stderr.strip()}"
+            )
+        bad = [
+            k
+            for k in result.stdout.split()
+            if not self._CLONE_CONFIG_OK.match(k.lower())
+        ]
+        if bad:
+            raise ValueError(
+                f"Refusing to update {repo_path}: its git config sets "
+                f"{', '.join(sorted(set(bad)))}"
+            )
 
-    def _git_pull(self, repo_path: str):
-        """Pull latest changes, only from an https origin that passes the URL checks."""
-        origin = self._git_remote_url(repo_path)
+    def _git_pull(self, repo_path: str, url: str):
+        """Fetch ``url`` (the source's checked URL) and reset the clone to it.
+
+        The clone's own remote/branch config is not trusted: the fetch names the
+        URL explicitly, after the same checks a clone gets, and the update is an
+        explicit ``reset --hard FETCH_HEAD`` (a depth-1 clone cannot
+        fast-forward-merge a depth-1 fetch anyway).
+        """
+        repo_path = self._under(str(self.base_dir), repo_path)
         try:
-            addresses = check_git_url(origin)
+            addresses = check_git_url(url)
         except ValueError as exc:
             raise ValueError(
-                f"Refusing to pull {repo_path}: its origin is not an allowed "
+                f"Refusing to update {repo_path}: its URL is not an allowed "
                 f"https URL ({exc})"
             ) from exc
-        logger.info(f"Pulling updates in {repo_path}...")
+        self._check_clone_config(repo_path)
+        logger.info(f"Fetching updates for {repo_path}...")
+        common = dict(
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            env=_git_env(),
+            stdin=subprocess.DEVNULL,
+        )
         result = subprocess.run(
             [
                 "git",
                 *_GIT_SAFE_CONFIG,
-                *_pin_resolve(origin, addresses),
-                "pull",
+                *_pin_resolve(url, addresses),
+                "fetch",
                 "--quiet",
-                "--ff-only",
+                "--depth",
+                "1",
+                "--no-tags",
                 "--no-recurse-submodules",
+                "--",
+                url,
+                "HEAD",
             ],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
             timeout=_GIT_PULL_TIMEOUT,
-            env=_git_env(),
-            stdin=subprocess.DEVNULL,
+            **common,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"Git pull failed: {result.stderr.strip()}")
-        logger.info(f"Successfully pulled updates in {repo_path}")
+            raise RuntimeError(f"Git fetch failed: {result.stderr.strip()}")
+        result = subprocess.run(
+            ["git", *_GIT_SAFE_CONFIG, "reset", "--quiet", "--hard", "FETCH_HEAD"],
+            timeout=_GIT_PULL_TIMEOUT,
+            **common,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Git reset failed: {result.stderr.strip()}")
+        logger.info(f"Successfully updated {repo_path}")
 
 
 # Global singleton

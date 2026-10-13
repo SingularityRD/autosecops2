@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from core.auth.permissions import permission_gate
 from core.llm.cost.pricing_router import GATEWAY, priced_as
 from core.llm.providers.registry import get_registry
 from core.reporting.ai_insights_service import AIInsightsService
@@ -265,7 +266,9 @@ class RecalculateCostRequest(BaseModel):
     limit: int = Field(default=200, ge=1, le=1000)
 
 
-@router.post("/analytics/recalculate-cost")
+@router.post(
+    "/analytics/recalculate-cost", dependencies=[permission_gate("settings.write")]
+)
 async def recalculate_cost_endpoint(
     payload: Optional[RecalculateCostRequest] = None,
 ) -> Dict[str, Any]:

@@ -8,16 +8,14 @@
 # (see docs/wp/w0.11.md). What is left is deliberate: own-account and login
 # flows (auth/*, own conversations), checks made inside a helper (users,
 # services, exclusions, cases delete), reads sent as POST (search, export,
-# estimate-cost, recalculate-cost, coverage, workflows/reload), finding
-# enrichment (generated lazily when anyone opens a finding), and agent/service
-# callbacks (ai/decisions; vstrike checks its own inbound key).
+# estimate-cost, coverage, workflows/reload), finding enrichment (generated
+# lazily when anyone opens a finding), and vstrike (checks its own inbound
+# key). Round 5 gated recalculate-cost (settings.write) and ai/decisions
+# create (ai_chat.use) / feedback (findings.write).
 DELETE /api/auth/mfa
 DELETE /api/conversations/{conversation_id}
 PATCH /api/conversations/{conversation_id}
-POST /api/ai/decisions
-POST /api/ai/decisions/{decision_id}/feedback
 POST /api/analytics/estimate-cost
-POST /api/analytics/recalculate-cost
 POST /api/auth/bootstrap
 POST /api/auth/change-password
 POST /api/auth/login
