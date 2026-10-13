@@ -13,7 +13,9 @@ The upgrade itself runs in tests/integration/test_upgrade_from_071.py. Here:
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -136,6 +138,99 @@ def test_password_goes_to_the_environment_not_argv():
     env = up.libpq_env("postgresql://u:p%40ss@db.internal:6543/vigil")
     assert (env["PGHOST"], env["PGPORT"], env["PGUSER"], env["PGPASSWORD"], env["PGDATABASE"]) == (
         "db.internal", "6543", "u", "p@ss", "vigil")
+
+
+TLS_SOCKET_URL = (
+    "postgresql://u:p%40ss@/vigil?host=/run/postgresql&sslmode=verify-full"
+    "&sslrootcert=/etc/vigil/ca.pem&sslcert=/etc/vigil/c.pem&sslkey=/etc/vigil/c.key"
+    "&options=-c%20statement_timeout%3D0&keepalives=1"
+)
+
+
+def test_url_query_options_reach_psql_and_pg_dump_env():
+    # Round 5 fix: sslmode/sslrootcert/sslcert/sslkey/host=socket/options were dropped.
+    env = up.libpq_env(TLS_SOCKET_URL)
+    assert env["PGHOST"] == "/run/postgresql"
+    assert env["PGSSLMODE"] == "verify-full"
+    assert env["PGSSLROOTCERT"] == "/etc/vigil/ca.pem"
+    assert env["PGSSLCERT"] == "/etc/vigil/c.pem"
+    assert env["PGSSLKEY"] == "/etc/vigil/c.key"
+    assert env["PGOPTIONS"] == "-c statement_timeout=0"
+    assert env["PGPASSWORD"] == "p@ss"
+
+
+def _captured_argv(monkeypatch, tmp_path, url):
+    calls = []
+
+    class Done:
+        returncode, stderr = 0, ""
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs["env"]))
+        if args[0] == "pg_dump":
+            Path(args[args.index("-f") + 1]).write_bytes(b"x")
+        return Done()
+
+    monkeypatch.setattr(up.subprocess, "run", fake_run)
+    sql = tmp_path / "99_x.sql"
+    sql.write_text("SELECT 1;")
+    up.take_backup(url, tmp_path / "b.dump")
+    up.run_sql(url, sql, strict=True)
+    return calls
+
+
+def test_url_query_options_reach_psql_and_pg_dump_argv(monkeypatch, tmp_path):
+    for args, env in _captured_argv(monkeypatch, tmp_path, TLS_SOCKET_URL):
+        conninfo = args[args.index("-d") + 1]
+        for part in ("host='/run/postgresql'", "sslmode='verify-full'",
+                     "sslrootcert='/etc/vigil/ca.pem'", "sslcert='/etc/vigil/c.pem'",
+                     "sslkey='/etc/vigil/c.key'", "options='-c statement_timeout=0'",
+                     "keepalives='1'", "dbname='vigil'", "user='u'"):
+            assert part in conninfo, (args[0], conninfo)
+        assert "p@ss" not in " ".join(args), "password never on argv"
+        assert env["PGPASSWORD"] == "p@ss"
+
+
+def test_postgres_ssl_mode_applies_when_url_has_no_sslmode(monkeypatch, tmp_path):
+    from core.config import get_settings
+
+    monkeypatch.setenv("POSTGRES_SSL_MODE", "require")
+    get_settings.cache_clear()
+    try:
+        url = "postgresql://u:p@db.internal/vigil"
+        assert up.libpq_env(url)["PGSSLMODE"] == "require"
+        assert up.engine_connect_args(url) == {"sslmode": "require"}
+        for args, _ in _captured_argv(monkeypatch, tmp_path, url):
+            assert "sslmode='require'" in args[args.index("-d") + 1]
+        # An explicit ?sslmode= in the URL wins, as in core/storage/connection.py.
+        assert up.libpq_env(url + "?sslmode=disable")["PGSSLMODE"] == "disable"
+        assert up.engine_connect_args(url + "?sslmode=disable") == {}
+    finally:
+        get_settings.cache_clear()
+
+
+def test_backup_is_owner_only_whatever_the_umask(monkeypatch, tmp_path):
+    # Round 5 fix: the dump holds the whole database; it must not be world-readable.
+    old = os.umask(0o002)
+    try:
+        _captured_argv(monkeypatch, tmp_path, "postgresql://u:p@h/db")
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE((tmp_path / "b.dump").stat().st_mode) == 0o600
+
+
+def test_backup_never_overwrites(monkeypatch, tmp_path):
+    (tmp_path / "b.dump").write_text("keep")
+    monkeypatch.setattr(up.subprocess, "run", lambda *a, **k: pytest.fail("pg_dump ran"))
+    with pytest.raises(up.UpgradeError):
+        up.take_backup("postgresql://u:p@h/db", tmp_path / "b.dump")
+    assert (tmp_path / "b.dump").read_text() == "keep"
+
+
+def test_upgrade_guide_keeps_backups_private():
+    guide = (REPO / "docs" / "upgrade-0.7-to-2.0.md").read_text(encoding="utf-8")
+    assert "install -d -m 700 backups" in guide
+    assert "777" not in guide
 
 
 def test_backup_flags_are_exclusive():

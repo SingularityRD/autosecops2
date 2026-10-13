@@ -192,20 +192,102 @@ def normalize_url(url: str) -> str:
     return re.sub(r"^postgres(ql)?://", "postgresql+psycopg2://", url)
 
 
+# URL query keys libpq also reads from the environment. pg_dump and psql get
+# them as PG* variables so a ?sslmode=verify-full&sslrootcert=... or a
+# ?host=/run/postgresql socket URL reaches them the same as the Python engine.
+_LIBPQ_QUERY_ENV = {
+    "host": "PGHOST",
+    "hostaddr": "PGHOSTADDR",
+    "port": "PGPORT",
+    "dbname": "PGDATABASE",
+    "user": "PGUSER",
+    "passfile": "PGPASSFILE",
+    "options": "PGOPTIONS",
+    "application_name": "PGAPPNAME",
+    "connect_timeout": "PGCONNECT_TIMEOUT",
+    "sslmode": "PGSSLMODE",
+    "sslrootcert": "PGSSLROOTCERT",
+    "sslcert": "PGSSLCERT",
+    "sslkey": "PGSSLKEY",
+    "sslcrl": "PGSSLCRL",
+    "sslcrldir": "PGSSLCRLDIR",
+    "sslsni": "PGSSLSNI",
+    "sslcompression": "PGSSLCOMPRESSION",
+    "sslnegotiation": "PGSSLNEGOTIATION",
+    "ssl_min_protocol_version": "PGSSLMINPROTOCOLVERSION",
+    "ssl_max_protocol_version": "PGSSLMAXPROTOCOLVERSION",
+    "requirepeer": "PGREQUIREPEER",
+    "gssencmode": "PGGSSENCMODE",
+    "krbsrvname": "PGKRBSRVNAME",
+    "gsslib": "PGGSSLIB",
+    "channel_binding": "PGCHANNELBINDING",
+    "target_session_attrs": "PGTARGETSESSIONATTRS",
+    "load_balance_hosts": "PGLOADBALANCEHOSTS",
+    "service": "PGSERVICE",
+    "tcp_user_timeout": "PGTCPUSERTIMEOUT",
+}
+
+
+def default_ssl_mode() -> str:
+    """POSTGRES_SSL_MODE (core/config.py), as core/backup/create.py uses it."""
+    try:
+        from core.config import get_settings
+
+        return get_settings().postgres_ssl_mode or "prefer"
+    except Exception:  # settings unavailable outside a configured install
+        return os.environ.get("POSTGRES_SSL_MODE") or "prefer"
+
+
+def _query_value(value) -> str:
+    # make_url turns a repeated key (multi-host URLs) into a tuple.
+    return ",".join(map(str, value)) if isinstance(value, (tuple, list)) else str(value)
+
+
+def libpq_params(url: str) -> dict:
+    """libpq keyword -> value for ``url``: host, port, database, user, every
+    query option, and sslmode from POSTGRES_SSL_MODE when the URL has none."""
+    u = make_url(normalize_url(url))
+    params = {
+        "host": u.host or "localhost",
+        "port": str(u.port or 5432),
+        "dbname": u.database or "",
+    }
+    if u.username:
+        params["user"] = u.username
+    for key, value in u.query.items():
+        params[key] = _query_value(value)
+    params.setdefault("sslmode", default_ssl_mode())
+    return params
+
+
+def engine_connect_args(url: str) -> dict:
+    """Extra psycopg2 connect args: sslmode from POSTGRES_SSL_MODE when the
+    URL does not set one (query options already reach psycopg2 via the URL)."""
+    u = make_url(normalize_url(url))
+    return {} if "sslmode" in u.query else {"sslmode": default_ssl_mode()}
+
+
+def libpq_conninfo(url: str) -> str:
+    """``-d`` argument for psql / pg_dump: every libpq parameter of ``url``
+    except the password, so options without a PG* variable (keepalives, ...)
+    are not lost either. Quoted as core/backup/create.py does."""
+    def quote(value: str) -> str:
+        return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+    return " ".join(f"{k}={quote(v)}" for k, v in libpq_params(url).items())
+
+
 def libpq_env(url: str) -> dict:
     """PG* variables for psql / pg_dump. The password goes in the environment,
-    never on a command line another user could read in ps."""
+    never on a command line another user could read in ps. The other
+    parameters are also on the command line (libpq_conninfo), which wins over
+    any PG* variable the operator's shell already exports."""
     u = make_url(normalize_url(url))
     env = os.environ.copy()
-    env.update(
-        {
-            "PGHOST": u.host or "localhost",
-            "PGPORT": str(u.port or 5432),
-            "PGDATABASE": u.database or "",
-        }
-    )
-    if u.username:
-        env["PGUSER"] = u.username
+    for key, value in libpq_params(url).items():
+        name = _LIBPQ_QUERY_ENV.get(key)
+        if name is not None:
+            env[name] = value
     if u.password is not None:
         env["PGPASSWORD"] = str(u.password)
     return env
@@ -438,11 +520,20 @@ def preflight(
 
 
 def take_backup(url: str, path: Path) -> None:
+    """pg_dump -Fc into a new 0600 file: the dump holds the whole database
+    (password hashes, integration secrets), whatever the caller's umask."""
+    try:
+        os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    except FileExistsError as e:
+        raise UpgradeError(f"{path} already exists; refusing to overwrite") from e
+    os.chmod(path, 0o600)
     completed = subprocess.run(
-        ["pg_dump", "-Fc", "--no-password", "-f", str(path)],
+        ["pg_dump", "-Fc", "--no-password", "-f", str(path), "-d", libpq_conninfo(url)],
         env=libpq_env(url), capture_output=True, text=True, check=False,
     )
     if completed.returncode != 0 or not path.is_file() or path.stat().st_size == 0:
+        if path.is_file() and path.stat().st_size == 0:
+            path.unlink()  # so a re-run's preflight does not trip on it
         raise UpgradeError(f"pg_dump failed: {completed.stderr.strip()[:500]}")
     logger.info("backup written: %s (%d bytes)", path, path.stat().st_size)
 
@@ -454,7 +545,7 @@ def run_sql(url: str, path: Path, *, strict: bool) -> tuple[bool, str]:
     # statement by statement and still stops at its first error.
     if strict and not uses_concurrently(path):
         args.append("--single-transaction")
-    args += ["-f", str(path)]
+    args += ["-d", libpq_conninfo(url), "-f", str(path)]
     completed = subprocess.run(args, env=libpq_env(url), capture_output=True, text=True, check=False)
     errors = [ln for ln in completed.stderr.splitlines() if "ERROR:" in ln]
     if completed.returncode != 0:
@@ -567,7 +658,8 @@ def upgrade(
 ) -> Report:
     """Preflight, then (unless ``dry_run``) every step. Raises UpgradeError on a failed step."""
     engine = create_engine(
-        normalize_url(url), poolclass=NullPool, connect_args={"connect_timeout": 5}
+        normalize_url(url), poolclass=NullPool,
+        connect_args={"connect_timeout": 5, **engine_connect_args(url)},
     )
     try:
         report = preflight(

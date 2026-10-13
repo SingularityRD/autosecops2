@@ -92,14 +92,19 @@ docker compose -f infra/docker/docker-compose.yml build
 docker compose -f infra/docker/docker-compose.yml up -d postgres
 
 # 3. Deneme çalıştırması. Backend imajında scripts/ yoktur; salt okunur bağlanır.
-mkdir -p backups && chmod 777 backups
+# Yedek dizini yalnızca sizin: araç kapsayıcıda sizin UID'nizle çalışır ve
+# yedeği 0600 izinle (yalnızca sahibi okur) yazar. Dizini başkalarına yazılabilir
+# yapmayın; yedek, parola özetleri dahil tüm veritabanını içerir.
+install -d -m 700 backups
 docker compose -f infra/docker/docker-compose.yml run --rm --no-deps \
+  --user "$(id -u):$(id -g)" \
   -v "$PWD/scripts:/app/scripts:ro" -v "$PWD/backups:/backups" \
   -e DATABASE_URL="postgresql://deeptempo:${POSTGRES_PASSWORD}@postgres:5432/deeptempo_soc" \
   --entrypoint python backend scripts/upgrade_database.py --dry-run
 
 # 4. Yükseltme (yedekle birlikte).
 docker compose -f infra/docker/docker-compose.yml run --rm --no-deps \
+  --user "$(id -u):$(id -g)" \
   -v "$PWD/scripts:/app/scripts:ro" -v "$PWD/backups:/backups" \
   -e DATABASE_URL="postgresql://deeptempo:${POSTGRES_PASSWORD}@postgres:5432/deeptempo_soc" \
   --entrypoint python backend scripts/upgrade_database.py --backup /backups/pre-2.0.dump

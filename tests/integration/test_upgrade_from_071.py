@@ -310,6 +310,8 @@ def test_rerun_changes_nothing(dbs):
 def test_backup_restores_the_071_database(dbs):
     backup = dbs["backup"]
     assert backup.is_file() and backup.stat().st_size > 0
+    # Round 5: the real pg_dump run leaves the dump owner-only.
+    assert backup.stat().st_mode & 0o777 == 0o600
     target = dbs["scratch"].create("rollback")
     restored = subprocess.run(
         ["pg_restore", "--no-password", "--no-owner", "--exit-on-error", "-d", target, str(backup)],

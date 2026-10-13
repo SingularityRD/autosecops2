@@ -25,6 +25,13 @@ jobs:
     timeout-minutes: 30
     services:
       postgres:
+        # TODO(digest): pin as postgres:16-alpine@sha256:<index digest>. Docker
+        # Hub, mirror.gcr.io and public.ecr.aws were unreachable from the
+        # environment that wrote this, and a guessed digest would break the
+        # job. Get it with
+        #   docker buildx imagetools inspect postgres:16-alpine --format '{{json .Manifest.Digest}}'
+        # and pin it here and in ci-cd.yml / airgap.yml / nightly.yml together
+        # (same tag everywhere today).
         image: postgres:16-alpine
         env:
           POSTGRES_DB: deeptempo_test
@@ -51,6 +58,9 @@ jobs:
       UPGRADE_TEST_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Nothing here pushes; keep the token out of .git/config.
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v7
