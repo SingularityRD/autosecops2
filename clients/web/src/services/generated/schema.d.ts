@@ -5182,6 +5182,89 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/response/four-eyes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Four Eyes
+         * @description The action classes under the two-person rule and its distinct-role condition.
+         */
+        get: operations["get_api_response_four-eyes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/response/four-eyes/{action_type}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Distinct Role
+         * @description Require (or stop requiring) a second approver of a different role.
+         *
+         *     Turning it on also puts the class under the two-person rule. Turning it off
+         *     leaves the two-person rule as it was.
+         */
+        put: operations["put_api_response_four-eyes_action_type"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/response/segregation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Segregation
+         * @description Who proposed, approved and executed each action, in which role, and violations.
+         */
+        get: operations["get_api_response_segregation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/response/segregation/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Segregation
+         * @description The report as a download (CSV cells cannot start a spreadsheet formula).
+         */
+        get: operations["get_api_response_segregation_export"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/services": {
         parameters: {
             query?: never;
@@ -9576,6 +9659,13 @@ export interface components {
             /** Kind */
             kind: string;
         };
+        /** DistinctRoleUpdate */
+        DistinctRoleUpdate: {
+            /** Distinct Role */
+            distinct_role: boolean;
+            /** Reason */
+            reason: string;
+        };
         /** DraftLine */
         DraftLine: {
             /** Cites */
@@ -10074,6 +10164,13 @@ export interface components {
             specialization?: string | null;
             /** System Prompt Override */
             system_prompt_override?: string | null;
+        };
+        /** FourEyesConfig */
+        FourEyesConfig: {
+            /** Distinct Role Types */
+            distinct_role_types: string[];
+            /** Four Eyes Types */
+            four_eyes_types: string[];
         };
         /**
          * GeneralConfig
@@ -11720,6 +11817,84 @@ export interface components {
             status?: string[] | null;
             /** Tags */
             tags?: string[] | null;
+        };
+        /** SegregationPolicy */
+        SegregationPolicy: {
+            /** Distinct Role Types */
+            distinct_role_types: string[];
+            /** Four Eyes Types */
+            four_eyes_types: string[];
+        };
+        /** SegregationReport */
+        SegregationReport: {
+            /** Action Type */
+            action_type?: string | null;
+            policy: components["schemas"]["SegregationPolicy"];
+            /** Rows */
+            rows?: components["schemas"]["SegregationRow"][];
+            /** Since */
+            since?: string | null;
+            summary: components["schemas"]["SegregationSummary"];
+            /** Until */
+            until?: string | null;
+        };
+        /** SegregationRow */
+        SegregationRow: {
+            /** Action Id */
+            action_id: string;
+            /** Action Type */
+            action_type: string;
+            /** Approved By */
+            approved_by?: string | null;
+            /** Approved Role */
+            approved_role?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /**
+             * Distinct Role
+             * @default false
+             */
+            distinct_role: boolean;
+            /** Executed At */
+            executed_at?: string | null;
+            /** Executed By */
+            executed_by?: string | null;
+            /** Execution */
+            execution?: string | null;
+            /**
+             * Four Eyes
+             * @default false
+             */
+            four_eyes: boolean;
+            /** Proposed By */
+            proposed_by?: string | null;
+            /** Proposed Role */
+            proposed_role?: string | null;
+            /** Reverse Of */
+            reverse_of?: string | null;
+            /** Role Source */
+            role_source?: string | null;
+            /** Second Approver */
+            second_approver?: string | null;
+            /** Second Role */
+            second_role?: string | null;
+            /** Status */
+            status: string;
+            /** Target */
+            target?: string | null;
+            /** Violations */
+            violations?: string[];
+        };
+        /** SegregationSummary */
+        SegregationSummary: {
+            /** By Kind */
+            by_kind: {
+                [key: string]: number;
+            };
+            /** Total */
+            total: number;
+            /** With Violations */
+            with_violations: number;
         };
         /**
          * ServerEnabledRequest
@@ -21818,6 +21993,151 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RevertResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_response_four-eyes": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FourEyesConfig"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "put_api_response_four-eyes_action_type": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                action_type: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DistinctRoleUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FourEyesConfig"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_response_segregation: {
+        parameters: {
+            query?: {
+                /** @description Actions created at or after */
+                since?: string | null;
+                /** @description Actions created before */
+                until?: string | null;
+                action_type?: string | null;
+                violations_only?: boolean;
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SegregationReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_response_segregation_export: {
+        parameters: {
+            query?: {
+                format?: "csv" | "json";
+                since?: string | null;
+                until?: string | null;
+                action_type?: string | null;
+                violations_only?: boolean;
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

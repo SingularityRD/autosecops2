@@ -36,7 +36,9 @@ approval
     Irreversible actions always require approval and are never auto-approved.
     Types in ``four_eyes_types`` need a second approver distinct from the first
     (compared case-insensitively); ``ApprovalService.approve_action`` enforces
-    it and the dispatcher refuses a row that lacks one.
+    it and the dispatcher refuses a row that lacks one. Types in
+    ``distinct_role_types`` (W3.2) also need the second approver to hold a
+    different role from the first, enforced at approval.
 
 Configuration is the system config row ``response.policy`` (JSON, keys as in
 ``PolicyConfig.from_mapping``), read at each decision. A failed read is not
@@ -459,6 +461,10 @@ class PolicyConfig:
     hourly_limits: Mapping[str, int] = DEFAULT_HOURLY_LIMITS
     default_hourly_limit: int = DEFAULT_HOURLY_LIMIT
     four_eyes_types: frozenset[str] = DEFAULT_FOUR_EYES_TYPES
+    # Four-eyes types whose second approver must also hold a different role
+    # from the first (W3.2). Opt-in per action class; every type listed here is
+    # a four-eyes type too.
+    distinct_role_types: frozenset[str] = frozenset()
     subdomain_matching_types: frozenset[str] = DEFAULT_SUBDOMAIN_MATCHING_TYPES
     undo_types: frozenset[str] = DEFAULT_UNDO_TYPES
     # Set when the stored config could not be read: refuse everything.
@@ -471,6 +477,8 @@ class PolicyConfig:
         ``protected_tags``, ``four_eyes_types``, ``subdomain_matching_types``
         and ``undo_types`` add to the defaults rather than replace them: a
         config row cannot unprotect a domain controller.
+        ``distinct_role_types`` (W3.2) are added to ``four_eyes_types``: a
+        second approver of another role presupposes a second approver.
         """
         raw = raw or {}
         limits = dict(DEFAULT_HOURLY_LIMITS)
@@ -493,7 +501,9 @@ class PolicyConfig:
                 raw.get("default_hourly_limit", DEFAULT_HOURLY_LIMIT)
             ),
             four_eyes_types=DEFAULT_FOUR_EYES_TYPES
-            | _norm_set(raw.get("four_eyes_types")),
+            | _norm_set(raw.get("four_eyes_types"))
+            | _norm_set(raw.get("distinct_role_types")),
+            distinct_role_types=_norm_set(raw.get("distinct_role_types")),
             subdomain_matching_types=DEFAULT_SUBDOMAIN_MATCHING_TYPES
             | _norm_set(raw.get("subdomain_matching_types")),
             undo_types=DEFAULT_UNDO_TYPES | _norm_set(raw.get("undo_types")),
@@ -518,6 +528,10 @@ class PolicyConfig:
 
     def needs_second_approver(self, action_type: str) -> bool:
         return _norm(action_type) in self.four_eyes_types
+
+    def needs_distinct_role(self, action_type: str) -> bool:
+        """Whether the second approver must hold a role the first does not (W3.2)."""
+        return _norm(action_type) in self.distinct_role_types
 
     def matches_subdomains(self, action_type: str) -> bool:
         return _norm(action_type) in self.subdomain_matching_types

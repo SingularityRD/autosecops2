@@ -202,6 +202,20 @@ export const qaApi = {
     api.post<Schema<'QADrawResponse'>>('/qa/samples/draw', data),
 }
 
+/** segregation of duties and the two-person rule's role condition, W3.2 */
+export const segregationApi = {
+  report: (params?: { since?: string; until?: string; action_type?: string; violations_only?: boolean }) =>
+    api.get<Schema<'SegregationReport'>>('/response/segregation', { params }),
+
+  exportUrl: (format: 'csv' | 'json' = 'csv', violationsOnly = false) =>
+    `${basePath}/api/response/segregation/export?format=${format}${violationsOnly ? '&violations_only=true' : ''}`,
+
+  fourEyes: () => api.get<Schema<'FourEyesConfig'>>('/response/four-eyes'),
+
+  setDistinctRole: (actionType: string, data: Schema<'DistinctRoleUpdate'>) =>
+    api.put<Schema<'FourEyesConfig'>>(`/response/four-eyes/${encodeURIComponent(actionType)}`, data),
+}
+
 /** how a findings read treats findings naming an analyst-excluded IP */
 export type ExclusionView = 'include' | 'hide' | 'only'
 

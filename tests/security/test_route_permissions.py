@@ -62,6 +62,12 @@ GATED_ROUTES = [
     ),
     ("POST", "/api/workflows/runs/r-1/resume", {}, "ai_decisions.approve"),
     (
+        "PUT",
+        "/api/response/four-eyes/disable_user",
+        {"distinct_role": True, "reason": "x"},
+        "settings.write",
+    ),
+    (
         "POST",
         "/api/workflows/runs/r-1/cancel",
         {"reason": "no"},
