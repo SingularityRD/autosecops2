@@ -24,13 +24,32 @@ ALERT = {
 }
 
 
-def answer(action="isolate", confidence="0.8", category="malware"):
-    return (
-        "SEVERITY: high\n"
-        f"CONFIDENCE: {confidence}\n"
-        f"CATEGORY: {category}\n"
-        f"RECOMMENDED_ACTION: {action}\n"
-        "REASONING: because\n"
+VERDICT_FOR = {
+    "isolate": "malicious",
+    "block": "malicious",
+    "investigate": "malicious",
+    "monitor": "benign",
+    "dismiss": "benign",
+}
+
+
+def answer(
+    action="isolate", confidence=0.8, category="malware", cited=None, target=None
+):
+    """A reply in the daemon's JSON verdict format (W1.2)."""
+    return json.dumps(
+        {
+            "verdict": VERDICT_FOR.get(action, "inconclusive"),
+            "confidence": confidence,
+            "category": category,
+            "cited_fields": cited if cited is not None else [],
+            "gaps": [],
+            "recommended_action": (
+                {"type": action, "target": target or "x"}
+                if action in VERDICT_FOR
+                else None
+            ),
+        }
     )
 
 
@@ -98,9 +117,34 @@ def test_unparseable_answer_is_inconclusive():
     finding = triage.apply_result(ALERT, "I cannot help with that.")
     d = triage.legacy_verdict(ALERT, finding, model="m", prompt_version="p")
     assert d.verdict.verdict == "inconclusive"
-    assert triage.NO_ACTION_GAP in d.verdict.gaps
-    assert triage.NO_CONFIDENCE_GAP in d.verdict.gaps
+    assert any("not a JSON verdict" in g for g in d.verdict.gaps)
     assert d.verdict.confidence == 0.0
+    assert d.verdict.recommended_action is None
+
+
+def test_old_key_value_reply_is_inconclusive():
+    reply = "SEVERITY: high\nCONFIDENCE: 0.9\nRECOMMENDED_ACTION: dismiss\n"
+    finding = triage.apply_result(ALERT, reply)
+    d = triage.legacy_verdict(ALERT, finding, model="m", prompt_version="p")
+    assert d.verdict.verdict == "inconclusive"
+
+
+def test_reads_the_stored_verdict_not_the_result_block():
+    finding = triage.apply_result(ALERT, answer(action="dismiss", cited=["severity"]))
+    assert finding["ai_triage"]["verdict"]["verdict"] == "benign"
+    finding["ai_triage"]["result"] = {"recommended_action": "isolate"}
+    finding["ai_triage"]["verdict"]["verdict"] = "malicious"
+    d = triage.legacy_verdict(ALERT, finding, model="m", prompt_version="p")
+    assert d.verdict.verdict == "malicious"
+    assert (d.verdict.model, d.verdict.prompt_version) == ("m", "p")
+
+
+def test_missing_stored_verdict_is_inconclusive():
+    d = triage.legacy_verdict(
+        ALERT, {"ai_triage": {"result": {}}}, model="m", prompt_version="p"
+    )
+    assert d.verdict.verdict == "inconclusive"
+    assert triage.NO_VERDICT_GAP in d.verdict.gaps
 
 
 def test_backend_error_is_inconclusive_with_reason():
@@ -109,9 +153,9 @@ def test_backend_error_is_inconclusive_with_reason():
     assert any("boom" in g for g in d.verdict.gaps)
 
 
-def test_repeated_key_is_dropped_by_the_daemon_parser():
+def test_repeated_key_is_refused_by_the_daemon_parser():
     # _apply_triage_result refuses a repeated key; the harness inherits that.
-    reply = answer(action="dismiss") + "RECOMMENDED_ACTION: isolate\n"
+    reply = answer(action="dismiss")[:-1] + ', "verdict": "malicious"}'
     finding = triage.apply_result(ALERT, reply)
     d = triage.legacy_verdict(ALERT, finding, model="m", prompt_version="p")
     assert d.verdict.verdict == "inconclusive"
@@ -135,13 +179,19 @@ def test_category_mapping(raw, mapped):
     assert triage.map_category(raw) == mapped
 
 
-def test_recommended_action_target_comes_from_the_alert():
-    v = decide(action="isolate").verdict
+def test_recommended_action_target_is_the_models_or_the_alerts():
+    v = decide(action="isolate", target="WEB-9").verdict
     assert (v.recommended_action.type, v.recommended_action.target) == (
         "isolate_host",
-        "WEB-1",
+        "WEB-9",
     )
-    v = decide(action="block").verdict
+    finding = triage.apply_result(ALERT, answer(action="isolate"))
+    finding["ai_triage"]["verdict"]["recommended_action"]["target"] = " "
+    v = triage.legacy_verdict(ALERT, finding, model="m", prompt_version="p").verdict
+    assert v.recommended_action.target == "WEB-1"
+    finding = triage.apply_result(ALERT, answer(action="block"))
+    finding["ai_triage"]["verdict"]["recommended_action"]["target"] = ""
+    v = triage.legacy_verdict(ALERT, finding, model="m", prompt_version="p").verdict
     assert (v.recommended_action.type, v.recommended_action.target) == (
         "block_ip",
         "192.0.2.5",
@@ -149,25 +199,44 @@ def test_recommended_action_target_comes_from_the_alert():
     assert decide(action="investigate").verdict.recommended_action is None
 
 
+def test_containment_the_daemon_refuses_is_not_scored():
+    # isolate on a benign verdict never reaches the responder.
+    reply = json.loads(answer(action="dismiss", cited=["severity"]))
+    reply["recommended_action"] = {"type": "isolate", "target": "WEB-1"}
+    finding = triage.apply_result(ALERT, json.dumps(reply))
+    d = triage.legacy_verdict(ALERT, finding, model="m", prompt_version="p")
+    assert d.verdict.verdict == "benign"
+    assert d.verdict.recommended_action is None
+
+
 def test_provenance_enforce_downgrades_uncited_benign():
     off = decide(action="dismiss", provenance="off")
     on = decide(action="dismiss", provenance="enforce")
     assert off.verdict.verdict == "benign" and off.provenance_downgraded
-    assert on.verdict.verdict == "inconclusive"
+    assert NO_SENSOR_CITATION_GAP not in off.verdict.gaps
+    assert on.verdict.verdict == "inconclusive" and on.provenance_downgraded
     assert NO_SENSOR_CITATION_GAP in on.verdict.gaps
     assert not decide(action="isolate").provenance_downgraded
 
 
+def test_sensor_cited_benign_stands_under_enforce():
+    # severity is a sensor field for crowdstrike; the title is not.
+    on = decide(action="dismiss", provenance="enforce", cited=["severity"])
+    assert on.verdict.verdict == "benign" and not on.provenance_downgraded
+    on = decide(action="dismiss", provenance="enforce", cited=["title"])
+    assert on.verdict.verdict == "inconclusive"
+
+
 def test_out_of_range_confidence_is_not_kept():
-    d = decide(confidence="1.7")
+    d = decide(confidence=1.7)
+    assert d.verdict.verdict == "inconclusive"
     assert d.verdict.confidence == 0.0
-    assert triage.NO_CONFIDENCE_GAP in d.verdict.gaps
 
 
 def test_prompt_version_is_stable_and_tracks_the_template(monkeypatch):
     v1 = triage.prompt_version()
     assert v1 == triage.prompt_version()
-    assert v1.startswith("legacy-triage@")
+    assert v1.startswith("daemon-triage-v2@")
     original = FindingProcessor._build_triage_prompt
     monkeypatch.setattr(
         FindingProcessor,

@@ -542,11 +542,15 @@ class Orchestrator:
         config: OrchestratorConfig,
         approvals: Optional[ApprovalService] = None,
         workflows: Optional[WorkflowsService] = None,
+        response: Optional[Any] = None,
     ):
         self.config = config
         self._enabled = config.enabled
         self._shutdown_event: Optional[asyncio.Event] = None
         self._approvals = approvals or ApprovalService()
+        # AutonomousResponseService: agent proposals pass its policy before a
+        # row is created. Built on first use when not injected.
+        self._response = response
         # Read for the run_kind a definition declares; the file cache needs no DB.
         self._workflows = workflows or WorkflowsService()
 
@@ -1899,28 +1903,45 @@ class Orchestrator:
     async def _create_approval_action(self, inv_id: str, action: Dict):
         """Create an approval action for proposed response."""
         try:
-            from core.response.approval_service import ActionType
-
             service = self._approvals
 
-            action_str = action.get("action", "unknown")
-            try:
-                action_type = ActionType(action_str)
-            except ValueError:
-                action_type = ActionType.CUSTOM
+            action_str = str(action.get("action", "unknown"))
 
-            service.create_action(
-                action_type=action_type,
+            if self._response is None:
+                from core.response.autonomous_response_service import (
+                    AutonomousResponseService,
+                )
+
+                self._response = AutonomousResponseService(approvals=service)
+
+            # The proposal is the agent's: the policy screens it before a row
+            # exists, and the row waits for a person (human_only) whatever the
+            # constant 0.8 says.
+            outcome = self._response.propose_action(
+                # A type outside ActionType is stored as custom; the policy
+                # still sees what was proposed.
+                action_type=action_str[:40] or "custom",
+                target=str(action.get("target", "unknown")),
                 title=f"Auto-investigation action: {action_str}",
                 description=f"Investigation {inv_id} proposes: {action.get('reason', '')}",
-                target=action.get("target", "unknown"),
                 confidence=0.8,
                 reason=f"[Auto-investigation {inv_id}] {action.get('reason', '')}",
                 evidence=[inv_id],
-                created_by=ORCHESTRATOR_ACTOR,
-                # The 0.8 is a constant, and the proposal is the agent's.
-                human_only=True,
+                proposed_by=ORCHESTRATOR_ACTOR,
+                parameters=(
+                    action.get("parameters")
+                    if isinstance(action.get("parameters"), dict)
+                    else None
+                ),
             )
+            if outcome.get("status") == "refused":
+                logger.warning(
+                    "Policy refused %s proposed by %s: %s",
+                    action_str,
+                    inv_id,
+                    "; ".join(outcome.get("reasons") or []),
+                )
+                return
             logger.info(f"Created approval action for {inv_id}: {action_str}")
         except Exception as e:
             logger.error(f"Failed to create approval action: {e}")

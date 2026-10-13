@@ -1,4 +1,5 @@
 import type { AgentEvent, CheckpointPayload, PatchPayload, ResolutionPayload } from "../../contracts/events.js";
+import type { Verdict } from "../../contracts/verdict.js";
 import type { Narrative } from "./narrative.js";
 import type {
   DecisionRecord,
@@ -26,6 +27,9 @@ export type HuntKinds = {
   finalize: unknown;
   // Written at the end and again on request: the latest wins, the earlier ones stay.
   narrative: Narrative;
+  // A verdict run's answer, journaled once before its terminal (verdict.ts). Derived
+  // from the fold, so it is a deliverable like finalize rather than a belief.
+  verdict: Verdict;
 };
 
 export type HuntEvent = AgentEvent<HuntKinds>;
@@ -160,6 +164,7 @@ export function fold(events: readonly HuntEvent[]): Projection {
         break;
       case "finalize":
       case "narrative":
+      case "verdict":
       // Recall is an input to the run's decisions and never a belief of the hunt's:
       // a fold that read episodic rows would make this projection depend on what
       // other runs concluded, and the fold is one run's own account of itself.

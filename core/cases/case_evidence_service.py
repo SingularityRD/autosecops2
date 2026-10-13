@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from core.storage.models import CaseEvidence
+from core.storage.models import Case, CaseEvidence
 from core.storage.unit_of_work import unit_of_work
 from core.time import utcnow
 
@@ -68,6 +68,22 @@ class CaseEvidenceService:
             )
         return Path(full_path)
 
+    def _refuse_other_case_dir(
+        self, session: Session, case_id: str, full_path: Path
+    ) -> None:
+        """A case's files live under ``<case_id>/``: a row of one case may not
+        point into another case's directory (its file would then be shared
+        across retention and legal-hold boundaries)."""
+        root = os.path.realpath(self.storage_path)
+        parts = os.path.relpath(full_path, root).split(os.sep, 1)
+        top = parts[0]
+        if len(parts) < 2 or top == case_id:
+            return
+        if session.query(Case.case_id).filter(Case.case_id == top).first():
+            raise ValueError(
+                "file_path must not point into another case's evidence directory"
+            )
+
     def add_evidence(
         self,
         case_id: str,
@@ -103,6 +119,8 @@ class CaseEvidenceService:
         full_path = self.resolve_stored_file(file_path) if file_path else None
         try:
             with unit_of_work(session) as session:
+                if full_path is not None:
+                    self._refuse_other_case_dir(session, case_id, full_path)
                 # Calculate file hashes if file exists
                 file_hash_md5 = None
                 file_hash_sha256 = None
@@ -146,6 +164,8 @@ class CaseEvidenceService:
                 logger.info(f"Added evidence {evidence.evidence_id} to case {case_id}")
                 return evidence
 
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(f"Error adding evidence: {e}")
             return None

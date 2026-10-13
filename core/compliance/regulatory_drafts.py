@@ -18,6 +18,7 @@ citation rule and the template is used instead whenever it fails it.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
@@ -89,6 +90,25 @@ TO_COMPLETE = {
 MAX_FINDINGS = 25
 MAX_EVIDENCE = 25
 MAX_AUDIT = 20
+
+
+# A pack id written into the text itself, as "[evidence:12]" or
+# "[finding:f-1, audit:3]". The structured ``cites`` are not the only place a
+# writer can point at evidence: a reference in the prose must name the pack too.
+_PACK_ID_KINDS = ("case", "finding", "evidence", "audit", "clock")
+_BRACKETED = re.compile(r"\[([^\[\]]+)\]")
+_PACK_REF = re.compile(r"^(?:%s):\S+$" % "|".join(_PACK_ID_KINDS))
+
+
+def text_references(value: str) -> List[str]:
+    """Pack ids referenced in bracketed form inside ``value``, in order."""
+    refs: List[str] = []
+    for group in _BRACKETED.findall(value):
+        for part in group.split(","):
+            part = part.strip()
+            if _PACK_REF.match(part) and part not in refs:
+                refs.append(part)
+    return refs
 
 
 class DraftCitationError(ValueError):
@@ -220,10 +240,22 @@ def template_sections(
     return sections
 
 
+def _check_text_references(value: str, known: frozenset) -> None:
+    for ref in text_references(value):
+        if ref not in known:
+            raise DraftCitationError(
+                f"text references {ref!r}, which is not in the evidence pack"
+            )
+
+
 def validate_citations(
     sections: Sequence[Mapping[str, Any]], pack: EvidencePack
 ) -> List[str]:
-    """The ids cited, in order. Raises on an unknown id or a line citing nothing."""
+    """The ids cited, in order. Raises on an unknown id or a line citing nothing.
+
+    An id referenced in the heading or line text (``[evidence:12]``) must be in
+    the pack as well, so the prose cannot point at evidence the case lacks.
+    """
     known = pack.ids
     cited: List[str] = []
     if not isinstance(sections, (list, tuple)) or not sections:
@@ -235,9 +267,11 @@ def validate_citations(
             raise DraftCitationError("a section is a heading and a list of lines")
         if not isinstance(section.get("heading"), str):
             raise DraftCitationError("a section needs a heading")
+        _check_text_references(section["heading"], known)
         for line in section["lines"]:
             if not isinstance(line, Mapping) or not isinstance(line.get("text"), str):
                 raise DraftCitationError("a line is text with cites")
+            _check_text_references(line["text"], known)
             cites = line.get("cites")
             if not isinstance(cites, list) or not cites:
                 raise DraftCitationError(f"line cites nothing: {line.get('text')!r}")
