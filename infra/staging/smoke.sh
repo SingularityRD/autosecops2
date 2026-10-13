@@ -15,6 +15,7 @@
 #   STAGING_POLL_INTERVAL [10]
 #
 # Exit 0 only if every step passed. Prints "SMOKE: PASS" / "SMOKE: FAIL <step>".
+# shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 # shellcheck source=lib/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"

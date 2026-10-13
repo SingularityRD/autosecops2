@@ -22,6 +22,7 @@
 # Env (defaults): K3S_VERSION [v1.31.4+k3s1], HELM_VERSION [v3.16.4],
 #   REGISTRY_IMAGE [docker.io/library/registry:2.8.3], plus anything in
 #   staging.env.example (read from $STAGING_ETC_DIR/staging.env when present).
+# shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 # shellcheck source=lib/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"

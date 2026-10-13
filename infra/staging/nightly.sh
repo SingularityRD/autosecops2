@@ -21,6 +21,7 @@
 #
 # A commit that already passed is not rebuilt unless STAGING_FORCE=1; the
 # smoke test still runs. One run at a time (flock).
+# shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 # shellcheck source=lib/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"

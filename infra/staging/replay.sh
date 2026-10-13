@@ -15,6 +15,7 @@
 #
 # Exit non-zero if ingestion fails or coverage stays below
 # $REPLAY_MIN_COVERAGE (default 0: report only).
+# shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 # shellcheck source=lib/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"

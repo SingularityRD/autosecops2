@@ -8,6 +8,7 @@
 #   STAGING_BASE_URL=http://127.0.0.1:16987 infra/staging/seed-demo.sh
 #
 # Credentials: $STAGING_ETC_DIR/admin.env (see bootstrap.sh).
+# shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 # shellcheck source=lib/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
