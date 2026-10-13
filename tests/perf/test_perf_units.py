@@ -135,9 +135,11 @@ def test_report_renders_and_serialises():
         accounting=acc,
         slo=measure.compare_slo(stats, 0),
         notes=["smoke"],
+        by_path={"api": stats},
     )
     md = measure.render_markdown(rep)
     assert "| rules | 1 | 1 |" in md and "Alert loss" in md and "smoke" in md
+    assert "| api | rules | 1 | 1 |" in md
     d = json.loads(json.dumps(rep.to_dict(), default=str))
     assert d["accounting"]["lost_count"] == 0
 

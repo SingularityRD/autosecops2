@@ -30,6 +30,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,7 +81,9 @@ class PrivatePostgres:
     """A throwaway PostgreSQL cluster on a free port."""
 
     def __init__(self, workdir: Path):
-        self.dir = workdir / "pg"
+        # Outside ``workdir``: pytest's tmp dirs are 0700 and the server runs
+        # as the postgres user, which must be able to reach its data directory.
+        self.dir = Path(tempfile.mkdtemp(prefix="autosecops-perf-pg-"))
         self.data = self.dir / "data"
         self.log = self.dir / "postgres.log"
         self.port = _free_port()
@@ -103,10 +106,9 @@ class PrivatePostgres:
             raise StackError(f"pg_ctl {args[0]} failed: {done.stdout}{done.stderr}")
 
     def init(self) -> None:
-        self.dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.dir, 0o755)
         if os.geteuid() == 0:
             shutil.chown(self.dir, user="postgres")
-            os.chmod(self.dir.parent, 0o755)
         argv = _as_postgres(
             [_pg_bin("initdb"), "-D", str(self.data), "-A", "trust", "-U", self.user]
         )
@@ -434,10 +436,9 @@ class LocalStack:
                     proc.stop()
                 except Exception:  # noqa: BLE001
                     pass
-        try:
+        # shutdown() blocks forever on a server that never started serving.
+        if self.llm._thread.is_alive():
             self.llm.stop()
-        except Exception:  # noqa: BLE001
-            pass
         self.redis.stop()
         if self.pg:
             self.pg.destroy()

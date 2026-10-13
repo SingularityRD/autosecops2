@@ -368,6 +368,8 @@ class Report:
     slo: List[SloCheck]
     notes: List[str] = field(default_factory=list)
     extra: Dict[str, Any] = field(default_factory=dict)
+    # The same latencies split by how the finding came in (webhook / api).
+    by_path: Dict[str, Dict[str, LaneStats]] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -403,6 +405,17 @@ def render_markdown(report: Report) -> str:
             f"| {st.lane} | {st.count} | {st.settled} | {_fmt(st.p50)} | "
             f"{_fmt(st.p95)} | {_fmt(st.p99)} | {_fmt(st.max)} |"
         )
+    if report.by_path:
+        lines += ["", "### By ingest path", ""]
+        lines.append("| Path | Lane | Findings | Settled | p50 | p95 | p99 |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for path, lanes in report.by_path.items():
+            for st in lanes.values():
+                if st.count:
+                    lines.append(
+                        f"| {path} | {st.lane} | {st.count} | {st.settled} | "
+                        f"{_fmt(st.p50)} | {_fmt(st.p95)} | {_fmt(st.p99)} |"
+                    )
     lines += ["", "## SLO comparison", ""]
     lines.append("| SLO | Target | Measured | Status |")
     lines.append("|---|---|---|---|")

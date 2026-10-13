@@ -457,7 +457,15 @@ def build_report(
     )
     stats = measure.lane_stats(rows)
     acc = measure.account(log.accepted_ids(), log.sent_ids(), rows)
+    paths: Dict[str, set] = {}
+    for s in log.sends:
+        paths.setdefault(s.path, set()).update(s.ids)
+    by_path = {
+        path: measure.lane_stats([r for r in rows if r.finding_id in ids])
+        for path, ids in sorted(paths.items())
+    }
     return measure.Report(
+        by_path=by_path,
         run_id=run_id,
         label=label,
         profile=dict(profile.__dict__),
