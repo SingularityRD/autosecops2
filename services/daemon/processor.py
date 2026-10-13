@@ -384,6 +384,23 @@ def _reasoning(verdict: Verdict) -> str:
     )
 
 
+# Keys only an earlier analysis writes. On a finding from the backfill sweep
+# they came from our own database; on any other they came from the sender.
+_PRIOR_ANALYSIS_KEYS = ("ai_enrichment", "verdict", "prior_verdict")
+
+
+def drop_payload_analysis(finding: Dict[str, Any], source: Optional[str]) -> None:
+    """Remove analysis fields the processor writes from a finding it did not
+    read back itself. ``triage_confidence`` / ``recommended_action`` /
+    ``enrichment`` in a webhook or Kafka payload must not drive response,
+    lane risk or the prompt's THIRD_PARTY group as if AutoSecOps wrote them."""
+    for key in _AI_ANALYSIS_KEYS:
+        finding.pop(key, None)
+    if source != BACKFILL_SOURCE:
+        for key in _PRIOR_ANALYSIS_KEYS:
+            finding.pop(key, None)
+
+
 def legacy_triage_fields(verdict: Verdict) -> Dict[str, Any]:
     """The ``ai_triage["result"]`` fields downstream readers use, from a verdict.
 
@@ -967,6 +984,11 @@ class FindingProcessor:
         is capped by the semaphore and short-circuited by the breaker; response
         evaluation always runs on whatever severity we have."""
         finding_id = finding.get("finding_id", "unknown")
+        # Triage output a sender put on its own payload is not this run's:
+        # when triage is skipped (a rules lane, an enqueued verdict run, a
+        # failed or disabled triage) it would otherwise reach the responder
+        # and be stored as the AI's analysis.
+        drop_payload_analysis(finding, source)
         # W2.2 lane: rules / small model / verdict. Only this run's decision is
         # trusted; an ``alert_lane`` arriving in the payload is never honoured.
         lane = await self.alert_lanes(finding)
