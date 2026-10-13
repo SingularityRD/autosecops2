@@ -5,7 +5,7 @@ and keeps every request body. The answer comes from ``responder(body)``, which
 returns the assistant ``content`` string, or ``(status, json_body)`` to fail.
 The default responder plays an Ollama model constrained by the request's JSON
 schema: it reads the alert's lexical cues (the evalkit stub's scorer) and
-answers with a schema-valid object.
+answers with a schema-valid verdict object.
 """
 
 from __future__ import annotations
@@ -20,23 +20,12 @@ Responder = Callable[[Dict[str, Any]], Answer]
 
 
 def schema_answer(body: Dict[str, Any]) -> str:
-    """A schema-valid assessment derived from the prompt (deterministic)."""
+    """A schema-valid verdict object derived from the prompt (deterministic):
+    the evalkit stub's own JSON verdict for the same daemon prompt."""
     from evalkit.backends import stub_answer
 
     prompt = "\n".join(str(m.get("content") or "") for m in body.get("messages") or [])
-    fields = {}
-    for line in stub_answer(prompt).splitlines():
-        key, _, value = line.partition(":")
-        fields[key.strip()] = value.strip()
-    return json.dumps(
-        {
-            "severity": fields["SEVERITY"],
-            "confidence": float(fields["CONFIDENCE"]),
-            "category": fields["CATEGORY"],
-            "recommended_action": fields["RECOMMENDED_ACTION"],
-            "reasoning": fields["REASONING"],
-        }
-    )
+    return stub_answer(prompt)
 
 
 class StubBifrost:

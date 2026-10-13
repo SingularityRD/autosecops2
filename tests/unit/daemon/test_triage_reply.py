@@ -1,5 +1,7 @@
 """The triage reply is model output over alert text; only a well-formed one counts."""
 
+import json
+
 import pytest
 
 from services.daemon.config import ProcessingConfig
@@ -9,43 +11,81 @@ from services.daemon.responder import _actionable_ip
 pytestmark = pytest.mark.unit
 
 
+# A finding with one sensor field (CrowdStrike: entity_context.src_ips) and
+# one adversary-influenceable field (title).
+FINDING = {
+    "finding_id": "f-1",
+    "data_source": "crowdstrike",
+    "title": "beacon",
+    "entity_context": {"src_ips": ["10.1.2.3"]},
+}
+
+
+def _reply(**fields) -> str:
+    doc = {
+        "verdict": "malicious",
+        "confidence": 0.82,
+        "category": "malware",
+        "cited_fields": ["entity_context.src_ips"],
+        "gaps": [],
+        "recommended_action": {"type": "isolate", "target": "ws-1"},
+    }
+    doc.update(fields)
+    return json.dumps(doc)
+
+
 def _apply(reply: str) -> dict:
     processor = FindingProcessor(ProcessingConfig())
-    return processor._apply_triage_result({"finding_id": "f-1"}, reply)
+    return processor._apply_triage_result(dict(FINDING), reply, model="m")
 
 
 def test_a_well_formed_reply_is_applied():
-    finding = _apply(
-        "SEVERITY: high\nCONFIDENCE: 0.82\nCATEGORY: Malware\n"
-        "RECOMMENDED_ACTION: Isolate\nREASONING: beaconing"
-    )
+    finding = _apply(_reply())
     assert finding["severity"] == "high"
     assert finding["triage_confidence"] == 0.82
     assert finding["recommended_action"] == "isolate"
     assert finding["category"] == "malware"
+    assert finding["ai_triage"]["verdict"]["verdict"] == "malicious"
 
 
-@pytest.mark.parametrize("confidence", ["42", "1.5", "-1", "nan", "inf", "high"])
+@pytest.mark.parametrize("confidence", [42, 1.5, -1, "0.9", True])
 def test_a_confidence_outside_zero_to_one_is_not_recorded(confidence):
-    finding = _apply(
-        f"SEVERITY: high\nCONFIDENCE: {confidence}\nRECOMMENDED_ACTION: isolate"
-    )
+    finding = _apply(_reply(confidence=confidence))
     assert "triage_confidence" not in finding
     assert "confidence" not in finding["ai_triage"]["result"]
+    assert "recommended_action" not in finding
+    assert finding["ai_triage"]["result"]["verdict"] == "inconclusive"
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_a_non_json_number_is_not_a_confidence(constant):
+    finding = _apply(_reply().replace("0.82", constant))
+    assert "triage_confidence" not in finding
+    assert finding["ai_triage"]["result"]["verdict"] == "inconclusive"
 
 
 def test_a_repeated_key_is_dropped_rather_than_last_wins():
-    finding = _apply(
-        "CONFIDENCE: 0.2\nRECOMMENDED_ACTION: dismiss\n"
-        "CONFIDENCE: 0.95\nRECOMMENDED_ACTION: isolate"
+    reply = (
+        '{"verdict": "benign", "confidence": 0.2, "category": "other",'
+        ' "cited_fields": ["entity_context.src_ips"], "gaps": [],'
+        ' "verdict": "malicious", "confidence": 0.95,'
+        ' "recommended_action": {"type": "isolate", "target": "ws-1"}}'
     )
+    finding = _apply(reply)
     assert "triage_confidence" not in finding
     assert "recommended_action" not in finding
+    assert finding["ai_triage"]["result"]["verdict"] == "inconclusive"
 
 
 def test_an_action_outside_the_vocabulary_is_ignored():
-    finding = _apply("CONFIDENCE: 0.9\nRECOMMENDED_ACTION: wipe_everything")
+    finding = _apply(
+        _reply(recommended_action={"type": "wipe_everything", "target": "all"})
+    )
     assert "recommended_action" not in finding
+    # The verdict itself keeps what the model said.
+    assert finding["ai_triage"]["verdict"]["recommended_action"]["type"] == (
+        "wipe_everything"
+    )
 
 
 def test_alert_text_is_fenced_in_the_prompt():

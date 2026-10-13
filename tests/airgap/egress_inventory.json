@@ -179,6 +179,19 @@
       "note": "Vendor connector; runs only when the 'carbon_black' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
     },
     {
+      "site": "core/integrations/cloudflare/client.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 6,
+        "host:api.cloudflare.com": 1
+      },
+      "gates": [
+        "integration:cloudflare",
+        "mcp-server:cloudflare"
+      ],
+      "note": "Shared Cloudflare REST client used by the WAF/Gateway/Access executor (W2.4); runs only when the 'cloudflare' integration is enabled with credentials. The air-gap profile enables none."
+    },
+    {
       "site": "core/integrations/cloudflare/tool.py",
       "category": "gated",
       "kinds": {

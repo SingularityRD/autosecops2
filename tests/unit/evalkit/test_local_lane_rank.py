@@ -26,11 +26,12 @@ def responder(body):
     if model == "ollama/lazy:1b":
         return json.dumps(
             {
-                "severity": "low",
+                "verdict": "benign",
                 "confidence": 0.9,
                 "category": "other",
-                "recommended_action": "dismiss",
-                "reasoning": "looks fine",
+                "cited_fields": ["severity"],
+                "gaps": [],
+                "recommended_action": {"type": "dismiss", "target": "host"},
             }
         )
     if model == "ollama/sloppy:1b":
@@ -261,3 +262,45 @@ def test_small_lane_slice_and_committed_candidates():
     candidates = el.load_candidates(el.CANDIDATES_FILE)
     assert len(candidates) >= 2
     assert all("/" not in c for c in candidates)
+
+
+def test_answers_are_scored_through_the_daemon_verdict_path():
+    """Round 5: a lane answer is scored as the daemon stores it (W1.2)."""
+    import asyncio
+
+    from evalkit.corpus import load_suites
+    from evalkit.triage import prompt_version
+    from tests.unit.llm.stub_bifrost import schema_answer
+
+    cases = el.slice_cases(load_suites(["dev"])["dev"], "small_lane")[:4]
+
+    class FakeLane:
+        model = "ollama/fake:1b"
+
+        def __init__(self, reply):
+            self.reply = reply
+
+        async def triage(self, prompt):
+            content = self.reply(prompt)
+            return ll.LaneAnswer(content=content, model=self.model, latency_ms=1)
+
+    def good(prompt):
+        return schema_answer({"messages": [{"content": prompt}]})
+
+    results = asyncio.run(
+        el.evaluate(cases, el.LocalLaneBackend(FakeLane(good)), concurrency=1)
+    )
+    assert all(r.error is None for r in results)
+    assert all(r.verdict["prompt_version"] == prompt_version() for r in results)
+    assert not any(el.is_schema_error(r) for r in results)
+    # A legacy KEY: value answer would be stored inconclusive by the daemon.
+    legacy = asyncio.run(
+        el.evaluate(
+            cases,
+            el.LocalLaneBackend(FakeLane(lambda p: "SEVERITY: high\nCONFIDENCE: 0.9")),
+            concurrency=1,
+        )
+    )
+    assert all(r.actual_verdict == "inconclusive" for r in legacy)
+    assert all(el.is_schema_error(r) for r in legacy)
+    assert el.summarize(legacy, "dev")["schema_error_rate"] == 1.0

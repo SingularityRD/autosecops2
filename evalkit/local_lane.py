@@ -4,6 +4,12 @@
 :class:`core.llm.local_lane.LocalModelLane`, i.e. Bifrost → Ollama with a
 JSON-schema answer) over the same corpus slice, offline, and ranks them:
 
+Each answer is scored exactly as the daemon would store it: the lane returns
+the verdict JSON the daemon's prompt (``daemon-triage-v2``) asks for, and
+evalkit runs it through ``FindingProcessor._apply_triage_result`` /
+``parse_triage_reply`` (W1.2) before scoring the stored verdict. An answer the
+lane refuses as off-schema, or the daemon parser cannot read, is a schema error.
+
 1. A candidate is *eligible* when its recall on the slice reaches the floor
    (``--min-recall``; default ``baseline`` = the deterministic stub's recall on
    the same slice, the floor any real model must beat) and its schema-error
@@ -50,6 +56,9 @@ RANKING_FORMAT = "autosecops.local_lane.ranking/v1"
 SLICES = ("small_lane", "all")
 SMALL_LANE_EXCLUDED_SEVERITIES = frozenset({"critical"})
 SCHEMA_ERROR_PREFIX = "schema:"
+# Gaps the daemon's parse_triage_reply records when it could not read a reply
+# as a verdict (W1.2): an answer the daemon would store as inconclusive.
+DAEMON_UNREADABLE_GAP_PREFIX = "triage reply "
 EXIT_NO_ELIGIBLE = 3
 EXIT_NONLOCAL_GATEWAY = 4
 
@@ -104,9 +113,7 @@ def summarize(results: Sequence[CaseResult], suite: str) -> Dict[str, Any]:
     rep = build_report({suite: results}, run={})["suites"][suite]
     overall, ops = rep["overall"], rep["operational"]
     n = overall["n"]
-    schema_errors = sum(
-        1 for r in results if (r.error or "").startswith(SCHEMA_ERROR_PREFIX)
-    )
+    schema_errors = sum(1 for r in results if is_schema_error(r))
     return {
         "n": n,
         "n_malicious": overall["n_malicious"],
@@ -122,6 +129,16 @@ def summarize(results: Sequence[CaseResult], suite: str) -> Dict[str, Any]:
         "latency_p50_ms": ops["latency_ms"]["p50"],
         "latency_p95_ms": ops["latency_ms"]["p95"],
     }
+
+
+def is_schema_error(result: CaseResult) -> bool:
+    """The lane refused the answer as off-schema, or the daemon's own reply
+    parser (the path every lane's answer is scored through) could not read
+    it as a verdict."""
+    if (result.error or "").startswith(SCHEMA_ERROR_PREFIX):
+        return True
+    gaps = (result.verdict or {}).get("gaps") or []
+    return any(str(g).startswith(DAEMON_UNREADABLE_GAP_PREFIX) for g in gaps)
 
 
 def _num(value: Optional[float], default: float) -> float:
