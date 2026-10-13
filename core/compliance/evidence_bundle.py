@@ -321,7 +321,14 @@ def build_bundle(
             info = zipfile.ZipInfo(name, date_time=stamp_tuple)
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o644 << 16
+            # No extra field and no comment: the verifier refuses both, so
+            # every ZIP reader sees the one directory it checked.
+            info.extra = b""
+            info.comment = b""
             archive.writestr(info, body)
+    # The strict reader must accept what was just written (no ZIP64, no extra
+    # fields, no comment, nothing between entries).
+    verify_bundle._zip_entries(buffer, len(buffer.getvalue()))
     return Bundle(
         data=buffer.getvalue(),
         filename=filename,

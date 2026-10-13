@@ -26,13 +26,20 @@ citable_index    the digest the regulatory drafts cite is the sha256 of the
                  listed items.
 
 archive          (ZIP only) every entry is a file the manifest lists, at the
-                 size it lists; checked before anything is inflated.
+                 size it lists; checked before anything is inflated, and only
+                 once manifest.sig is a valid signature of the manifest (by the
+                 pinned key, when one is given).
 
 A ZIP is read strictly: exactly one archive filling the file (first local header
 at offset 0, end-of-central-directory record last, no comment, no bytes before,
 between or after the entries), every local header agreeing with its central
-directory entry, stored or deflated only, no encryption, no ZIP64. Inflation
-stops at each entry's declared size, and the declared total is capped.
+directory entry, no extra field and no comment on any entry (local or central),
+no ZIP64 record or locator signature anywhere outside entry data, stored or
+deflated only, no encryption, no ZIP64. So the only bytes outside entry data are
+fixed header fields and names, and every ZIP reader finds the same directory.
+Inflation stops at each entry's declared size, the declared total is capped,
+and entries are hashed as they inflate (only the JSON the chain checks parse is
+kept in memory).
 
 Exit status: 0 the pack verifies; 1 it does not (tampered, an entry the manifest
 does not account for, or a chain in it is broken); 2 it cannot be read (not a
@@ -55,7 +62,7 @@ import struct
 import sys
 import zlib
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence
 
 FORMAT = "autosecops.evidence-pack"
 VERSION = 1
@@ -307,11 +314,42 @@ _EOCD_SIG = b"PK\x05\x06"
 _CDH_SIG = b"PK\x01\x02"
 _LFH_SIG = b"PK\x03\x04"
 _DD_SIG = b"PK\x07\x08"
+# ZIP64 end-of-central-directory record and locator. CPython's zipfile (and
+# others) honour a locator found just before the classic EOCD record, wherever
+# it came from, so neither may appear anywhere a reader looks for structure.
+_ZIP64_SIGS = (b"PK\x06\x06", b"PK\x06\x07")
 _FLAG_ENCRYPTED = 0x0001
 _FLAG_DESCRIPTOR = 0x0008
 _FLAG_STRONG_ENCRYPTION = 0x0040
 _FLAG_UTF8 = 0x0800
 _STORED, _DEFLATED = 0, 8
+
+
+# Files whose contents the chain checks parse; every other file is only hashed.
+CONTENT_FILES = frozenset(
+    {
+        MANIFEST,
+        SIGNATURE,
+        "data/ledger.json",
+        "data/regulatory_clock_events.json",
+        "data/audit_chain.json",
+        "data/citable_index.json",
+    }
+)
+
+
+@dataclass(frozen=True)
+class Digest:
+    """A file that was hashed while it streamed, not kept: its sha256 and size."""
+
+    sha256: str
+    size: int
+
+
+def _no_zip64_signature(region: bytes, where: str) -> None:
+    for sig in _ZIP64_SIGS:
+        if sig in region:
+            raise PackUnreadable(f"ZIP64 record or locator signature in {where}")
 
 
 @dataclass
@@ -385,6 +423,13 @@ def _zip_entries(handle: Any, size: int) -> List[_Entry]:
         if pos > len(directory) or len(raw_name) != name_len:
             raise PackUnreadable("central directory is truncated")
         name = raw_name.decode("utf-8" if flags & _FLAG_UTF8 else "cp437")
+        if extra_len or comment_len:
+            # The builder writes neither. An extra field can rename the entry
+            # for some readers (Info-ZIP Unicode Path, 0x7075) and either can
+            # hide a second directory that another reader finds.
+            raise PackUnreadable(
+                f"{name}: central directory entry has an extra field or comment"
+            )
         if flags & (_FLAG_ENCRYPTED | _FLAG_STRONG_ENCRYPTION):
             raise PackUnreadable(f"{name} is encrypted")
         if method not in (_STORED, _DEFLATED):
@@ -397,6 +442,10 @@ def _zip_entries(handle: Any, size: int) -> List[_Entry]:
         entries.append(_Entry(name, raw_name, flags, method, crc, csize, usize, offset))
     if pos != len(directory):
         raise PackUnreadable("central directory has trailing bytes")
+    # The directory now holds only fixed fields and names; it ends where the
+    # EOCD record begins, so this also covers the 20 bytes where a reader looks
+    # for a ZIP64 locator.
+    _no_zip64_signature(directory, "the central directory")
 
     expected = 0
     for entry in sorted(entries, key=lambda e: e.offset):
@@ -412,6 +461,9 @@ def _zip_entries(handle: Any, size: int) -> List[_Entry]:
         if sig != _LFH_SIG:
             raise PackUnreadable(f"{entry.name}: no local header at {entry.offset}")
         raw_name = _read_exact(handle, entry.offset + _LFH.size, name_len)
+        if extra_len:
+            raise PackUnreadable(f"{entry.name}: local header has an extra field")
+        _no_zip64_signature(header + raw_name, f"{entry.name}'s local header")
         if raw_name != entry.raw_name or flags != entry.flags or method != entry.method:
             raise PackUnreadable(
                 f"{entry.name}: local header does not match the central directory"
@@ -437,7 +489,12 @@ def _zip_entries(handle: Any, size: int) -> List[_Entry]:
             head = _read_exact(handle, expected, 4)
             if head == _DD_SIG:
                 expected += 4
-            descriptor = struct.unpack("<III", _read_exact(handle, expected, 12))
+            raw_descriptor = _read_exact(handle, expected, 12)
+            _no_zip64_signature(
+                (_DD_SIG if head == _DD_SIG else b"") + raw_descriptor,
+                f"{entry.name}'s data descriptor",
+            )
+            descriptor = struct.unpack("<III", raw_descriptor)
             if descriptor != (entry.crc, entry.csize, entry.usize):
                 raise PackUnreadable(
                     f"{entry.name}: data descriptor does not match the central directory"
@@ -450,46 +507,87 @@ def _zip_entries(handle: Any, size: int) -> List[_Entry]:
     return entries
 
 
-def _inflate(handle: Any, entry: _Entry) -> bytes:
-    """The entry's bytes, never inflating past its declared size."""
+def _stream(handle: Any, entry: _Entry) -> Iterator[bytes]:
+    """The entry's bytes in pieces, never inflating past its declared size.
+
+    The size and CRC are checked after the last piece, so a consumer must
+    exhaust the iterator before trusting what it saw.
+    """
     handle.seek(entry.data_start)
     left = entry.csize
-    parts: List[bytes] = []
     produced = 0
+    crc = 0
     inflater = zlib.decompressobj(-15) if entry.method == _DEFLATED else None
     while left:
         chunk = handle.read(min(_CHUNK, left))
         if not chunk:
             raise PackUnreadable("archive is truncated")
         left -= len(chunk)
-        if inflater is None:
-            piece = chunk
-        else:
-            piece = inflater.decompress(chunk, entry.usize - produced + 1)
-            if inflater.unconsumed_tail:
+        pending = chunk
+        while True:
+            if inflater is None:
+                piece, pending = pending, b""
+            else:
+                # At most _CHUNK bytes out per call: a small input that inflates
+                # hugely is held back in unconsumed_tail, never in memory.
+                piece = inflater.decompress(pending, _CHUNK)
+                pending = inflater.unconsumed_tail
+            produced += len(piece)
+            if produced > entry.usize:
                 raise PackUnreadable(f"{entry.name} inflates past its declared size")
-        produced += len(piece)
-        if produced > entry.usize:
-            raise PackUnreadable(f"{entry.name} inflates past its declared size")
-        parts.append(piece)
+            if piece:
+                crc = zlib.crc32(piece, crc)
+                yield piece
+            if not pending and (inflater is None or len(piece) < _CHUNK):
+                break
+        handle.seek(entry.data_start + entry.csize - left)
     if inflater is not None:
         tail = inflater.flush()
         produced += len(tail)
-        parts.append(tail)
+        if produced > entry.usize:
+            raise PackUnreadable(f"{entry.name} inflates past its declared size")
+        crc = zlib.crc32(tail, crc)
         if not inflater.eof or inflater.unused_data:
             raise PackUnreadable(f"{entry.name}: compressed data is corrupt")
-    data = b"".join(parts)
-    if len(data) != entry.usize or (zlib.crc32(data) & 0xFFFFFFFF) != entry.crc:
+        if tail:
+            yield tail
+    if produced != entry.usize or (crc & 0xFFFFFFFF) != entry.crc:
         raise PackUnreadable(f"{entry.name}: data does not match its CRC or size")
-    return data
 
 
-def _listed_sizes(raw_manifest: bytes) -> Optional[Dict[str, int]]:
+def _inflate(handle: Any, entry: _Entry) -> bytes:
+    """The entry's bytes, never inflating past its declared size."""
+    return b"".join(_stream(handle, entry))
+
+
+def _digest(handle: Any, entry: _Entry) -> Digest:
+    """The entry's sha256 and size, hashed piece by piece."""
+    hasher = hashlib.sha256()
+    size = 0
+    for piece in _stream(handle, entry):
+        hasher.update(piece)
+        size += len(piece)
+    return Digest(hasher.hexdigest(), size)
+
+
+class SignatureRejected(ArchiveRejected):
+    """manifest.sig does not hold for the manifest, so its sizes are not trusted."""
+
+    def __init__(self, checks: List["Check"]):
+        super().__init__("; ".join(c.detail for c in checks if not c.ok))
+        self.checks = checks
+
+
+def _parse_manifest(raw_manifest: bytes) -> Optional[Dict[str, Any]]:
     try:
         manifest = json.loads(raw_manifest.decode("utf-8"))
     except ValueError:
         return None
-    listed = manifest.get("files") if isinstance(manifest, dict) else None
+    return manifest if isinstance(manifest, dict) else None
+
+
+def _listed_sizes(manifest: Mapping[str, Any]) -> Optional[Dict[str, int]]:
+    listed = manifest.get("files")
     if not isinstance(listed, list):
         return None
     sizes: Dict[str, int] = {}
@@ -500,7 +598,7 @@ def _listed_sizes(raw_manifest: bytes) -> Optional[Dict[str, int]]:
     return sizes
 
 
-def _read_zip(path: str) -> Dict[str, bytes]:
+def _read_zip(path: str, trusted_key: Optional[bytes] = None) -> Dict[str, Any]:
     with open(path, "rb") as handle:
         size = os.fstat(handle.fileno()).st_size
         entries = _zip_entries(handle, size)
@@ -509,7 +607,7 @@ def _read_zip(path: str) -> Dict[str, bytes]:
             raise PackUnreadable(
                 f"archive declares more than {MAX_PACK_BYTES} bytes uncompressed"
             )
-        files: Dict[str, bytes] = {}
+        files: Dict[str, Any] = {}
         for name, cap in (
             (MANIFEST, MAX_MANIFEST_BYTES),
             (SIGNATURE, MAX_SIGNATURE_BYTES),
@@ -520,9 +618,19 @@ def _read_zip(path: str) -> Dict[str, bytes]:
             if entry.usize > cap:
                 raise PackUnreadable(f"{name} is larger than {cap} bytes")
             files[name] = _inflate(handle, entry)
-        sizes = _listed_sizes(files[MANIFEST])
-        if sizes is None:
+        manifest = _parse_manifest(files[MANIFEST])
+        if manifest is None:
             return files  # verify_files says what is wrong with the manifest
+        # The manifest's sizes bound what is inflated below, so they count only
+        # once its signature holds (for the pinned key, when one is given).
+        signature = _signature_checks(
+            manifest, files[MANIFEST], files[SIGNATURE], trusted_key
+        )
+        if not all(c.ok for c in signature):
+            raise SignatureRejected(signature)
+        sizes = _listed_sizes(manifest)
+        if sizes is None:
+            return files
         problems: List[str] = []
         for entry in entries:
             if entry.name in files:
@@ -539,19 +647,37 @@ def _read_zip(path: str) -> Dict[str, bytes]:
         if problems:
             raise ArchiveRejected("; ".join(problems))
         for entry in entries:
-            if entry.name not in files:
+            if entry.name in files:
+                continue
+            if entry.name in CONTENT_FILES:
                 files[entry.name] = _inflate(handle, entry)
+            else:
+                files[entry.name] = _digest(handle, entry)
         return files
 
 
-def read_pack(path: str) -> Dict[str, bytes]:
-    """Every file of the pack by its path.
+def _hash_file(handle: Any) -> Digest:
+    hasher = hashlib.sha256()
+    size = 0
+    while True:
+        chunk = handle.read(_CHUNK)
+        if not chunk:
+            return Digest(hasher.hexdigest(), size)
+        hasher.update(chunk)
+        size += len(chunk)
 
+
+def read_pack(path: str, trusted_key: Optional[bytes] = None) -> Dict[str, Any]:
+    """Every file of the pack by its path: bytes, or a ``Digest`` when only hashed.
+
+    The files the chain checks parse (``CONTENT_FILES``) come back as bytes;
+    every other file is hashed as it is read and comes back as a ``Digest``.
     A ZIP is read strictly (see ``_zip_entries``) and only entries the manifest
-    lists, at the size it lists, are inflated. Raises PackUnreadable (exit 2) or
-    ArchiveRejected (exit 1).
+    lists, at the size it lists, are inflated, after its signature holds.
+    Raises PackUnreadable (exit 2) or ArchiveRejected (exit 1;
+    SignatureRejected when the signature does not hold).
     """
-    files: Dict[str, bytes] = {}
+    files: Dict[str, Any] = {}
     if os.path.isdir(path):
         root = os.path.abspath(path)
         for base, _dirs, names in os.walk(root):
@@ -559,10 +685,12 @@ def read_pack(path: str) -> Dict[str, bytes]:
                 full = os.path.join(base, name)
                 rel = os.path.relpath(full, root).replace(os.sep, "/")
                 with open(full, "rb") as handle:
-                    files[rel] = handle.read()
+                    files[rel] = (
+                        handle.read() if rel in CONTENT_FILES else _hash_file(handle)
+                    )
         return files
     try:
-        return _read_zip(path)
+        return _read_zip(path, trusted_key)
     except (OSError, zlib.error, struct.error, UnicodeDecodeError) as exc:
         raise PackUnreadable(f"cannot read {path}: {exc}") from None
 
@@ -575,33 +703,26 @@ class Check:
     warning: bool = False
 
 
-def _json_file(files: Mapping[str, bytes], name: str) -> Any:
-    return json.loads(files[name].decode("utf-8"))
+def _json_file(files: Mapping[str, Any], name: str) -> Any:
+    data = files[name]
+    if isinstance(data, Digest):
+        raise ValueError(f"{name} was hashed, not read")
+    return json.loads(data.decode("utf-8"))
 
 
-def verify_files(
-    files: Mapping[str, bytes], trusted_key: Optional[bytes] = None
+def _signature_checks(
+    manifest: Mapping[str, Any],
+    raw_manifest: bytes,
+    raw_signature: bytes,
+    trusted_key: Optional[bytes],
 ) -> List[Check]:
-    """Every check over an already-read pack. Raises PackUnreadable."""
-    if MANIFEST not in files or SIGNATURE not in files:
-        raise PackUnreadable("manifest.json or manifest.sig is missing")
-    raw_manifest = files[MANIFEST]
-    try:
-        manifest = json.loads(raw_manifest.decode("utf-8"))
-    except ValueError:
-        raise PackUnreadable("manifest.json is not JSON") from None
-    if not isinstance(manifest, dict) or manifest.get("format") != FORMAT:
-        raise PackUnreadable("not an AutoSecOps evidence pack")
-    if manifest.get("version") != VERSION:
-        raise PackUnreadable(f"unsupported pack version {manifest.get('version')!r}")
-
     checks: List[Check] = []
-
-    # signature
-    signer = manifest.get("signer") or {}
+    signer = manifest.get("signer")
+    if not isinstance(signer, Mapping):
+        signer = {}
     try:
         public = base64.b64decode(str(signer.get("public_key", "")), validate=True)
-        signature = base64.b64decode(files[SIGNATURE].strip(), validate=True)
+        signature = base64.b64decode(raw_signature.strip(), validate=True)
     except (binascii.Error, ValueError):
         public, signature = b"", b""
     if signer.get("algorithm") != "ed25519" or not ed25519_verify(
@@ -633,6 +754,33 @@ def verify_files(
         checks.append(
             Check("signature", False, "manifest key_id does not match its key")
         )
+    return checks
+
+
+def verify_files(
+    files: Mapping[str, Any], trusted_key: Optional[bytes] = None
+) -> List[Check]:
+    """Every check over an already-read pack. Raises PackUnreadable.
+
+    A file's value is its bytes or, for one only hashed while read, a Digest.
+    """
+    if MANIFEST not in files or SIGNATURE not in files:
+        raise PackUnreadable("manifest.json or manifest.sig is missing")
+    raw_manifest = files[MANIFEST]
+    if isinstance(raw_manifest, Digest) or isinstance(files[SIGNATURE], Digest):
+        raise PackUnreadable("manifest.json or manifest.sig was not read")
+    manifest = _parse_manifest(raw_manifest)
+    if manifest is None:
+        try:
+            json.loads(raw_manifest.decode("utf-8"))
+        except ValueError:
+            raise PackUnreadable("manifest.json is not JSON") from None
+    if not isinstance(manifest, dict) or manifest.get("format") != FORMAT:
+        raise PackUnreadable("not an AutoSecOps evidence pack")
+    if manifest.get("version") != VERSION:
+        raise PackUnreadable(f"unsupported pack version {manifest.get('version')!r}")
+
+    checks = _signature_checks(manifest, raw_manifest, files[SIGNATURE], trusted_key)
 
     # files
     listed = manifest.get("files")
@@ -658,7 +806,9 @@ def verify_files(
         data = files.get(name)
         if data is None:
             problems.append(f"{name} is missing")
-        elif sha256_hex(data) != entry.get("sha256") or len(data) != entry.get("bytes"):
+            continue
+        digest = data if isinstance(data, Digest) else Digest(sha256_hex(data), len(data))
+        if digest.sha256 != entry.get("sha256") or digest.size != entry.get("bytes"):
             problems.append(f"{name} does not match its sha256")
     for name in sorted(set(files) - names - {MANIFEST, SIGNATURE}):
         problems.append(f"{name} is not in the manifest")
@@ -737,7 +887,9 @@ def _content_checks(
 
 def verify_pack(path: str, trusted_key: Optional[bytes] = None) -> List[Check]:
     try:
-        files = read_pack(path)
+        files = read_pack(path, trusted_key)
+    except SignatureRejected as exc:
+        return exc.checks
     except ArchiveRejected as exc:
         return [Check("archive", False, str(exc))]
     return verify_files(files, trusted_key)

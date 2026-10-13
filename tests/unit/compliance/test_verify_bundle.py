@@ -588,7 +588,7 @@ def test_encrypted_or_unknown_compression_is_a_clean_exit_2(
 def test_an_unexpected_failure_is_still_exit_2_without_a_traceback(
     tmp_path, capsys, monkeypatch
 ):
-    def boom(path):
+    def boom(path, *_args):
         raise RuntimeError("disk on fire")
 
     monkeypatch.setattr(verify_bundle, "read_pack", boom)
@@ -605,3 +605,306 @@ def test_a_truncated_or_corrupt_stream_is_exit_2(tmp_path):
     corrupt[start : start + 4] = b"\xff\xff\xff\xff"
     assert _main(tmp_path, bytes(corrupt)) == 2
     assert _main(tmp_path, data[: len(data) // 2]) == 2
+
+
+# -- round 5: one directory for every reader -----------------------------------
+import hashlib  # noqa: E402
+import shutil  # noqa: E402
+import struct  # noqa: E402
+import zlib  # noqa: E402
+
+
+def _raw_entries(data: bytes):
+    """[(central header bytes, name, local header bytes, payload)] of a plain ZIP."""
+    _, _, _, _, n, cd_size, cd_off, _ = struct.unpack("<4sHHHHIIH", data[-22:])
+    out, pos = [], cd_off
+    for _ in range(n):
+        nl, xl, cl = struct.unpack_from("<HHH", data, pos + 28)
+        central = data[pos : pos + 46]
+        name = data[pos + 46 : pos + 46 + nl]
+        (lo,) = struct.unpack_from("<I", data, pos + 42)
+        (csize,) = struct.unpack_from("<I", data, pos + 20)
+        lnl, lxl = struct.unpack_from("<HH", data, lo + 26)
+        start = lo + 30 + lnl + lxl
+        out.append((central, name, data[lo : lo + 30], data[start : start + csize]))
+        pos += 46 + nl + xl + cl
+    return out
+
+
+def _rebuild(data: bytes, *, local_extra=None, central_extra=None, comment=None):
+    """``data`` again, with an extra field or comment added to chosen entries.
+
+    Each keyword maps an entry name to the bytes to add for it.
+    """
+    local_extra, central_extra = local_extra or {}, central_extra or {}
+    comment = comment or {}
+    body, directory = b"", b""
+    for central, name, local, payload in _raw_entries(data):
+        key = name.decode()
+        lx = local_extra.get(key, b"")
+        cx, cc = central_extra.get(key, b""), comment.get(key, b"")
+        offset = len(body)
+        body += local[:28] + struct.pack("<H", len(lx)) + name + lx + payload
+        directory += (
+            central[:30]
+            + struct.pack("<HH", len(cx), len(cc))
+            + central[34:42]
+            + struct.pack("<I", offset)
+            + name
+            + cx
+            + cc
+        )
+    n = len(_raw_entries(data))
+    eocd = struct.pack(
+        "<4sHHHHIIH", b"PK\x05\x06", 0, 0, n, n, len(directory), len(body), 0
+    )
+    return body + directory + eocd
+
+
+def _unicode_path_extra(real_name: str) -> bytes:
+    """Info-ZIP Unicode Path extra (0x7075): some readers use this name instead."""
+    payload = b"\x01" + struct.pack("<I", zlib.crc32(real_name.encode()))
+    payload += b"data/evil.json"
+    return struct.pack("<HH", 0x7075, len(payload)) + payload
+
+
+def _zip64_swap(good: bytes) -> bytes:
+    """A pack whose last central entry's comment hides a second directory.
+
+    The comment holds a local header with a doctored ledger.json, a central
+    directory pointing at it, a ZIP64 EOCD record and a ZIP64 locator ending
+    exactly where the classic EOCD begins; CPython's zipfile follows the
+    locator and reads that ledger (the round-4 finding).
+    """
+    _, _, _, _, nt, cds, cdo, _ = struct.unpack("<4sHHHHIIH", good[-22:])
+    cd, recs, p = good[cdo : cdo + cds], [], 0
+    while p < len(cd):
+        nl, xl, cml = struct.unpack_from("<HHH", cd, p + 28)
+        recs.append(cd[p : p + 46 + nl + xl + cml])
+        p += 46 + nl + xl + cml
+
+    def name(r):
+        return r[46 : 46 + struct.unpack_from("<H", r, 28)[0]]
+
+    pre, last = b"".join(recs[:-1]), recs[-1]
+    head = last[: 46 + struct.unpack_from("<H", last, 28)[0]]
+    lfh_off = cdo + len(pre) + len(head)
+    with zipfile.ZipFile(io.BytesIO(good)) as z:
+        evil = z.read("data/ledger.json").replace(b"malicious", b"BENIGN!!!")
+    crc = zlib.crc32(evil)
+    lfh = struct.pack(
+        "<4sHHHHHIIIHH", b"PK\x03\x04", 20, 0, 0, 0, 0x5C62, crc, len(evil),
+        len(evil), 16, 0,
+    ) + b"data/ledger.json" + evil
+    alt = b""
+    for r in recs:
+        if name(r) == b"data/ledger.json":
+            r = (
+                r[:10] + struct.pack("<H", 0) + r[12:16]
+                + struct.pack("<III", crc, len(evil), len(evil))
+                + r[28:42] + struct.pack("<I", lfh_off) + r[46:]
+            )
+        alt += r
+    alt_off = lfh_off + len(lfh)
+    z64_off = alt_off + len(alt)
+    z64 = struct.pack(
+        "<4sQHHIIQQQQ", b"PK\x06\x06", 44, 45, 45, 0, 0, nt, nt, len(alt), alt_off
+    )
+    loc = struct.pack("<4sIQI", b"PK\x06\x07", 0, z64_off, 1)
+    hidden = lfh + alt + z64 + loc
+    head = head[:32] + struct.pack("<H", len(hidden)) + head[34:]
+    newcd = pre + head + hidden
+    return (
+        good[:cdo]
+        + newcd
+        + struct.pack("<4sHHHHIIH", b"PK\x05\x06", 0, 0, nt, nt, len(newcd), cdo, 0)
+    )
+
+
+def test_a_hidden_zip64_directory_is_refused(tmp_path, capsys):
+    good = make_bundle().data
+    swapped = _zip64_swap(good)
+    # The attack is real: CPython's zipfile reads the doctored ledger ...
+    with zipfile.ZipFile(io.BytesIO(swapped)) as z:
+        assert b"BENIGN!!!" in z.read("data/ledger.json")
+    # ... so the verifier must not call the pack verified.
+    assert _main(tmp_path, swapped) == 2
+    assert "extra field or comment" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("sig", [b"PK\x06\x06", b"PK\x06\x07"])
+def test_a_zip64_signature_outside_entry_data_is_refused(tmp_path, capsys, sig):
+    files = _files(make_bundle().data)
+    files["data/x" + sig.decode("latin-1") + ".json"] = b"{}"
+    assert _main(tmp_path, _zip(files)) == 2
+    assert "ZIP64 record or locator signature" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "where",
+    [
+        pytest.param({"central_extra": True}, id="central extra"),
+        pytest.param({"local_extra": True}, id="local extra"),
+        pytest.param({"central_extra": True, "local_extra": True}, id="both"),
+    ],
+)
+def test_an_info_zip_unicode_path_extra_is_refused(tmp_path, capsys, where):
+    good = make_bundle().data
+    name = "data/case.json"
+    extra = {name: _unicode_path_extra(name)}
+    bad = _rebuild(
+        good,
+        local_extra=extra if where.get("local_extra") else None,
+        central_extra=extra if where.get("central_extra") else None,
+    )
+    assert _main(tmp_path, bad) == 2
+    assert "extra field" in capsys.readouterr().err
+
+
+def test_an_entry_comment_is_refused(tmp_path, capsys):
+    good = make_bundle().data
+    assert _main(tmp_path, _rebuild(good)) == 0  # the rebuild alone is harmless
+    bad = _rebuild(good, comment={"manifest.sig": b"note"})
+    assert _main(tmp_path, bad) == 2
+    assert "extra field or comment" in capsys.readouterr().err
+
+
+def test_the_builder_writes_no_extra_field_and_no_comment():
+    data = make_bundle().data
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        assert z.comment == b""
+        for info in z.infolist():
+            assert info.extra == b"" and info.comment == b"", info.filename
+            assert not info.flag_bits & 0x08  # no data descriptor either
+    for central, _name, local, _payload in _raw_entries(data):
+        assert struct.unpack_from("<HH", central, 30) == (0, 0)
+        assert struct.unpack_from("<H", local, 28) == (0,)
+
+
+def _streamed(monkeypatch):
+    seen = []
+    real = verify_bundle._stream
+
+    def spy(handle, entry):
+        seen.append(entry.name)
+        return real(handle, entry)
+
+    monkeypatch.setattr(verify_bundle, "_stream", spy)
+    return seen
+
+
+def test_no_entry_is_inflated_before_the_signature_holds(
+    tmp_path, capsys, monkeypatch
+):
+    # A forged manifest (not re-signed) that lists a 50 MiB entry.
+    files = _files(make_bundle().data)
+    files["data/case.json"] = b"0" * (50 * 1024 * 1024)
+    manifest = json.loads(files["manifest.json"])
+    for entry in manifest["files"]:
+        if entry["path"] == "data/case.json":
+            entry["bytes"] = len(files["data/case.json"])
+            entry["sha256"] = verify_bundle.sha256_hex(files["data/case.json"])
+    files["manifest.json"] = json.dumps(manifest, sort_keys=True, indent=2).encode()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, body in files.items():
+            z.writestr(name, body)
+    seen = _streamed(monkeypatch)
+    assert _main(tmp_path, buf.getvalue()) == 1
+    assert "FAIL  signature" in capsys.readouterr().out
+    assert set(seen) == {"manifest.json", "manifest.sig"}
+
+
+def test_a_pack_signed_by_another_key_is_not_inflated_when_pinned(
+    tmp_path, capsys, monkeypatch
+):
+    files = _resign(_files(make_bundle().data), Ed25519PrivateKey.generate())
+    seen = _streamed(monkeypatch)
+    assert _main(tmp_path, _zip(files)) == 1
+    assert "not the pinned key" in capsys.readouterr().out
+    assert set(seen) == {"manifest.json", "manifest.sig"}
+
+
+def test_entries_are_hashed_while_streaming_not_buffered(tmp_path, monkeypatch):
+    import tracemalloc
+
+    key = Ed25519PrivateKey.from_private_bytes(SEED)
+    files = _files(make_bundle().data)
+    big = b"\0" * (32 * 1024 * 1024)
+    files["data/big.bin"] = big
+    manifest = json.loads(files["manifest.json"])
+    manifest["files"].append({"path": "data/big.bin", "sha256": "", "bytes": 0})
+    files["manifest.json"] = json.dumps(manifest).encode()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, body in _resign(files, key).items():
+            z.writestr(name, body)
+    del big, files
+    pack = tmp_path / "big.zip"
+    pack.write_bytes(buf.getvalue())
+    del buf
+    inflated = []
+    real = verify_bundle._inflate
+    monkeypatch.setattr(
+        verify_bundle, "_inflate", lambda h, e: inflated.append(e.name) or real(h, e)
+    )
+    tracemalloc.start()
+    try:
+        read = verify_bundle.read_pack(str(pack))
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 8 * 1024 * 1024, peak
+    assert read["data/big.bin"] == verify_bundle.Digest(
+        hashlib.sha256(b"\0" * (32 * 1024 * 1024)).hexdigest(), 32 * 1024 * 1024
+    )
+    assert "data/big.bin" not in inflated and "verify_bundle.py" not in inflated
+    assert set(inflated) <= verify_bundle.CONTENT_FILES
+    assert all(c.ok for c in verify_bundle.verify_files(read, bytes.fromhex(PUB_HEX)))
+    assert verify_bundle.main([str(pack), "--public-key", PUB_HEX]) == 0
+
+
+def test_every_zip_reader_lists_the_same_pack(tmp_path):
+    """CPython zipfile, ``python -m zipfile -l``, unzip and the verifier agree."""
+    data = make_bundle().data
+    pack = tmp_path / "pack.zip"
+    pack.write_bytes(data)
+    read = verify_bundle.read_pack(str(pack))
+
+    def digest(body):
+        return hashlib.sha256(body).hexdigest()
+
+    ours = {
+        name: (v.sha256 if isinstance(v, verify_bundle.Digest) else digest(v))
+        for name, v in read.items()
+    }
+    with zipfile.ZipFile(pack) as z:
+        cpython = {i.filename: digest(z.read(i)) for i in z.infolist()}
+    assert cpython == ours
+
+    listing = subprocess.run(
+        [sys.executable, "-I", "-m", "zipfile", "-l", str(pack)],
+        capture_output=True, text=True, timeout=120, check=True,
+    ).stdout.splitlines()
+    assert listing[0].startswith("File Name")
+    assert sorted(line.split()[0] for line in listing[1:] if line.strip()) == sorted(
+        ours
+    )
+
+    if shutil.which("unzip") is None:
+        pytest.skip("unzip is not installed")
+    names = subprocess.run(
+        ["unzip", "-Z1", str(pack)], capture_output=True, text=True, timeout=120,
+        check=True,
+    ).stdout.split()
+    assert sorted(names) == sorted(ours)
+    for name in names:
+        body = subprocess.run(
+            ["unzip", "-p", str(pack), name], capture_output=True, timeout=120,
+            check=True,
+        ).stdout
+        assert digest(body) == ours[name], name
+    test = subprocess.run(
+        ["unzip", "-tq", str(pack)], capture_output=True, text=True, timeout=120
+    )
+    assert test.returncode == 0, test.stdout + test.stderr
