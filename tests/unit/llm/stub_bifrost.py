@@ -23,9 +23,7 @@ def schema_answer(body: Dict[str, Any]) -> str:
     """A schema-valid assessment derived from the prompt (deterministic)."""
     from evalkit.backends import stub_answer
 
-    prompt = "\n".join(
-        str(m.get("content") or "") for m in body.get("messages") or []
-    )
+    prompt = "\n".join(str(m.get("content") or "") for m in body.get("messages") or [])
     fields = {}
     for line in stub_answer(prompt).splitlines():
         key, _, value = line.partition(":")

@@ -40,8 +40,14 @@ def responder(body):
 
 @pytest.fixture(autouse=True)
 def _offline(monkeypatch):
-    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy",
-                 "https_proxy", "all_proxy"):
+    for name in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(
         "core.llm.cost.budget.enforcement_status", lambda: ("disabled", None)
@@ -114,8 +120,10 @@ def test_candidates_compete_and_the_eval_picks_the_default(stub, tmp_path):
     }
     assert all(b["response_format"]["type"] == "json_schema" for b in stub.requests)
     # No critical alert reached the small-lane slice.
-    assert all("Current Severity: critical" not in b["messages"][-1]["content"]
-               for b in stub.requests)
+    assert all(
+        "Current Severity: critical" not in b["messages"][-1]["content"]
+        for b in stub.requests
+    )
 
     # The selection is what the runtime picks up as its default model.
     sel = json.loads(selection.read_text())
@@ -146,7 +154,9 @@ def test_no_eligible_candidate_exits_3_without_selection(stub, tmp_path):
     assert not selection.exists()
     ranking = json.loads((tmp_path / "out" / "ranking.json").read_text())
     assert ranking["selected"] is None
-    missing = next(r for r in ranking["candidates"] if r["model"] == "ollama/missing:1b")
+    missing = next(
+        r for r in ranking["candidates"] if r["model"] == "ollama/missing:1b"
+    )
     assert missing["errors"] == int(LIMIT)
 
 
@@ -187,8 +197,17 @@ def test_rank_refuses_a_nonlocal_gateway(tmp_path):
 def test_bad_arguments(tmp_path):
     assert el.main(["rank", "--min-recall", "2", "--out", str(tmp_path)]) == 2
     assert (
-        el.main(["rank", "--candidates", "a", "--suite", "injection",
-                 "--out", str(tmp_path)])
+        el.main(
+            [
+                "rank",
+                "--candidates",
+                "a",
+                "--suite",
+                "injection",
+                "--out",
+                str(tmp_path),
+            ]
+        )
         == 2
     )
 
@@ -196,7 +215,10 @@ def test_bad_arguments(tmp_path):
 def test_rank_ordering():
     def m(recall, f1, p50, schema=0.0):
         return {
-            "n": 10, "recall": recall, "f1": f1, "latency_p50_ms": p50,
+            "n": 10,
+            "recall": recall,
+            "f1": f1,
+            "latency_p50_ms": p50,
             "schema_error_rate": schema,
         }
 

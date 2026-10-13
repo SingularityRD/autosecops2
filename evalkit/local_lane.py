@@ -34,10 +34,10 @@ from typing import Any, Dict, List, Optional, Sequence
 from core.llm.local_lane import SELECTION_FORMAT, LocalModelLane
 from core.time import utcnow
 from evalkit.backends import BackendResult, StubBackend
+from evalkit.cli import _git_sha
 from evalkit.corpus import CORPUS_SPLITS, REPO_ROOT, Case, load_suites
 from evalkit.report import build_report, write_report
 from evalkit.runner import CaseResult, run_cases
-from evalkit.cli import _git_sha
 from evalkit.triage import ADAPTER_VERSION, prompt_version
 
 logger = logging.getLogger("evalkit.local_lane")

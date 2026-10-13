@@ -44,8 +44,14 @@ def _prompt() -> str:
 @pytest.fixture(autouse=True)
 def _no_proxy(monkeypatch):
     # The stub is on loopback; an inherited proxy must not sit in between.
-    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy",
-                 "https_proxy", "all_proxy"):
+    for name in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
         monkeypatch.delenv(name, raising=False)
     # The budget VK lookup reads Postgres, which unit tests block.
     monkeypatch.setattr(
@@ -185,9 +191,12 @@ def test_lane_refuses_a_nonlocal_gateway_unless_overridden():
         "qwen2.5:7b", bifrost_url="https://gw.example.com", allow_nonlocal_gateway=True
     )
     assert lane.model == "ollama/qwen2.5:7b"
-    assert ll.get_local_lane(
-        _settings(local_lane_model="m", bifrost_url="https://gw.example.com")
-    ) is None
+    assert (
+        ll.get_local_lane(
+            _settings(local_lane_model="m", bifrost_url="https://gw.example.com")
+        )
+        is None
+    )
 
 
 # --------------------------------------------------------------------------
@@ -292,7 +301,9 @@ def test_off_schema_answers_are_errors(answer, needle):
 
 
 def test_gateway_error_is_an_error_not_a_fallback():
-    with StubBifrost(lambda body: (400, {"error": {"message": "model not found"}})) as stub:
+    with StubBifrost(
+        lambda body: (400, {"error": {"message": "model not found"}})
+    ) as stub:
         lane = ll.LocalModelLane("missing:1b", bifrost_url=stub.url, timeout_s=120)
         result = asyncio.run(lane.triage(_prompt()))
     assert result.content is None
