@@ -172,7 +172,56 @@ def is_genuine_probe(finding: Dict[str, Any]) -> bool:
         "entity_context"
     ]:
         return False
+    if not _marker_fits(marker):
+        return False
+    # The probe map labels severity and timestamp sensor: they must be what
+    # the daemon writes (none / a triage severity; an ISO time), not text.
+    severity = finding.get("severity")
+    if severity not in (None, "") and severity not in SEVERITIES:
+        return False
+    if not _is_timestamp(finding.get("timestamp")):
+        return False
     return not any(finding.get(k) for k in _PROBE_TEXT_KEYS)
+
+
+# What entity_context["probe"] may hold: build_probe_finding writes name and
+# expected, score_probes adds score.
+_MARKER_KEYS = frozenset({"name", "expected", "score"})
+# expected: lists drawn from the fixed vocabularies (rows stored before the
+# verdict format carry severity instead of verdict).
+_EXPECTED_VOCAB = {
+    "verdict": VERDICTS,
+    "severity": SEVERITIES,
+    "recommended_action": ACTIONS,
+}
+
+
+def _marker_fits(marker: Dict[str, Any]) -> bool:
+    if not set(marker) <= _MARKER_KEYS:
+        return False
+    expected = marker.get("expected")
+    if not isinstance(expected, dict) or not expected:
+        return False
+    for key, values in expected.items():
+        vocab = _EXPECTED_VOCAB.get(key)
+        if vocab is None or not isinstance(values, list):
+            return False
+        if not all(isinstance(v, str) and v in vocab for v in values):
+            return False
+    score = marker.get("score")
+    return score is None or isinstance(score, dict)
+
+
+def _is_timestamp(value: Any) -> bool:
+    if value is None or isinstance(value, datetime):
+        return True
+    if not isinstance(value, str) or len(value) > 40:
+        return False
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 async def inject_probes(queue: asyncio.Queue, data_service: Any) -> int:

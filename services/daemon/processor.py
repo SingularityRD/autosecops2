@@ -301,6 +301,9 @@ def _storable(value: Any) -> Any:
 # spaces and joiners, bidi overrides, tag characters). json.dumps escapes
 # only U+0000..U+001F, '"' and '\\'.
 _ESCAPE_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs", "Co", "Cn"})
+# Invisible characters outside those categories: the combining grapheme
+# joiner (Mn) and the Hangul fillers (Lo), which render as nothing.
+_INVISIBLE = frozenset({"\u034f", "\u115f", "\u1160", "\u3164", "\uffa0"})
 
 
 def _json_escape(ch: str) -> str:
@@ -316,7 +319,8 @@ def _escape_invisible(text: str) -> str:
     return "".join(
         (
             _json_escape(ch)
-            if ord(ch) > 0x7E and unicodedata.category(ch) in _ESCAPE_CATEGORIES
+            if ord(ch) > 0x7E
+            and (ch in _INVISIBLE or unicodedata.category(ch) in _ESCAPE_CATEGORIES)
             else ch
         )
         for ch in text
@@ -324,9 +328,12 @@ def _escape_invisible(text: str) -> str:
 
 
 def _strip_format_chars(text: str) -> str:
-    """``text`` without format controls (zero-width and bidi characters), so a
-    fence spelled with them in between is still recognised as a fence."""
-    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    """``text`` without format controls (zero-width and bidi characters) and
+    the other invisible characters (``_INVISIBLE``), so a fence spelled with
+    them in between is still recognised as a fence."""
+    return "".join(
+        ch for ch in text if ch not in _INVISIBLE and unicodedata.category(ch) != "Cf"
+    )
 
 
 def _downstream_severity(verdict: Verdict, action: Optional[str]) -> Optional[str]:

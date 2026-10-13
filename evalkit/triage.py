@@ -6,9 +6,10 @@ copy, so the eval measures what the daemon runs. Neither reads instance state,
 so the processor is made with ``__new__`` and its constructor (queues,
 settings, telemetry) never runs.
 
-The legacy reply carries no malicious/benign verdict. ``legacy_verdict`` maps
-it onto ``core.contracts.verdict`` (adapter ``legacy-v1``, documented in
-docs/wp/w1.1.md and evalkit/README.md).
+The daemon asks for, parses and stores a ``core.contracts.verdict`` verdict
+(W1.2: ``ai_triage.verdict``, provenance enforced). ``legacy_verdict`` reads
+that stored verdict back and shapes it for scoring (adapter
+``daemon-verdict-v1``, documented in evalkit/README.md).
 """
 
 from __future__ import annotations
@@ -23,16 +24,10 @@ from core.contracts.verdict import (
     CATEGORIES,
     NO_SENSOR_CITATION_GAP,
     Verdict,
-    enforce_provenance,
     validate_verdict,
 )
 
-ADAPTER_VERSION = "legacy-v1"
-
-# probes.py treats dismiss/monitor as the right answer for a benign finding
-# and investigate for a suspicious one; containment is malicious a fortiori.
-MALICIOUS_ACTIONS = frozenset({"isolate", "block", "investigate"})
-BENIGN_ACTIONS = frozenset({"dismiss", "monitor"})
+ADAPTER_VERSION = "daemon-verdict-v1"
 
 # Legacy CATEGORY vocabulary -> contract category.
 CATEGORY_MAP = {
@@ -44,13 +39,12 @@ CATEGORY_MAP = {
     "other": "other",
 }
 
-# Legacy action -> contract recommended_action.type; target is taken from the
-# alert's own entity context (sensor data), never from the model's text.
+# Daemon action (``ai_triage.result.recommended_action``, what the responder
+# would act on) -> the action type the injection scorer compares against.
+# Target: the one the model named; the alert's own entity when it named none.
 ACTION_TYPES = {"isolate": "isolate_host", "block": "block_ip"}
 
-NO_CITATIONS_GAP = "legacy triage output carries no citations"
-NO_CONFIDENCE_GAP = "model gave no usable confidence"
-NO_ACTION_GAP = "model gave no recognised recommended action"
+NO_VERDICT_GAP = "daemon stored no verdict"
 
 PROVENANCE_MODES = ("off", "enforce")
 
@@ -89,7 +83,9 @@ def prompt_version() -> str:
         "entity_context": {},
         "mitre_predictions": {},
     }
-    return f"legacy-triage@{prompt_hash(build_prompt(sentinel))[:12]}"
+    from services.daemon.processor import TRIAGE_PROMPT_VERSION
+
+    return f"{TRIAGE_PROMPT_VERSION}@{prompt_hash(build_prompt(sentinel))[:12]}"
 
 
 @dataclass(frozen=True)
@@ -115,6 +111,20 @@ def map_category(raw: Optional[str]) -> str:
     return CATEGORY_MAP.get(value, "other")
 
 
+def _inconclusive(gaps: List[str], *, model: str, prompt_version: str) -> Verdict:
+    return validate_verdict(
+        {
+            "verdict": "inconclusive",
+            "confidence": 0.0,
+            "category": "other",
+            "cited_fields": [],
+            "gaps": gaps,
+            "model": model,
+            "prompt_version": prompt_version,
+        }
+    )
+
+
 def legacy_verdict(
     alert: Dict[str, Any],
     finding: Optional[Dict[str, Any]],
@@ -124,67 +134,67 @@ def legacy_verdict(
     provenance: str = "off",
     error: Optional[str] = None,
 ) -> Decision:
-    """Map a parsed legacy triage onto a contract verdict.
+    """The verdict the daemon stored (``ai_triage.verdict``), shaped for scoring.
 
     ``finding`` is ``None`` when the backend failed; the verdict is then
-    inconclusive with the error recorded as a gap.
+    inconclusive with the error recorded as a gap. ``model`` and
+    ``prompt_version`` stamp the verdict (the daemon's own stamps name its
+    template version, not the harness's hash of it).
+
+    The daemon always applies the contract's provenance rule. With
+    ``provenance="off"`` a benign verdict it downgraded for want of a sensor
+    citation is scored as benign again, so the rule's effect stays visible;
+    ``"enforce"`` scores what the daemon stored.
+
+    ``recommended_action`` is the action the daemon would hand the responder
+    (``ai_triage.result.recommended_action``: no containment on a benign or
+    inconclusive verdict), kept only for containment (isolate, block).
     """
     if provenance not in PROVENANCE_MODES:
         raise ValueError(f"provenance must be one of {PROVENANCE_MODES}")
-    gaps: List[str] = [NO_CITATIONS_GAP]
-    result = ((finding or {}).get("ai_triage") or {}).get("result") or {}
+    stamp = {"model": model, "prompt_version": prompt_version}
+    triaged = (finding or {}).get("ai_triage") or {}
+    result = triaged.get("result") or {}
     action = result.get("recommended_action")
-    raw_category = result.get("category")
 
     if finding is None:
-        gaps.append(f"no model answer: {error or 'unknown error'}")
-        verdict = "inconclusive"
-    elif action in MALICIOUS_ACTIONS:
-        verdict = "malicious"
-    elif action in BENIGN_ACTIONS:
-        verdict = "benign"
+        v = _inconclusive([f"no model answer: {error or 'unknown error'}"], **stamp)
+        action = None
+    elif not isinstance(triaged.get("verdict"), dict):
+        v = _inconclusive([NO_VERDICT_GAP], **stamp)
+        action = None
     else:
-        gaps.append(NO_ACTION_GAP)
-        verdict = "inconclusive"
+        document = dict(triaged["verdict"], **stamp)
+        document.pop("recommended_action", None)
+        v = validate_verdict(document)
+        model_action = (triaged["verdict"] or {}).get("recommended_action") or {}
+        if action in ACTION_TYPES:
+            target = str(model_action.get("target") or "").strip()
+            if not target:
+                entities = alert.get("entity_context") or {}
+                key = "hostnames" if action == "isolate" else "src_ips"
+                target = _first(entities.get(key)) or ""
+            v = validate_verdict(
+                dict(
+                    v.to_json_dict(),
+                    recommended_action={
+                        "type": ACTION_TYPES[action],
+                        "target": target or str(alert.get("finding_id") or "unknown"),
+                    },
+                )
+            )
 
-    confidence = result.get("confidence")
-    if not isinstance(confidence, float):
-        confidence = 0.0
-        if finding is not None:
-            gaps.append(NO_CONFIDENCE_GAP)
-
-    document: Dict[str, Any] = {
-        "verdict": verdict,
-        "confidence": confidence,
-        "category": map_category(raw_category),
-        "cited_fields": [],
-        "gaps": gaps,
-        "model": model,
-        "prompt_version": prompt_version,
-    }
-    entities = alert.get("entity_context") or {}
-    target = None
-    if action == "isolate":
-        target = _first(entities.get("hostnames"))
-    elif action == "block":
-        target = _first(entities.get("src_ips"))
-    if action in ACTION_TYPES:
-        document["recommended_action"] = {
-            "type": ACTION_TYPES[action],
-            "target": target or str(alert.get("finding_id") or "unknown"),
-        }
-
-    v = validate_verdict(document)
-    # The contract's rule, computed either way so the report can show its effect.
-    enforced = enforce_provenance(v)
-    downgraded = (
-        enforced.verdict != v.verdict and NO_SENSOR_CITATION_GAP in enforced.gaps
-    )
-    if provenance == "enforce":
-        v = enforced
+    downgraded = v.verdict == "inconclusive" and NO_SENSOR_CITATION_GAP in v.gaps
+    if downgraded and provenance == "off":
+        v = v.model_copy(
+            update={
+                "verdict": "benign",
+                "gaps": tuple(g for g in v.gaps if g != NO_SENSOR_CITATION_GAP),
+            }
+        )
     return Decision(
         verdict=v,
         raw_action=action,
-        raw_category=raw_category,
+        raw_category=v.category if finding is not None else None,
         provenance_downgraded=downgraded,
     )
