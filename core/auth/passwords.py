@@ -12,7 +12,20 @@ bounds (salt >= 128 bits, key >= 112 bits, iterations >= 1000).
 Both formats always verify, so switching scheme never locks anyone out:
 ``needs_rehash`` tells the login path to rewrite a hash in the active scheme
 once it has the plaintext. The one exception is FIPS_MODE with
-FIPS_LEGACY_BCRYPT_VERIFY=false, which refuses bcrypt outright.
+FIPS_LEGACY_BCRYPT_VERIFY=false, which refuses bcrypt for login password hashes.
+
+That flag governs ``users.password_hash`` only. MFA recovery codes and
+``password_history`` entries are never rehashed (the plaintext of an unused
+recovery code or a past password is never in hand), so their callers pass
+``legacy_bcrypt=True``: refusing them would lock users out of their recovery
+codes and make old passwords reusable. Both drain on their own: recovery codes
+are consumed or regenerated (``POST /auth/mfa/recovery-codes``) in the active
+scheme, history entries age out after AUTH_PASSWORD_HISTORY_LIMIT changes.
+docs/fips.md has the count queries.
+
+Stored PBKDF2 iteration counts are capped at ``MAX_PBKDF2_ITERATIONS``: a
+tampered or corrupt row with ``pbkdf2_sha256$2000000000$...`` must not pin a
+worker CPU for hours on one login.
 """
 
 from __future__ import annotations
@@ -36,6 +49,8 @@ _PBKDF2_PREFIX = PBKDF2_SHA256 + "$"
 _SALT_BYTES = 16
 _DK_BYTES = 32
 _BCRYPT_PREFIXES = ("$2a$", "$2b$", "$2y$")
+# Upper bound for stored and configured PBKDF2 iterations (core/config.py le=).
+MAX_PBKDF2_ITERATIONS = 10_000_000
 
 
 def active_scheme() -> str:
@@ -87,25 +102,39 @@ def hash_secret(plaintext: str, scheme: Optional[str] = None) -> str:
 
 def _parse_pbkdf2(stored: str) -> tuple[int, bytes, bytes]:
     _, iterations, salt, digest = stored.split("$")
+    count = int(iterations)
+    if not 1 <= count <= MAX_PBKDF2_ITERATIONS:
+        raise ValueError("PBKDF2 iteration count out of range")
     return (
-        int(iterations),
+        count,
         base64.b64decode(salt, validate=True),
         base64.b64decode(digest, validate=True),
     )
 
 
-def verify_secret(plaintext: str, stored: Optional[str]) -> bool:
-    """True if ``plaintext`` matches ``stored``. Never raises on a bad hash."""
+def verify_secret(
+    plaintext: str, stored: Optional[str], *, legacy_bcrypt: bool = False
+) -> bool:
+    """True if ``plaintext`` matches ``stored``. Never raises on a bad hash.
+
+    ``legacy_bcrypt=True`` verifies bcrypt even under FIPS_MODE with
+    FIPS_LEGACY_BCRYPT_VERIFY=false; only for hashes that cannot be migrated
+    (recovery codes, password history; see the module docstring).
+    """
     scheme = identify(stored)
     try:
         if scheme == PBKDF2_SHA256:
             iterations, salt, expected = _parse_pbkdf2(stored)  # type: ignore[arg-type]
-            if iterations < 1 or not expected:
+            if not expected:
                 return False
             return hmac.compare_digest(_pbkdf2(plaintext, salt, iterations), expected)
         if scheme == BCRYPT:
             settings = get_settings()
-            if settings.fips_mode and not settings.fips_legacy_bcrypt_verify:
+            if (
+                settings.fips_mode
+                and not settings.fips_legacy_bcrypt_verify
+                and not legacy_bcrypt
+            ):
                 logger.warning(
                     "bcrypt hash refused: FIPS_MODE with FIPS_LEGACY_BCRYPT_VERIFY=false"
                 )
@@ -135,5 +164,10 @@ def needs_rehash(stored: Optional[str]) -> bool:
     return False
 
 
-def matches_any(plaintext: str, hashes: Optional[Iterable[str]]) -> bool:
-    return any(h and verify_secret(plaintext, h) for h in (hashes or ()))
+def matches_any(
+    plaintext: str, hashes: Optional[Iterable[str]], *, legacy_bcrypt: bool = False
+) -> bool:
+    return any(
+        h and verify_secret(plaintext, h, legacy_bcrypt=legacy_bcrypt)
+        for h in (hashes or ())
+    )

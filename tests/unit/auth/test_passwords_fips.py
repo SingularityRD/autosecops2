@@ -230,3 +230,69 @@ def test_legacy_bcrypt_recovery_code_still_works_under_fips(fips_mode):
         mfa_recovery_codes=[_bcrypt("ABCD1234")],
     )
     assert AuthService.verify_mfa_code("user-1", "abcd1234", _session(user))
+
+
+# --- Round 3 fixes ---------------------------------------------------------------
+
+
+@pytest.fixture
+def strict_fips(monkeypatch):
+    return _use(
+        monkeypatch,
+        fips_mode=True,
+        password_hash_scheme=None,
+        fips_legacy_bcrypt_verify=False,
+    )
+
+
+def test_strict_fips_still_honours_legacy_recovery_codes(strict_fips):
+    """FIPS_LEGACY_BCRYPT_VERIFY=false must not lock users out of the recovery
+    codes they were issued before FIPS_MODE: those cannot be rehashed."""
+    user = SimpleNamespace(
+        username="ada",
+        mfa_secret="JBSWY3DPEHPK3PXP",
+        mfa_recovery_codes=[_bcrypt("ABCD1234"), _bcrypt("EEEE0000")],
+    )
+    assert AuthService.verify_mfa_code("user-1", "abcd1234", _session(user))
+    assert len(user.mfa_recovery_codes) == 1
+
+
+def test_strict_fips_still_blocks_reuse_of_bcrypt_history(strict_fips):
+    """Refusing bcrypt history entries would make old passwords reusable."""
+    assert password_matches_any("old-one-123", [_bcrypt("old-one-123")])
+    # ...while the login password itself is refused as before.
+    assert not AuthService.verify_password("old-one-123", _bcrypt("old-one-123"))
+
+
+def _pbkdf2_with(iterations: int) -> str:
+    salt = passwords._b64(b"s" * 16)
+    return f"pbkdf2_sha256${iterations}${salt}${passwords._b64(b'd' * 32)}"
+
+
+@pytest.mark.parametrize("iterations", [10_000_001, 2_000_000_000, 10**30])
+def test_absurd_stored_iteration_counts_are_refused_without_hashing(
+    fips_mode, monkeypatch, iterations
+):
+    called = MagicMock(side_effect=AssertionError("PBKDF2 must not run"))
+    monkeypatch.setattr(passwords, "_pbkdf2", called)
+    stored = _pbkdf2_with(iterations)
+    assert not passwords.verify_secret("anything", stored)
+    assert not passwords.needs_rehash(stored)
+    called.assert_not_called()
+
+
+def test_iteration_cap_is_inclusive(fips_mode):
+    assert passwords._parse_pbkdf2(_pbkdf2_with(passwords.MAX_PBKDF2_ITERATIONS))[
+        0
+    ] == (passwords.MAX_PBKDF2_ITERATIONS)
+
+
+def test_settings_cap_configured_iterations():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, password_pbkdf2_iterations=10_000_001)
+    assert (
+        Settings(
+            _env_file=None, password_pbkdf2_iterations=10_000_000
+        ).password_pbkdf2_iterations
+        == passwords.MAX_PBKDF2_ITERATIONS
+    )

@@ -92,8 +92,12 @@ class AccountLockedError(Exception):
 
 
 def password_matches_any(plaintext: str, hashes) -> bool:
-    """Return True if `plaintext` matches any stored hash (bcrypt or PBKDF2)."""
-    return passwords.matches_any(plaintext, hashes)
+    """Return True if `plaintext` matches any stored hash (bcrypt or PBKDF2).
+
+    For the password-history reuse check: legacy bcrypt entries are always
+    compared, since they cannot be rehashed and refusing them would let an
+    old password back in (core/auth/passwords.py)."""
+    return passwords.matches_any(plaintext, hashes, legacy_bcrypt=True)
 
 
 class AuthService:
@@ -404,7 +408,9 @@ class AuthService:
             normalized = code.strip().upper()
             for i, hashed in enumerate(recovery_codes):
                 try:
-                    if passwords.verify_secret(normalized, hashed):
+                    # legacy_bcrypt: a code issued before FIPS_MODE cannot be
+                    # rehashed; it is consumed here or replaced on regenerate.
+                    if passwords.verify_secret(normalized, hashed, legacy_bcrypt=True):
                         recovery_codes.pop(i)
                         user.mfa_recovery_codes = recovery_codes
                         logger.info(

@@ -5,6 +5,11 @@ offer EdDSA, so under FIPS_MODE checkpoints are signed with ECDSA over P-256
 and SHA-256 (FIPS 186-5), DER-encoded and base64'd. Every signature records the
 algorithm next to it (``ALG_*``), so a verifier never has to guess and keys of
 either kind can coexist across a migration.
+
+ECDSA signatures are malleable and randomized: (r, s) and (r, n - s) both
+verify, and signing the same message twice gives different bytes. Never use a
+signature as an identifier, dedupe key or cache key; identify a checkpoint by
+the digest of what it signs.
 """
 
 from __future__ import annotations
@@ -12,7 +17,7 @@ from __future__ import annotations
 import base64
 from typing import Literal, Optional, Union
 
-from cryptography.exceptions import InvalidSignature
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
@@ -124,5 +129,6 @@ def verify(public: PublicKey, alg: str, message: bytes, signature: str) -> bool:
         else:
             public.verify(raw, message)  # type: ignore[call-arg]
         return True
-    except (InvalidSignature, SigningKeyError, ValueError):
+    except (InvalidSignature, SigningKeyError, UnsupportedAlgorithm, ValueError):
+        # UnsupportedAlgorithm: e.g. Ed25519 under a FIPS-only OpenSSL.
         return False

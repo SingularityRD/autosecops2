@@ -235,7 +235,7 @@ class Settings(BaseSettings):
     # bcrypt | pbkdf2_sha256. Blank means bcrypt, or pbkdf2_sha256 under
     # FIPS_MODE; bcrypt together with FIPS_MODE is a configuration error.
     password_hash_scheme: Optional[Literal["bcrypt", "pbkdf2_sha256"]] = None
-    password_pbkdf2_iterations: int = Field(default=600_000, ge=100_000)
+    password_pbkdf2_iterations: int = Field(default=600_000, ge=100_000, le=10_000_000)
     # Under FIPS_MODE, still verify (then rehash) legacy bcrypt hashes at login.
     # Turn off once every account has migrated; bcrypt users then need a reset.
     fips_legacy_bcrypt_verify: bool = True

@@ -68,3 +68,23 @@ def test_other_curves_are_refused():
 def test_unknown_algorithm_is_refused():
     with pytest.raises(signing.SigningKeyError):
         signing.generate_private_key("rsa")  # type: ignore[arg-type]
+
+
+def test_unsupported_algorithm_from_the_backend_is_a_false_not_a_raise(monkeypatch):
+    """A FIPS-only OpenSSL raises UnsupportedAlgorithm for Ed25519; verify()
+    must answer False rather than 500 the caller."""
+    from cryptography.exceptions import UnsupportedAlgorithm
+
+    key = signing.generate_private_key("ed25519")
+    _, signature = signing.sign(key, MESSAGE)
+
+    class _Refusing:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def verify(self, *_a, **_k):
+            raise UnsupportedAlgorithm("ed25519 not available in FIPS provider")
+
+    public = key.public_key()
+    monkeypatch.setattr(signing, "algorithm_of", lambda _k: "ed25519")
+    assert not signing.verify(_Refusing(public), "ed25519", MESSAGE, signature)
