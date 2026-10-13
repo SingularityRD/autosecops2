@@ -1,10 +1,12 @@
 {{- if .Values.daemon.enabled }}
 {{- /*
-The SOC daemon is a singleton by design — the orchestrator holds in-memory
-state (work queues, agent tracking) that is not safe to share across replicas.
-We use a StatefulSet with replicas=1 (hardcoded — NOT exposed in values.yaml
-to prevent accidental misconfiguration) to guarantee at most one pod.
+Only one daemon may run the loops — the orchestrator holds in-memory state
+(work queues, agent tracking) that is not safe to share. The replica count is
+not a value: with daemon.leaderElection.enabled the StatefulSet runs exactly 2
+pods (a leader and a hot standby, chosen by a Postgres advisory lock; see
+services/daemon/leadership.py), otherwise exactly 1.
 */ -}}
+{{- $ha := .Values.daemon.leaderElection.enabled }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -14,8 +16,10 @@ metadata:
     {{- include "vigil.componentLabels" (dict "context" . "component" "daemon") | nindent 4 }}
 spec:
   serviceName: {{ include "vigil.daemon.fullname" . }}
-  replicas: 1
-  podManagementPolicy: OrderedReady
+  replicas: {{ if $ha }}2{{ else }}1{{ end }}
+  {{- /* Parallel: a standby is created (and recreated) without waiting on the
+         other pod; the lock, not pod ordering, decides who leads. */}}
+  podManagementPolicy: {{ if $ha }}Parallel{{ else }}OrderedReady{{ end }}
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
@@ -67,6 +71,14 @@ spec:
             {{- include "vigil.env" . | nindent 12 }}
             {{- include "vigil.stateEnv" . | nindent 12 }}
             {{- include "vigil.caBundleEnv" . | nindent 12 }}
+            - name: DAEMON_LEADER_ELECTION_ENABLED
+              value: {{ $ha | toString | quote }}
+            {{- if $ha }}
+            - name: DAEMON_LEADER_LEASE_SECONDS
+              value: {{ .Values.daemon.leaderElection.leaseSeconds | toString | quote }}
+            - name: DAEMON_LEADER_RETRY_SECONDS
+              value: {{ .Values.daemon.leaderElection.retrySeconds | toString | quote }}
+            {{- end }}
             {{- with .Values.daemon.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -118,9 +130,21 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.daemon.affinity }}
+      {{- if .Values.daemon.affinity }}
       affinity:
-        {{- toYaml . | nindent 8 }}
+        {{- toYaml .Values.daemon.affinity | nindent 8 }}
+      {{- else if $ha }}
+      # Leader and standby on different nodes when the cluster allows it, so
+      # one node loss does not take both.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "vigil.componentSelectorLabels" (dict "context" . "component" "daemon") | nindent 20 }}
       {{- end }}
       {{- with .Values.daemon.tolerations }}
       tolerations:

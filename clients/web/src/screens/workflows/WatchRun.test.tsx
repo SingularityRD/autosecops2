@@ -393,6 +393,12 @@ describe('the kind of a run', () => {
     expect(screen.getByText(PLAYBOOK)).toBeInTheDocument()
   })
 
+  it('treats verdict as hunt-like: an alert verdict is the hunt loop at triage scale', () => {
+    render(<WatchRun d={started({ trigger_context: { run_kind: 'verdict' } })} onBack={vi.fn()} />)
+    expect(screen.getByText('Starting…')).toBeInTheDocument()
+    expect(screen.queryByText(PLAYBOOK)).not.toBeInTheDocument()
+  })
+
   it('says replayed once the run has ended, and falls back to the beliefs put up when no hypothesis was typed', () => {
     const d = hunt('completed', [move(1)], { hypotheses: [{ hypothesis_id: 'h1', statement: 'The same operator moved', status: 'active', provenance: 'operator' }, { hypothesis_id: 'h2', statement: 'A scanner', status: 'active', provenance: 'base_rate' }] })
     render(<WatchRun d={d} onBack={vi.fn()} />)

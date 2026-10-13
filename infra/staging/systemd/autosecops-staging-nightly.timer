@@ -1,0 +1,12 @@
+[Unit]
+Description=AutoSecOps staging: nightly install from main
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 UTC
+RandomizedDelaySec=15min
+# A VM that was off at 02:30 runs the missed install at boot.
+Persistent=true
+Unit=autosecops-staging-nightly.service
+
+[Install]
+WantedBy=timers.target

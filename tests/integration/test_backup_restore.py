@@ -23,6 +23,14 @@ from core.storage.models.base import Base
 
 pytestmark = [pytest.mark.integration, pytest.mark.database]
 
+# restic is a host tool the CI image installs. Without it these tests cannot
+# run at all; skip on a developer box, but never in CI (CI set), where a
+# missing restic must still fail.
+needs_restic = pytest.mark.skipif(
+    shutil.which("restic") is None and not os.environ.get("CI"),
+    reason="restic is not installed (required in CI)",
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INIT = REPO_ROOT / "infra" / "database" / "init"
 RUN_ID = "11111111-1111-1111-1111-111111111111"
@@ -299,6 +307,7 @@ def _names() -> list[str]:
     return [row[0] for row in rows]
 
 
+@needs_restic
 def test_round_trip_serves_restored_database(scratch_databases, tmp_path: Path):
     root = tmp_path / "round"
     root.mkdir()
@@ -396,6 +405,7 @@ def test_round_trip_serves_restored_database(scratch_databases, tmp_path: Path):
     assert payload["run_id"] == RUN_ID
 
 
+@needs_restic
 def test_test_flag_leaves_live_byte_identical(scratch_databases, tmp_path: Path):
     root = tmp_path / "testflag"
     root.mkdir()
@@ -424,6 +434,7 @@ def test_test_flag_leaves_live_byte_identical(scratch_databases, tmp_path: Path)
     assert _names() == before_names
 
 
+@needs_restic
 def test_other_major_minor_is_refused(scratch_databases, tmp_path: Path):
     root = tmp_path / "version"
     root.mkdir()
@@ -448,6 +459,7 @@ def test_other_major_minor_is_refused(scratch_databases, tmp_path: Path):
     assert _names() == before
 
 
+@needs_restic
 def test_broken_ledger_does_not_swap(scratch_databases, tmp_path: Path):
     root = tmp_path / "ledger"
     root.mkdir()
@@ -480,6 +492,7 @@ def test_broken_ledger_does_not_swap(scratch_databases, tmp_path: Path):
     assert not any("pre_restore" in name for name in _names())
 
 
+@needs_restic
 def test_open_connection_refuses_before_staging(scratch_databases, tmp_path: Path):
     root = tmp_path / "busy"
     root.mkdir()
@@ -525,6 +538,7 @@ def test_open_connection_refuses_before_staging(scratch_databases, tmp_path: Pat
     assert not log.exists()
 
 
+@needs_restic
 def test_undecryptable_secrets_do_not_swap(scratch_databases, tmp_path: Path):
     root = tmp_path / "secrets"
     root.mkdir()
@@ -553,6 +567,7 @@ def test_undecryptable_secrets_do_not_swap(scratch_databases, tmp_path: Path):
     assert list(dest["state"].iterdir()) == []
 
 
+@needs_restic
 def test_failed_location_removes_staging_siblings(scratch_databases, tmp_path: Path):
     root = tmp_path / "partial"
     root.mkdir()
@@ -659,6 +674,7 @@ def _install_app_rows(database: str, mfa: str) -> None:
     engine.dispose()
 
 
+@needs_restic
 def test_restore_rotates_jwt_and_expires_pending_approvals(
     scratch_databases, tmp_path: Path
 ):
@@ -836,6 +852,7 @@ def test_restore_rotates_jwt_and_expires_pending_approvals(
     assert f"mfa {_TOTP}" in checked.stdout
 
 
+@needs_restic
 def test_wrong_old_key_aborts_without_touching_mfa_secrets(
     scratch_databases, tmp_path: Path
 ):
@@ -881,6 +898,7 @@ def test_wrong_old_key_aborts_without_touching_mfa_secrets(
     ) == [("pending",)]
 
 
+@needs_restic
 def test_key_held_outside_the_install_rotates_into_secrets(
     scratch_databases, tmp_path: Path
 ):
@@ -948,6 +966,7 @@ def test_key_held_outside_the_install_rotates_into_secrets(
     )
 
 
+@needs_restic
 def test_key_held_outside_the_install_is_reported_not_faked(
     scratch_databases, tmp_path: Path
 ):
@@ -1022,6 +1041,7 @@ sys.exit(__main__.main(sys.argv[1:]))
 """
 
 
+@needs_restic
 def test_failure_after_first_location_restores_every_original(
     scratch_databases, tmp_path: Path
 ):

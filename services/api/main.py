@@ -439,6 +439,8 @@ def _build_services(app: FastAPI):
     from core.integrations.mcp.registry import MCPRegistry
     from core.platform.demo_data_service import DemoDataService
     from core.response.approval_service import ApprovalService, register_pending_gauge
+    from core.response.autonomous_response_service import AutonomousResponseService
+    from core.response.executors.wiring import build_executor_registry
     from core.storage.database_data_service import DatabaseDataService
     from core.workflows.custom_workflow_service import CustomWorkflowService
     from core.workflows.workflow_ai_generator import WorkflowAIGenerator
@@ -454,6 +456,11 @@ def _build_services(app: FastAPI):
 
     app.state.approvals = ApprovalService()
     register_pending_gauge(app.state.approvals)
+    # One executor registry for the API process (W2.4); the daemon builds its own.
+    app.state.executors = build_executor_registry()
+    app.state.response = AutonomousResponseService(
+        approvals=app.state.approvals, executors=app.state.executors
+    )
     app.state.custom_workflows = CustomWorkflowService()
     app.state.detection_rules = DetectionRulesService()
     app.state.integration_bridge = IntegrationBridgeService()

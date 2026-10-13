@@ -3325,7 +3325,7 @@
           },
           "run_kind": {
             "default": "hunt",
-            "description": "One of hunt, root_cause, adjudicate, investigate, compose, chat.",
+            "description": "One of hunt, root_cause, adjudicate, verdict, investigate, compose, chat.",
             "title": "Run Kind",
             "type": "string"
           },

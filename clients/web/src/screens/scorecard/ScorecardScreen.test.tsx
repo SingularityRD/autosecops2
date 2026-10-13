@@ -156,6 +156,24 @@ describe('review queue tab', () => {
     )
   })
 
+  it('says what a disagreement does to the bound for each kind of sample', async () => {
+    state.samples = [sample(1), sample(2, { sampling_kind: 'risk_weighted', category: 'identity' })]
+    renderAt('/scorecard?tab=queue')
+
+    const first = (await screen.findByText('dec-1')).closest('tr') as HTMLElement
+    fireEvent.click(within(first).getByRole('button', { name: /Disagree/ }))
+    let dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('Malicious counts as a miss against the phishing bound; inconclusive counts as a disagreement, not a miss.')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    const second = screen.getByText('dec-2').closest('tr') as HTMLElement
+    fireEvent.click(within(second).getByRole('button', { name: /Disagree/ }))
+    dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('never enters the identity bound')
+    expect(dialog).not.toHaveTextContent('counts as a miss')
+  })
+
   it('shows the queue without review buttons to a role that cannot review', async () => {
     state.perms = new Set()
     state.samples = [sample(1)]

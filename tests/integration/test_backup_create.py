@@ -24,6 +24,14 @@ from core.version import __version__
 
 pytestmark = [pytest.mark.integration, pytest.mark.database]
 
+# restic is a host tool the CI image installs. Without it these tests cannot
+# run at all; skip on a developer box, but never in CI (CI set), where a
+# missing restic must still fail.
+needs_restic = pytest.mark.skipif(
+    shutil.which("restic") is None and not os.environ.get("CI"),
+    reason="restic is not installed (required in CI)",
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INIT = REPO_ROOT / "infra" / "database" / "init"
 SCRATCH_DB = "vigil_test_backup_create"
@@ -234,6 +242,7 @@ def _bifrost(path: Path, secret: str) -> sqlite3.Connection:
     return live
 
 
+@needs_restic
 def test_create_snapshot_lists_state_and_matches_counts(scratch_db, tmp_path: Path):
     root = tmp_path / "run"
     state = root / "state"
@@ -328,6 +337,7 @@ def test_create_snapshot_lists_state_and_matches_counts(scratch_db, tmp_path: Pa
     assert (repo / "config").is_file()
 
 
+@needs_restic
 def test_missing_locations_are_skipped(scratch_db, tmp_path: Path):
     root = tmp_path / "skip"
     (root / "state").mkdir(parents=True)
@@ -359,6 +369,7 @@ def test_missing_locations_are_skipped(scratch_db, tmp_path: Path):
     assert "only.txt" in listing
 
 
+@needs_restic
 def test_wrong_passphrase_does_not_dump(scratch_db, tmp_path: Path):
     root = tmp_path / "pw"
     (root / "state").mkdir(parents=True)
@@ -403,6 +414,7 @@ def test_wrong_passphrase_does_not_dump(scratch_db, tmp_path: Path):
     assert "--format" not in invocations
 
 
+@needs_restic
 def test_large_dump_still_verifies(scratch_db, tmp_path: Path):
     """An incompressible dump still verifies and leaves the repository unlocked."""
     engine = create_engine(_url(SCRATCH_DB))
@@ -433,6 +445,7 @@ def test_large_dump_still_verifies(scratch_db, tmp_path: Path):
     )
 
 
+@needs_restic
 def test_concurrent_create_skips(scratch_db, tmp_path: Path):
     root = tmp_path / "lock"
     state = root / "state"
@@ -540,6 +553,7 @@ def _manifest_tables(
     return _dump_json(env, repo, passphrase, snap, manifest_path)["tables"]
 
 
+@needs_restic
 def test_owner_override_skips_stored_dsn(tmp_path: Path):
     """A stored vigil-app-style DSN loses to the owner override and wins without it."""
     admin = create_engine(_url("postgres"), isolation_level="AUTOCOMMIT")

@@ -37,7 +37,7 @@ interface CallRow {
 type Mark = 'done' | 'failed' | 'running' | 'warn' | 'paused' | 'stopped' | 'pending'
 /** Why the run is not working right now, though its steps may be on screen. */
 interface Halt { kind: 'needs_you' | 'paused' | 'failed' | 'cancelled'; reason: string }
-const HUNT_LIKE_RUN_KINDS = ['hunt', 'adjudicate']
+const HUNT_LIKE_RUN_KINDS = ['hunt', 'adjudicate', 'verdict']
 
 export const STEP_MS = 1400
 export const UNSUPPORTED = 'Replay isn’t available for this kind of run yet.'

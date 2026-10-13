@@ -138,8 +138,10 @@ def verify_signature(
 
     Several ``v1=`` entries are accepted (any one may match), so a sender can
     sign with an old and a new secret during a rotation. Replay protection
-    beyond the time window is the receiver's: remember ``X-AutoSecOps-Event-Id``
-    values for at least ``tolerance`` seconds and drop repeats.
+    beyond the time window is the receiver's: remember the ``id`` field of the
+    verified body for at least ``tolerance`` seconds and drop repeats. Not the
+    ``X-AutoSecOps-Event-Id`` header: headers are outside the signature, so a
+    replayed request can carry any header value.
     """
     if not header:
         return False
@@ -686,12 +688,13 @@ def claim_due_deliveries(
         if not rows:
             return []
         ids = [int(r._mapping["id"]) for r in rows]
+        lease = current + timedelta(seconds=CLAIM_LEASE_SECONDS)
         s.execute(
             text(
                 "UPDATE webhook_deliveries SET next_attempt_at = :lease "
                 "WHERE id = ANY(:ids)"
             ),
-            {"lease": current + timedelta(seconds=CLAIM_LEASE_SECONDS), "ids": ids},
+            {"lease": lease, "ids": ids},
         )
         claimed = []
         for r in rows:
@@ -702,6 +705,9 @@ def claim_due_deliveries(
                 url=m["url"],
                 secret_ref=m["secret_ref"],
                 endpoint_enabled=bool(m["enabled"]),
+                # The claim's token: record_attempt only writes while the row
+                # still carries this lease (see there).
+                lease=lease,
             )
             claimed.append(item)
         return claimed
@@ -716,10 +722,15 @@ def record_attempt(
 ) -> str:
     """Write one attempt's outcome; returns the delivery's new status.
 
-    The update only applies while the row is still the one this sender claimed
-    (pending, same attempt count). If the lease ran out and another sender took
-    the delivery over, or an admin changed it meanwhile, the stale outcome is
-    dropped instead of overwriting newer state.
+    The update only applies while the row is still the one this sender claimed:
+    pending, same attempt count, and still carrying this claim's lease in
+    ``next_attempt_at``. Every later claim sets a strictly later lease (a row is
+    only re-claimable once its lease has passed), and every recorded outcome or
+    requeue moves ``next_attempt_at`` too, so a stale claim never matches again.
+    If the lease ran out and another sender took the delivery over, or an admin
+    requeued it meanwhile (which resets ``attempts`` to 0, so the attempt count
+    alone would match again), the stale outcome is dropped instead of
+    overwriting newer state, whichever of the two results arrives first.
     """
     current = now or utc_now()
     attempts = int(delivery["attempts"]) + 1
@@ -739,7 +750,8 @@ def record_attempt(
                 "next_attempt_at = :next_at, last_attempt_at = :now, "
                 "response_status = :code, last_error = :error, "
                 "delivered_at = CASE WHEN :status = 'delivered' THEN :now ELSE delivered_at END "
-                "WHERE id = :id AND status = 'pending' AND attempts = :previous"
+                "WHERE id = :id AND status = 'pending' AND attempts = :previous "
+                "AND next_attempt_at = :lease"
             ),
             {
                 "status": status,
@@ -750,6 +762,7 @@ def record_attempt(
                 "error": (result.error or None) and result.error[:500],
                 "id": int(delivery["id"]),
                 "previous": attempts - 1,
+                "lease": delivery["lease"],
             },
         )
         if not updated.rowcount:

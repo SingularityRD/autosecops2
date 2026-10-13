@@ -72,6 +72,15 @@ class _FakeSession:
     def add(self, obj):
         self.added.append(obj)
 
+    def begin_nested(self):
+        # create_broadcast inserts inside a savepoint (W0.10); no conflict here.
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+    def flush(self):
+        pass
+
     def commit(self):
         pass
 
