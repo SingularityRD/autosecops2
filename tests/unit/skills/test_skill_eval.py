@@ -28,7 +28,8 @@ _spec.loader.exec_module(skill_eval)
 
 def test_grade_reports_the_missing_strings_only():
     assert (
-        core_eval.grade("SEVERITY: high\nVERDICT: ESCALATE", ["high", "ESCALATE"]) == []
+        core_eval.grade("SEVERITY: high\nVERDICT: ESCALATE", ["high", "ESCALATE"])
+        == []
     )
     assert core_eval.grade("SEVERITY: low", ["high", "low"]) == ["high"]
 
