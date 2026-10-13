@@ -579,3 +579,190 @@ def test_client_error_carries_status_and_code(ft):
             client.list_alerts()
     assert err.value.status == 400 and err.value.code == "BadRequest"
     assert "Bearer" not in str(err.value)
+
+
+# ------------------------------------------------- verifier regressions (R3)
+
+
+def test_short_name_filter_is_exact_first_label_not_startswith(mock, ft):
+    """FIXES W2.5 #1: 'web' must not be resolved through startswith('web')."""
+    route = _machines(
+        mock,
+        [
+            {**MACHINE, "computerDnsName": "web.corp.example"},
+            {**MACHINE, "id": MID2, "computerDnsName": "web2.corp.example"},
+        ],
+    )
+    verdict = _executor(ft).validate(_action(target="web"))
+    assert verdict.allowed, verdict.reasons
+    odata = route.calls.last.request.url.params["$filter"]
+    assert odata == "computerDnsName eq 'web' or startswith(computerDnsName,'web.')"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # nextLink: a second page exists that may hold a second match
+        {"value": [MACHINE], "@odata.nextLink": f"{API}/machines?$skip=50"},
+        # a full page without nextLink: cannot tell it is complete either
+        {"value": [MACHINE] + [{"id": "c" * 40}] * 49},
+    ],
+    ids=["next-link", "full-page"],
+)
+def test_truncated_machine_lookup_is_refused(mock, ft, body):
+    """FIXES W2.5 #1: one match on page 1 is not 'exactly one machine'."""
+    route = mock.get(f"{API}/machines").mock(
+        return_value=httpx.Response(200, json=body)
+    )
+    post = mock.post(url__regex=rf"{API}/machines/.*/isolate")
+    ex = _executor(ft)
+    verdict = ex.validate(_action(target="ws-01"))
+    assert not verdict.allowed and "more MDE machines" in verdict.reasons[0]
+    assert not ex.validate(_action(target="10.0.0.5")).allowed
+    result = ex.execute(_action(target="ws-01"))
+    assert result.status == "failed" and "machine id" in result.error
+    assert not post.called
+    # the nextLink is never followed
+    assert all("$skip" not in str(c.request.url) for c in route.calls)
+
+
+def test_isolation_history_is_read_newest_first(mock, ft):
+    """FIXES W2.5 #2: $top without $orderby can omit the latest action."""
+    _machines(mock, [MACHINE])
+    route = _actions(mock, [_act("Isolate", "Succeeded")])
+    _executor(ft).execute(_action())
+    params = route.calls.last.request.url.params
+    assert params["$orderby"] == "creationDateTimeUtc desc"
+    assert "$top" in params
+
+
+def _post_isolate(mock, **kw):
+    return mock.post(f"{API}/machines/{MID}/isolate").mock(**kw)
+
+
+@pytest.mark.parametrize(
+    "post_kw",
+    [
+        {"return_value": httpx.Response(503, text="busy")},
+        {"side_effect": httpx.ReadTimeout("slow")},
+        {
+            "return_value": httpx.Response(
+                400, json={"error": {"code": "BadRequest", "message": "odd"}}
+            )
+        },
+    ],
+    ids=["5xx", "timeout", "unexpected-400"],
+)
+def test_ambiguous_post_that_landed_is_executed(mock, ft, post_kw):
+    """FIXES W2.5 #3: an isolation MDE accepted despite the error is reported
+    executed, pointing at the machine action, so verify/reverse/TTL follow it."""
+    _machines(mock, [MACHINE])
+    mock.get(f"{API}/machineactions").mock(
+        side_effect=[
+            httpx.Response(200, json={"value": [_act("Unisolate", "Succeeded")]}),
+            httpx.Response(
+                200,
+                json={
+                    "value": [
+                        _act("Isolate", "Pending", "2026-10-13T00:00:00Z", "ma-new"),
+                        _act("Unisolate", "Succeeded"),
+                    ]
+                },
+            ),
+        ]
+    )
+    _post_isolate(mock, **post_kw)
+    result = _executor(ft).execute(_action())
+    assert result.status == "executed", result.error
+    assert result.external_ref == "ma-new"
+    assert result.after_state["isolated"] is True
+    assert result.before_state["isolated"] is False
+
+
+def test_ambiguous_post_confirmed_not_landed_is_failed(mock, ft):
+    _machines(mock, [MACHINE])
+    route = _actions(mock, [_act("Unisolate", "Succeeded")])
+    _post_isolate(mock, return_value=httpx.Response(503))
+    result = _executor(ft).execute(_action())
+    assert result.status == "failed" and "HTTP 503" in result.error
+    assert route.call_count == 2  # before + re-read
+
+
+def test_ambiguous_post_with_unreadable_state_is_unknown_not_failed(mock, ft):
+    """Re-read fails too: the isolation may stand, so it must stay undoable."""
+    _machines(mock, [MACHINE])
+    mock.get(f"{API}/machineactions").mock(
+        side_effect=[httpx.Response(200, json={"value": []})]
+        + [httpx.Response(503)] * 4
+    )
+    _post_isolate(mock, side_effect=httpx.ReadTimeout("slow"))
+    ex = _executor(ft)
+    result = ex.execute(_action())
+    assert result.status == "executed"
+    assert result.after_state["outcome"] == "unknown"
+    assert result.external_ref is None and result.error
+    # reverse still works from the recorded machine id
+    mock.get(f"{API}/machines/{MID}").mock(
+        return_value=httpx.Response(200, json=MACHINE)
+    )
+    mock.get(f"{API}/machineactions").mock(
+        return_value=httpx.Response(
+            200, json={"value": [_act("Isolate", "Succeeded", id_="ma-late")]}
+        )
+    )
+    unpost = mock.post(f"{API}/machines/{MID}/unisolate").mock(
+        return_value=httpx.Response(201, json={"id": "ma-u", "status": "Pending"})
+    )
+    assert ex.reverse(_action(), result).status == "executed"
+    assert unpost.called
+
+
+def test_definite_rejection_with_unreadable_state_is_failed(mock, ft):
+    _machines(mock, [MACHINE])
+    mock.get(f"{API}/machineactions").mock(
+        side_effect=[httpx.Response(200, json={"value": []})]
+        + [httpx.Response(503)] * 4
+    )
+    _post_isolate(
+        mock, return_value=httpx.Response(403, json={"error": {"code": "Forbidden"}})
+    )
+    result = _executor(ft).execute(_action())
+    assert result.status == "failed" and "HTTP 403" in result.error
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        "https://attacker.example/api",
+        "http://api.securitycenter.microsoft.com/api",
+        "https://api.securitycenter.microsoft.com.attacker.example/api",
+        "https://api.securitycenter.microsoft.com/api/../../x",
+    ],
+)
+def test_api_base_outside_the_mde_allowlist_is_refused(mock, ft, base):
+    """FIXES W2.5 #4: integration config cannot send the token to its own host."""
+    with pytest.raises(ValueError, match="official Microsoft Defender"):
+        _executor(ft, api_base=base)
+    with pytest.raises(ValueError):
+        MDEClient(lambda: TOKEN, api_base=base)
+
+
+def test_regional_api_base_is_accepted(mock, ft):
+    eu = "https://api-eu.securitycenter.microsoft.com/api"
+    route = mock.get(f"{eu}/machines").mock(
+        return_value=httpx.Response(200, json={"value": [MACHINE]})
+    )
+    assert _executor(ft, api_base=eu + "/").validate(_action()).allowed
+    assert route.called
+
+
+def test_validate_of_a_reverse_does_not_re_resolve_the_target(mock, ft):
+    """FIXES W2.5 #5 (executor side): the host was renamed since isolation;
+    the reverse is still allowed and reverse() uses the recorded machine id."""
+    route = _machines(mock, [])
+    ex = _executor(ft)
+    reverse = _action(reverse_of="act-0")
+    verdict = ex.validate(reverse)
+    assert verdict.allowed, verdict.reasons
+    assert not route.called
+    assert not ex.validate(_action()).allowed  # forward still resolves

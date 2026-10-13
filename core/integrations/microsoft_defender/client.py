@@ -35,6 +35,39 @@ MAX_BACKOFF_SECONDS = 30.0
 
 ISOLATION_TYPES = ("Full", "Selective")
 
+# The only API bases the client will send a bearer token to: the global MDE
+# endpoint and its documented commercial regional ones
+# (learn.microsoft.com/defender-endpoint/api/exposed-apis-list), all of which
+# accept a token for TOKEN_SCOPE. An operator-supplied base is matched against
+# this list, never trusted, so integration config cannot redirect the token to
+# a host it controls. Sovereign clouds need a different token scope and are not
+# supported.
+ALLOWED_API_BASES = frozenset(
+    {
+        API_BASE,
+        "https://api-us.securitycenter.microsoft.com/api",
+        "https://api-eu.securitycenter.microsoft.com/api",
+        "https://api-uk.securitycenter.microsoft.com/api",
+        "https://api-au.securitycenter.microsoft.com/api",
+        "https://api.security.microsoft.com/api",
+        "https://us.api.security.microsoft.com/api",
+        "https://eu.api.security.microsoft.com/api",
+        "https://uk.api.security.microsoft.com/api",
+        "https://au.api.security.microsoft.com/api",
+    }
+)
+
+
+def check_api_base(api_base: str) -> str:
+    """``api_base`` normalised, or ``ValueError`` if it is not an MDE endpoint."""
+    normalised = str(api_base or "").strip().rstrip("/")
+    if normalised.lower() not in ALLOWED_API_BASES:
+        raise ValueError(
+            "api_base must be an official Microsoft Defender for Endpoint API "
+            f"endpoint, one of: {', '.join(sorted(ALLOWED_API_BASES))}"
+        )
+    return normalised.lower()
+
 
 class MDEApiError(Exception):
     """An MDE API call failed. ``str()`` carries no credential and is safe to log.
@@ -132,7 +165,7 @@ class MDEClient:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._token_provider = token_provider
-        self._api_base = api_base.rstrip("/")
+        self._api_base = check_api_base(api_base)
         self._http = http if http is not None else httpx.Client(timeout=DEFAULT_TIMEOUT)
         self._owns_http = http is None
         self.max_retries = max(0, int(max_retries))
@@ -247,14 +280,25 @@ class MDEClient:
     def get_machine(self, machine_id: str) -> dict[str, Any]:
         return self.request("GET", f"machines/{machine_id}") or {}
 
-    def find_machines(self, odata_filter: str, top: int = 50) -> list[dict[str, Any]]:
+    def find_machines(
+        self, odata_filter: str, top: int = 50
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """One page of machines matching ``odata_filter``, and whether there are more.
+
+        ``more`` is True when MDE sent an ``@odata.nextLink`` or filled the
+        page: the caller has not seen every match and must not treat the page
+        as complete. The nextLink is never followed (it is a URL from the
+        response; following it would send the token wherever it points).
+        """
         body = (
             self.request(
                 "GET", "machines", params={"$filter": odata_filter, "$top": top}
             )
             or {}
         )
-        return list(body.get("value", []))
+        values = list(body.get("value", []))
+        more = bool(body.get("@odata.nextLink")) or len(values) >= top
+        return values, more
 
     def isolate(
         self, machine_id: str, comment: str, isolation_type: str = "Full"
@@ -282,14 +326,21 @@ class MDEClient:
     def list_isolation_actions(
         self, machine_id: str, top: int = 50
     ) -> list[dict[str, Any]]:
-        """Isolate / Unisolate machine actions for one machine, any status."""
+        """Isolate / Unisolate machine actions for one machine, any status,
+        newest first, so the ``top`` returned always include the latest."""
         odata = (
             f"machineId eq {odata_quote(machine_id)} and "
             "(type eq 'Isolate' or type eq 'Unisolate')"
         )
         body = (
             self.request(
-                "GET", "machineactions", params={"$filter": odata, "$top": top}
+                "GET",
+                "machineactions",
+                params={
+                    "$filter": odata,
+                    "$orderby": "creationDateTimeUtc desc",
+                    "$top": top,
+                },
             )
             or {}
         )
@@ -297,11 +348,13 @@ class MDEClient:
 
 
 __all__ = [
+    "ALLOWED_API_BASES",
     "API_BASE",
     "ISOLATION_TYPES",
     "MDEApiError",
     "MDEClient",
     "acquire_token",
+    "check_api_base",
     "isolate_payload",
     "odata_quote",
 ]

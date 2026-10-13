@@ -35,9 +35,14 @@ registry.register(build_executor({}))   # kimlik bilgileri entegrasyon yapıland
 - Hedef **tam olarak bir** MDE makinesine çözülmelidir:
   - 40 hex karakter → makine kimliği (`GET /machines/{id}`; 404 → ret).
   - IP adresi → `lastIpAddress eq '…'`.
-  - FQDN → `computerDnsName eq '…'`; kısa ad → `startswith(computerDnsName,'…')`
-    ve ardından tam ad ya da ilk etiket eşleşmesiyle süzülür (`ws-01`,
+  - FQDN → `computerDnsName eq '…'`; kısa ad → ilk DNS etiketinin tam
+    eşleşmesi: `computerDnsName eq 'ws-01' or startswith(computerDnsName,'ws-01.')`,
+    ardından istemci tarafında da tam ad / ilk etiket süzülür (`ws-01`,
     `ws-01.corp.example`'ı bulur ama `ws-010`'u bulmaz).
+  - Arama tek sayfa (`$top=50`) okur. Yanıtta `@odata.nextLink` varsa veya
+    sayfa doluysa tüm eşleşmeler görülmemiştir; "tam olarak bir" kanıtlanamaz ve
+    hedef reddedilir (makine kimliğiyle verilmelidir). `nextLink` hiçbir zaman
+    izlenmez (yanıttan gelen bir URL'ye token gönderilmez).
   - Başka biçimdeki hedef OData filtresine hiç girmez, reddedilir.
 - Sıfır eşleşme, birden çok eşleşme (belirsiz; mesajda en fazla 10 makine
   kimliği listelenir) veya MDE'ye erişilememesi gerekçeli `deny` döner.
@@ -58,9 +63,19 @@ registry.register(build_executor({}))   # kimlik bilgileri entegrasyon yapıland
    eder, böylece verify onu izler).
 4. Aksi halde POST yapılır; `external_ref` = MDE makine eylemi kimliği,
    `after_state` = beklenen yeni durum.
-5. POST `400 ActiveRequestAlreadyExists` dönerse (başka bir istek ya da 5xx
-   sonrası yeniden denenen POST önce ulaşmış) durum yeniden okunur; aynı yönde
-   bekleyen eylem varsa sonuç `executed` ve `external_ref` o eylemdir.
+5. POST hata ile biterse (ağ zaman aşımı, yeniden denemeler sonrası 5xx/429,
+   herhangi bir 400 — `ActiveRequestAlreadyExists` dahil, ya da başka 4xx)
+   sonuç belirsiz olabilir: MDE isteği kabul etmiş olabilir. Makine eylemleri
+   **yeniden okunur**:
+   - `before_state`'tekinden farklı, istenen yönde canlı bir eylem varsa sonuç
+     `executed`, `external_ref` o eylemdir (verify onu izler; reverse/TTL geri
+     alabilir).
+   - Yeniden okuma böyle bir eylem olmadığını doğrularsa `failed`.
+   - Yeniden okuma da başarısızsa: belirsiz hata (ağ, 429, 5xx) için
+     `executed` + `after_state.outcome = "unknown"` ve `external_ref` yok
+     (verify durumu yeniden okur; reverse kayıtlı makine kimliğiyle geri
+     alabilir, böylece izole kalmış bir host sahipsiz kalmaz); kesin ret
+     (diğer 4xx) için `failed`.
 
 Yorum (`Comment`) verilmezse `AutoSecOps isolate (action <id>, requested by <kim>)`
 yazılır; 1000 karakterle sınırlıdır.
@@ -77,6 +92,9 @@ yazılır; 1000 karakterle sınırlıdır.
 
 ### reverse
 
+- Reverse eyleminin (`reverse_of` dolu) `validate`'i hedef dizgesini yeniden
+  çözmez (yalnızca tip/parametre/yapılandırma kontrolü); yeniden adlandırılmış
+  bir hostun geri alınması reddedilmez.
 - `before_state`'teki **makine kimliği** kullanılır (hedef dizgesi değil); host
   yeniden adlandırılmış veya IP'si değişmiş olsa da doğru makine geri alınır.
 - `noop` bir eylemin tersi `noop`'tur: biz dokunmadan önce izole olan bir host
@@ -111,7 +129,7 @@ ve kısaltılmış (200 karakter) MDE mesajını içerir. Testler bunu doğrular
 | `max_retries` | 3 | 429/5xx/ağ hatası için. |
 | `backoff_base_seconds` | 1 | Üstel geri çekilme tabanı. |
 | `require_approval` | `false` | `true` ise validate her zaman onay ister. |
-| `api_base` | `https://api.securitycenter.microsoft.com/api` | Bölgesel uç nokta (ör. `https://api-eu.securitycenter.microsoft.com/api`). |
+| `api_base` | `https://api.securitycenter.microsoft.com/api` | Yalnızca resmi MDE uç noktaları kabul edilir (`client.ALLOWED_API_BASES`: global, `api-us/eu/uk/au.securitycenter.microsoft.com`, `api.security.microsoft.com` ve `us/eu/uk/au.api.security.microsoft.com`, hepsi `https://…/api`). Başka bir host `ValueError` ile reddedilir; böylece entegrasyon yapılandırmasını yazabilen biri bearer token'ı kendi sunucusuna yönlendiremez. Egemen bulutlar (GCC/High, DoD) farklı token kapsamı ister, desteklenmez. |
 
 ### Gerekli MDE uygulama izinleri (Application, yönetici onaylı)
 
@@ -125,7 +143,8 @@ ve kısaltılmış (200 karakter) MDE mesajını içerir. Testler bunu doğrular
 - Makine eylemi varlığı izolasyon tipini (`Full`/`Selective`) döndürmez;
   `before_state.isolation_type` yalnızca AutoSecOps'un kendi başlattığı eylem için
   biliniyor. Bilinmiyorsa unisolate'in tersi `default_isolation_type` ile izole eder.
-- Durum, makine başına son 50 Isolate/Unisolate eyleminden çıkarılır.
+- Durum, makine başına en yeni 50 Isolate/Unisolate eyleminden
+  (`$orderby=creationDateTimeUtc desc`) çıkarılır.
 - Portalda elle yapılmış ve henüz makine eylemi listesinde görünmeyen bir
   değişiklik, kısa bir süre için durum okumasını yanıltabilir; verify bunu
   eylem durumu üzerinden yakalar.

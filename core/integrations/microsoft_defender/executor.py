@@ -40,6 +40,7 @@ from core.integrations.microsoft_defender.client import (
     MDEApiError,
     MDEClient,
     acquire_token,
+    check_api_base,
     odata_quote,
 )
 from core.integrations.microsoft_defender.descriptor import MICROSOFT_DEFENDER
@@ -111,6 +112,7 @@ class DefenderExecutorSettings:
     require_approval: bool = False
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "api_base", check_api_base(self.api_base))
         if self.default_isolation_type not in ISOLATION_TYPES:
             raise ValueError(f"default_isolation_type must be one of {ISOLATION_TYPES}")
         if self.isolation_ttl is not None and self.isolation_ttl <= timedelta(0):
@@ -171,7 +173,7 @@ class DefenderIsolationExecutor:
         except ValueError:
             ip = None
         if ip is not None:
-            candidates = self._client.find_machines(
+            candidates, more = self._client.find_machines(
                 f"lastIpAddress eq {odata_quote(str(ip))}"
             )
             matches = [m for m in candidates if m.get("lastIpAddress") == str(ip)]
@@ -180,13 +182,18 @@ class DefenderIsolationExecutor:
             if "." in name:
                 odata = f"computerDnsName eq {odata_quote(name)}"
             else:
-                # A short name matches its FQDNs too (host -> host.corp.example).
-                odata = f"startswith(computerDnsName,{odata_quote(name)})"
-            candidates = self._client.find_machines(odata)
+                # A short name is the first DNS label: it matches ``host`` and
+                # ``host.<domain>``, never ``host2`` or ``host-old``.
+                odata = (
+                    f"computerDnsName eq {odata_quote(name)} or "
+                    f"startswith(computerDnsName,{odata_quote(name + '.')})"
+                )
+            candidates, more = self._client.find_machines(odata)
             matches = [
                 m
                 for m in candidates
-                if (dns := str(m.get("computerDnsName") or "").lower()) == name
+                if (dns := str(m.get("computerDnsName") or "").lower().rstrip("."))
+                == name
                 or ("." not in name and dns.split(".", 1)[0] == name)
             ]
         else:
@@ -194,6 +201,12 @@ class DefenderIsolationExecutor:
                 "target must be a hostname, an IP address or a 40-hex MDE machine id"
             )
 
+        if more:
+            # Not every match was seen, so "exactly one" cannot be established.
+            raise TargetError(
+                f"{target!r} matches more MDE machines than one page returns; "
+                "name the machine id instead"
+            )
         if not matches:
             raise TargetError(f"no MDE machine matches {target!r}")
         if len(matches) > 1:
@@ -271,6 +284,11 @@ class DefenderIsolationExecutor:
             return PolicyResult.deny("comment must be a string")
         if not self._configured():
             return PolicyResult.deny("Microsoft Defender is not configured")
+        if action.reverse_of is not None:
+            # A reverse works from the machine id recorded in the original's
+            # before_state, not the target string: re-resolving the name here
+            # would refuse the undo of a host renamed or re-addressed since.
+            return PolicyResult.allow(requires_approval=self.settings.require_approval)
         try:
             self._resolve(action.target)
         except TargetError as exc:
@@ -323,25 +341,7 @@ class DefenderIsolationExecutor:
             else:
                 response = self._client.unisolate(machine_id, comment)
         except MDEApiError as exc:
-            if exc.status == 400 and exc.code in _ALREADY_PENDING_CODES:
-                # Another request got there first (or a retried POST landed
-                # twice). Re-read: if it is ours in direction, that is the action.
-                now = self._isolation_state(machine_id)
-                if now["isolated"] == isolate:
-                    after = {**before, **now}
-                    return ExecResult(
-                        status="executed",
-                        message=f"{verb}ion already pending on machine {machine_id}",
-                        before_state=before,
-                        after_state=after,
-                        external_ref=now.get("last_action_id"),
-                    )
-            return ExecResult(
-                status="failed",
-                message=f"{verb}ion of machine {machine_id} was not accepted",
-                before_state=before,
-                error=str(exc),
-            )
+            return self._settle_rejected_post(before, exc, isolate=isolate, verb=verb)
 
         action_id = response.get("id")
         status = response.get("status") or "Pending"
@@ -369,6 +369,95 @@ class DefenderIsolationExecutor:
             before_state=before,
             after_state=after,
             external_ref=action_id,
+        )
+
+    def _settle_rejected_post(
+        self,
+        before: dict[str, Any],
+        exc: MDEApiError,
+        *,
+        isolate: bool,
+        verb: str,
+    ) -> ExecResult:
+        """What a POST that raised actually did, from MDE's machine actions.
+
+        A timeout, a 5xx after retries or a 400 can each hide a request MDE
+        accepted (a retried POST that landed the first time answers
+        ``ActiveRequestAlreadyExists``). Reporting ``failed`` then would leave
+        a host isolated with nothing scheduled to undo it, so the machine's
+        actions are re-read: a live action in our direction newer than the one
+        ``before`` saw is ours, and the result is ``executed`` with it as
+        ``external_ref`` for verify to follow. Only a re-read that confirms no
+        such action gives ``failed``. If the re-read itself fails after an
+        ambiguous error (transport, 429, 5xx) the outcome is unknown: it is
+        reported ``executed`` with ``outcome: unknown`` and no external_ref,
+        so verify re-checks the state and reverse / TTL expiry can still undo
+        it; a definite rejection (other 4xx) stays ``failed``.
+        """
+        machine_id = before["machine_id"]
+        try:
+            now = self._isolation_state(machine_id)
+        except (MDEApiError, TokenError) as reread:
+            if exc.retryable:
+                logger.warning(
+                    "MDE %sion of machine %s: outcome unknown (%s; re-read: %s)",
+                    verb,
+                    machine_id,
+                    exc,
+                    reread,
+                )
+                return ExecResult(
+                    status="executed",
+                    message=(
+                        f"{verb}ion of machine {machine_id} may or may not have "
+                        "been accepted; state could not be re-read"
+                    ),
+                    before_state=before,
+                    after_state={
+                        **before,
+                        "isolated": isolate,
+                        "isolation_state": "unknown",
+                        "outcome": "unknown",
+                        "error": str(exc),
+                    },
+                    error=str(exc),
+                )
+            return ExecResult(
+                status="failed",
+                message=f"{verb}ion of machine {machine_id} was not accepted",
+                before_state=before,
+                error=str(exc),
+            )
+
+        landed = (
+            now["isolated"] == isolate
+            and now.get("last_action_id")
+            and now.get("last_action_id") != before.get("last_action_id")
+        )
+        if landed:
+            logger.info(
+                "MDE %sion of machine %s answered %s but machine action %s exists",
+                verb,
+                machine_id,
+                exc,
+                now.get("last_action_id"),
+            )
+            return ExecResult(
+                status="executed",
+                message=(
+                    f"{verb}ion of machine {machine_id} is in machine action "
+                    f"{now.get('last_action_id')} (the request answered: {exc})"
+                ),
+                before_state=before,
+                after_state={**before, **now},
+                external_ref=now.get("last_action_id"),
+            )
+        return ExecResult(
+            status="failed",
+            message=f"{verb}ion of machine {machine_id} was not accepted",
+            before_state=before,
+            after_state={**before, **now},
+            error=str(exc),
         )
 
     def execute(self, action: TypedAction) -> ExecResult:
@@ -541,7 +630,10 @@ def build_executor(
     ``client_secret``) and the executor options (``isolation_ttl`` seconds,
     ``default_isolation_type``, ``verify_timeout_seconds``,
     ``poll_interval_seconds``, ``max_retries``, ``backoff_base_seconds``,
-    ``require_approval``, ``api_base``). Credentials missing from it are
+    ``require_approval``, ``api_base``). ``api_base`` only selects among the
+    official MDE endpoints (``ALLOWED_API_BASES``); any other host is refused
+    with ``ValueError`` so the bearer token cannot be sent elsewhere.
+    Credentials missing from it are
     resolved from the integration's stored config and secret store on each
     token fetch, so a rotated secret is picked up without a rebuild and an
     unconfigured integration gives an executor that refuses at validate.
