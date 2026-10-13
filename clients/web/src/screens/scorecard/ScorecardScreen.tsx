@@ -376,7 +376,10 @@ function DisagreeDialog({
       {sample && (
         <form onSubmit={submit} className="flex flex-col gap-4">
           <p className="text-[13px] text-tx-2">
-            AutoSecOps closed <span className="font-mono">{sample.subject_id}</span> as benign. A malicious verdict counts as a miss against the {titleCase(sample.category).toLowerCase()} bound.
+            AutoSecOps closed <span className="font-mono">{sample.subject_id}</span> as benign.{' '}
+            {sample.sampling_kind === 'simple_random'
+              ? `Malicious counts as a miss against the ${titleCase(sample.category).toLowerCase()} bound; inconclusive counts as a disagreement, not a miss.`
+              : `This is a risk-weighted extra: it is reported on its own and never enters the ${titleCase(sample.category).toLowerCase()} bound, whatever the verdict.`}
           </p>
           <Field label="Correct verdict">
             <div className="range-tabs" role="radiogroup" aria-label="Correct verdict">

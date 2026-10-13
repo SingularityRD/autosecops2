@@ -30,6 +30,27 @@ def test_shadow_adjudication_is_a_hunt_like_definition():
     assert listed["hunt_like"] is True
 
 
+# verdict is the hunt loop at triage scale; like adjudicate it has to answer as
+# hunt-like, or the console and the resolver walk phases it does not have.
+def test_alert_verdict_is_a_hunt_like_definition():
+    assert is_hunt_like("verdict")
+
+    wf = WorkflowsService().get_workflow("alert-verdict")
+    assert wf is not None
+    assert wf.run_kind == "verdict"
+    assert wf.metadata.get("hypotheses") == []
+    assert wf.metadata.get("attack_techniques")
+    assert wf.metadata.get("data_domains")
+    # At most two workers: the roster is arch/verdict.yaml's.
+    assert wf.agents == ["threat_hunter", "threat_intel"]
+
+    listed = next(
+        w for w in WorkflowsService().list_workflows() if w["id"] == "alert-verdict"
+    )
+    assert listed["run_kind"] == "verdict"
+    assert listed["hunt_like"] is True
+
+
 def test_cloud_incident_workflow_is_discovered():
     """The cloud-incident workflow should load from disk with correct metadata."""
     service = WorkflowsService()

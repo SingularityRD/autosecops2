@@ -1,0 +1,11 @@
+[Unit]
+Description=AutoSecOps staging: nightly eval-corpus replay (after the install)
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 UTC
+RandomizedDelaySec=10min
+Persistent=true
+Unit=autosecops-staging-replay.service
+
+[Install]
+WantedBy=timers.target

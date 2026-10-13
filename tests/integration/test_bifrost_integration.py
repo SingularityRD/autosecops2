@@ -21,11 +21,36 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO))
 
+
+def _bifrost_listening() -> bool:
+    """True when something accepts connections at BIFROST_URL's host:port."""
+    import socket
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(os.getenv("BIFROST_URL", ""))
+    if not parts.hostname:
+        return False
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        with socket.create_connection((parts.hostname, port), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(
         not os.getenv("BIFROST_URL"),
         reason="BIFROST_URL not set — Bifrost gateway not running",
+    ),
+    # .env sets BIFROST_URL on every dev box; skip when nothing listens there,
+    # except in CI (CI set), where a configured gateway that is down must fail.
+    pytest.mark.skipif(
+        bool(os.getenv("BIFROST_URL"))
+        and not os.environ.get("CI")
+        and not _bifrost_listening(),
+        reason="BIFROST_URL is set but nothing is listening there",
     ),
 ]
 
