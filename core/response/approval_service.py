@@ -20,7 +20,7 @@ from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional
 
 from opentelemetry.metrics import Observation
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from core.response.config import (
@@ -85,6 +85,12 @@ class ActionType(Enum):
     ACCESS_REVOKE = "access_revoke"  # Cloudflare Zero Trust Access session revoke
     # Entra ID (W2.6): two-person rule by default (policy.DEFAULT_FOUR_EYES_TYPES).
     REVOKE_SESSIONS = "revoke_sessions"
+    # Undo types (policy.DEFAULT_UNDO_TYPES), taken by the Palo Alto, Defender
+    # and Entra executors. Without a member here a proposal of one was stored
+    # as ``custom``, which no executor takes, so it could never run.
+    UNBLOCK_IP = "unblock_ip"
+    UNISOLATE_HOST = "unisolate_host"
+    ENABLE_USER = "enable_user"
     CUSTOM = "custom"
 
 
@@ -428,8 +434,19 @@ class ApprovalService:
         requires_approval: Optional[bool] = None,
         workflow_run_id: Optional[str] = None,
         limit: int = 500,
+        action_types: Optional[Iterable[str]] = None,
+        undispatched: bool = False,
     ) -> List[PendingAction]:
-        """List actions with optional filters, newest first."""
+        """List actions with optional filters, newest first.
+
+        ``undispatched`` is the dispatcher's view: rows not yet claimed
+        (``executed_at`` unset), not a reverse row, and decided by a person
+        or held for one, oldest first. Together with ``action_types`` (the
+        types something can execute) it keeps rows that will never be run
+        (workflow phases, custom, types without an executor) from filling the
+        page: newest-first with a cap, an action approved long after it was
+        proposed sat below 500 such rows and was never dispatched.
+        """
         try:
             db = get_db_manager()
             with db.session_scope() as session:
@@ -440,6 +457,21 @@ class ApprovalService:
                     stmt = stmt.where(
                         ApprovalActionRow.action_type == action_type.value
                     )
+                if action_types is not None:
+                    stmt = stmt.where(
+                        ApprovalActionRow.action_type.in_(sorted(set(action_types)))
+                    )
+                if undispatched:
+                    stmt = (
+                        stmt.where(ApprovalActionRow.executed_at.is_(None))
+                        .where(ApprovalActionRow.reverse_of.is_(None))
+                        .where(
+                            or_(
+                                ApprovalActionRow.requires_approval.is_(True),
+                                ApprovalActionRow.approved_by.is_not(None),
+                            )
+                        )
+                    )
                 if requires_approval is not None:
                     stmt = stmt.where(
                         ApprovalActionRow.requires_approval == requires_approval
@@ -448,7 +480,12 @@ class ApprovalService:
                     stmt = stmt.where(
                         ApprovalActionRow.workflow_run_id == workflow_run_id
                     )
-                stmt = stmt.order_by(ApprovalActionRow.created_at.desc()).limit(limit)
+                order = (
+                    ApprovalActionRow.created_at.asc()
+                    if undispatched
+                    else ApprovalActionRow.created_at.desc()
+                )
+                stmt = stmt.order_by(order).limit(limit)
                 rows = session.execute(stmt).scalars().all()
                 return [_row_to_pending(r) for r in rows]
         except SQLAlchemyError as e:

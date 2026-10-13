@@ -658,8 +658,13 @@ class AutonomousResponseService:
         """
         try:
             # Get approved but not executed actions
+            # Only rows something here can run, oldest first: see
+            # ApprovalService.list_actions(undispatched=True).
             approved_actions = self.approval_service.list_actions(
-                status=ActionStatus.APPROVED
+                status=ActionStatus.APPROVED,
+                action_types=self.executors.action_types()
+                | {ActionType.ISOLATE_HOST.value},
+                undispatched=True,
             )
             results = []
 
