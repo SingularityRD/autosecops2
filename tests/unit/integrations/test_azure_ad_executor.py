@@ -261,6 +261,29 @@ def test_protected_role_refused_on_a_later_page(executor, graph):
     assert not executor.validate(_action()).allowed
 
 
+@pytest.mark.parametrize(
+    "stub",
+    [
+        {"id": "r-unreadable"},
+        {"id": "r-unreadable", "displayName": None, "roleTemplateId": ""},
+        {"id": "r-unreadable", "displayName": "  ", "roleTemplateId": None},
+    ],
+)
+def test_a_role_without_name_or_template_fails_closed(executor, graph, stub):
+    """An id-only role entry could be a protected role; it is not waved through."""
+    _lookup(graph, _user())
+    graph.get(ROLES_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"value": [{"displayName": "Reports Reader", "roleTemplateId": "x"}, stub]},
+        )
+    )
+    verdict = executor.validate(_action())
+    assert not verdict.allowed
+    assert "r-unreadable" in verdict.reasons[0]
+    assert "cannot be ruled out" in verdict.reasons[0]
+
+
 def test_role_lookup_failure_fails_closed(executor, graph, sleeps):
     _lookup(graph, _user())
     graph.get(ROLES_URL).mock(return_value=httpx.Response(403, json={"error": {"code": "Authorization_RequestDenied"}}))

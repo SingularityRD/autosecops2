@@ -158,6 +158,23 @@ describe('CaseActions', () => {
     expect(screen.getByLabelText('Revert reason')).toBeTruthy()
   })
 
+  it('shows the message of a 502 object detail and refreshes the timeline', async () => {
+    vi.mocked(responseActionsApi.revert).mockRejectedValue({
+      message: 'Request failed with status code 502',
+      response: {
+        status: 502,
+        data: { detail: { message: 'The reversal did not take effect', reverse_action_id: 'act-2', verify_status: 'failed' } },
+      },
+    })
+    const onReverted = show([item()])
+    fireEvent.click(screen.getByRole('button', { name: 'Revert' }))
+    fireEvent.change(screen.getByLabelText('Revert reason'), { target: { value: 'oops' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm revert' }))
+    expect(await screen.findByText('The reversal did not take effect (verify: failed)')).toBeTruthy()
+    expect(screen.queryByText(/status code 502/)).toBeNull()
+    await waitFor(() => expect(onReverted).toHaveBeenCalled())
+  })
+
   it('shows the server detail on any other failure', async () => {
     vi.mocked(responseActionsApi.revert).mockRejectedValue({ response: { status: 409, data: { detail: 'Already reverted' } } })
     show([item()])

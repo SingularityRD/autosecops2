@@ -209,6 +209,53 @@ def test_malformed_or_uncited_sections_are_refused(recorded, sections):
         validate_citations(sections, _pack(events))
 
 
+@pytest.mark.parametrize(
+    "text,heading",
+    [
+        ("Ransomware confirmed [evidence:99].", "Summary"),
+        ("Seen on pay-01 [finding:f-1, audit:999].", "Summary"),
+        ("Ransomware on pay-01.", "Summary [clock:42]"),
+    ],
+)
+def test_a_reference_in_the_text_must_be_in_the_pack(recorded, text, heading):
+    _, events = recorded
+    sections = [
+        {"heading": heading, "lines": [{"text": text, "cites": ["finding:f-1"]}]}
+    ]
+    with pytest.raises(DraftCitationError, match="text references"):
+        validate_citations(sections, _pack(events))
+
+
+def test_a_writer_whose_text_invents_a_reference_falls_back(recorded):
+    _, events = recorded
+    pack = _pack(events)
+
+    def writer(p, regime, kind):
+        return [
+            {
+                "heading": "Summary",
+                "lines": [
+                    {"text": "Exfiltration proven [evidence:404].", "cites": ["finding:f-1"]}
+                ],
+            }
+        ]
+
+    draft = _draft(pack, events, "dora", "initial", writer=writer)
+    assert draft["generator"] == "template"
+    assert "evidence:404" in draft["fallback_reason"]
+
+
+def test_a_reference_in_the_text_that_is_in_the_pack_passes(recorded):
+    _, events = recorded
+    sections = [
+        {
+            "heading": "Summary",
+            "lines": [{"text": "Beacon seen [finding:f-1].", "cites": ["finding:f-1"]}],
+        }
+    ]
+    assert validate_citations(sections, _pack(events)) == ["finding:f-1"]
+
+
 def test_a_writer_that_cites_the_pack_is_used(recorded):
     _, events = recorded
     pack = _pack(events)

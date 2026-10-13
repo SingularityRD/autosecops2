@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from contextlib import nullcontext
 from typing import Any, Callable, ContextManager, Dict, List, Optional, Tuple
 
@@ -239,9 +240,19 @@ def provide_approvals_source(request: Request) -> ApprovalsSource:
 # checkpoint question lead / investigate / hunt raise, and the reason compose
 # mirrors onto its phase. Matched as written, not as a word anywhere in the text,
 # so a phase or an argument that merely mentions a tool does not approve it.
+#
+# The question is "<role> wants to call <tool> with <args>. Approve?": the tool
+# is the one named in the first "wants to call" of its first line, and nothing
+# in <args> counts -- arguments are the model's text and can spell out any
+# question, another tool's included. A text that is such a question names that
+# tool only; the "parked on approval" form is not looked for inside it.
+_QUESTION = re.compile(r"[^\n]*? wants to call (\S+) with ")
+
+
 def _names_tool(text: str, tool: str) -> bool:
-    if f" wants to call {tool} with " in f" {text}":
-        return True
+    question = _QUESTION.match(text.lstrip())
+    if question:
+        return question.group(1) == tool
     return any(
         line.strip() == f"parked on approval for {tool}" for line in text.splitlines()
     )

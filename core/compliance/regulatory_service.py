@@ -6,7 +6,11 @@ never a column someone overwrites. Each set, change or clear is appended to
 it replaced and, for a change or clear of a known value, a mandatory reason.
 Rows of one case form a hash chain (``prev_hash`` -> ``row_hash``), so an
 edited or missing row shows in :meth:`RegulatoryService.verify_chain`; the
-table also refuses UPDATE (``50_regulatory_clocks.sql``). Every event writes a
+table also refuses UPDATE (``50_regulatory_clocks.sql``). The chain alone
+cannot show that its last rows were deleted, so a trigger keeps the case's
+chain head (last seq and row hash) in ``regulatory_clock_heads``, which only
+that trigger and a case deletion may change
+(``58_broadcast_unique_and_clock_heads.sql``); verify_chain compares the two. Every event writes a
 ``case_audit_logs`` row too, so it appears in the case record.
 
 Storage sits behind :class:`ClockStore`; :class:`SqlClockStore` is the
@@ -30,6 +34,7 @@ from core.compliance.clocks import (
     ClockConfig,
     ClockConfigError,
     evaluate,
+    order_violations,
     validate_instant,
 )
 from core.time import utcnow
@@ -43,6 +48,10 @@ FUTURE_SLACK = timedelta(minutes=5)
 
 class InstantRefused(ValueError):
     """The requested start-instant change is not allowed (422)."""
+
+
+class AnchorUnavailable(RuntimeError):
+    """The store keeps no chain head (the table is not installed)."""
 
 
 @dataclass(frozen=True)
@@ -137,6 +146,11 @@ class ClockStore(Protocol):
 
     def append(self, event: ClockEvent) -> None: ...
 
+    # Optional: the case's chain head as {"seq", "row_hash", "broken_at"} or
+    # None when no event was ever appended. Raises AnchorUnavailable when the
+    # store keeps none.
+    # def head(self, case_id: str) -> Optional[Dict[str, Any]]: ...
+
     def audit(
         self,
         case_id: str,
@@ -173,9 +187,14 @@ class MemoryClockStore:
     config_rows: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     config_audits: List[Dict[str, Any]] = field(default_factory=list)
     draft_rows: List[Dict[str, Any]] = field(default_factory=list)
+    heads: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     def case_exists(self, case_id: str) -> bool:
         return case_id in self.cases
+
+    def head(self, case_id: str) -> Optional[Dict[str, Any]]:
+        head = self.heads.get(case_id)
+        return dict(head) if head else None
 
     def events(self, case_id: str) -> List[ClockEvent]:
         return sorted(
@@ -186,6 +205,25 @@ class MemoryClockStore:
         if any(e.case_id == event.case_id and e.seq == event.seq for e in self.rows):
             raise RuntimeError("duplicate seq")
         self.rows.append(event)
+        # What the trigger in 58_broadcast_unique_and_clock_heads.sql does:
+        # the head moves to every appended row, and the first append that did
+        # not extend it (wrong seq or prev_hash) is remembered for good.
+        head = self.heads.get(event.case_id)
+        if head is None:
+            follows = event.seq == 1 and event.prev_hash == ""
+            broken_at = None
+        else:
+            follows = (
+                event.seq == head["seq"] + 1 and event.prev_hash == head["row_hash"]
+            )
+            broken_at = head["broken_at"]
+        if broken_at is None and not follows:
+            broken_at = event.seq
+        self.heads[event.case_id] = {
+            "seq": event.seq,
+            "row_hash": event.row_hash,
+            "broken_at": broken_at,
+        }
 
     def audit(self, case_id, field_name, old, new, summary, actor) -> None:
         self.audits.append(
@@ -268,6 +306,25 @@ class SqlClockStore:
             )
             for r in rows
         ]
+
+    def head(self, case_id: str) -> Optional[Dict[str, Any]]:
+        if (
+            self.session.execute(
+                text("SELECT to_regclass('regulatory_clock_heads')")
+            ).scalar()
+            is None
+        ):
+            raise AnchorUnavailable("regulatory_clock_heads is not installed")
+        row = self.session.execute(
+            text(
+                "SELECT seq, row_hash, broken_at FROM regulatory_clock_heads "
+                "WHERE tenant_id = :tenant AND case_id = :case_id"
+            ),
+            {"tenant": self.tenant_id, "case_id": case_id},
+        ).first()
+        if row is None:
+            return None
+        return {"seq": row[0], "row_hash": row[1], "broken_at": row[2]}
 
     def lock_case(self, case_id: str) -> None:
         """Serialise appends per case so two writers cannot take the same seq."""
@@ -480,13 +537,18 @@ class RegulatoryService:
         if lock:
             lock(case_id)
         events = self.store.events(case_id)
-        previous = fold_instants(events)[regime][instant]
+        current = fold_instants(events)[regime]
+        previous = current[instant]
         if previous == value:
             return None
         if previous is not None and not reason:
             raise InstantRefused(
                 f"{instant} is already recorded; changing or clearing it needs a reason"
             )
+        broken = order_violations(regime, {**current, instant: value}, instant)
+        if broken:
+            earlier, later = broken[0]
+            raise InstantRefused(f"{regime.upper()} {later} cannot be before {earlier}")
         last = events[-1] if events else None
         event = ClockEvent(
             case_id=case_id,
@@ -522,7 +584,12 @@ class RegulatoryService:
         return event
 
     def verify_chain(self, case_id: str) -> Dict[str, Any]:
-        """Recompute every row hash; report the first row that does not match."""
+        """Recompute every row hash; report the first row that does not match.
+
+        Then hold the last row against the chain head the store keeps: a chain
+        whose last rows were deleted is still internally consistent, and only
+        the head shows that it used to be longer.
+        """
         prev_hash = ""
         expected_seq = 1
         events = self.store.events(case_id)
@@ -535,7 +602,49 @@ class RegulatoryService:
                 return {"ok": False, "broken_at": event.seq, "why": "hash mismatch"}
             prev_hash = event.row_hash
             expected_seq += 1
-        return {"ok": True, "broken_at": None, "why": None, "rows": len(events)}
+
+        anchored = False
+        head_of = getattr(self.store, "head", None)
+        if head_of is not None:
+            try:
+                head = head_of(case_id)
+                anchored = True
+            except AnchorUnavailable:
+                head = None
+            if anchored:
+                last = events[-1] if events else None
+                if head is None:
+                    if last is not None:
+                        return {
+                            "ok": False,
+                            "broken_at": 1,
+                            "why": "chain head missing",
+                        }
+                elif head.get("broken_at") is not None:
+                    return {
+                        "ok": False,
+                        "broken_at": head["broken_at"],
+                        "why": "append out of sequence",
+                    }
+                elif last is None or last.seq < head["seq"]:
+                    return {
+                        "ok": False,
+                        "broken_at": (last.seq + 1) if last else 1,
+                        "why": "missing row",
+                    }
+                elif last.seq != head["seq"] or last.row_hash != head["row_hash"]:
+                    return {
+                        "ok": False,
+                        "broken_at": last.seq,
+                        "why": "chain head mismatch",
+                    }
+        return {
+            "ok": True,
+            "broken_at": None,
+            "why": None,
+            "rows": len(events),
+            "anchored": anchored,
+        }
 
     # -- status -----------------------------------------------------------
 
