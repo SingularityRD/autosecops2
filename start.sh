@@ -276,7 +276,7 @@ mkdir -p "$LOGS_DIR"
 print_ready() {
     echo ""
     echo "=========================================="
-    echo "Vigil SOC v$VERSION - Ready"
+    echo "AutoSecOps v$VERSION - Ready"
     echo "=========================================="
     echo "Backend:  http://localhost:6987"
     echo "Frontend: http://localhost:6988"

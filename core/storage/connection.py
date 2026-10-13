@@ -286,7 +286,7 @@ def _flag_shipped_default(password: str) -> None:
         _shipped_default_logged = True
         logger.error(
             "The Postgres password in use is a published default shipped with "
-            "Vigil. Set POSTGRES_PASSWORD to a unique value (and change it in "
+            "AutoSecOps. Set POSTGRES_PASSWORD to a unique value (and change it in "
             "the database) before exposing this deployment."
         )
 
@@ -997,7 +997,7 @@ def check_schema_drift(
 
         if state == "empty":
             summary = (
-                "Database has no Vigil tables after create_all, so nothing "
+                "Database has no AutoSecOps tables after create_all, so nothing "
                 "provisioned it. Check the database user can CREATE, and that "
                 "the target is the database you meant."
             )

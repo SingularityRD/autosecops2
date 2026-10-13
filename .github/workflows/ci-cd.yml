@@ -7,6 +7,10 @@ on:
     branches: [ main, develop ]
   workflow_dispatch:  # Allows manual triggering from GitHub UI
 
+# Read-only token by default; a job that needs more says so itself.
+permissions:
+  contents: read
+
 env:
   NODE_VERSION: '20'
   REGISTRY: ghcr.io
@@ -912,6 +916,28 @@ jobs:
               raise SystemExit(1)
           PY
 
+      - name: Upgrade re-runs the files the install could not apply
+        # On a first install the Job runs before create_all, so the files that
+        # reference backend tables (50/58 need cases) fail. The Job must not
+        # record them; the next run (an upgrade, here) applies them.
+        env:
+          NETWORK: ${{ job.services.postgres.network }}
+        run: |
+          job="$RUNNER_TEMP/db-init-job.yaml"
+          container='.spec.template.spec.containers[] | select(.name == "db-init")'
+          readarray -d '' command < <(yq -0 "$container | .command[]" "$job")
+          docker run --rm --network "$NETWORK" --user 70:70 --read-only \
+            -v "$PWD/infra/helm/vigil/files/database-init:/sql:ro" \
+            -e PGHOST=postgres -e PGPORT=5432 -e PGDATABASE="$POSTGRES_DB" \
+            -e PGUSER=deeptempo -e PGPASSWORD="$POSTGRES_PASSWORD" \
+            "$(yq "$container | .image" "$job")" "${command[@]}"
+          missing=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h localhost -U deeptempo -d "$POSTGRES_DB" -tAc \
+            "SELECT string_agg(t, ', ') FROM unnest(ARRAY['regulatory_clock_events','regulatory_report_drafts','regulatory_clock_heads']) t WHERE to_regclass(t) IS NULL")
+          if [ -n "$missing" ]; then
+            echo "::error::SQL-owned tables missing after a Helm upgrade: $missing"
+            exit 1
+          fi
+
   # ============================================================================
   # Security Scanning
   # ============================================================================
@@ -1084,6 +1110,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build-images]
     if: false  # Disabled - enable by changing to: github.event_name == 'push'
+    permissions:
+      contents: read
+      security-events: write  # upload-sarif
     steps:
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master

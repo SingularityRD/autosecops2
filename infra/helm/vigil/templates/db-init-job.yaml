@@ -45,6 +45,8 @@ spec:
                 secretKeyRef:
                   name: {{ include "vigil.postgres.passwordSecret" . }}
                   key: {{ include "vigil.postgres.passwordSecretKey" . }}
+            - name: APP_SCHEMA_WAIT_SECONDS
+              value: {{ .Values.dbInit.appSchemaWaitSeconds | default 0 | toString | quote }}
           command:
             - /bin/sh
             - -ec
@@ -119,14 +121,29 @@ spec:
                   return 1
                 fi
                 echo "APPLY $f"
-                if psql -f "/sql/$f"; then
-                  echo "  applied cleanly"
-                else
-                  echo "  applied with warnings (likely tables not yet created by ORM — safe to ignore on first install)"
+                # psql exits 0 after a failed statement unless ON_ERROR_STOP is
+                # set, so its status says nothing; an ERROR line does. A file
+                # with one is NOT recorded: on a first install those are the
+                # files whose tables (cases, sla_policies, ...) the backend's
+                # create_all has not built yet (50/58 never created the
+                # regulatory clock tables on Helm), and recording them would
+                # skip them for good. They are retried below once the backend
+                # has built its tables, and on every later upgrade until they
+                # apply cleanly; the files are rerunnable (compose's db-seed
+                # re-applies all of them on every `up`).
+                local out
+                out=$(psql -v ON_ERROR_STOP=0 -f "/sql/$f" 2>&1) || true
+                [ -z "$out" ] || printf '%s\n' "$out"
+                if printf '%s\n' "$out" | grep -q '^psql:.*ERROR:'; then
+                  echo "  NOT recorded: errors above; retried later"
+                  pending="$pending $f"
+                  return 0
                 fi
+                echo "  applied cleanly"
                 psql -v ON_ERROR_STOP=1 -c "INSERT INTO _vigil_schema_versions (filename) VALUES ('$f') ON CONFLICT (filename) DO NOTHING"
               }
 
+              pending=""
               {{- range .Values.dbInit.sqlFiles }}
               apply {{ . | quote }}
               {{- end }}
@@ -140,6 +157,34 @@ spec:
               fi
               echo "setting vigil_app password"
               printf '%s\n' "ALTER ROLE vigil_app PASSWORD :'pw';" | psql -v ON_ERROR_STOP=1 --set=pw="$pw"
+
+              # Second pass, as compose's db-seed does: with the password set the
+              # backend can log in and run create_all; wait (bounded) for its
+              # tables, then retry what failed. Whatever still fails stays
+              # unrecorded and the next upgrade retries it.
+              if [ -n "$pending" ]; then
+                wait_s="${APP_SCHEMA_WAIT_SECONDS:-0}"
+                case "$wait_s" in ''|*[!0-9]*) wait_s=0 ;; esac
+                echo "Not yet applied:$pending; waiting up to ${wait_s}s for the backend's tables"
+                waited=0
+                while :; do
+                  ready=$(psql -tA -c "SELECT to_regclass('public.cases') IS NOT NULL AND to_regclass('public.sla_policies') IS NOT NULL" || true)
+                  [ "$ready" = "t" ] && break
+                  [ "$waited" -lt "$wait_s" ] || break
+                  sleep 5
+                  waited=$((waited + 5))
+                done
+                if [ "$ready" = "t" ]; then
+                  retry="$pending"
+                  pending=""
+                  for f in $retry; do
+                    apply "$f"
+                  done
+                fi
+                if [ -n "$pending" ]; then
+                  echo "WARNING: not applied:$pending (backend tables missing or errors above); the next helm upgrade retries them" >&2
+                fi
+              fi
 
               echo "Database initialization complete."
           volumeMounts:
