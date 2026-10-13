@@ -61,10 +61,20 @@ backend:
     BIND_HOST: "0.0.0.0"
 
 # -----------------------------------------------------------------------------
-# SOC Daemon (autonomous orchestrator, singleton)
+# SOC Daemon (autonomous orchestrator; one leader, optional hot standby)
 # -----------------------------------------------------------------------------
 daemon:
   enabled: true
+  # Hot standby (docs/operations/rpo-rto.md). With enabled=true the StatefulSet
+  # runs 2 pods; a Postgres advisory lock picks the leader, which runs every
+  # loop, and the other waits (healthy, "role": "standby"; its webhook answers
+  # 503 + Retry-After). A killed leader is replaced within ~retrySeconds, a
+  # frozen or partitioned one within leaseSeconds + retrySeconds. Needs
+  # PostgreSQL 14+. enabled=false: a single pod, as before.
+  leaderElection:
+    enabled: true
+    leaseSeconds: 15
+    retrySeconds: 2
   image:
     repository: ""   # empty → auto-derive from global.imageNamespace + "-daemon"
     tag: ""
@@ -444,6 +454,7 @@ dbInit:
     - 50_regulatory_clocks.sql
     - 51_audit_chain.sql
     - 56_alert_lane_decisions.sql
+    - 58_broadcast_unique_and_clock_heads.sql
   resources:
     requests:
       cpu: 50m
@@ -451,6 +462,64 @@ dbInit:
     limits:
       cpu: 500m
       memory: 512Mi
+
+# -----------------------------------------------------------------------------
+# Database backup CronJob (docs/operations/rpo-rto.md)
+# -----------------------------------------------------------------------------
+# pg_dump -Fc of the platform database on a schedule. Each dump is checked
+# with pg_restore --list and gets a .sha256 before it is kept. Retention keeps
+# the newest keepLast dumps and deletes older ones past retentionDays (0 = keep
+# only keepLast). Optionally each new dump is copied to an S3-compatible
+# bucket; expire objects there with a bucket lifecycle rule.
+backup:
+  enabled: false
+  schedule: "17 2 * * *"   # daily 02:17 UTC; the RPO is this interval
+  image:
+    # pg_dump must be at least the server's major version.
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+  keepLast: 14
+  retentionDays: 30
+  # libpq sslmode for the dump connection.
+  sslMode: prefer
+  backoffLimit: 1
+  activeDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  persistence:
+    # false: dumps live only in the object store (objectStore.enabled required).
+    enabled: true
+    existingClaim: ""
+    size: 50Gi
+    storageClassName: ""
+    accessModes:
+      - ReadWriteOnce
+  objectStore:
+    enabled: false
+    image:
+      repository: amazon/aws-cli
+      tag: "2.17.0"
+      pullPolicy: IfNotPresent
+    bucket: ""
+    prefix: vigil-backups
+    # Non-AWS stores (MinIO, Ceph RGW): the S3 endpoint URL.
+    endpointUrl: ""
+    region: ""
+    # Secret with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Empty: the pod's
+    # own identity (IRSA / workload identity) is used.
+    existingSecret: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 # -----------------------------------------------------------------------------
 # Ingress

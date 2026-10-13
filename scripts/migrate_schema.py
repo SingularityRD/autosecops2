@@ -705,6 +705,30 @@ def add_approval_action_lifecycle(conn):
         """))
 
 
+# One broadcast row per case event: the SLA monitor and stale-case detector
+# raced past their "already raised?" read and both inserted. The model
+# declares this index, but create_all adds none to a table that already
+# exists; 58_broadcast_unique_and_clock_heads.sql does the same for the
+# databases it reaches. Duplicates already written keep their first row.
+@migration("Create uq_case_notification_broadcast_event index")
+def create_case_notification_broadcast_unique(conn):
+    if not _table_exists(conn, 'case_notifications'):
+        return
+    if _index_exists(conn, 'uq_case_notification_broadcast_event'):
+        return
+    conn.execute(text("""
+        DELETE FROM case_notifications a
+          USING case_notifications b
+          WHERE a.user_id = 'system:broadcast'
+            AND b.user_id = 'system:broadcast'
+            AND a.notification_metadata ->> 'event_key' = b.notification_metadata ->> 'event_key'
+            AND a.notification_id > b.notification_id;
+        CREATE UNIQUE INDEX uq_case_notification_broadcast_event
+          ON case_notifications ((notification_metadata ->> 'event_key'))
+          WHERE user_id = 'system:broadcast';
+    """))
+
+
 # Audit chain (W1.10): infra/database/init/51_audit_chain.sql creates the
 # append-only audit_chain / audit_checkpoints tables and the capture functions.
 # A bare-metal database that never had the file applied gets it here, run

@@ -280,6 +280,15 @@ class Settings(BaseSettings):
     # release so the Federation upgrade rule can carry a tuned cadence over.
     daemon_splunk_poll_interval: int = 300
     daemon_crowdstrike_poll_interval: int = 60
+    # Hot standby (W3.9): replicas race for a Postgres advisory lock; only the
+    # leader runs the loops. Lease = server-side idle timeout of the lock
+    # session and the leader's self-demotion bound; retry = standby poll.
+    daemon_leader_election_enabled: bool = False
+    daemon_leader_lease_seconds: float = 15.0
+    daemon_leader_retry_seconds: float = 2.0
+    # Direct Postgres DSN for the lock session only (empty: the platform DB).
+    # Required when the platform DB goes through PgBouncer in transaction mode.
+    daemon_leader_database_url: str = ""
     daemon_webhook_enabled: bool = True
     daemon_webhook_port: int = 8081
     daemon_auto_triage: bool = True
@@ -351,6 +360,13 @@ class Settings(BaseSettings):
     # episodic read log, while an unanswered containment proposal goes stale
     # in days (#675).
     daemon_approval_expiry_days: int = 7
+    # KVKK retention purge (core/compliance/retention.py). Off by default, and
+    # a dry run when first switched on: a purge destroys data irreversibly.
+    retention_purge_enabled: bool = False
+    retention_purge_dry_run: bool = True
+    retention_purge_interval: int = 86400
+    retention_purge_batch_size: int = 500
+    retention_purge_max_batches: int = 20
     daemon_metrics_enabled: bool = True
     daemon_metrics_port: int = 9090
     daemon_health_host: str = "localhost"
@@ -371,6 +387,16 @@ class Settings(BaseSettings):
     orchestrator_stale_threshold: int = 300
     orchestrator_workdir: str = "data/investigations"
     orchestrator_dry_run: bool = False
+
+    # Alert verdict runs (W2.1): the hunt loop at triage scale, one uncertain alert
+    # in and one contract verdict out. Off until the daemon routes to it (W2.2), so
+    # enqueue_verdict_run does nothing while this is False. The budget is small by
+    # design -- a verdict run is paid for on every alert that needs one -- and is a
+    # starting point to be tuned by eval, not a measured optimum.
+    verdict_run_enabled: bool = False
+    verdict_run_max_iterations: int = 4
+    verdict_run_max_cost_usd: float = 1.0
+    verdict_run_max_wall_ms: int = 300_000
 
     # Kafka ingestion. Credentials go through the secrets store, not here.
     kafka_enabled: bool = False

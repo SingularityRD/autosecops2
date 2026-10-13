@@ -17,7 +17,7 @@ from services.daemon.probes import (
     ACTIONS,
     PROBE_DATA_SOURCE,
     PROBES,
-    SEVERITIES,
+    VERDICTS,
     build_probe_finding,
     inject_probes,
     probe_finding_id,
@@ -86,7 +86,7 @@ class TestTheProbeDefinitions:
             assert "file_hashes" not in probe["entity_context"]
             assert "mitre_predictions" not in probe
             expected = probe["expected"]
-            assert expected["severity"] and set(expected["severity"]) <= set(SEVERITIES)
+            assert expected["verdict"] and set(expected["verdict"]) <= set(VERDICTS)
             assert expected["recommended_action"]
             assert set(expected["recommended_action"]) <= set(ACTIONS)
 
@@ -95,7 +95,7 @@ class TestTheProbeDefinitions:
     def test_expected_answers_differ(self):
         answers = {
             (
-                tuple(p["expected"]["severity"]),
+                tuple(p["expected"]["verdict"]),
                 tuple(p["expected"]["recommended_action"]),
             )
             for p in PROBES
@@ -154,6 +154,7 @@ class TestScoring:
                 _probe_row(
                     self.beacon,
                     triage={
+                        "verdict": "malicious",
                         "severity": "critical",
                         "recommended_action": "isolate",
                         "confidence": 0.9,
@@ -161,7 +162,11 @@ class TestScoring:
                 ),
                 _probe_row(
                     self.patch_window,
-                    triage={"severity": "high", "recommended_action": "dismiss"},
+                    triage={
+                        "verdict": "malicious",
+                        "severity": "high",
+                        "recommended_action": "dismiss",
+                    },
                 ),
                 _probe_row(self.travel),
             ]
@@ -173,6 +178,7 @@ class TestScoring:
         hit, miss, silent = (scores[r["finding_id"]] for r in data.rows.values())
         assert hit["outcome"] == "hit"
         assert hit["verdict"] == {
+            "verdict": "malicious",
             "severity": "critical",
             "recommended_action": "isolate",
             "confidence": 0.9,
@@ -183,17 +189,69 @@ class TestScoring:
         assert silent["outcome"] == "silent"
         assert silent["verdict"] is None and silent["time_to_verdict_s"] is None
 
-    def test_a_right_severity_with_a_wrong_action_is_a_miss(self):
+    def test_a_right_verdict_with_a_wrong_action_is_a_miss(self):
         data = _Data(
             rows=[
                 _probe_row(
                     self.travel,
-                    triage={"severity": "high", "recommended_action": "isolate"},
+                    triage={"verdict": "inconclusive", "recommended_action": "isolate"},
                 )
             ]
         )
         _, scores = _score(data)
         assert [s["outcome"] for s in scores.values()] == ["miss"]
+
+    def test_a_wrong_verdict_with_a_right_action_is_a_miss(self):
+        data = _Data(
+            rows=[
+                _probe_row(
+                    self.patch_window,
+                    triage={
+                        "verdict": "inconclusive",
+                        "severity": "low",
+                        "recommended_action": "monitor",
+                    },
+                )
+            ]
+        )
+        _, scores = _score(data)
+        assert [s["outcome"] for s in scores.values()] == ["miss"]
+
+    def test_an_inconclusive_travel_probe_sent_to_an_analyst_is_a_hit(self):
+        data = _Data(
+            rows=[
+                _probe_row(
+                    self.travel,
+                    triage={
+                        "verdict": "inconclusive",
+                        "recommended_action": "investigate",
+                    },
+                )
+            ]
+        )
+        _, scores = _score(data)
+        [score] = scores.values()
+        assert score["outcome"] == "hit"
+        assert score["verdict"]["severity"] is None
+        assert score["verdict"]["confidence"] is None
+
+    # A row stored before the verdict format carries expected["severity"].
+    def test_a_row_stored_before_the_verdict_format_is_graded_on_severity(self):
+        legacy = {"severity": ["critical", "high"], "recommended_action": ["block"]}
+        row = _probe_row(
+            self.beacon, triage={"severity": "high", "recommended_action": "block"}
+        )
+        row["entity_context"]["probe"]["expected"] = legacy
+        wrong = _probe_row(
+            self.beacon, triage={"severity": "low", "recommended_action": "block"}
+        )
+        wrong["finding_id"] += "-2"
+        wrong["entity_context"]["probe"]["expected"] = legacy
+        data = _Data(rows=[row, wrong])
+
+        _, scores = _score(data)
+
+        assert [s["outcome"] for s in scores.values()] == ["hit", "miss"]
 
     def test_a_probe_younger_than_an_hour_waits(self):
         data = _Data(rows=[_probe_row(self.travel, age=timedelta(minutes=59))])
@@ -221,7 +279,11 @@ class TestScoring:
     def test_the_score_is_merged_into_entity_context(self):
         row = _probe_row(
             self.beacon,
-            triage={"severity": "high", "recommended_action": "block"},
+            triage={
+                "verdict": "malicious",
+                "severity": "high",
+                "recommended_action": "block",
+            },
         )
         data = _Data(rows=[row])
 
@@ -274,7 +336,11 @@ class TestScoring:
             rows=[
                 _probe_row(
                     self.beacon,
-                    triage={"severity": "high", "recommended_action": "block"},
+                    triage={
+                        "verdict": "malicious",
+                        "severity": "high",
+                        "recommended_action": "block",
+                    },
                 ),
                 _probe_row(self.travel),
             ]
