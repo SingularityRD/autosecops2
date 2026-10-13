@@ -56,9 +56,9 @@ from core.audit.chain import (
     head,
     walk_audit_chain,
 )
-from core.storage.audit_chain import AUDITED_TABLES
 from core.config import get_settings
 from core.secrets import get_secret
+from core.storage.audit_chain import AUDITED_TABLES
 from core.storage.connection import get_db_manager
 from core.time import utcnow
 
