@@ -375,15 +375,46 @@ yeniden kullanılır.
   `integration`, `endpoint`, `url`, …) geçen anahtarlar sistem sağlığıdır.
   Yalnız `health` içeren bir anahtar (`health_status`) altında sistem durumu
   sözcükleri (`ok`, `healthy`, `degraded`, `down`, `unknown`, …) geçer, diğer
-  her değer (`HIV positive`, `stable`) maskelenir. Ödünleşim: bir kişinin
-  sağlığını `service_health` gibi bir anahtarla yazan kaynak maskelenmez.
+  her değer (`HIV positive`, `stable`) maskelenir. **Round 9:** bu istisna
+  anahtarları (özel nitelikli bir kök/sözcük taşıyıp yukarıdaki kurallarla
+  serbest bırakılanlar: `service_health`, `health_check_url`, `healthcheck`,
+  `diagnostics`, `race_condition`, `diagnosis_count`, `*_enabled`,
+  `*_consent`, `blood_count` …) altında yalnız sayı, boolean, `null` ve kısa
+  bir durum sözcüğü listesi (`ok`, `degraded`, `up`, `down`, `healthy`,
+  `unhealthy`, `enabled`, `true`, `12`, `30s`, `99.9%` …) aktarılır; başka her
+  dize (iç içe sözlük/liste öğeleri dahil, metindeki `service_health=…`
+  çiftleri de) maskelenir. Ödünleşim: `health_check_url` gibi altyapı
+  anahtarlarındaki URL'ler de maskelenir.
+- **Metindeki çiftlerin değeri bütündür (Round 9).** Kişisel veri anahtarlı
+  ve GÜÇLÜ gizli anahtarlı tırnaksız bir değer ilk sözcükte değil açık bir
+  sınırda biter: satır sonu, `;`, `|`, `"`, `<`, kapanan parantez, ardından
+  harf gelmeyen `'` (`Crohn's` sürer), başka bir `anahtar=`/`anahtar:`
+  çiftinden önceki `,`, ya da sonraki `anahtar=`/`anahtar:` belirteci
+  (`diagnosis: Type 2 diabetes` → `diagnosis: [REDACTED-PII]`,
+  `password: correct horse battery staple` → `password: [REDACTED]`).
+  Tırnaklı değerler ve JSON benzeri metin tırnağa kadar. Ödünleşim: sınır
+  yoksa satırın geri kalanı maskelenir (`PGPASSWORD=x psql -h db` →
+  `PGPASSWORD=[REDACTED]`); sızdırmaktansa fazla maskelemek.
+- **Türkçe/Rusça gizli sözcükler (Round 9).** `parola`, `şifre`/`sifre`,
+  `şifresi`, `пароль`, `секрет`, `gizli_anahtar`, `api_anahtarı`,
+  `секретный_ключ` GÜÇLÜ; `jeton`, `токен`, `ключ` ve tek başına `anahtar`
+  ZAYIF (`token`/`key` gibi: değer gizli gibi görünürse). Anahtarda ve
+  metinde aynı katlamayla, tam parça olarak eşleşir (`ŞİFRE`,
+  `kullanici_sifresi`); `şifreleme`, `şifreli`, `parolasız`,
+  `anahtar_sayisi` gizli değildir. Metin anahtarı artık her yazının
+  harflerini kabul eder (`şifre=`, `пароль:`).
 - **Unicode.** Anahtarlar ve metin NFKC + biçim karakterleri (Cf: sıfır
   genişlikli boşluk, yumuşak tire, BOM, bidi) silinmiş + her Unicode boşluğu
   düz boşluk + Latin'e benzeyen Kiril/Yunan harfleri ve Türkçe harfler ASCII
   karşılığı olarak eşleştirilir (`ｐａｓｓｗｏｒｄ`, `pass\u200bword`,
-  `password\u00a0=`, `pаssword`). Çıktı özgün metindir; katlanmış biçim
-  özgün metnin göstermediği bir gizli/PII ortaya çıkarırsa katlanmış ve
-  maskelenmiş biçim aktarılır (yüzde/kaçış çözümündeki gibi).
+  `password\u00a0=`, `pаssword`). Katlama yalnız eşleşme aralığını bulmak
+  içindir (Round 9): katlanmış biçimin taramasının maskelediği aralıklar
+  karakter karakter özgün metne geri eşlenir ve yalnız o aralıklar
+  maskelenir; gizli olmayan metin bayt bayt aynı kalır
+  (`Kullanıcı Çağrı Öztürk … pаssword=[REDACTED]`, Kiril harfler Latin'e
+  dönmez). Aralık yerleştirilemezse ya da sonuç katlandığında hâlâ bir gizli
+  gösteriyorsa değerin tamamı `[REDACTED]` olur. Katlanmış metin hiçbir
+  zaman aktarılmaz.
 - **Sözlük anahtarları da taranır.** Kısa düz ASCII olmayan bir anahtar
   (`{"password=S": true}`, `{"alice@example.com": …}`) metin gibi maskelenir
   ve böyle maskelenen anahtarın skaler değeri de kesilir; aynı biçime düşen
@@ -457,9 +488,13 @@ saklanır (`<HEDEF>` = büyük harfli ad, `-` → `_`). Ad hedeften türetilir v
 yapılandırılamaz; böylece bir yapılandırma yazımı başka bir gizliyi (ör. bir
 LLM anahtarını) seçip dışarı gönderemez. `siem-a` ile `siem_a` aynı gizliye düşeceği
 için birlikte tanımlanamaz. Saklı jeton girildiği uç noktaya (şema, ana
-makine, port) bağlıdır: bir `PUT` jetonu olan bir HTTP hedefini başka bir uç
-noktaya çevirirse (ya da eski jetonu hâlâ saklı bir adı yeniden yaratırsa)
-jeton yeniden girilmeli veya `clear_token` verilmelidir, yoksa 409 döner. İstemci anahtarı diske yalnızca
+makine, port) ve gönderiliş biçimine bağlıdır: bir `PUT` jetonu olan bir HTTP
+hedefini başka bir uç noktaya çevirirse, `tls_verify`'ı kapatırsa, `ca_pem`'i
+değiştirir/ekler/kaldırırsa ya da `auth_header`'ı değiştirirse (büyük/küçük
+harf farkı sayılmaz) — ya da eski jetonu hâlâ saklı bir adı yeniden
+yaratırsa — jeton yeniden girilmeli veya `clear_token` verilmelidir, yoksa 409
+döner. Yol değişikliği, açık varsayılan port (`:443`), `tls_verify`'ı açmak
+ve `auth_scheme` serbesttir. İstemci anahtarı diske yalnızca
 `load_cert_chain` süresince, 0700 izinli geçici bir dizinde yazılır.
 
 ### Ağ güvenliği

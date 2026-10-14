@@ -427,9 +427,10 @@ def iso_utc(value: datetime) -> str:
 # soft hyphen, BOM, bidi controls) removed, every Unicode space (NBSP,
 # ideographic space, ...) read as a plain space, and the Cyrillic/Greek
 # letters that look like Latin ones (``pаssword`` with a Cyrillic ``а``)
-# and the Turkish letters read as their ASCII base letters. What is exported stays the original text unless the folded
-# form reveals a secret the original did not show (then the folded, redacted
-# form is exported, as with percent-/escape-decoding; see :meth:`Redactor.text`).
+# and the Turkish letters read as their ASCII base letters. Folding only finds
+# spans: what the scan of the folded form masks is mapped back onto the
+# original text (:func:`fold_with_map`, :func:`unfold_redactions`), so the
+# exported text outside a masked span is the original, byte for byte.
 _CONFUSABLES = str.maketrans(
     {
         # Cyrillic
