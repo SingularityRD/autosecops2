@@ -81,33 +81,78 @@ def record_decision(decision: LaneDecision) -> None:
         )
 
 
-# W0.15: the earliest decision per finding that settled it on its own (a rules
-# outcome, or a verdict run that was enqueued). Mirrors wants_llm_triage().
+# W0.15: the findings whose *latest* recorded decision settled them on its own
+# (a rules outcome, or a verdict run that was enqueued; mirrors
+# wants_llm_triage()). The latest decision is the finding's current routing:
+# a later decision that wants the model (a deliberate re-route after a rule
+# change, an analyst's re-triage) means a model triage is owed, so an older
+# rules decision no longer settles it; a later settling decision replaces an
+# older one. Ties on decided_at go to the row inserted last (id).
 _SETTLING = """
-SELECT DISTINCT ON (finding_id)
-       finding_id, tenant_id, lane, reason, risk, factors, rule_kind, rule_id,
+SELECT finding_id, tenant_id, lane, reason, risk, factors, rule_kind, rule_id,
        outcome, deferred_verdict, degraded_from, verdict_run_id, model, decided_at
-FROM alert_lane_decisions
-WHERE tenant_id = :tenant
-  AND finding_id = ANY(:ids)
-  AND (lane = :rules OR (lane = :verdict AND verdict_run_id IS NOT NULL))
-ORDER BY finding_id, decided_at, id
+FROM (
+    SELECT DISTINCT ON (finding_id)
+           finding_id, tenant_id, lane, reason, risk, factors, rule_kind,
+           rule_id, outcome, deferred_verdict, degraded_from, verdict_run_id,
+           model, decided_at
+    FROM alert_lane_decisions
+    WHERE tenant_id = :tenant
+      AND finding_id = ANY(:ids)
+    ORDER BY finding_id, decided_at DESC, id DESC
+) AS latest
+WHERE lane = :rules OR (lane = :verdict AND verdict_run_id IS NOT NULL)
 """
+
+# SQLSTATE undefined_table: 56_alert_lane_decisions.sql was never applied.
+_UNDEFINED_TABLE = "42P01"
+
+
+class DecisionTableMissing(RuntimeError):
+    """``alert_lane_decisions`` does not exist (an install without 56_*.sql).
+
+    Not an outage that passes: the caller falls back to routing without the
+    recorded decisions and raises an alarm, instead of waiting forever.
+    """
+
+
+def _is_undefined_table(exc: BaseException) -> bool:
+    seen = set()
+    cur: Any = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        code = getattr(cur, "pgcode", None) or getattr(cur, "sqlstate", None)
+        if code == _UNDEFINED_TABLE or type(cur).__name__ == "UndefinedTable":
+            return True
+        text = str(cur).lower()
+        if "alert_lane_decisions" in text and (
+            "does not exist" in text or "no such table" in text
+        ):
+            return True
+        cur = getattr(cur, "orig", None) or cur.__cause__ or cur.__context__
+    return False
 
 
 def settling_decisions(
     finding_ids: Iterable[str], tenant: str = DEFAULT_TENANT
 ) -> Dict[str, LaneDecision]:
-    """``{finding_id: decision}`` for the findings a recorded lane decision
-    already settled (``tenant``'s decisions: the daemon writes its own).
-    Raises when the database can't be read: the caller (the backfill sweep)
-    must then not route anything, never assume "unsettled".
+    """``{finding_id: decision}`` for the findings whose latest recorded lane
+    decision settled them (``tenant``'s decisions: the daemon writes its own).
+
+    Raises :class:`DecisionTableMissing` when the table does not exist, and
+    any other error when the database can't be read: the caller (the backfill
+    sweep) must then not take the answer as "unsettled".
     """
     ids = sorted({i for i in finding_ids if i})
     if not ids:
         return {}
-    with _session_scope() as session:
-        return query_settling(session, ids, tenant)
+    try:
+        with _session_scope() as session:
+            return query_settling(session, ids, tenant)
+    except Exception as exc:
+        if _is_undefined_table(exc):
+            raise DecisionTableMissing(str(exc)) from exc
+        raise
 
 
 def query_settling(

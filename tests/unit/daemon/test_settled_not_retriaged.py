@@ -30,7 +30,9 @@ from services.daemon.processor import BACKFILL_SOURCE, FindingProcessor
 pytestmark = pytest.mark.unit
 
 NOW = datetime(2026, 10, 14, tzinfo=timezone.utc)
-SCANNER = SuppressionRule("r1", "default", "scanner", {"data_source": "nessus"}, "noise")
+SCANNER = SuppressionRule(
+    "r1", "default", "scanner", {"data_source": "nessus"}, "noise"
+)
 
 
 class _Data:
@@ -163,7 +165,10 @@ async def test_backfill_records_instead_of_rerouting_a_settled_finding(monkeypat
 
     def lookup(ids, tenant):
         seen.append((list(ids), tenant))
-        return {"done": _settled("done"), "verd": _settled("verd", LANE_VERDICT, "run-1")}
+        return {
+            "done": _settled("done"),
+            "verd": _settled("verd", LANE_VERDICT, "run-1"),
+        }
 
     processor._settling_decisions = lookup
     spawned = await _sweep_once(
@@ -177,7 +182,9 @@ async def test_backfill_records_instead_of_rerouting_a_settled_finding(monkeypat
 
     assert spawned == [("open", BACKFILL_SOURCE)]
     assert seen == [(["done", "verd", "open"], "default")]
-    by_id = {u["finding_id"]: u["ai_enrichment"] for u in processor._data_service.updates}
+    by_id = {
+        u["finding_id"]: u["ai_enrichment"] for u in processor._data_service.updates
+    }
     assert by_id["done"]["alert_lane"]["lane"] == LANE_RULES
     assert by_id["verd"]["alert_lane"]["verdict_run_id"] == "run-1"
     # Out of the unrated set: no error left without a triage.
@@ -218,7 +225,132 @@ async def test_rules_finding_during_outage_is_never_routed_twice(monkeypatch):
     processor._settling_decisions = lambda ids, tenant: {
         d.finding_id: d for d in decisions if d.finding_id in ids
     }
-    spawned = await _sweep_once(processor, [{"finding_id": "r9", "ai_enrichment": None}])
+    spawned = await _sweep_once(
+        processor, [{"finding_id": "r9", "ai_enrichment": None}]
+    )
     assert spawned == []
     assert [d.lane for d in decisions] == [LANE_RULES]  # no second decision
     assert triaged == []
+
+
+# -- round 2 ------------------------------------------------------------------
+
+
+def _responses(processor) -> List[Dict[str, Any]]:
+    seen: List[Dict[str, Any]] = []
+
+    async def evaluate(finding):
+        seen.append(dict(finding))
+
+    processor._evaluate_for_response = evaluate  # type: ignore[method-assign]
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_backfill_evaluates_response_for_a_settled_decision_once(monkeypatch):
+    """Finding 1: killed between the decision record and the ai_enrichment
+    write, the decided finding was never evaluated for response."""
+    processor, _ = _processor(monkeypatch)
+    responses = _responses(processor)
+    decision = LaneDecision(
+        finding_id="k1",
+        tenant_id="default",
+        lane=LANE_RULES,
+        reason="suppression_rule",
+        risk=0.9,
+        outcome={"recommended_action": "isolate"},
+        decided_at="2026-10-14T10:48:31+00:00",
+    )
+    processor._settling_decisions = lambda ids, tenant: {"k1": decision}
+    row = {"finding_id": "k1", "severity": "high", "ai_enrichment": None}
+
+    assert await _sweep_once(processor, [row]) == []
+    [finding] = responses
+    assert finding["finding_id"] == "k1"
+    assert finding["recommended_action"] == "isolate"  # the recorded outcome
+    assert finding["alert_lane"]["lane"] == LANE_RULES
+    assert processor.stats["backfill_settled_responded"] == 1
+
+    # A sweep that still saw the row (a stale read) does not respond twice.
+    assert await _sweep_once(processor, [row]) == []
+    assert len(responses) == 1
+
+
+@pytest.mark.asyncio
+async def test_backfill_does_not_respond_again_after_a_failed_live_write(monkeypatch):
+    """The live run evaluates response even when its ai_enrichment write
+    fails; the sweep that then records the decision must not repeat it."""
+    processor, _ = _processor(monkeypatch)
+    responses = _responses(processor)
+    decisions: List[LaneDecision] = []
+    processor.alert_lanes.lanes._recorder = decisions.append
+
+    class _Failing(_Data):
+        def update_finding(self, finding_id, **updates):
+            super().update_finding(finding_id, **updates)
+            return False
+
+    processor._data_service = _Failing()
+    finding = {"finding_id": "w1", "data_source": "nessus", "severity": "high"}
+    await asyncio.create_task(processor._enrich_in_background(finding, "webhook"))
+    assert len(responses) == 1
+
+    processor._settling_decisions = lambda ids, tenant: {
+        d.finding_id: d for d in decisions if d.finding_id in ids
+    }
+    assert (
+        await _sweep_once(processor, [{"finding_id": "w1", "ai_enrichment": None}])
+        == []
+    )
+    assert [u["finding_id"] for u in processor._data_service.updates] == ["w1"]
+    assert len(responses) == 1
+
+
+@pytest.mark.asyncio
+async def test_backfill_responds_only_once_the_decision_is_written(monkeypatch):
+    processor, _ = _processor(monkeypatch)
+    responses = _responses(processor)
+    processor._settling_decisions = lambda ids, tenant: {"n1": _settled("n1")}
+
+    class _Down(_Data):
+        def update_finding(self, finding_id, **updates):
+            raise ConnectionError("database unavailable")
+
+    rows = [{"finding_id": "n1", "ai_enrichment": None}]
+    shutdown = asyncio.Event()
+    processor._data_service = _Down(rows)
+
+    async def once(batch):
+        rest = await FindingProcessor._drop_settled(processor, batch)
+        shutdown.set()
+        return rest
+
+    processor._drop_settled = once  # type: ignore[method-assign]
+    await asyncio.wait_for(processor._backfill_loop(shutdown), timeout=10)
+    assert responses == []  # retried with the write on a later sweep
+
+
+@pytest.mark.asyncio
+async def test_backfill_routes_as_before_when_the_decision_table_is_missing(
+    monkeypatch, caplog
+):
+    """Finding 2: without 56_*.sql the sweep must not stop for good."""
+    import logging
+
+    from core.lanes.decision_store import DecisionTableMissing
+
+    processor, _ = _processor(monkeypatch)
+
+    def missing(ids, tenant):
+        raise DecisionTableMissing('relation "alert_lane_decisions" does not exist')
+
+    processor._settling_decisions = missing
+    with caplog.at_level(logging.ERROR, logger="services.daemon.processor"):
+        spawned = await _sweep_once(
+            processor, [{"finding_id": "a"}, {"finding_id": "b"}]
+        )
+
+    assert spawned == [("a", BACKFILL_SOURCE)]  # the stub stops after the first
+    assert processor.stats["backfill_settled_table_missing"] == 1
+    assert processor.stats["backfill_settled_lookup_failed"] == 0
+    assert "alert_lane_decisions is missing" in caplog.text
