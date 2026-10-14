@@ -1015,3 +1015,44 @@ def test_networkpolicy_default_branch_unchanged():
         "inClusterOnly": False,
         "extraCIDRs": [],
     }
+
+
+def test_image_namespace_reaches_the_bundled_overlay(tmp_path):
+    """--image-namespace moves where the app images are pushed (images.tsv);
+    the bundled values-airgap.yaml must name the same namespace, or every app
+    pod pulls <registry>/vigil-soc/vigil-<c> that the registry does not hold."""
+    ns = "singularityrd/autosecops"
+    key, _pub = _keypair(tmp_path, "release")
+    images_dir = tmp_path / "image-archives"
+    images_dir.mkdir()
+    entries = airgap_images.Enumerator(REPO, VERSION, image_namespace=ns).run()
+    for entry in entries:
+        (images_dir / Path(entry["file"]).name).write_bytes(b"fake " + os.urandom(16))
+    bin_dir, calls = _stubs(tmp_path)
+    (bin_dir / "helm").unlink()
+    out = tmp_path / "dist"
+    proc = subprocess.run(
+        [str(BUILD), "--version", VERSION, "--out", str(out), "--images-from",
+         str(images_dir), "--image-namespace", ns, "--skip-ollama-model",
+         "--rules-dir", str(tmp_path / "no-rules"), "--key", str(key), "--no-tar"],
+        env=_env(bin_dir, calls, _path_without("helm")),
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    overlay = yaml.safe_load(
+        (out / f"autosecops-airgap-{VERSION}" / "values-airgap.yaml").read_text()
+    )
+    assert overlay["global"]["imageNamespace"] == ns
+    pushed = {e["local_path"] for e in entries}
+    assert f"{ns}-backend:{VERSION}" in pushed
+
+
+def test_bad_image_namespace_is_refused(tmp_path):
+    proc = subprocess.run(
+        [str(BUILD), "--version", VERSION, "--image-namespace", "a#b", "--key", "x"],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 1
+    assert "bad --image-namespace" in proc.stderr

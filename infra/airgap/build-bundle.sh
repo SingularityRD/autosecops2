@@ -81,6 +81,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$version" ] || { echo "--version is required" >&2; usage; }
 [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]] || die "bad --version '$version'"
+[ -z "$namespace" ] || [[ "$namespace" =~ ^[a-z0-9]([a-z0-9._/-]*[a-z0-9])?$ ]] || die "bad --image-namespace '$namespace'"
 case "$format" in tsv|json) ;; *) die "--format must be tsv or json" ;; esac
 
 list_args=(list --version "$version" --repo "$REPO" --compose-profiles "$profiles")
@@ -197,7 +198,17 @@ else
   tar -C "$work" --sort=name --owner=0 --group=0 --numeric-owner -czf "$bundle/chart/vigil-$version.tgz" vigil
 fi
 [ -f "$bundle/chart/vigil-$version.tgz" ] || die "chart package missing"
-cp "$HERE/values-airgap.yaml" "$bundle/values-airgap.yaml"
+# The overlay names the app images <registry>/<global.imageNamespace>-<c>; with
+# --image-namespace the bundle (and install.sh) pushes them under that
+# namespace, so the bundled overlay must say the same or every app pod pulls a
+# path that is not in the local registry.
+if [ -n "$namespace" ]; then
+  sed -E "s#^(  imageNamespace:).*#\\1 $namespace#" "$HERE/values-airgap.yaml" >"$bundle/values-airgap.yaml"
+  grep -qxF "  imageNamespace: $namespace" "$bundle/values-airgap.yaml" \
+    || die "could not set global.imageNamespace in the bundled values-airgap.yaml"
+else
+  cp "$HERE/values-airgap.yaml" "$bundle/values-airgap.yaml"
+fi
 cp "$HERE/airgap.env" "$bundle/airgap.env"
 if [ -n "$ollama_image" ]; then
   sed -E "s#^([[:space:]]*image:[[:space:]]*)ollama/ollama:.*#\\1$ollama_image#" \
