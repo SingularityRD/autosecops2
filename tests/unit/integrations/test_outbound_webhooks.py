@@ -199,6 +199,11 @@ def test_bad_urls_are_refused(url):
         "fe80::1",
         "::ffff:10.0.0.1",
         "fd00:ec2::254",
+        "100.64.0.1",  # carrier-grade NAT: not is_private, not global either
+        "100.127.255.254",
+        "100.100.100.200",  # Alibaba Cloud metadata
+        "198.18.0.1",
+        "::ffff:100.64.0.1",
     ],
 )
 def test_internal_answers_are_refused(monkeypatch, address):
@@ -241,6 +246,20 @@ def test_the_metadata_address_stays_refused_even_inside_an_allowed_network(
     with pytest.raises(UrlSafetyError, match="metadata"):
         resolve_allowed_addresses(
             "meta.example", 80, allowed_networks=parse_networks("169.254.0.0/16")
+        )
+
+
+@pytest.mark.parametrize("address", ["100.100.100.200", "fd00:ec2::254"])
+def test_other_metadata_addresses_stay_refused_inside_an_allowed_network(
+    monkeypatch, address
+):
+    _fake_dns(monkeypatch, {"meta.example": [address]})
+
+    with pytest.raises(UrlSafetyError, match="metadata"):
+        resolve_allowed_addresses(
+            "meta.example",
+            80,
+            allowed_networks=parse_networks("100.64.0.0/10, fd00::/8"),
         )
 
 

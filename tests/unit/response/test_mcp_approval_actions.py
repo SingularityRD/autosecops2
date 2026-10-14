@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from core.config import get_settings
+from core.response.approval_service import APPROVAL_CONFIG_KEY
 from tools.mcp import vigil
 
 
@@ -40,11 +41,22 @@ def no_db():
 
     manager.session_scope = _scope
     config_store = Mock()
-    config_store.read_system_config.return_value = {"enabled": False}
+    # The approval-gate config is off; every other key (the response policy
+    # read by ``PolicyConfig.load``) is empty, i.e. the shipped defaults.
+    config_store.read_system_config.side_effect = lambda key: (
+        {"enabled": False} if key == APPROVAL_CONFIG_KEY else {}
+    )
     with (
         patch("core.response.approval_service.get_db_manager", return_value=manager),
         patch(
             "core.response.approval_service.get_config_service",
+            return_value=config_store,
+        ),
+        # ``PolicyConfig.load`` imports the config service itself; without
+        # this it reaches the real (blocked) database, degrades, and refuses
+        # every action when this file runs on its own.
+        patch(
+            "core.storage.config_service.get_config_service",
             return_value=config_store,
         ),
     ):

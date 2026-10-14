@@ -38,9 +38,27 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from core.config import get_settings
-from core.platform.url_safety import UrlSafetyError, validate_provider_url
+from core.platform.url_safety import (
+    UrlSafetyError,
+    parse_networks,
+    validate_provider_url,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def provider_allowed_networks() -> tuple:
+    """``LLM_PROVIDER_ALLOWED_CIDRS`` parsed; a malformed value allows nothing."""
+    raw = getattr(get_settings(), "llm_provider_allowed_cidrs", "") or ""
+    try:
+        return parse_networks(raw)
+    except ValueError:
+        logger.error(
+            "LLM_PROVIDER_ALLOWED_CIDRS is not a list of CIDRs; "
+            "no extra provider networks allowed"
+        )
+        return ()
+
 
 _CACHE_TTL_S = 60.0
 _RETRIES = 3
@@ -186,7 +204,9 @@ async def fetch_anthropic_models(
 
     try:
         safe = validate_provider_url(
-            base_url or _ANTHROPIC_DEFAULT_BASE_URL, allow_custom=True
+            base_url or _ANTHROPIC_DEFAULT_BASE_URL,
+            allow_custom=True,
+            allowed_networks=provider_allowed_networks(),
         )
     except UrlSafetyError as exc:
         raise RuntimeError(str(exc)) from exc
@@ -269,6 +289,7 @@ async def fetch_openai_models(
         safe = validate_provider_url(
             base_url or "https://api.openai.com/v1",
             allow_custom=True,
+            allowed_networks=provider_allowed_networks(),
             allow_loopback=allow_loopback,
         )
     except UrlSafetyError as exc:
@@ -515,7 +536,10 @@ async def fetch_ollama_models(
 
     try:
         safe = validate_provider_url(
-            raw_base, allow_custom=True, allow_loopback=allow_loopback
+            raw_base,
+            allow_custom=True,
+            allowed_networks=provider_allowed_networks(),
+            allow_loopback=allow_loopback,
         )
     except UrlSafetyError as exc:
         raise RuntimeError(str(exc)) from exc

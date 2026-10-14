@@ -30,6 +30,14 @@ os.environ["VIGIL_CSRF_REPORT_ONLY"] = "true"
 import pytest  # noqa: E402
 
 
+def pytest_configure(config):
+    # Before any test retargets POSTGRES_*: the database named now is the
+    # configured one, and no test may drop its schema (W0.17, tests/_db_guard.py).
+    from tests import _db_guard
+
+    _db_guard.install()
+
+
 # get_settings() is lru_cached, so a test that monkeypatches env needs the cache
 # dropped on both sides to avoid leaking a stale Settings.
 @pytest.fixture(autouse=True)

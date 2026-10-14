@@ -6942,6 +6942,56 @@
    height: 17px;
 }
 
+/* single sign-on: one button per configured identity provider */
+.auth .sso {
+   display: flex;
+   flex-direction: column;
+   gap: 10px;
+   margin-top: 18px;
+}
+
+.auth .sso-divider {
+   display: flex;
+   align-items: center;
+   gap: 10px;
+   font-size: 12px;
+   color: var(--tx-3);
+}
+
+.auth .sso-divider::before,
+.auth .sso-divider::after {
+   content: "";
+   flex: 1;
+   border-top: 1px solid var(--line);
+}
+
+.auth .btn-sso {
+   width: 100%;
+   display: inline-flex;
+   align-items: center;
+   justify-content: center;
+   gap: 8px;
+   min-height: 44px;
+   padding: 11px;
+   font-size: 14px;
+   font-weight: 600;
+   color: var(--tx);
+   background: transparent;
+   border: 1px solid var(--line-strong);
+   border-radius: var(--r);
+   text-decoration: none;
+   transition: all .14s;
+}
+
+.auth .btn-sso:hover {
+   background: var(--hover);
+}
+
+.auth .sso-note {
+   font-size: 12px;
+   color: var(--tx-3);
+}
+
 .auth .spin {
    width: 18px;
    height: 18px;

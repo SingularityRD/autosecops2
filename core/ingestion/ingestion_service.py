@@ -10,7 +10,9 @@ Handles ingestion of findings and cases from various formats:
 """
 
 import csv
+import functools
 import hashlib
+import inspect
 import json
 import logging
 import math
@@ -18,13 +20,17 @@ import tempfile
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from core.findings.source_evidence import (
     normalize_finding_source_evidence,
     source_evidence_from_loglm_row,
 )
+from core.storage.external_id import normalize_external_id
 from core.time import utcnow
+
+if TYPE_CHECKING:
+    from core.ingestion.store_outcome import StoreOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +90,14 @@ def _first_present(row: Dict[str, Any], aliases: tuple) -> Any:
         if row.get(alias) is not None:
             return row[alias]
     return None
+
+
+def _raising(method):
+    """``method`` without a ``@default_on_error`` wrapper, so a database error
+    raises instead of reading as "not found" / "not created" (W0.12b)."""
+    if not inspect.ismethod(method):
+        return method
+    return functools.partial(inspect.unwrap(method.__func__), method.__self__)
 
 
 def _optional_float(value: Any) -> Optional[float]:
@@ -343,8 +357,8 @@ class IngestionService:
                 # same duplicate, counted the same way; without this check
                 # the insert fails on the unique (source, external_id) index
                 # and the row is reported as an error (#1935).
-                external_id = finding_data.get("external_id")
-                if external_id:
+                external_id = normalize_external_id(finding_data.get("external_id"))
+                if external_id is not None:
                     lookup = getattr(
                         self.db_service, "get_finding_by_external_id", None
                     )
@@ -359,23 +373,9 @@ class IngestionService:
                         self.stats["findings_skipped"] += 1
                         return True
 
-                timestamp = self.parse_timestamp(finding_data.get("timestamp"))
-
                 # Create finding in database
                 finding = self.db_service.create_finding(
-                    finding_id=finding_id,
-                    mitre_predictions=finding_data.get("mitre_predictions", {}),
-                    anomaly_score=_optional_float(finding_data.get("anomaly_score")),
-                    timestamp=timestamp,
-                    data_source=finding_data.get("data_source", "imported"),
-                    external_id=finding_data.get("external_id"),
-                    title=finding_data.get("title"),
-                    description=finding_data.get("description"),
-                    entity_context=finding_data.get("entity_context"),
-                    evidence_links=finding_data.get("evidence_links"),
-                    cluster_id=finding_data.get("cluster_id"),
-                    severity=finding_data.get("severity"),
-                    status=finding_data.get("status", "new"),
+                    **self._create_kwargs(finding_id, finding_data)
                 )
 
                 if finding:
@@ -399,6 +399,92 @@ class IngestionService:
             self.stats["findings_errors"] += 1
             logger.error(f"Error ingesting finding {finding_id}: {e}")
             return False
+
+    def _create_kwargs(
+        self, finding_id: str, finding_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        return dict(
+            finding_id=finding_id,
+            mitre_predictions=finding_data.get("mitre_predictions", {}),
+            anomaly_score=_optional_float(finding_data.get("anomaly_score")),
+            timestamp=self.parse_timestamp(finding_data.get("timestamp")),
+            data_source=finding_data.get("data_source", "imported"),
+            external_id=normalize_external_id(finding_data.get("external_id")),
+            title=finding_data.get("title"),
+            description=finding_data.get("description"),
+            entity_context=finding_data.get("entity_context"),
+            evidence_links=finding_data.get("evidence_links"),
+            cluster_id=finding_data.get("cluster_id"),
+            severity=finding_data.get("severity"),
+            status=finding_data.get("status", "new"),
+        )
+
+    def store_finding(self, finding_data: Dict[str, Any]) -> "StoreOutcome":
+        """Store one finding and say what happened (W0.12b, daemon spool).
+
+        Unlike :meth:`ingest_finding`: a lookup error is a failure, not "not
+        found"; "already stored" is told apart from "inserted" (with whether
+        the stored row is triaged); a failure carries its kind (outage vs this
+        finding's data, :func:`classify_store_error`). Never raises.
+        """
+        from core.ingestion.store_outcome import (
+            CREATED,
+            DATA,
+            EXISTS,
+            OUTAGE,
+            UNKNOWN,
+            StoreOutcome,
+            classify_store_error,
+            failed,
+            has_triage,
+        )
+
+        try:
+            finding_data = to_internal_finding(finding_data)
+            finding_id = finding_data.get("finding_id")
+            if not finding_id:
+                self.stats["findings_errors"] += 1
+                return failed(DATA, "finding has no finding_id")
+            finding_data = normalize_finding_source_evidence(finding_data)
+            create_kwargs = self._create_kwargs(finding_id, finding_data)
+        except Exception as e:  # noqa: BLE001 - this finding's content
+            self.stats["findings_errors"] += 1
+            kind = classify_store_error(e)
+            return failed(DATA if kind == UNKNOWN else kind, e)
+        if not (self.use_database and self.db_service):
+            self.stats["findings_errors"] += 1
+            return failed(OUTAGE, "database unavailable")
+        db = self.db_service
+        try:
+            existing = _raising(db.get_finding)(finding_id)
+            if existing:
+                self.stats["findings_skipped"] += 1
+                return StoreOutcome(
+                    status=EXISTS,
+                    triaged=has_triage(getattr(existing, "ai_enrichment", None)),
+                )
+            # Looked up whenever the insert would carry it into the unique
+            # (data_source, external_id) index: any non-None value, matching
+            # the index's IS NOT NULL predicate (blank ones are None by now).
+            external_id = create_kwargs["external_id"]
+            lookup = getattr(db, "get_finding_by_external_id", None)
+            if external_id is not None and lookup is not None:
+                if _raising(lookup)(
+                    finding_data.get("data_source", "imported"), external_id
+                ):
+                    self.stats["findings_skipped"] += 1
+                    return StoreOutcome(status=EXISTS, triaged=None)
+            created = _raising(db.create_finding)(**create_kwargs)
+        except Exception as e:  # noqa: BLE001 - classified for the caller
+            self.stats["findings_errors"] += 1
+            kind = classify_store_error(e)
+            logger.error("Error storing finding %s (%s): %s", finding_id, kind, e)
+            return failed(kind, e)
+        if not created:
+            self.stats["findings_errors"] += 1
+            return failed(UNKNOWN, "create_finding returned nothing")
+        self.stats["findings_imported"] += 1
+        return StoreOutcome(status=CREATED)
 
     def _ingest_finding_batch(self, finding_dicts: List[Dict[str, Any]]) -> None:
         """Bulk-dedup and insert a batch in one DB round trip, vs. per-row ingest_finding."""

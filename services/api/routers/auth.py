@@ -18,16 +18,20 @@ from core.auth.auth_cookies import (
     ACCESS_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
     clear_auth_cookies,
-    set_auth_cookies,
+    issue_session_cookies,
 )
 from core.auth.auth_service import (
     PASSWORD_HISTORY_LIMIT,
     AccountLockedError,
     AuthService,
+    _is_service_account,
     password_matches_any,
 )
+from core.auth.login_policy import local_login_allowed
+from core.auth.oidc_accounts import is_sso_only
 from core.auth.password_reset import (
     generate_reset_token,
+    token_matches_email,
     verify_reset_token,
 )
 from core.auth.password_validator import (
@@ -40,6 +44,12 @@ from core.auth.token_blacklist import (
     is_token_revoked,
     revoke_all_for_user,
 )
+from core.compliance.audit_export import (
+    arecord_auth_event,
+    audit_export_on,
+    failed_login_fields,
+    record_auth_event,
+)
 from core.config import get_settings
 from core.platform.email_service import send_email
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
@@ -48,6 +58,7 @@ from core.storage.schemas import UserSchema
 from core.time import utcnow
 from services.api.middleware.auth import get_current_active_user
 from services.api.middleware.rate_limit import limiter
+from services.api.routers.users import refuse_address_collision
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +155,14 @@ class MFAVerifyRequest(BaseModel):
     code: str
 
 
+class MFACodeRequest(BaseModel):
+    """A current TOTP or recovery code, proving the caller still holds the
+    second factor. Required to weaken MFA once it is on: a stolen session
+    alone must not be able to turn it off or mint fresh recovery codes."""
+
+    code: Optional[str] = None
+
+
 class PasswordResetRequest(BaseModel):
     """Password reset initiation."""
 
@@ -160,9 +179,10 @@ class PasswordResetConfirm(BaseModel):
 def _apply_new_password(user: User, plaintext: str) -> None:
     """Enforce history, hash, set, update history + changed_at in one place.
     The request's unit of work owns the commit."""
-    if password_matches_any(plaintext, user.password_history or []) or (
-        user.password_hash
-        and AuthService.verify_password(plaintext, user.password_hash)
+    # Current hash + history through the legacy-aware matcher: under strict
+    # FIPS_MODE a bcrypt current hash must still count as "same password".
+    if password_matches_any(
+        plaintext, [user.password_hash, *(user.password_history or [])]
     ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -269,6 +289,14 @@ def bootstrap_admin(
         )
 
     logger.info("First admin account created: %s", user.username)
+    record_auth_event(
+        request,
+        "user_create",
+        actor=user.username,
+        actor_id=user.user_id,
+        target_id=user.user_id,
+        details={"role_id": ADMIN_ROLE_ID, "bootstrap": True},
+    )
     return UserSchema.dump(user)
 
 
@@ -304,6 +332,13 @@ def login(
             payload.username_or_email, payload.password, session
         )
     except AccountLockedError as exc:
+        if audit_export_on(request):
+            record_auth_event(
+                request,
+                "login",
+                outcome="locked",
+                **failed_login_fields(request, payload.username_or_email, session),
+            )
         retry_after = max(1, int((exc.locked_until - utcnow()).total_seconds()))
         raise HTTPException(
             status_code=status.HTTP_423_LOCKED,
@@ -312,10 +347,28 @@ def login(
         )
 
     if not user:
+        if audit_export_on(request):
+            record_auth_event(
+                request,
+                "login",
+                outcome="failure",
+                **failed_login_fields(request, payload.username_or_email, session),
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username/email or password",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Once an administrator turns local sign-in off, a password works only for
+    # break-glass and service accounts (core/auth/login_policy.py). Checked
+    # after the password so the answer reveals nothing to someone without it;
+    # the 403 rolls back the login bookkeeping authenticate_user just did.
+    if not local_login_allowed(user, session):
+        logger.info("Local sign-in refused by policy for: %s", user.username)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Local sign-in is disabled for this account. Use single sign-on.",
         )
 
     # Check MFA if enabled
@@ -328,28 +381,31 @@ def login(
             )
 
         if not AuthService.verify_mfa_code(user.user_id, payload.mfa_code, session):
+            record_auth_event(
+                request,
+                "login",
+                outcome="mfa_failure",
+                actor=user.username,
+                actor_id=user.user_id,
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid MFA code",
             )
 
-    # Generate tokens
-    _ua = request.headers.get("user-agent")
-    access_token = AuthService.generate_jwt_token(user, "access", user_agent=_ua)
-    refresh_token = AuthService.generate_jwt_token(user, "refresh", user_agent=_ua)
-
-    # Extract exp claims so the cookie Max-Age matches the JWT lifetime.
-    access_payload = AuthService.verify_jwt_token(access_token) or {}
-    refresh_payload = AuthService.verify_jwt_token(refresh_token) or {}
-    set_auth_cookies(
-        response,
-        access_token,
-        refresh_token,
-        access_exp=access_payload.get("exp"),
-        refresh_exp=refresh_payload.get("exp"),
+    # Generate tokens; the same issuance single sign-on uses.
+    access_token, refresh_token = issue_session_cookies(
+        response, user, request.headers.get("user-agent")
     )
 
     logger.info(f"User logged in: {user.username}")
+    record_auth_event(
+        request,
+        "login",
+        actor=user.username,
+        actor_id=user.user_id,
+        details={"mfa": bool(user.mfa_enabled)},
+    )
 
     return LoginResponse(
         access_token=access_token,
@@ -425,6 +481,9 @@ async def logout(
     clear_auth_cookies(response)
 
     logger.info(f"User logged out: {current_user.username}")
+    await arecord_auth_event(
+        request, "logout", actor=current_user.username, actor_id=current_user.user_id
+    )
     return {"message": "Logged out successfully"}
 
 
@@ -495,18 +554,8 @@ async def refresh_token(
         )
 
     # Generate new tokens
-    _ua = request.headers.get("user-agent")
-    access_token = AuthService.generate_jwt_token(user, "access", user_agent=_ua)
-    refresh_token = AuthService.generate_jwt_token(user, "refresh", user_agent=_ua)
-
-    access_payload = AuthService.verify_jwt_token(access_token) or {}
-    refresh_payload = AuthService.verify_jwt_token(refresh_token) or {}
-    set_auth_cookies(
-        response,
-        access_token,
-        refresh_token,
-        access_exp=access_payload.get("exp"),
-        refresh_exp=refresh_payload.get("exp"),
+    access_token, refresh_token = issue_session_cookies(
+        response, user, request.headers.get("user-agent")
     )
 
     return LoginResponse(
@@ -542,17 +591,19 @@ def _apply_profile_update(
     if full_name:
         user.full_name = full_name
 
-    if email:
-        existing = (
-            session.query(User)
-            .filter(User.email == email, User.user_id != user.user_id)
-            .first()
-        )
-        if existing:
+    if email and email != user.email:
+        if _is_service_account(user):
+            # Same rule as PUT /api/users/{id}: a reachable address is the
+            # first step to a password reset, and a service account has none.
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already in use",
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="A service account's email can't be changed",
             )
+        # Same rule as creating or editing a user: the address must be
+        # acceptable and must not compare equal (case, Unicode, IDNA, a
+        # trailing dot) to another account's email or address-shaped
+        # username, or SSO linking and sign-in by email become ambiguous.
+        refuse_address_collision(session, email, exclude_user_id=user.user_id)
         user.email = email
         user.is_verified = False
         email_changed = True
@@ -674,6 +725,12 @@ async def change_password(
 
         clear_auth_cookies(response)
         logger.info(f"Password changed for user: {current_user.username}")
+        await arecord_auth_event(
+            request,
+            "password_change",
+            actor=current_user.username,
+            actor_id=current_user.user_id,
+        )
         return {"message": "Password changed successfully. Please log in again."}
 
     except Exception as e:
@@ -688,6 +745,9 @@ async def change_password(
 def setup_mfa(
     current_user: Annotated[User, Depends(get_current_active_user)],
     session: UnitOfWorkSession,
+    # Last and defaulted: FastAPI injects it by type; direct callers (unit
+    # tests) may leave it out, and record_auth_event ignores a missing one.
+    request: Request = None,  # type: ignore[assignment]
 ):
     """
     Setup MFA for current user.
@@ -701,6 +761,15 @@ def setup_mfa(
         they are returned by POST /mfa/verify once the first TOTP code is
         confirmed.
     """
+    # Re-running setup on an enabled account would switch MFA off and wipe
+    # the recovery codes with nothing but a session. Disable it first, which
+    # asks for a current code.
+    if current_user.mfa_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="MFA is already enabled; disable it first",
+        )
+
     secret = AuthService.setup_mfa(current_user.user_id, session)
     if not secret:
         raise HTTPException(
@@ -715,6 +784,9 @@ def setup_mfa(
             detail="Failed to generate QR code",
         )
 
+    record_auth_event(
+        request, "mfa_setup", actor=current_user.username, actor_id=current_user.user_id
+    )
     return MFASetupResponse(secret=secret, qr_uri=qr_uri)
 
 
@@ -741,10 +813,23 @@ def verify_mfa(
     codes = AuthService.enable_mfa(current_user.user_id, body.code, session)
 
     if codes is None:
+        record_auth_event(
+            request,
+            "mfa_enable",
+            outcome="failure",
+            actor=current_user.username,
+            actor_id=current_user.user_id,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid MFA code"
         )
 
+    record_auth_event(
+        request,
+        "mfa_enable",
+        actor=current_user.username,
+        actor_id=current_user.user_id,
+    )
     return RecoveryCodesResponse(
         recovery_codes=codes, message="MFA enabled successfully"
     )
@@ -756,14 +841,17 @@ def regenerate_recovery_codes(
     request: Request,
     current_user: Annotated[User, Depends(get_current_active_user)],
     session: UnitOfWorkSession,
+    body: Optional[MFACodeRequest] = None,
 ):
     """
     Generate a fresh set of one-time MFA recovery codes, invalidating any
-    previous codes. Requires MFA to already be set up.
+    previous codes. Requires MFA to already be set up, and once it is
+    enabled, a current TOTP or recovery code in ``code``.
 
     Returns:
         The new plaintext recovery codes, shown only once.
     """
+    _require_current_mfa_code(current_user, body, session)
     codes = AuthService.get_mfa_recovery_codes(current_user.user_id, session)
     if codes is None:
         raise HTTPException(
@@ -771,29 +859,74 @@ def regenerate_recovery_codes(
             detail="MFA is not set up for this user",
         )
 
+    record_auth_event(
+        request,
+        "mfa_recovery_codes",
+        actor=current_user.username,
+        actor_id=current_user.user_id,
+    )
     return RecoveryCodesResponse(recovery_codes=codes)
 
 
+def _require_current_mfa_code(
+    user: User, body: Optional[MFACodeRequest], session: Session
+) -> None:
+    """Refuse unless MFA is off or ``body.code`` is a current second factor.
+
+    A recovery code is accepted (and consumed), so someone who lost their
+    authenticator can still turn MFA off.
+    """
+    if not user.mfa_enabled:
+        return
+    code = (body.code or "").strip() if body else ""
+    if not code:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A current MFA code is required",
+        )
+    if not AuthService.verify_mfa_code(user.user_id, code, session):
+        # 400, not 401: the session is fine, and a 401 sends the console
+        # through its refresh-and-retry path.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid MFA code",
+        )
+
+
 @router.delete("/mfa")
+@limiter.limit("5/minute")
 def disable_mfa(
+    request: Request,
     current_user: Annotated[User, Depends(get_current_active_user)],
     session: UnitOfWorkSession,
+    body: Optional[MFACodeRequest] = None,
 ):
     """
-    Disable MFA for current user.
+    Disable MFA for current user. Once MFA is enabled this needs a current
+    TOTP or recovery code in ``code``: a session alone can't remove it.
 
     Args:
+        request: FastAPI request (used by the rate limiter).
         current_user: Current authenticated user
         session: Database session
+        body: The current MFA code
 
     Returns:
         Success message
     """
+    _require_current_mfa_code(current_user, body, session)
     try:
         current_user.mfa_enabled = False
         current_user.mfa_secret = None
+        current_user.mfa_recovery_codes = []
 
         logger.info(f"MFA disabled for user: {current_user.username}")
+        record_auth_event(
+            request,
+            "mfa_disable",
+            actor=current_user.username,
+            actor_id=current_user.user_id,
+        )
         return {"message": "MFA disabled successfully"}
 
     except Exception as e:
@@ -826,8 +959,17 @@ def password_reset_request(
     with DEV_MODE on it logs the link.
     """
     user = session.query(User).filter(User.email == body.email).first()
-    if user and user.is_active:
-        token = generate_reset_token(user.user_id)
+    # An account single sign-on created has no password to reset; giving it one
+    # would let it outlive its removal at the identity provider. A service
+    # account's password belongs to its gateway alone; it is rotated with
+    # `python -m core.auth.service_account ensure`, never by email.
+    if (
+        user
+        and user.is_active
+        and not is_sso_only(user)
+        and not _is_service_account(user)
+    ):
+        token = generate_reset_token(user.user_id, user.email)
         frontend_base = get_settings().vigil_frontend_url.rstrip("/")
         if frontend_base:
             reset_link = f"{frontend_base}/reset-password?token={token}"
@@ -846,6 +988,12 @@ def password_reset_request(
         )
         send_email(to=user.email, subject=subject, body=body_text)
         logger.info("Password reset requested for %s", user.user_id)
+        record_auth_event(
+            request,
+            "password_reset_request",
+            actor=user.username,
+            actor_id=user.user_id,
+        )
     else:
         # Unknown address or inactive user — log for ops visibility but
         # return the same response. Constant-time comparison isn't needed
@@ -879,10 +1027,16 @@ async def password_reset_confirm(
         )
 
     user = await asyncio.to_thread(_get_user, session, user_id)
-    if not user or not user.is_active:
+    if not user or not user.is_active or _is_service_account(user):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Account no longer eligible for reset",
+        )
+    if not token_matches_email(body.token, user.email):
+        # The account's email changed after this link was sent.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
         )
 
     try:
@@ -913,6 +1067,9 @@ async def password_reset_confirm(
             )
 
         logger.info("Password reset completed for user: %s", user.username)
+        await arecord_auth_event(
+            request, "password_reset", actor=user.username, actor_id=user.user_id
+        )
         return {"message": "Password reset successfully"}
     except HTTPException:
         raise
