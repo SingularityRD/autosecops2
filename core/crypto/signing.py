@@ -1,8 +1,14 @@
 """Detached signatures for audit checkpoints: Ed25519 or ECDSA P-256 (W3.10).
 
 Ed25519 is the default. Validated OpenSSL 3 FIPS providers (3.0.x, 3.1.x) do not
-offer EdDSA, so under FIPS_MODE checkpoints are signed with ECDSA over P-256
-and SHA-256 (FIPS 186-5), DER-encoded and base64'd. Every signature records the
+offer EdDSA, so ``checkpoint_algorithm()`` picks ECDSA over P-256 and SHA-256
+(FIPS 186-5, DER-encoded and base64'd) under FIPS_MODE.
+
+NOT WIRED YET: ``core/audit/checkpoint.py``, ``core/audit/verify.py`` and the
+evidence-pack code still sign with Ed25519 directly and do not call this
+module, so FIPS_MODE does not change their signatures (known gap, docs/fips.md
+"Bilinen boşluklar"). tests/unit/crypto/test_fips_docs_consistency.py keeps the
+operator docs honest about that until they are wired. Every signature records the
 algorithm next to it (``ALG_*``), so a verifier never has to guess and keys of
 either kind can coexist across a migration.
 
@@ -35,7 +41,7 @@ class SigningKeyError(ValueError):
 
 
 def checkpoint_algorithm(fips_mode: Optional[bool] = None) -> Algorithm:
-    """ECDSA P-256 under FIPS_MODE, Ed25519 otherwise."""
+    """ECDSA P-256 under FIPS_MODE, Ed25519 otherwise. No production caller yet."""
     if fips_mode is None:
         from core.config import get_settings
 

@@ -276,7 +276,10 @@ _ITS_SERIALIZER_SIGNER_POS = 4
 _ITS_SERIALIZER_KWARGS_POS = 5
 _DIGEST_CALLS = {"hashlib.new", "hashlib.pbkdf2_hmac", "hashlib.file_digest"}
 _HMAC_CALLS = {"hmac.new", "hmac.digest", "hmac.HMAC"}
-_IMPORT_CALLS = {"importlib.import_module", "__import__"}
+# Round 8: ``builtins.__import__`` is the same function as ``__import__``.
+_IMPORT_CALLS = {"importlib.import_module", "__import__", "builtins.__import__"}
+# Round 8: namespace dicts whose ``d['N'] = ...`` rebinds the global/local N.
+_NAMESPACE_CALLS = {"globals", "vars", "locals"}
 # Round 7: calls that locate / run / resolve a module by name without an
 # import statement: (call, name keyword).
 _SPEC_CALLS = {
@@ -414,6 +417,17 @@ def _bound_names(node: ast.AST):
         yield node.name, None
     elif isinstance(node, ast.MatchMapping) and node.rest:
         yield node.rest, None
+    elif (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.ctx, ast.Store)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id in _NAMESPACE_CALLS
+        and isinstance(node.slice, ast.Constant)
+        and isinstance(node.slice.value, str)
+    ):
+        # Round 8: globals()['N'] = ... rebinds N
+        yield node.slice.value, None
 
 
 class _Scanner(ast.NodeVisitor):
@@ -1019,6 +1033,15 @@ class _Scanner(ast.NodeVisitor):
             return
         self.found["itsdangerous digest unproven"] += 1
 
+    def _judge_key_derivation(self, node: ast.expr) -> None:
+        """Round 8: itsdangerous ``key_derivation`` other than ``'hmac'``
+        (``concat``, ``django-concat``, ``none``) is not an approved KDF."""
+        text = self._fold_str(node)
+        if text is None:
+            self.found["itsdangerous key derivation unproven"] += 1
+        elif text != "hmac":
+            self.found[f"itsdangerous key derivation ({text})"] += 1
+
     def _kwargs_dict(self, node: ast.expr) -> dict | None:
         """{key: value node} for a literal dict / dict(...) / a name bound once
         to one; None when not provable (or it unpacks ``**``)."""
@@ -1047,6 +1070,10 @@ class _Scanner(ast.NodeVisitor):
         kind = self._its_kind(name)
         local = name in self.its_classes
         star = any(kw.arg is None for kw in node.keywords)
+        if kind == "signer":
+            kd = _arg(node, _ITS_SIGNER_DIGEST_POS - 1, "key_derivation")
+            if kd is not None:
+                self._judge_key_derivation(kd)
         if kind in ("signer", "algorithm"):
             dm = (
                 _arg(node, _ITS_SIGNER_DIGEST_POS, "digest_method")
@@ -1068,6 +1095,8 @@ class _Scanner(ast.NodeVisitor):
             if kwargs is None:
                 self.found["itsdangerous digest unproven"] += 1
                 return
+            if "key_derivation" in kwargs:
+                self._judge_key_derivation(kwargs["key_derivation"])
             if "digest_method" in kwargs:
                 self._judge_digest_method(kwargs["digest_method"])
                 return
@@ -1117,7 +1146,13 @@ class _Scanner(ast.NodeVisitor):
 
     def _jwt_call(self, node: ast.Call, leaf: str) -> None:
         if leaf == "encode":
-            self._jwt_alg(_arg(node, 2, "algorithm"))
+            alg = _arg(node, 2, "algorithm")
+            self._jwt_alg(alg)
+            # Round 8: the signing side picks the algorithm itself, so it must
+            # be provable (decode's allow-list may be checked at runtime).
+            if alg is not None and self._fold_str(alg) is None:
+                if not (isinstance(alg, ast.Constant) and alg.value is None):
+                    self.found["jwt algorithm unproven"] += 1
             return
         algs = _arg(node, 2, "algorithms")
         if isinstance(algs, (ast.List, ast.Tuple, ast.Set)):
@@ -2429,3 +2464,79 @@ def test_typescript_scanner_catches_round7(source, expected):
 )
 def test_typescript_scanner_round7_passes(source):
     assert not scan_typescript(source), scan_typescript(source)
+
+
+# --- Round 8 ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        ("import builtins\nbuiltins.__import__('bcrypt')", "bcrypt"),
+        ("from builtins import __import__ as imp\nimp('nacl.signing')", "pynacl"),
+        (
+            "import builtins\nbuiltins.__import__('hashlib').md5(b'')",
+            "md5 (security use)",
+        ),
+        (
+            "import builtins\nbuiltins.__import__(prefix + 'crypt')",
+            "dynamic crypto import",
+        ),
+        ("import jwt\njwt.encode(p, k, algorithm=alg)", "jwt algorithm unproven"),
+        ("import jwt\njwt.encode(p, k, settings.jwt_alg)", "jwt algorithm unproven"),
+        (
+            "import jwt\nA = 'HS256'\nglobals()['A'] = 'EdDSA'\n"
+            "jwt.encode(p, k, algorithm=A)",
+            "jwt algorithm unproven",
+        ),
+        (
+            "import hashlib\nN = 'sha256'\nglobals()['N'] = 'md5'\nhashlib.new(N)",
+            "dynamic digest name",
+        ),
+        (
+            "import hashlib\nN = 'sha256'\nvars()['N'] = 'md5'\nhashlib.new(N)",
+            "dynamic digest name",
+        ),
+        (
+            _ITS
+            + "URLSafeSerializer(k, signer_kwargs={'digest_method': hashlib.sha256,"
+            " 'key_derivation': 'concat'})",
+            "itsdangerous key derivation (concat)",
+        ),
+        (
+            _ITS + "URLSafeSerializer(k, signer_kwargs=dict("
+            "digest_method=hashlib.sha256, key_derivation='django-concat'))",
+            "itsdangerous key derivation (django-concat)",
+        ),
+        (
+            _ITS + "Signer(k, key_derivation='none', digest_method=hashlib.sha256)",
+            "itsdangerous key derivation (none)",
+        ),
+        (
+            _ITS + "Signer(k, 'salt', '.', 'concat', hashlib.sha256)",
+            "itsdangerous key derivation (concat)",
+        ),
+        (
+            _ITS + "Signer(k, key_derivation=kd, digest_method=hashlib.sha256)",
+            "itsdangerous key derivation unproven",
+        ),
+    ],
+)
+def test_scanner_catches_round8(source, expected):
+    assert expected in scan_python(source), scan_python(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import builtins\nbuiltins.__import__('json')",
+        "import jwt\nA = 'HS256'\njwt.encode(p, k, algorithm=A)",
+        "import jwt\njwt.encode(p, k, algorithm='RS' + '256')",
+        "import hashlib\nN = 'sha256'\nglobals()['M'] = 'md5'\nhashlib.new(N)",
+        _ITS + "Signer(k, key_derivation='hmac', digest_method=hashlib.sha256)",
+        _ITS + "URLSafeSerializer(k, signer_kwargs={'digest_method': hashlib.sha256,"
+        " 'key_derivation': 'h' + 'mac'})",
+    ],
+)
+def test_scanner_round8_approved_uses(source):
+    assert not scan_python(source), scan_python(source)

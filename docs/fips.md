@@ -13,7 +13,7 @@ hazırlanacağını ve mevcut bir kurulumun nasıl geçirileceğini anlatır.
 | Eski bcrypt parola hash'leri (`users.password_hash`) | doğrulanır | doğrulanır ve doğru parolayla ilk girişte PBKDF2'ye yeniden yazılır; `FIPS_LEGACY_BCRYPT_VERIFY=false` ile reddedilir |
 | MFA kurtarma kodları | bcrypt | PBKDF2-HMAC-SHA256 (yeni üretilenler); eski bcrypt kodlar `FIPS_LEGACY_BCRYPT_VERIFY` değerinden bağımsız olarak çalışmaya devam eder (yeniden yazılamazlar) |
 | Parola geçmişi (`users.password_history`) | bcrypt | yeni girişler etkin şemada; eski bcrypt girişleri yeniden kullanım denetiminde her zaman karşılaştırılır (aksi halde eski parola yeniden kullanılabilirdi) |
-| Denetim kontrol noktası imzası | Ed25519 | ECDSA P-256 + SHA-256 (`core/crypto/signing.py`) |
+| Denetim kontrol noktası ve kanıt paketi imzası | Ed25519 | **değişmez: Ed25519 kalır** (FIPS onaylı sayılmaz; bilinen boşluk, bkz. [Bilinen boşluklar](#bilinen-boşluklar)) |
 | JWT | HS256 | HS256 (HMAC-SHA256 onaylıdır) |
 | MFA sırrı ve gizli anahtar deposu | Fernet (AES-128-CBC + HMAC-SHA256) | aynı (onaylı ilkeller) |
 | TOTP | HMAC-SHA1 | aynı (HMAC-SHA1, SP 800-131A'ya göre onaylı) |
@@ -24,7 +24,10 @@ hazırlanacağını ve mevcut bir kurulumun nasıl geçirileceğini anlatır.
 hash'te 10 000 000'dan büyük yineleme sayısı (bozuk ya da kurcalanmış satır) hesaplama
 yapılmadan reddedilir.
 
-ECDSA imzaları rastgeledir ve değiştirilebilirdir (malleable): aynı mesajın iki imzası
+`core/crypto/signing.py` Ed25519 ve ECDSA P-256 (SHA-256) imza yardımcıları sunar,
+ancak bu sürümde denetim kontrol noktası ve kanıt paketi kodu onu kullanmaz;
+`FIPS_MODE` bu imzaları değiştirmez. Bu arayüz ileride bağlandığında dikkat: ECDSA
+imzaları rastgeledir ve değiştirilebilirdir (malleable): aynı mesajın iki imzası
 farklı baytlardır ve (r, s) ile (r, n−s) ikisi de doğrulanır. İmzayı asla tanımlayıcı,
 tekilleştirme ya da önbellek anahtarı olarak kullanmayın; kontrol noktasını imzaladığı
 içeriğin özetiyle tanımlayın.
@@ -178,8 +181,8 @@ taban listesinde gerekçesiyle tutulan ve FIPS modunda kullanılmaması gereken
 
 - Denetim kaydı kontrol noktaları (`core/audit/checkpoint.py`, `core/audit/verify.py`)
   ve kanıt paketi manifest imzası (`core/compliance/evidence_bundle.py`,
-  `core/compliance/verify_bundle.py`) yalnızca Ed25519 kullanır. FIPS modunda
-  ECDSA P-256'ya geçiş için bu modüllerin `core/crypto/signing.py` arayüzüne
+  `core/compliance/verify_bundle.py`) yalnızca Ed25519 kullanır; `FIPS_MODE=true`
+  bunu değiştirmez. FIPS modunda ECDSA P-256'ya geçiş için bu modüllerin `core/crypto/signing.py` arayüzüne
   bağlanması gerekir (ayrı iş paketi). O zamana kadar bu imzalar FIPS onaylı
   sayılmaz.
 - Veritabanı proxy'sinin `ssh_tunnel` türü (`core/storage/db_proxy.py`,

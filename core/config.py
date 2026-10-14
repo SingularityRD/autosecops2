@@ -246,8 +246,9 @@ class Settings(BaseSettings):
 
     # FIPS 140-3 mode (W3.10). True refuses to start unless the OpenSSL 3 FIPS
     # provider is active for both hashlib and cryptography (core/crypto/fips.py),
-    # and switches non-approved algorithms to approved ones: new password hashes
-    # become PBKDF2-HMAC-SHA256, audit checkpoints sign with ECDSA P-256.
+    # and new password hashes become PBKDF2-HMAC-SHA256. Audit checkpoint and
+    # evidence-pack signatures stay Ed25519 even in FIPS mode (known gap, see
+    # docs/fips.md "Bilinen boşluklar").
     fips_mode: bool = False
     # bcrypt | pbkdf2_sha256. Blank means bcrypt, or pbkdf2_sha256 under
     # FIPS_MODE; bcrypt together with FIPS_MODE is a configuration error.
