@@ -198,9 +198,12 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Same action SHA and Trivy version as Service Image below
+      # (tests/unit/release/test_ci_image_scan.py keeps them in step).
       - name: Trivy — report HIGH and CRITICAL
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          version: v0.75.0
           image-ref: vigil-agent:ci
           format: table
           severity: HIGH,CRITICAL
@@ -209,10 +212,12 @@ jobs:
       # base image is not something this repo can act on, and failing every PR
       # on one teaches people to ignore the job.
       - name: Trivy — fail on fixable CRITICAL
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          version: v0.75.0
           image-ref: vigil-agent:ci
           format: table
+          scanners: vuln,secret
           severity: CRITICAL
           ignore-unfixed: true
           exit-code: '1'
@@ -324,17 +329,16 @@ jobs:
 
       # Same rule as Agent Image: an unfixed base-image CVE is not something
       # this repo can act on, and failing every PR on one teaches people to
-      # ignore the job. Vulnerabilities only: the secret scanner (still in the
-      # report above) rates the SPA's GCP key-file placeholder, the text
-      # '"type": "service_account"' in AiProvidersPanel, as a CRITICAL
-      # service-account key.
+      # ignore the job. Secrets are gated too, with no allow-list: the one
+      # finding W0.22 saw (gcp-service-account on a key-shaped placeholder in
+      # the SPA's AiProvidersPanel) is fixed at the source (W0.23).
       - name: Trivy — fail on fixable CRITICAL
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.75.0
           image-ref: ${{ env.IMAGE }}
           format: table
-          scanners: vuln
+          scanners: vuln,secret
           severity: CRITICAL
           ignore-unfixed: true
           exit-code: '1'
