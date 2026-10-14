@@ -52,6 +52,7 @@ import functools
 import hashlib
 import hmac
 import ipaddress
+import itertools
 import json
 import logging
 import os
@@ -833,44 +834,12 @@ def mask_personal_data(text_: str) -> str:
 
 
 def _redact_pii_pairs(text_: str) -> str:
-    """``iban=TR…`` / ``"gender": "f"`` / ``accountNumber: 123`` in free text:
-    the value of a pair whose key names personal data (:func:`pii_key`; not
-    actor keys)."""
-    if "=" not in text_ and ":" not in text_ and "%3" not in text_.upper():
-        return text_
-    out: list[str] = []
-    pos = 0
-    for m in _KEY_SEP.finditer(text_):
-        if m.start() < pos:
-            continue
-        ident = m.group(2).lstrip("-")
-        if not ident or ident.lower() in _ACTOR_KEYS:
-            continue
-        lookalike = False
-        if not pii_key(ident):
-            if not special_lookalike_key(ident):
-                continue
-            lookalike = True
-        vm = _VALUE.match(text_, m.end())
-        if vm is None:
-            continue
-        value = vm.group(0)
-        if lookalike and benign_special_value(
-            text_[vm.start() : _phrase_end(text_, vm)].strip("\"'")
-        ):
-            continue  # ``service_health=degraded``
-        if value.startswith("[REDACTED") or value.lstrip("\\\"'").startswith(
-            "[REDACTED"
-        ):
-            continue
-        # The whole value, not its first word: ``diagnosis: Type 2 diabetes``.
-        end = max(_value_end(text_, vm, _VALUE_TAIL), _phrase_end(text_, vm))
-        out.append(text_[pos : vm.start()])
-        red = _redacted_value(value) if end == vm.end() else REDACTED
-        out.append(red.replace(REDACTED, REDACTED_PII))
-        pos = end
-    out.append(text_[pos:])
-    return "".join(out)
+    """``iban=TR…`` / ``"gender": "f"`` / ``<diagnosis>HIV</diagnosis>`` /
+    ``religion: |`` blocks in free text: the value of every pair
+    :func:`locate_pairs` finds whose key :func:`classify_key` says names
+    personal data (not actor keys). The same locator and classifier as the
+    secret pass (:func:`_redact_located`)."""
+    return _redact_located(text_, pii=True)
 
 
 # -- identifiers that are neither personal data nor credentials ----------------
@@ -1097,11 +1066,34 @@ _SPECIAL_STEMS = (
     "etnik",
     "cinsel",
     "sendika",
+    "teşhis",
+    "teshis",
 )
 # Whole segments only: as stems these would catch ``trace``/``racing``,
 # ``faithful``, ``dinner``.
+# Turkish ones are matched folded (``tanı`` -> ``tani``, ``ırk`` -> ``irk``,
+# ``inanç`` -> ``inanc``), as whole segments: ``tanım``, ``dinamik``, ``irkilme``
+# are not about a person.
 _SPECIAL_SEGMENTS = frozenset(
-    {"race", "races", "faith", "belief", "beliefs", "dna", "hiv", "din", "ırk"}
+    {
+        "race",
+        "races",
+        "faith",
+        "belief",
+        "beliefs",
+        "dna",
+        "hiv",
+        # Turkish (KVKK md. 6): diagnosis, race, religion, belief
+        "tani",
+        "tanisi",
+        "irk",
+        "irki",
+        "din",
+        "dini",
+        "inanc",
+        "inanci",
+        "inanclari",
+    }
 )
 # Segments that start with a stem above but are not about a person:
 # service health checks, ``diagnostics`` bundles, ``disabled`` flags are not
@@ -1287,6 +1279,8 @@ BENIGN_SPECIAL_VALUES = SERVICE_HEALTH_VALUES | frozenset(
         "timeout",
         "skipped",
         "partial",
+        "passed",
+        "succeeded",
     }
 )
 _BENIGN_NUMBER = re.compile(r"[+-]?\d{1,15}(?:\.\d{1,6})?\s?(?:ms|s|m|h|%)?")
@@ -1317,7 +1311,66 @@ def pii_key(name: str) -> bool:
         return True
     if len(segments) > 1 and segments[-1] in _NON_SECRET_LEAVES:
         return False
+    if _NETWORK_QUALIFIERS.intersection(segments):
+        # ``ip_address``, ``source_address``, ``mac_address``: a network
+        # address is SOC evidence, not where a person lives.
+        segments = [s for s in segments if s not in ("address", "addresses")]
     return bool(_PII_SEGMENTS.intersection(segments))
+
+
+# ``<qualifier>_address`` keys that name a network address (exported; see
+# AUDIT_EXPORT.md, "Network addresses"). ``email_address`` still names
+# personal data through ``email``.
+_NETWORK_QUALIFIERS = frozenset(
+    {
+        "ip",
+        "ipv4",
+        "ipv6",
+        "mac",
+        "hw",
+        "hardware",
+        "src",
+        "source",
+        "dst",
+        "dest",
+        "destination",
+        "remote",
+        "client",
+        "server",
+        "bind",
+        "listen",
+        "local",
+        "peer",
+        "host",
+        "gateway",
+        "gw",
+        "network",
+        "net",
+        "socket",
+        "nat",
+        "proxy",
+        "forwarded",
+        "upstream",
+        "multicast",
+        "broadcast",
+        "loopback",
+        "vip",
+        "router",
+        "dns",
+        "hop",
+        "endpoint",
+        "interface",
+        "public",
+        "private",
+        "internal",
+        "external",
+        "node",
+        "pod",
+        "service",
+        "target",
+        "origin",
+    }
+)
 
 
 # Keys naming who acted. The audit trail exists to answer "who did this", so
@@ -1550,6 +1603,25 @@ _NON_SECRET_LEAVES = frozenset(
         "time",
         "timestamp",
         "version",
+        # Turkish, folded: ``parola_uzunluğu`` (length), ``şifre_politikası``
+        # (policy), ``parola_sayısı`` (count), ``şifre_süresi`` (lifetime),
+        # ``parola_durumu`` (status), ``şifre_değişti`` (changed).
+        "uzunluk",
+        "uzunlugu",
+        "politika",
+        "politikasi",
+        "sayi",
+        "sayisi",
+        "suresi",
+        "durum",
+        "durumu",
+        "tipi",
+        "turu",
+        "gecmisi",
+        "degisti",
+        "degistirildi",
+        "ipucu",
+        "gucu",
     }
 )
 # ``<prefix>_key`` / ``<prefix>Key`` is a credential (``primaryKey``,
@@ -1991,38 +2063,10 @@ _IDENT = r"-{0,2}[^\W\d][\w.\-]{0,255}"
 # JSON-escaped) closing the key.
 _KEY_SEP = re.compile(
     r"(?<![\w.\-%])(\\?[\"']?)(" + _IDENT + r")"
-    r"((?:\\?[\"'])?[ \t]*(?:=>|=|:|%3[Dd]|%3[Aa])[ \t]*)"
+    r"((?:\\?[\"'])?[ \t]*(?:=>|->|=|:|%3[Dd]|%3[Aa])[ \t]*)"
 )
 # ``PASSWORD<tab>value``, ``token value``, ``--password value``.
 _KEY_SPACE = re.compile(r"(?<![\w.\-%=:/\\])(" + _IDENT + r")([ \t]+)")
-# Where an unquoted multi-word value behind a personal-data or STRONG secret
-# key ends (``diagnosis: Type 2 diabetes``, ``password: correct horse battery
-# staple``): end of line, ``;``, ``|``, ``"``, ``<``, a closing bracket, a
-# ``'`` not followed by a letter (``Crohn's`` goes on), a ``,`` before another
-# ``key=`` / ``key:`` pair, or the next ``key=`` / ``key:`` token itself.
-_PAIR_KEY_TOKEN = (
-    r"\\?[\"']?[^\W\d][\w.\-]{0,255}(?:\\?[\"'])?[ \t]*(?:=>|=|:|%3[DdAa])"
-)
-_PAIR_BOUNDARY = re.compile(
-    r"[\r\n;|\"<)\]}\\]|'(?![^\W\d_])"
-    r"|,(?=[ \t]*" + _PAIR_KEY_TOKEN + r")"
-    r"|(?<=[\s&,(\[{])" + _PAIR_KEY_TOKEN
-)
-
-
-def _phrase_end(text_: str, vm: "re.Match[str]") -> int:
-    """End of the unquoted value that starts at ``vm`` read as a phrase, up
-    to :data:`_PAIR_BOUNDARY` (trailing blanks left out); never short of
-    ``vm`` itself. Quoted and braced values end where ``vm`` does."""
-    if text_[vm.start()] in "\"'{\\":
-        return vm.end()
-    b = _PAIR_BOUNDARY.search(text_, vm.start() + 1)
-    end = len(text_) if b is None else b.start()
-    while end > vm.start() and text_[end - 1] in " \t":
-        end -= 1
-    return max(end, vm.end())
-
-
 # Every quantifier is bounded: a value is matched at each ``key=`` in the
 # text, and an unbounded value ran to the end of the line each time, which
 # made ``key:key:key:…`` quadratic. An unquoted value that reaches the bound
@@ -2036,8 +2080,6 @@ _VALUE = re.compile(
     r"|[^\s;&,\"'<>][^\s;&,\"<>]{0,1023}"
 )
 _VALUE_TAIL = re.compile(r"[^\s;&,\"<>]+")
-# ``Password=ab;cd`` where ``cd`` is no ``key=`` of its own: still the value.
-_SEMI_TAIL = re.compile(r";([^\s;=&,\"'<>]+)(?=[\s,]|$)")
 _SPACE_VALUE = re.compile(r"\"[^\"]{0,8192}\"|'[^']{0,8192}'|[^\s;,\"'<>|]{1,1024}")
 _SPACE_VALUE_TAIL = re.compile(r"[^\s;,\"'<>|]+")
 
@@ -2053,36 +2095,25 @@ def _value_end(text_: str, vm: "re.Match[str]", tail: "re.Pattern[str]") -> int:
     return end
 
 
-_YAML_BLOCK_INDICATOR = re.compile(r"^[|>][+-]?\d*$")
-# ``password: >-`` / ``password: |`` and the indented lines under it.
-_YAML_BLOCK = re.compile(
-    r"(?m)^([ \t]*)(-[ \t]+)?([\"']?)([A-Za-z_][A-Za-z0-9_.\-]*)\3[ \t]*:[ \t]*"
-    r"([|>][+-]?\d*)[ \t]*(?:#[^\n]*)?\n((?:\1[ \t]+\S[^\n]*(?:\n|$))+)"
-)
-# ``password:`` with its scalar on the next, deeper-indented line.
-_YAML_NEXT_LINE = re.compile(
-    r"(?m)^([ \t]*)(?:-[ \t]+)?([\"']?)([A-Za-z_][A-Za-z0-9_.\-]*)\2[ \t]*:[ \t]*"
-    r"(?:#[^\n]*)?\n(\1[ \t]++)(?!-[ \t])(?!#)([^\n:#]*[^\s:#])[ \t]*$"
-)
 # HCL / shell heredoc: ``password = <<EOF`` ... ``EOF``.
 _HEREDOC = re.compile(
-    r"(?ms)^([ \t]*[\"']?)([A-Za-z_][\w.\-]*)([\"']?[ \t]*[=:][ \t]*<<-?[ \t]*)"
+    r"(?ms)^([ \t]*[\"']?)([^\W\d][\w.\-]*)([\"']?[ \t]*[=:][ \t]*<<-?[ \t]*)"
     r"([\"']?)([A-Za-z_]\w*)\4[ \t]*\n(.*?)(^[ \t]*\5[ \t]*$)"
 )
 # ``<password>x</password>``, ``<ns:ApiKey attr="1">x</ns:ApiKey>``.
 _XML_ELEMENT = re.compile(
-    r"<((?:[A-Za-z_][\w.\-]*:)?([A-Za-z_][\w.\-]*))(\s[^<>]*)?>([^<]*)</\1\s*>"
+    r"<((?:[^\W\d][\w.\-]*:)?([^\W\d][\w.\-]*))(\s[^<>]*)?>([^<]*)</\1\s*>"
 )
 # ``<password><![CDATA[x]]></password>``.
 _XML_CDATA = re.compile(
-    r"<((?:[A-Za-z_][\w.\-]*:)?([A-Za-z_][\w.\-]*))(\s[^<>]*)?>(\s*<!\[CDATA\[)"
+    r"<((?:[^\W\d][\w.\-]*:)?([^\W\d][\w.\-]*))(\s[^<>]*)?>(\s*<!\[CDATA\[)"
     r"(.*?)(\]\]>\s*</\1\s*>)",
     re.DOTALL,
 )
 # ``<Password><Value>x</Value></Password>``: the secret's name on the parent.
 _XML_NESTED = re.compile(
-    r"<((?:[A-Za-z_][\w.\-]*:)?([A-Za-z_][\w.\-]*))(\s[^<>]*)?>"
-    r"(\s*<([A-Za-z_][\w.:\-]*)(?:\s[^<>]*)?>)([^<]*)(</\5\s*>)"
+    r"<((?:[^\W\d][\w.\-]*:)?([^\W\d][\w.\-]*))(\s[^<>]*)?>"
+    r"(\s*<([^\W\d][\w.:\-]*)(?:\s[^<>]*)?>)([^<]*)(</\5\s*>)"
 )
 # .NET ``<add key="Password" value="x"/>`` and ``name="..." value="..."``.
 _NAMED_VALUE_ATTR = re.compile(
@@ -2092,7 +2123,7 @@ _NAMED_VALUE_ATTR = re.compile(
 # ``- name: API_TOKEN\n  value: x``, ``"name": "X-Api-Key", "value": "x"``.
 _NAMED_VALUE_TEXT = re.compile(
     r"(?i)(?<![\w-])([\"']?)(?:name|key|header)\1[ \t]*[:=][ \t]*([\"']?)"
-    r"([A-Za-z_][\w.\-]{0,127})\2([ \t,;]*+(?:\r?\n[ \t]*+)?(?:-[ \t]++)?"
+    r"([^\W\d][\w.\-]{0,127})\2([ \t,;]*+(?:\r?\n[ \t]*+)?(?:-[ \t]++)?"
     r"([\"']?)(?:value|val)\5[ \t]*+[:=][ \t]*+)"
 )
 # ``mysql -pS3cret`` (attached), only where it reads as a password.
@@ -2265,51 +2296,6 @@ def _is_flag_key(text_: str, start: int, ident: str) -> bool:
     return ident.startswith("-") or (start > 0 and text_[start - 1] in "/?&")
 
 
-def _redact_pairs(text_: str) -> str:
-    """``key=value`` / ``"key": "value"`` / ``key%3Dvalue`` / ``key => value``
-    whose key names a credential. Scanned key by key so that a non-secret pair
-    never swallows a secret one after it (``foo=password=x``)."""
-    out: list[str] = []
-    pos = 0
-    for m in _KEY_SEP.finditer(text_):
-        if m.start() < pos:
-            continue
-        ident = m.group(2)
-        strength = identifier_strength(ident)
-        if not strength:
-            continue
-        vm = _VALUE.match(text_, m.end())
-        if vm is None:
-            continue
-        value = vm.group(0)
-        if value == REDACTED or _YAML_BLOCK_INDICATOR.match(value):
-            continue
-        if value.startswith("[REDACTED") or value.startswith("<<"):
-            continue
-        if text_.startswith(" " + REDACTED, vm.end()):
-            continue  # ``Authorization: Basic [REDACTED]``: the scheme stays
-        if (
-            strength == WEAK
-            and not _is_flag_key(text_, m.start(2), ident)
-            and not _secretish(value, _numeric_identifier(ident), ident)
-        ):
-            continue
-        end = _value_end(text_, vm, _VALUE_TAIL)
-        if strength == STRONG:
-            # ``password: correct horse battery staple``: the whole phrase.
-            end = max(end, _phrase_end(text_, vm))
-            while True:
-                tail = _SEMI_TAIL.match(text_, end)
-                if tail is None:
-                    break
-                end = tail.end()
-        out.append(text_[pos : vm.start()])
-        out.append(_redacted_value(value) if end == vm.end() else REDACTED)
-        pos = end
-    out.append(text_[pos:])
-    return "".join(out)
-
-
 def _random_enough(value: str) -> bool:
     """A space-separated value is taken for a secret only when it does not
     read as a word: a digit next to a letter, or mixed case."""
@@ -2365,86 +2351,671 @@ def _redact_spaced(text_: str) -> str:
     return "".join(out)
 
 
-def _pair_hit(name: str, value: str) -> bool:
-    strength = identifier_strength(name)
-    if strength == STRONG:
+# -- free-text key/value pairs: one locator, one classifier --------------------
+#
+# Every free-text form that writes a value under a key name is found by ONE
+# locator (:func:`locate_pairs`), and every key is judged by ONE classifier
+# (:func:`classify_key`). The secret pass (:func:`redact_text`) and the
+# personal-data pass (:func:`mask_personal_data`) both walk the same pairs
+# through :func:`_redact_located`; they differ only in which facet of the
+# key's class they act on (``secret`` or ``pii``). A form the locator knows is
+# therefore covered for credentials and for personal data alike: the two
+# paths cannot drift apart again (tests/unit/compliance/
+# test_audit_export_round10.py runs every form against every key class).
+#
+# Forms (:data:`PAIR_FORMS`):
+#   inline       ``k=v``, ``k: v``, ``k => v``, ``k -> v``, ``k%3Dv``
+#   quoted       ``k="v"``, ``"k": "v"``, ``'k': 'v'``, ``\"k\": \"v\"``
+#   braced       ``k={...}``
+#   query        ``?k=v&k2=v2`` (the value ends at ``&``, ``#`` or a blank)
+#   xml          ``<k>v</k>``, ``<ns:K a="1">v</ns:K>``, ``<k><![CDATA[v]]></k>``,
+#                ``<k><Value>v</Value></k>``
+#   xml_attr     ``<k value="v"/>``, ``<add key="k" value="v"/>``,
+#                ``<field name="k">v</field>``
+#   yaml_block   ``k: |`` / ``k: >-`` and the indented lines under it
+#   yaml_scalar  ``k:`` and its scalar on the next, deeper lines
+#   yaml_item    ``k:`` and each ``- item`` of the sequence under it
+#   named        ``- name: K`` / ``value: v`` (Kubernetes env, header lists)
+#   heredoc      ``k = <<EOF`` ... ``EOF``
+# ``k value`` (a space, no separator) is prose as often as a pair: only the
+# secret pass reads it (:func:`_redact_spaced`), for credential keys.
+#
+# Where a value ends. A value is *delimited* when its form says where it
+# stops: quoted (and nothing but a separator after the closing quote), an
+# XML element or attribute, a URL query parameter (ends at ``&``), a YAML
+# block, a braced object. Any other value behind a credential or
+# personal-data key runs to the end of the line, and on over following lines
+# that do not start a new record (:func:`_phrase_end`), stopping only at a
+# quote or bracket that closes something opened before the key, at a tag, or
+# right before the next ``key=`` / ``key:`` token. Delimiters that are not
+# part of the value (``&``, ``;``, ``,``, the closing bracket) stay.
+
+PAIR_FORMS = (
+    "inline",
+    "quoted",
+    "braced",
+    "query",
+    "xml",
+    "xml_attr",
+    "yaml_block",
+    "yaml_scalar",
+    "yaml_item",
+    "named",
+    "heredoc",
+)
+_DELIMITED_FORMS = frozenset(PAIR_FORMS) - {"inline", "quoted", "named"}
+
+
+@dataclass(frozen=True)
+class KeyClass:
+    """What a key names, as :func:`classify_key` sees it.
+
+    ``secret``: 0, :data:`WEAK` or :data:`STRONG` (:func:`identifier_strength`).
+    ``pii``: ``None`` or what kind of personal data:
+      ``"special"``  special-category data (:func:`special_category_key`)
+      ``"health"``   special only through ``health`` (a service's health
+                     status word is let through: :data:`SERVICE_HEALTH_VALUES`)
+      ``"pii"``      other personal data (:func:`pii_key`)
+      ``"address"``  personal only through ``address`` (a network address
+                     value is let through: :func:`network_address_value`)
+      ``"lookalike"`` carries a special-category word but is about a system
+                     (:func:`special_lookalike_key`): only a status word, a
+                     number or a boolean is let through
+    """
+
+    secret: int
+    pii: Optional[str]
+
+    @property
+    def label(self) -> str:
+        """``secret`` / ``special`` / ``pii`` / ``weak_secret`` /
+        ``lookalike`` / ``benign``: the class that decides first."""
+        if self.secret == STRONG:
+            return "secret"
+        if self.pii in ("special", "health"):
+            return "special"
+        if self.pii in ("pii", "address"):
+            return "pii"
+        if self.secret == WEAK:
+            return "weak_secret"
+        if self.pii == "lookalike":
+            return "lookalike"
+        return "benign"
+
+
+_ADDRESS_SEGMENTS = frozenset({"address", "addresses", "addr"})
+
+
+def address_only_key(name: str) -> bool:
+    """A personal-data key whose only personal word is ``address``
+    (``address``, ``home_address``); not ``email_address``."""
+    segments = key_segments(fold_unicode(name))
+    if not _ADDRESS_SEGMENTS.intersection(segments):
+        return False
+    rest = "_".join(s for s in segments if s not in _ADDRESS_SEGMENTS)
+    return not rest or not pii_key(rest)
+
+
+@functools.lru_cache(maxsize=8192)
+def classify_key(name: str) -> KeyClass:
+    """The one classifier both free-text passes use (see :class:`KeyClass`).
+    ``name`` is the key as written (quotes, ``--`` and all)."""
+    secret = identifier_strength(name)
+    bare = fold_unicode(name.strip("\"'\\ :").lstrip("-"))
+    pii: Optional[str] = None
+    if not bare or bare.lower() in _ACTOR_KEYS:
+        pii = None
+    elif special_category_key(bare):
+        pii = "health" if health_only_key(bare) else "special"
+    elif pii_key(bare):
+        pii = "address" if address_only_key(bare) else "pii"
+    elif special_lookalike_key(bare):
+        pii = "lookalike"
+    return KeyClass(secret, pii)
+
+
+_MAC_ADDRESS = re.compile(
+    r"[0-9A-Fa-f]{2}(?:[:\-][0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{4}(?:\.[0-9A-Fa-f]{4}){2}"
+)
+_URL_VALUE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]{1,30}://[^\s\"'<>]{1,2048}")
+_BRACKETED_V6 = re.compile(r"\[([0-9A-Fa-f:.]{2,45})\](?::\d{1,5})?")
+
+
+def network_address_value(value: str) -> bool:
+    """An IP address (v4 or v6, with a port or a prefix length), a MAC address
+    or a URL: what an ``address`` key holds in a SOC audit trail, not where a
+    person lives. Network addresses are exported (AUDIT_EXPORT.md, "Network
+    addresses")."""
+    s = value.strip().strip("\"'")
+    if not s or len(s) > 2048:
+        return False
+    if _MAC_ADDRESS.fullmatch(s) or _URL_VALUE.fullmatch(s):
         return True
-    return strength == WEAK and _secretish(value, _numeric_identifier(name), name)
+    m = _BRACKETED_V6.fullmatch(s)
+    if m:
+        s = m.group(1)
+    elif s.count(":") == 1:
+        s, _, port = s.partition(":")
+        if not port.isdigit():
+            return False
+    try:
+        ipaddress.ip_interface(s)
+    except ValueError:
+        return False
+    return True
 
 
-def _yaml_block_redaction(match: "re.Match[str]") -> str:
-    if not secret_identifier(match.group(4)):
-        return match.group(0)
-    indent = match.group(1)
-    head = match.group(0)[: match.start(6) - match.start(0)]
-    trailing = "\n" if match.group(6).endswith("\n") else ""
-    return f"{head}{indent}  {REDACTED}{trailing}"
+# Values under a STRONG credential key in free text that are a state, not the
+# credential: ``password: changed``, ``api_key: rotated``, ``secret: null``.
+SECRET_STATUS_VALUES = _STATUS_WORDS | frozenset(
+    {
+        "updated",
+        "cleared",
+        "removed",
+        "deleted",
+        "created",
+        "generated",
+        "regenerated",
+        "configured",
+        "stored",
+        "saved",
+        "modified",
+        "restored",
+        "provided",
+        "not set",
+        "n/a",
+    }
+)
+_JSON_LITERALS = frozenset({"true", "false", "null", "none"})
 
 
-def _yaml_next_line_redaction(match: "re.Match[str]") -> str:
-    value = match.group(5)
-    if value.startswith("[REDACTED") or not _pair_hit(match.group(3), value):
-        return match.group(0)
-    head = match.group(0)[: match.start(5) - match.start(0)]
-    return head + _redacted_value(value.strip())
+def secret_status_value(value: str) -> bool:
+    """A known non-secret status word (:data:`SECRET_STATUS_VALUES`)."""
+    return value.strip().strip("\"'").strip().lower() in SECRET_STATUS_VALUES
 
 
-def _heredoc_redaction(match: "re.Match[str]") -> str:
-    body = match.group(6)
-    if not body.strip() or not _pair_hit(match.group(2), body.strip()):
-        return match.group(0)
-    head = match.group(0)[: match.start(6) - match.start(0)]
-    return f"{head}{REDACTED}\n{match.group(7)}"
+def pii_value_exempt(kind: Optional[str], value: str) -> bool:
+    """Whether a value under a personal-data key of ``kind`` (see
+    :class:`KeyClass`) is let through. Shared by the structured path
+    (:meth:`Redactor.value`) and both free-text passes."""
+    v = value.strip().strip("\"'").strip()
+    if kind == "health":
+        return v.lower() in SERVICE_HEALTH_VALUES or v.lower() in _JSON_LITERALS
+    if kind == "lookalike":
+        return benign_special_value(v)
+    if kind == "address":
+        return network_address_value(v)
+    return False
 
 
-def _xml_redaction(match: "re.Match[str]") -> str:
-    content = match.group(4)
-    if not content.strip() or not _pair_hit(match.group(2), content.strip()):
-        return match.group(0)
-    attrs = match.group(3) or ""
-    return f"<{match.group(1)}{attrs}>{REDACTED}</{match.group(1)}>"
+class _Pair:
+    """A located value: ``key`` as written, the key's offset, the value's
+    span ``[start, end)`` and its form. For the ``inline``, ``quoted`` and
+    ``named`` forms ``end`` is the first token only (what a WEAK key masks);
+    the whole value is :func:`_phrase_end`. ``ctx`` is where the key token
+    starts, for the quote/bracket context the value sits in."""
+
+    __slots__ = ("key", "key_start", "start", "end", "form", "ctx", "rank", "tail")
+
+    def __init__(
+        self,
+        key: str,
+        key_start: int,
+        start: int,
+        end: int,
+        form: str,
+        ctx: int = -1,
+        rank: int = 1,
+    ) -> None:
+        self.key = key
+        self.key_start = key_start
+        self.start = start
+        self.end = end
+        self.form = form
+        self.ctx = key_start if ctx < 0 else ctx
+        self.rank = rank
+        self.tail = False
+
+    def extend(self, text_: str) -> int:
+        """``end`` past the :data:`_VALUE_MAX` bound of the token match, for
+        a value about to be masked (done lazily: extending every pair up
+        front made ``k:k=k:k=…`` quadratic)."""
+        if self.tail:
+            self.tail = False
+            more = _VALUE_TAIL.match(text_, self.end)
+            if more is not None:
+                self.end = more.end()
+        return self.end
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"_Pair({self.key!r}, {self.form}, {self.start}:{self.end})"
 
 
-def _xml_cdata_redaction(match: "re.Match[str]") -> str:
-    if not match.group(5).strip() or not _pair_hit(match.group(2), match.group(5)):
-        return match.group(0)
-    head = match.group(0)[: match.start(5) - match.start(0)]
-    return head + REDACTED + match.group(6)
+# ``k=v`` / ``k: v`` / ``k => v`` / ``k -> v`` / ``k%3Dv``: the key token.
+_PHRASE_KEY = (
+    r"\\?[\"']?[^\W\d][\w.\-]{0,255}(?:\\?[\"'])?[ \t]*"
+    r"(?:=>|->|=(?!=)|:(?![/\\:])|%3[DdAa])"
+)
+_NEWLINES = "\r\n\u2028\u2029\x85\x0b\x0c"
+# What can end a phrase: a line break, a bracket, a quote, a tag, or the
+# next key token (with the separator before it, which stays).
+_PHRASE_STOP = re.compile(
+    r"(?P<nl>\r\n|[\r\n\u2028\u2029\x85\x0b\x0c])"
+    r"|(?P<br>[()\[\]{}])"
+    r"|(?P<q>\\\"|\"|')"
+    r"|(?P<tag><(?=[/!?A-Za-z_]))"
+    r"|(?P<key>(?:(?<=[\s(\[{])|[ \t]*[,;&|][ \t]*)(?=" + _PHRASE_KEY + r"))"
+)
+# A line that starts a new record: blank, a key token, a list item, a tag, a
+# comment, a bracket, a digit (timestamps, numbered lines).
+_RECORD_START = re.compile(
+    r"[ \t]*(?:$|[\-<#{}\[\]*|>\d]|" + _PHRASE_KEY + r"|[\"']?[^\s#\"'][^\n#:]{0,64}?"
+    r"[\"']?[ \t]*:(?:[ \t]|$))",
+    re.M,
+)
+_LONE_QUOTE = re.compile(r"(?<![^\W\d_])'|'(?![^\W\d_])")
+_OPENER = {")": "(", "]": "[", "}": "{"}
+_TRIM = " \t,;|&"
 
 
-def _xml_nested_redaction(match: "re.Match[str]") -> str:
-    inner = match.group(6)
-    if not inner.strip() or inner.startswith("[REDACTED"):
-        return match.group(0)
-    if not _pair_hit(match.group(2), inner.strip()):
-        return match.group(0)
-    head = match.group(0)[: match.start(6) - match.start(0)]
-    return head + REDACTED + match.group(7)
+class _LineContext:
+    """Quote and bracket counts between the start of a line and a key,
+    kept incrementally so that locating many pairs on one long line stays
+    linear."""
+
+    def __init__(self, text_: str) -> None:
+        self.text = text_
+        self.pos = 0
+        self._reset()
+
+    def _reset(self) -> None:
+        self.dq = self.edq = self.sq = 0
+        self.open = {"(": 0, "[": 0, "{": 0}
+        self.close = {")": 0, "]": 0, "}": 0}
+
+    def _count(self, chunk: str) -> None:
+        edq = chunk.count('\\"')
+        self.edq += edq
+        self.dq += chunk.count('"') - edq
+        if "'" in chunk:
+            self.sq += len(_LONE_QUOTE.findall(chunk))
+        for c in "([{":
+            self.open[c] += chunk.count(c)
+        for c in ")]}":
+            self.close[c] += chunk.count(c)
+
+    def at(self, i: int) -> "_LineContext":
+        if i < self.pos:
+            # Out of order (a nested form): count from the line start.
+            self.pos = 0
+            self._reset()
+        chunk = self.text[self.pos : i]
+        nl = max(chunk.rfind(c) for c in "\r\n")
+        if nl >= 0:
+            self._reset()
+            chunk = chunk[nl + 1 :]
+        self._count(chunk)
+        self.pos = i
+        return self
+
+    def enclosed(self, closer: str) -> bool:
+        return self.open[_OPENER[closer]] > self.close[closer]
 
 
-def _named_attr_redaction(match: "re.Match[str]") -> str:
-    if not _pair_hit(match.group(3), match.group(5)):
-        return match.group(0)
-    q = match.group(4)
-    return f"{match.group(1)}{q}{REDACTED}{q}"
+def _closing_quote(text_: str, q: str, i: int) -> int:
+    """Index of the ``q`` closing a quote opened just before ``i`` on the
+    same line, or -1."""
+    j = text_.find(q, i)
+    if j < 0:
+        return -1
+    nl = min((k for k in (text_.find(c, i, j) for c in "\r\n") if k >= 0), default=-1)
+    return -1 if nl >= 0 else j
 
 
-def _redact_named_values(text_: str) -> str:
-    """``- name: API_TOKEN`` / ``value: x`` written out as text."""
+def _phrase_end(text_: str, pair: _Pair, ctx: _LineContext) -> int:
+    """End of the whole value of an ``inline`` / ``quoted`` / ``named`` pair
+    (see the section comment): never short of its first token."""
+    c = ctx.at(pair.ctx)
+    in_dq, in_edq, in_sq = c.dq % 2 == 1, c.edq % 2 == 1, c.sq % 2 == 1
+    enclosing = {k: c.enclosed(k) for k in ")]}"}
+    stack: list[str] = []
+    start, token_end = pair.start, pair.end
+    pos = token_end if pair.form == "quoted" else start
+    end = len(text_)
+    while True:
+        m = _PHRASE_STOP.search(text_, pos)
+        if m is None:
+            break
+        i, tok, kind = m.start(), m.group(0), m.lastgroup
+        if kind == "nl":
+            nxt = m.end()
+            if nxt < len(text_) and not _RECORD_START.match(text_, nxt):
+                pos = nxt  # ``diagnosis: HIV\npositive``: the value goes on
+                continue
+            end = i
+            break
+        if kind == "br":
+            if tok in "([{":
+                stack.append(tok)
+            elif stack and stack[-1] == _OPENER[tok]:
+                stack.pop()
+            elif enclosing[tok]:
+                end = i  # closes a bracket opened before the key
+                break
+            pos = m.end()
+            continue
+        if kind == "q":
+            if tok == '\\"':
+                if in_edq:
+                    end = i
+                    break
+                pos = m.end()
+            elif tok == '"':
+                if in_dq:
+                    end = i  # closes the string the pair sits in
+                    break
+                close = _closing_quote(text_, '"', m.end())
+                pos = close + 1 if close >= 0 else m.end()
+            else:
+                if in_sq and _LONE_QUOTE.match(text_, i):
+                    end = i
+                    break
+                pos = m.end()
+            continue
+        if kind == "tag":
+            end = i
+            break
+        # The next key token (with the separator before it, which stays).
+        if i < token_end:
+            pos = max(m.end(), i + 1)
+            continue
+        end = i
+        break
+    while end > start and text_[end - 1] in _TRIM:
+        end -= 1
+    return end if end > start else token_end
+
+
+_QUERY_VALUE = re.compile(r"[^&\s#\"'<>]{1,8192}")
+_YAML_INDICATOR_LINE = re.compile(r"[|>][+-]?\d*[ \t]*(?:#[^\n]*)?(?:\r?\n|$)")
+# ``key:`` at the end of a line (YAML), optionally with a block indicator.
+_YAML_KEY_LINE = re.compile(
+    r"(?m)^([ \t]*)(-[ \t]+)?([\"']?)([^\W\d][\w.\-]{0,255})\3[ \t]*:[ \t]*"
+    r"([|>][+-]?\d*)?[ \t]*(?:#[^\n]*)?\r?$"
+)
+# A line that is a mapping entry (``k: v`` / ``k:``), not a scalar.
+_YAML_MAPPING = re.compile(
+    r"[\"']?[^\s#\"'\-][^\n#]{0,255}?[\"']?[ \t]*:(?:[ \t]|\r?$)"
+)
+# ``<k value="v"/>``: an opening (or empty) tag and its attributes.
+_XML_TAG = re.compile(r"<((?:[^\W\d][\w.\-]*:)?([^\W\d][\w.\-]*))(\s[^<>]{0,4096}?)/?>")
+_XML_VALUE_ATTR = re.compile(r"(?i)(?<![\w\-])(?:value|val)\s*=\s*([\"'])([^\"'<>]*)\1")
+_XML_NAME_ATTR = re.compile(
+    r"(?i)(?<![\w\-])(?:name|key)\s*=\s*([\"'])([^\"'<>]{1,256})\1"
+)
+
+
+def _lines_from(text_: str, i: int):
+    """``(start, end, indent)`` of each line from offset ``i`` on (``end``
+    excludes the line break)."""
+    n = len(text_)
+    while i < n:
+        j = text_.find("\n", i)
+        j = n if j < 0 else j
+        e = j - 1 if j > i and text_[j - 1] == "\r" else j
+        line = text_[i:e]
+        yield i, e, len(line) - len(line.lstrip(" \t"))
+        i = j + 1
+
+
+def _locate_yaml(text_: str, pairs: list) -> None:
+    for m in _YAML_KEY_LINE.finditer(text_):
+        key, key_start = m.group(4), m.start(4)
+        base = len(m.group(1))
+        after = m.end() + 1
+        if after > len(text_):
+            continue
+        if m.group(5):  # ``k: |`` block: every deeper (or blank) line
+            first = last = -1
+            for s, e, ind in _lines_from(text_, after):
+                if s + ind == e:
+                    continue  # blank lines belong to the block
+                if ind <= base:
+                    break
+                if first < 0:
+                    first = s + ind
+                last = e
+            if first >= 0:
+                pairs.append(_Pair(key, key_start, first, last, "yaml_block"))
+            continue
+        lines = _lines_from(text_, after)
+        head = next((ln for ln in lines if ln[0] + ln[2] < ln[1]), None)
+        if head is None:
+            continue
+        s, e, ind = head
+        body = text_[s + ind : e]
+        is_item = body == "-" or body.startswith(("- ", "-\t"))
+        if is_item and (ind > base or (ind == base and not m.group(2))):
+            item_indent = ind
+            cur: Optional[list] = None
+            for s, e, ind in itertools.chain([head], lines):
+                if s + ind == e:
+                    continue
+                text_line = text_[s + ind : e]
+                if ind == item_indent and (
+                    text_line == "-" or text_line.startswith(("- ", "-\t"))
+                ):
+                    if cur is not None:
+                        pairs.append(_Pair(key, key_start, cur[0], cur[1], "yaml_item"))
+                    vs = s + ind + 1
+                    while vs < e and text_[vs] in " \t":
+                        vs += 1
+                    item = text_[vs:e]
+                    mapping = (
+                        not item
+                        or _YAML_MAPPING.match(item)
+                        or _YAML_INDICATOR_LINE.fullmatch(item)
+                    )
+                    cur = None if mapping else [vs, e]
+                    continue
+                if ind > item_indent:
+                    if cur is not None:
+                        cur[1] = e  # a continuation line of the item
+                    continue
+                break
+            if cur is not None:
+                pairs.append(_Pair(key, key_start, cur[0], cur[1], "yaml_item"))
+            continue
+        if ind > base and not is_item and not _YAML_MAPPING.match(body):
+            last = e
+            for s2, e2, ind2 in lines:
+                if s2 + ind2 == e2 or ind2 <= base:
+                    break
+                if _YAML_MAPPING.match(text_, s2 + ind2):
+                    break
+                last = e2
+            pairs.append(_Pair(key, key_start, s + ind, last, "yaml_scalar"))
+
+
+def _locate_xml(text_: str, pairs: list) -> None:
+    for m in _XML_CDATA.finditer(text_):
+        if m.group(5).strip():
+            pairs.append(
+                _Pair(m.group(2), m.start(2), m.start(5), m.end(5), "xml", rank=0)
+            )
+    for m in _XML_NESTED.finditer(text_):
+        if m.group(6).strip():
+            pairs.append(_Pair(m.group(2), m.start(2), m.start(6), m.end(6), "xml"))
+    for m in _XML_ELEMENT.finditer(text_):
+        content = m.group(4)
+        if not content.strip():
+            continue
+        s = m.start(4) + (len(content) - len(content.lstrip()))
+        e = m.end(4) - (len(content) - len(content.rstrip()))
+        named = _XML_NAME_ATTR.search(m.group(3) or "")
+        if named:  # ``<field name="diagnosis">HIV</field>``
+            pairs.append(_Pair(named.group(2), m.start(2), s, e, "xml_attr", rank=0))
+        pairs.append(_Pair(m.group(2), m.start(2), s, e, "xml"))
+    for m in _XML_TAG.finditer(text_):
+        attrs = m.group(3)
+        val = _XML_VALUE_ATTR.search(attrs)
+        if val is None or not val.group(2).strip():
+            continue
+        s = m.start(3) + val.start(2)
+        e = m.start(3) + val.end(2)
+        named = _XML_NAME_ATTR.search(attrs)
+        if named:  # ``<add key="Password" value="x"/>``
+            pairs.append(_Pair(named.group(2), m.start(2), s, e, "xml_attr", rank=0))
+        pairs.append(_Pair(m.group(2), m.start(2), s, e, "xml_attr"))
+
+
+def locate_pairs(text_: str) -> list:
+    """Every ``(key, value span)`` pair in ``text_``, in every form of
+    :data:`PAIR_FORMS`, ordered by where the value starts. Pairs can nest
+    (``<a>password=x</a>``); :func:`_redact_located` skips a pair whose
+    value starts inside one it already masked."""
+    pairs: list[_Pair] = []
+    if "=" in text_ or ":" in text_ or "%3" in text_ or "->" in text_:
+        for m in _KEY_SEP.finditer(text_):
+            ident = m.group(2)
+            vstart = m.end()
+            ks = m.start(2)
+            if not m.group(1) and ks > 0 and text_[ks - 1] in "?&":
+                qm = _QUERY_VALUE.match(text_, vstart)
+                if qm is not None:
+                    pairs.append(_Pair(ident, ks, vstart, qm.end(), "query"))
+                continue
+            vm = _VALUE.match(text_, vstart)
+            if vm is None:
+                continue
+            first = text_[vstart]
+            if first in "|>" and _YAML_INDICATOR_LINE.match(text_, vstart):
+                continue  # a YAML block: _locate_yaml
+            if text_.startswith("<<", vstart):
+                continue  # a heredoc
+            if first in "\"'" or text_.startswith('\\"', vstart):
+                form = "quoted"
+            elif first == "{" or (first == "\\" and vm.group(0)[1:2] in "\r\n"):
+                form = "braced"  # an object, or ``DB_PASS=\`` + next line
+            else:
+                form = "inline"
+            pair = _Pair(ident, ks, vstart, vm.end(), form, ctx=m.start())
+            pair.tail = form == "inline" and vm.end() - vstart >= _VALUE_MAX
+            pairs.append(pair)
+    if "\n" in text_:
+        _locate_yaml(text_, pairs)
+    if "<" in text_ and ">" in text_:
+        _locate_xml(text_, pairs)
+    if "<<" in text_:
+        for m in _HEREDOC.finditer(text_):
+            body = m.group(6)
+            if body.strip():
+                e = m.end(6) - (1 if body.endswith("\n") else 0)
+                pairs.append(_Pair(m.group(2), m.start(2), m.start(6), e, "heredoc"))
+    if "=" in text_ and ("value" in text_.lower() or "val" in text_.lower()):
+        for m in _NAMED_VALUE_ATTR.finditer(text_):
+            pairs.append(
+                _Pair(m.group(3), m.start(3), m.start(5), m.end(5), "xml_attr", rank=0)
+            )
+    if ":" in text_ or "=" in text_:
+        for m in _NAMED_VALUE_TEXT.finditer(text_):
+            vm = _VALUE.match(text_, m.end())
+            if vm is None:
+                continue
+            form = "quoted" if text_[m.end()] in "\"'" else "named"
+            pair = _Pair(
+                m.group(3), m.start(3), m.end(), vm.end(), form, ctx=m.start(4), rank=0
+            )
+            pair.tail = form == "named" and vm.end() - m.end() >= _VALUE_MAX
+            pairs.append(pair)
+    pairs.sort(key=lambda p: (p.start, p.rank))
+    return pairs
+
+
+def _only_marks(value: str) -> bool:
+    return not _MARK.sub("", value).strip(" \t\"'\\,;.:()[]{}")
+
+
+def _secret_decision(text_: str, p: _Pair, cls: KeyClass, ctx: _LineContext):
+    """``(end, replacement)`` when the secret pass masks pair ``p``."""
+    strength = cls.secret
+    if not strength:
+        return None
+    token = text_[p.start : p.end]
+    body = token.strip()
+    if (
+        not body
+        or body.startswith("[REDACTED")
+        or token.lstrip("\\\"'").startswith("[REDACTED")
+    ):
+        return None
+    if p.form in ("inline", "quoted", "named") and text_.startswith(
+        " " + REDACTED, p.end
+    ):
+        return None  # ``Authorization: Basic [REDACTED]``: the scheme stays
+    if strength == WEAK:
+        flag = p.form in ("inline", "quoted", "query") and _is_flag_key(
+            text_, p.key_start, p.key
+        )
+        if p.form != "yaml_block" and not flag:
+            if not _secretish(body, _numeric_identifier(p.key), p.key):
+                return None
+        end = p.extend(text_)
+    elif p.form in _DELIMITED_FORMS:
+        end = p.end
+    else:
+        p.extend(text_)
+        end = _phrase_end(text_, p, ctx)
+    value = text_[p.start : end]
+    if secret_status_value(value):
+        return None  # ``password: changed``
+    if _only_marks(value):
+        return None
+    if p.form in _DELIMITED_FORMS:
+        return end, REDACTED
+    return end, (_redacted_value(value) if end == p.end else REDACTED)
+
+
+def _pii_decision(text_: str, p: _Pair, cls: KeyClass, ctx: _LineContext):
+    """``(end, replacement)`` when the personal-data pass masks pair ``p``."""
+    if cls.pii is None:
+        return None
+    p.extend(text_)
+    end = p.end if p.form in _DELIMITED_FORMS else _phrase_end(text_, p, ctx)
+    value = text_[p.start : end]
+    if not value.strip() or _only_marks(value):
+        return None
+    if pii_value_exempt(cls.pii, value):
+        return None
+    if p.form in _DELIMITED_FORMS:
+        return end, REDACTED_PII
+    red = _redacted_value(value) if end == p.end else REDACTED
+    return end, red.replace(REDACTED, REDACTED_PII)
+
+
+def _redact_located(text_: str, pii: bool) -> str:
+    """Mask the values :func:`locate_pairs` finds whose key
+    :func:`classify_key` puts in the pass's class: credentials (``pii``
+    False) or personal data (``pii`` True)."""
+    pairs = locate_pairs(text_)
+    if not pairs:
+        return text_
+    decide = _pii_decision if pii else _secret_decision
+    ctx = _LineContext(text_)
     out: list[str] = []
     pos = 0
-    for m in _NAMED_VALUE_TEXT.finditer(text_):
-        if m.start() < pos:
+    for p in pairs:
+        if p.start < pos:
             continue
-        vm = _VALUE.match(text_, m.end())
-        if vm is None or vm.group(0).startswith("[REDACTED"):
+        hit = decide(text_, p, classify_key(p.key), ctx)
+        if hit is None:
             continue
-        if not _pair_hit(m.group(3), vm.group(0)):
-            continue
-        out.append(text_[pos : vm.start()])
-        end = _value_end(text_, vm, _VALUE_TAIL)
-        out.append(_redacted_value(vm.group(0)) if end == vm.end() else REDACTED)
+        end, replacement = hit
+        out.append(text_[pos : p.start])
+        out.append(replacement)
         pos = end
+    if not out:
+        return text_
     out.append(text_[pos:])
     return "".join(out)
 
@@ -2858,14 +3429,6 @@ def _redact_raw(value: str, depth: int = 0) -> str:
     for pattern in _TOKEN_SHAPES:
         out = pattern.sub(REDACTED, out)
     out = _SCHEME_CREDENTIAL.sub(_scheme_redaction, out)
-    out = _HEREDOC.sub(_heredoc_redaction, out)
-    out = _YAML_BLOCK.sub(_yaml_block_redaction, out)
-    out = _YAML_NEXT_LINE.sub(_yaml_next_line_redaction, out)
-    out = _XML_CDATA.sub(_xml_cdata_redaction, out)
-    out = _XML_NESTED.sub(_xml_nested_redaction, out)
-    out = _XML_ELEMENT.sub(_xml_redaction, out)
-    out = _NAMED_VALUE_ATTR.sub(_named_attr_redaction, out)
-    out = _redact_named_values(out)
     out = _SQL_IDENTIFIED_BY.sub(
         lambda m: m.group(1) + _redacted_value(m.group(2)), out
     )
@@ -2879,7 +3442,9 @@ def _redact_raw(value: str, depth: int = 0) -> str:
         ),
         out,
     )
-    out = _redact_pairs(out)
+    # Every key/value form, judged by classify_key (shared with the
+    # personal-data pass: mask_personal_data).
+    out = _redact_located(out, pii=False)
     out = _redact_cli(out)
     out = _SSHPASS.sub(lambda m: m.group(1) + REDACTED, out)
     out = _NET_USE.sub(lambda m: m.group(1) + REDACTED, out)
@@ -3275,13 +3840,17 @@ class Redactor:
         if strength == STRONG and not _is_argv(value):
             if value == "" or value == {} or value == []:
                 return value
+            leaf = path.rsplit(".", 1)[-1]
             if (
                 isinstance(value, str)
-                and value.strip().lower() in SERVICE_HEALTH_VALUES
-                and health_only_key(path.rsplit(".", 1)[-1])
-                and not identifier_strength(path.rsplit(".", 1)[-1])
+                and self.redact_pii
+                and not identifier_strength(leaf)
+                and pii_value_exempt(classify_key(leaf).pii, value)
             ):
-                return value  # ``health_status: degraded`` is a system's state
+                # ``health_status: degraded`` is a system's state,
+                # ``address: 10.0.0.1`` a network address (the same rule as
+                # free text: pii_value_exempt).
+                return value
             return self._redact()
         if strength == WEAK:
             weak_key = path.rsplit(".", 1)[-1]

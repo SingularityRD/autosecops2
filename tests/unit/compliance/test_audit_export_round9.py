@@ -92,8 +92,12 @@ def test_pii_value_ends_at_a_clear_boundary():
     out = _message("diagnosis: HIV positive, user=bob; ok=1 | tail")
     assert "HIV" not in out and "positive" not in out
     assert out.endswith(", user=bob; ok=1 | tail"), out
+    # Round 10: a line break no longer ends an unquoted value (``HIV\npositive``
+    # leaked); a following line that starts a new record still does.
     out = _message("diagnosis: HIV positive\nnext line")
-    assert out.endswith("\nnext line") and "positive" not in out
+    assert "positive" not in out and "next line" not in out, out
+    out = _message("diagnosis: HIV positive\nuser=bob")
+    assert out.endswith("\nuser=bob") and "positive" not in out, out
     out = _message("religion: Roman Catholic group=a")
     assert "Catholic" not in out and out.endswith(" group=a"), out
 
