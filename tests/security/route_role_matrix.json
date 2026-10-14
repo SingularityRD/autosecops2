@@ -9,18 +9,18 @@
  ],
  "routes": {
   "DELETE /api/agents/custom/{agent_id}": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "DELETE /api/ai/config/{component}": {
-   "gate": "login",
-   "role-viewer": "allow",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
@@ -49,8 +49,8 @@
    "role-admin": "allow"
   },
   "DELETE /api/cases/templates/{template_id}": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:cases.write",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -121,10 +121,10 @@
    "role-admin": "allow"
   },
   "DELETE /api/detection-rules/sources/{source_id}": {
-   "gate": "login",
-   "role-viewer": "allow",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
@@ -137,8 +137,8 @@
    "role-admin": "allow"
   },
   "DELETE /api/findings/{finding_id}/noise": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:findings.write",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -161,16 +161,16 @@
    "role-admin": "allow"
   },
   "DELETE /api/skills/{name}": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "DELETE /api/sla-policies/{policy_id}": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:cases.write",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -201,18 +201,18 @@
    "role-admin": "allow"
   },
   "DELETE /api/workflows/custom/{workflow_id}": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "DELETE /api/workflows/runs/{run_id}": {
-   "gate": "login",
-   "role-viewer": "allow",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
@@ -1901,8 +1901,8 @@
    "note": "The mounted app decides: the MCP surface toggle plus the caller's bearer token (services/api/mcp_surface.py), not a role check here."
   },
   "PATCH /api/agents/custom/{agent_id}": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -1925,9 +1925,9 @@
    "role-admin": "allow"
   },
   "PATCH /api/federation/sources/{source_id}": {
-   "gate": "login",
-   "role-viewer": "allow",
-   "role-analyst": "allow",
+   "gate": "login + perm:integrations.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
@@ -1981,40 +1981,40 @@
    "role-admin": "allow"
   },
   "POST /api/agents/custom": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/agents/custom/generate": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/agents/{source_agent_id}/fork": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/ai/decisions": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/ai/decisions/{decision_id}/feedback": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:findings.write",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -2029,10 +2029,10 @@
    "role-admin": "allow"
   },
   "POST /api/analytics/recalculate-cost": {
-   "gate": "login",
-   "role-viewer": "allow",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
@@ -2173,16 +2173,16 @@
    "role-admin": "allow"
   },
   "POST /api/cases/templates/": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:cases.write",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/cases/templates/{template_id}/create-case": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:cases.write",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -2261,8 +2261,8 @@
    "role-admin": "allow"
   },
   "POST /api/cases/{case_id}/generate-report": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -2509,8 +2509,8 @@
    "role-admin": "allow"
   },
   "POST /api/conversations/import": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -2541,34 +2541,34 @@
    "role-admin": "allow"
   },
   "POST /api/detection-rules/reload": {
-   "gate": "login",
-   "role-viewer": "allow",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/detection-rules/sources": {
-   "gate": "login",
-   "role-viewer": "allow",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/detection-rules/sources/{source_id}/update": {
-   "gate": "login",
-   "role-viewer": "allow",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/detection-rules/update-all": {
-   "gate": "login",
-   "role-viewer": "allow",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
@@ -2589,9 +2589,9 @@
    "role-admin": "allow"
   },
   "POST /api/federation/sources/{source_id}/poll-now": {
-   "gate": "login",
-   "role-viewer": "allow",
-   "role-analyst": "allow",
+   "gate": "login + perm:integrations.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
@@ -2613,48 +2613,48 @@
    "role-admin": "allow"
   },
   "POST /api/findings/{finding_id}/intake": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/findings/{finding_id}/noise": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:findings.write",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/ingest/ingest-string": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:findings.write",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/ingest/s3-file": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:findings.write",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/ingest/sync-s3-folder": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:findings.write",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/ingest/upload": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:findings.write",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -2749,8 +2749,8 @@
    "role-admin": "allow"
   },
   "POST /api/orchestrator/investigations": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -2765,24 +2765,24 @@
    "role-admin": "allow"
   },
   "POST /api/orchestrator/investigations/{investigation_id}/kill": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/orchestrator/investigations/{investigation_id}/review": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:findings.write",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/orchestrator/investigations/{investigation_id}/wake": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -2797,8 +2797,8 @@
    "role-admin": "allow"
   },
   "POST /api/orchestrator/scan-findings": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -2877,48 +2877,48 @@
    "role-admin": "allow"
   },
   "POST /api/skills": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/skills/": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/skills/upload": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/skills/{name}/test": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/sla-policies/": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:cases.write",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/sla-policies/{policy_id}/set-default": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:cases.write",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -3113,16 +3113,16 @@
    "flag": "darktrace_enabled"
   },
   "POST /api/workflows/custom": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/workflows/generate": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -3145,8 +3145,8 @@
    "role-admin": "allow"
   },
   "POST /api/workflows/runs/{run_id}/narrate": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -3241,18 +3241,18 @@
    "role-admin": "deny"
   },
   "PUT /api/agents/agents/{agent_id}/enabled": {
-   "gate": "login",
-   "role-viewer": "allow",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "PUT /api/ai/config/{component}": {
-   "gate": "login",
-   "role-viewer": "allow",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
@@ -3289,8 +3289,8 @@
    "role-admin": "allow"
   },
   "PUT /api/cases/templates/{template_id}": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:cases.write",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -3337,18 +3337,18 @@
    "role-admin": "allow"
   },
   "PUT /api/federation/settings": {
-   "gate": "login",
-   "role-viewer": "allow",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "PUT /api/kafka/config": {
-   "gate": "login",
-   "role-viewer": "allow",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
@@ -3401,8 +3401,8 @@
    "role-admin": "allow"
   },
   "PUT /api/sla-policies/{policy_id}": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:cases.write",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -3417,18 +3417,18 @@
    "role-admin": "allow"
   },
   "PUT /api/workflows/custom/{workflow_id}": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:ai_chat.use",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "PUT /api/workflows/{workflow_id}/enabled": {
-   "gate": "login",
-   "role-viewer": "allow",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   }

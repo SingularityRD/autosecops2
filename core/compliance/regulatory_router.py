@@ -74,6 +74,9 @@ class ChainResponse(BaseModel):
     broken_at: Optional[int] = None
     why: Optional[str] = None
     rows: Optional[int] = None
+    # True when the last row was also checked against the stored chain head, so
+    # a deleted tail would show; False when the store keeps no head (W0.11).
+    anchored: Optional[bool] = None
 
 
 class RegulatoryStatusResponse(BaseModel):

@@ -165,7 +165,9 @@ class WorkflowEnabledRequest(BaseModel):
     enabled: bool
 
 
-@router.put("/workflows/{workflow_id}/enabled")
+@router.put(
+    "/workflows/{workflow_id}/enabled", dependencies=[permission_gate("settings.write")]
+)
 async def set_enabled(
     workflow_id: str,
     body: WorkflowEnabledRequest,
@@ -221,7 +223,9 @@ async def list_custom_workflows(
     return {"workflows": rows, "count": len(rows)}
 
 
-@router.post("/workflows/custom", status_code=201)
+@router.post(
+    "/workflows/custom", status_code=201, dependencies=[permission_gate("ai_chat.use")]
+)
 async def create_custom_workflow(
     payload: CustomWorkflowCreate,
     service: CustomWorkflowService = Depends(provide_custom_workflows),
@@ -249,7 +253,9 @@ async def get_custom_workflow(
     return wf
 
 
-@router.put("/workflows/custom/{workflow_id}")
+@router.put(
+    "/workflows/custom/{workflow_id}", dependencies=[permission_gate("ai_chat.use")]
+)
 async def update_custom_workflow(
     workflow_id: str,
     payload: CustomWorkflowUpdate,
@@ -271,7 +277,9 @@ async def update_custom_workflow(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.delete("/workflows/custom/{workflow_id}")
+@router.delete(
+    "/workflows/custom/{workflow_id}", dependencies=[permission_gate("ai_chat.use")]
+)
 async def delete_custom_workflow(
     workflow_id: str,
     service: CustomWorkflowService = Depends(provide_custom_workflows),
@@ -291,7 +299,7 @@ async def delete_custom_workflow(
 # -----------------------------------------------------------------------------
 
 
-@router.post("/workflows/generate")
+@router.post("/workflows/generate", dependencies=[permission_gate("ai_chat.use")])
 async def generate_workflow(
     payload: WorkflowGenerateRequest,
     generator: WorkflowAIGenerator = Depends(provide_workflow_ai),
@@ -629,7 +637,9 @@ async def cancel_workflow_run(
     }
 
 
-@router.post("/workflows/runs/{run_id}/narrate")
+@router.post(
+    "/workflows/runs/{run_id}/narrate", dependencies=[permission_gate("ai_chat.use")]
+)
 async def narrate_workflow_run(
     run_id: str,
     run_service: WorkflowRunService = Depends(provide_workflow_runs),
@@ -725,7 +735,9 @@ async def _restate_summary(run_id: str, run_service: WorkflowRunService) -> None
         logger.warning("could not restate the stored summary of %s: %s", run_id, exc)
 
 
-@router.delete("/workflows/runs/{run_id}")
+@router.delete(
+    "/workflows/runs/{run_id}", dependencies=[permission_gate("settings.write")]
+)
 async def delete_workflow_run(
     run_id: str,
     run_service: WorkflowRunService = Depends(provide_workflow_runs),

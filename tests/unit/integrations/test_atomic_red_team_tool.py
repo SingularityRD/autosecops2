@@ -42,6 +42,30 @@ class TestExecuteAtomic:
             assert out == {"error": "hostname required"}
         assert calls == []
 
+    @pytest.mark.parametrize(
+        "technique,hostname",
+        [
+            ("--help", "dc01"),
+            ("T1059.001 --atomics-path /tmp/evil", "dc01"),
+            ("T1059.001;id", "dc01"),
+            ("T1059.001", "--atomics-path=/tmp/evil"),
+            ("T1059.001", "-x"),
+            ("T1059.001", "dc01 --technique T1"),
+            ("T1059.001", "dc\n01"),
+        ],
+    )
+    def test_option_shaped_arguments_refuse_before_the_runner(
+        self, technique, hostname
+    ):
+        """W0.11: tool arguments never reach the runner's argv as options."""
+        calls: list = []
+        out = art.execute_atomic(
+            {"technique": technique, "environment_id": "r", "hostname": hostname},
+            CONFIG,
+            run=_refusing_runner(calls),
+        )
+        assert "error" in out and calls == []
+
     def test_stubbed_run_returns_the_action_trace(self):
         recorded = []
 

@@ -146,6 +146,9 @@ class Settings(BaseSettings):
     # os.pathsep-separated roots beyond the home directory that local detection
     # rule sources may live under.
     vigil_detection_local_roots: str = ""
+    # Comma-separated CIDRs a git detection-rule source may resolve to although
+    # private (an internal git server). Empty: public addresses only.
+    vigil_detection_git_allowed_cidrs: str = ""
     vigil_context_path: str = ""
     vigil_frontend_url: str = ""
     # Empty means the repo-root INTENT.md, as core.platform.autostart_config does.
