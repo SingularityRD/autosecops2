@@ -28,7 +28,7 @@ W0.1 upstream sync and hard fork; W0.2 brand; W0.3 CI; W0.4 agent factory and ga
 
 ### Not included (5)
 
-W0.8 external dependencies (human work); W0.23 scan hardening: PyJWT 2.15.1 (security), Agent Image Trivy pinned by SHA and version, image gates fail on secrets too; W1.4 injection test set; W2.9 phishing pipeline (optional); W4.4 external pentest.
+W0.8 external dependencies (human work); W0.23 scan hardening: PyJWT 2.15.1 (security), Agent Image Trivy pinned by SHA and version, every image fails on a secret finding of any severity; W1.4 injection test set; W2.9 phishing pipeline (optional); W4.4 external pentest.
 
 The 0.7.1 → 2.0 database upgrade path is W4.5: when it is not in the included
 list above, it is not verified in this release.

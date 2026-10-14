@@ -143,8 +143,8 @@
     },
     {
       "id": "W0.23",
-      "topic": "Tarama sıkılaştırma: PyJWT 2.15.1 (güvenlik), Agent Image'ın Trivy'si SHA ve sürümle sabitlendi, imaj kapıları gizli bulguda da düşer",
-      "topic_en": "scan hardening: PyJWT 2.15.1 (security), Agent Image Trivy pinned by SHA and version, image gates fail on secrets too"
+      "topic": "Tarama sıkılaştırma: PyJWT 2.15.1 (güvenlik), Agent Image'ın Trivy'si SHA ve sürümle sabitlendi, her imaj herhangi bir önem derecesindeki gizli bulguda düşer",
+      "topic_en": "scan hardening: PyJWT 2.15.1 (security), Agent Image Trivy pinned by SHA and version, every image fails on a secret finding of any severity"
     },
     {
       "id": "W1.1",
@@ -549,7 +549,7 @@
       "when": [
         "W0.23"
       ],
-      "text": "**PyJWT 2.15.1 (güvenlik):** GHSA-42vr-xj54-vc7v (CVE-2026-101918; `PyJWKClient` içinde derin iç içe JWKS ile yakalanmamış `RecursionError`) ve GHSA-x33g-cr3x-6449 (CVE-2026-102275; OKP `from_jwk` genel/özel anahtar uyuşmazlığını kabul ediyordu) düzeltmeleri. AutoSecOps ikisine de ulaşmaz (OIDC JWKS'i kendi kodu ile alır, yalnızca RSA/EC anahtarları kabul eder) ama sürüm yine de yükseltildi; API davranışı değişmez. Agent Image'ın Trivy'si de backend/daemon ile aynı SHA ve Trivy v0.75.0 ile sabitlendi; üç imaj kapısı artık gizli bulguda da düşer (W0.23)."
+      "text": "**PyJWT 2.15.1 (güvenlik):** GHSA-42vr-xj54-vc7v (CVE-2026-101918; `PyJWKClient` içinde derin iç içe JWKS ile yakalanmamış `RecursionError`) ve GHSA-x33g-cr3x-6449 (CVE-2026-102275; OKP `from_jwk` genel/özel anahtar uyuşmazlığını kabul ediyordu) düzeltmeleri. AutoSecOps ikisine de ulaşmaz (OIDC JWKS'i kendi kodu ile alır, yalnızca RSA/EC anahtarları kabul eder) ama sürüm yine de yükseltildi; API davranışı değişmez. Agent Image'ın Trivy'si de backend/daemon ile aynı SHA ve Trivy v0.75.0 ile sabitlendi; üç imajın (agent, backend, daemon) her birinde iki kapı var: düzeltmesi olan CRITICAL bir zafiyet ve herhangi bir önem derecesinde (UNKNOWN–CRITICAL) bir gizli bulgu CI'ı düşürür; gizli bulgu için izin listesi yoktur (W0.23)."
     },
     {
       "when": [

@@ -208,18 +208,30 @@ jobs:
           format: table
           severity: HIGH,CRITICAL
 
-      # The gate is narrower than the report on purpose. An unfixed CVE in the
-      # base image is not something this repo can act on, and failing every PR
-      # on one teaches people to ignore the job.
+      # The vulnerability gate is narrower than the report on purpose. An
+      # unfixed CVE in the base image is not something this repo can act on,
+      # and failing every PR on one teaches people to ignore the job.
       - name: Trivy — fail on fixable CRITICAL
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.75.0
           image-ref: vigil-agent:ci
           format: table
-          scanners: vuln,secret
+          scanners: vuln
           severity: CRITICAL
           ignore-unfixed: true
+          exit-code: '1'
+
+      # A secret in an image is never "unfixed upstream": any finding, at any
+      # severity, fails the job. No allow-list (trivy-secret.yaml) exists.
+      - name: Trivy — fail on any secret
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.75.0
+          image-ref: vigil-agent:ci
+          format: table
+          scanners: secret
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
           exit-code: '1'
 
       # Loads both entry points without running either: the main blocks guard on
@@ -329,18 +341,31 @@ jobs:
 
       # Same rule as Agent Image: an unfixed base-image CVE is not something
       # this repo can act on, and failing every PR on one teaches people to
-      # ignore the job. Secrets are gated too, with no allow-list: the one
-      # finding W0.22 saw (gcp-service-account on a key-shaped placeholder in
-      # the SPA's AiProvidersPanel) is fixed at the source (W0.23).
+      # ignore the job.
       - name: Trivy — fail on fixable CRITICAL
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.75.0
           image-ref: ${{ env.IMAGE }}
           format: table
-          scanners: vuln,secret
+          scanners: vuln
           severity: CRITICAL
           ignore-unfixed: true
+          exit-code: '1'
+          timeout: 15m0s
+
+      # Any secret finding, at any severity, fails the job, with no
+      # allow-list: the one finding W0.22 saw (gcp-service-account on a
+      # key-shaped placeholder in the SPA's AiProvidersPanel) is fixed at the
+      # source (W0.23).
+      - name: Trivy — fail on any secret
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.75.0
+          image-ref: ${{ env.IMAGE }}
+          format: table
+          scanners: secret
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
           exit-code: '1'
           timeout: 15m0s
 
