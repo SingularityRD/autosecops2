@@ -182,7 +182,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VIGIL_VERSION=${{ github.ref_name }}
+            VIGIL_VERSION=${{ needs.version.outputs.version }}
             PYTHON_VERSION=${{ steps.pin.outputs.version }}
           platforms: linux/amd64,linux/arm64
 

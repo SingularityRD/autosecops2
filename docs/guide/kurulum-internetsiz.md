@@ -67,11 +67,11 @@ sızma durumunda yapılacaklar: [infra/airgap/README.md](../../infra/airgap/READ
 
 ```bash
 # 1) Önce neyin pakete gireceğini görün (hiçbir şey çekilmez)
-infra/airgap/build-bundle.sh --dry-run --version 0.7.1
+infra/airgap/build-bundle.sh --dry-run --version 2.0.0
 
 # 2) Paketi üretin (kural depoları ~/security-detections altında önceden klonlu olmalı)
 AIRGAP_PYTHON=/path/to/venv/bin/python \
-infra/airgap/build-bundle.sh --version 0.7.1 \
+infra/airgap/build-bundle.sh --version 2.0.0 \
   --key ~/keys/autosecops-airgap.key \
   --ollama-model llama3.1:8b \
   --out dist/airgap
@@ -90,15 +90,15 @@ durdurur.
    altında normal dosya ve dizin olmalı:
 
    ```bash
-   tar -tvf autosecops-airgap-0.7.1.tar | less
+   tar -tvf autosecops-airgap-2.0.0.tar | less
    ```
 
 2. Yalnızca sizin yazabildiğiniz **yeni, boş** bir dizine açın:
 
    ```bash
    install -d -m 0700 /opt/autosecops-kurulum
-   tar -xf autosecops-airgap-0.7.1.tar -C /opt/autosecops-kurulum --no-same-owner
-   cd /opt/autosecops-kurulum/autosecops-airgap-0.7.1
+   tar -xf autosecops-airgap-2.0.0.tar -C /opt/autosecops-kurulum --no-same-owner
+   cd /opt/autosecops-kurulum/autosecops-airgap-2.0.0
    ```
 
 3. Yükleyicinin kendisine güvenmeden önce imzayı elle doğrulayın:

@@ -1092,3 +1092,36 @@ def test_a_failing_git_command_is_a_clean_error(history: Path) -> None:
     with pytest.raises(rt.ReleaseError, match="git log failed in .*: fatal: .*no-such-ref"):
         rt.merged_branches(history, "no-such-ref")
     assert rt.main(["--repo", str(history), "render-notes", "--data", "/nonexistent.json"]) == 1
+
+
+def test_dry_run_export_inside_another_checkout_skips_like_a_plain_export(
+    tmp_path: Path,
+) -> None:
+    """Round 9: an export unpacked inside some other git checkout has no history
+    of its own; dry-run.sh SKIPs the notes step (plain run) instead of handing
+    release_tool.py a parent checkout it refuses (exit 1)."""
+    src = _dry_run_fixture(tmp_path)
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    _git(outer, "init", "-q", "-b", "main")
+    _git(outer, "commit", "-q", "--allow-empty", "-m", "outer")
+    export = outer / "export"
+    shutil.copytree(src, export, ignore=shutil.ignore_patterns(".git"))
+    dry = export / "scripts/release/dry-run.sh"
+
+    def run(*extra: str):
+        return subprocess.run(
+            ["sh", str(dry), "--out", str(tmp_path / "out"), *extra],
+            env=_offline_env(tmp_path),
+            capture_output=True,
+            text=True,
+            cwd=export,
+            timeout=600,
+        )
+
+    proc = run()
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "SKIP release notes: no git repository" in proc.stdout
+    proc = run("--strict-notes")
+    assert proc.returncode != 0
+    assert "(no git repository)" in proc.stderr

@@ -507,7 +507,7 @@
       "when": [
         "W1.7b"
       ],
-      "text": "**MCP (kırıcı, güvenlik):** `approve_action` ve `reject_action` araçları `/mcp` sunucusundan ve chat / compose / investigate / hunt / root-cause araç kataloglarından kaldırıldı; bu adları çağıran MCP istemcisi bilinmeyen araç hatası alır. Karar Onaylar ekranından (ya da oturum açmış kullanıcı olarak `POST /api/approvals/{action_id}/approve` / `.../reject`) verilir. Yükseltmeden önce bekletilmiş onay satırları argüman özeti taşımaz ve devam ettirildiğinde reddedilir: o araç çağrılarını yükseltmeden sonra yeniden çalıştırın (W1.7b)."
+      "text": "**MCP (kırıcı, güvenlik):** `approve_action` ve `reject_action` araçları `/mcp` sunucusundan ve chat / compose / investigate / hunt / root-cause araç kataloglarından kaldırıldı; bu adları çağıran MCP istemcisi bilinmeyen araç hatası alır. Karar Onaylar ekranından ya da `POST /api/approvals/{action_id}/approve` / `.../reject` ile, `ai_decisions.approve` yetkisi olan bir kullanıcı tarafından (varsayılan rollerde Senior Analyst, Manager, Admin; Analyst ve Viewer'da yok) verilir. Yükseltmeden önce bekletilmiş onay satırları argüman özeti taşımaz ve devam ettirildiğinde reddedilir: o araç çağrılarını yükseltmeden sonra yeniden çalıştırın (W1.7b)."
     },
     {
       "text": "**İmaj adları değişti.** 2.0 imajları `ghcr.io/singularityrd/autosecops-{backend,daemon,agent}:2.0.0` adıyla yayımlanır. Helm grafiğinin varsayılanı henüz eski ad alanını gösterir; kurulumda `--set global.imageNamespace=singularityrd/autosecops` verin. Air-gap paketi için: `infra/airgap/build-bundle.sh --version 2.0.0 --image-namespace singularityrd/autosecops`."
@@ -579,7 +579,7 @@
       "when": [
         "W3.10"
       ],
-      "text": "**FIPS modu (W3.10):** `FIPS_MODE=true` ile mevcut bcrypt parola hash'leri kullanıcının bir sonraki girişinde PBKDF2'ye yeniden yazılır; göç bitince `FIPS_LEGACY_BCRYPT_VERIFY=false` ile girişte bcrypt doğrulaması kapatılabilir (giriş yapmamış kullanıcılar parolasını sıfırlar). **Geri alma uyarısı:** PBKDF2'ye yeniden yazılmış hash'ler eski sürümde doğrulanamaz; eski sürüme dönmeden önce `FIPS_MODE`'u kapatın ve kullanıcıların yeniden giriş yaparak bcrypt'e dönmesini sağlayın."
+      "text": "**FIPS modu (W3.10):** `FIPS_MODE=true` ile mevcut bcrypt parola hash'leri kullanıcının bir sonraki girişinde PBKDF2'ye yeniden yazılır; göç bitince `FIPS_LEGACY_BCRYPT_VERIFY=false` ile girişte bcrypt doğrulaması kapatılabilir (giriş yapmamış kullanıcılar parolasını sıfırlar). **Geri alma uyarısı:** PBKDF2'ye yeniden yazılmış hash'ler eski sürümde doğrulanamaz; eski sürüme dönmeden önce `FIPS_MODE=false` yapın, `PASSWORD_HASH_SCHEME`'i boş bırakın (ya da kaldırın) ve kullanıcıların yeniden giriş yaparak bcrypt'e dönmesini sağlayın; giriş yapmayanlar eski sürümde parolasını sıfırlamalıdır (bkz. `docs/fips.md`)."
     },
     {
       "when": [
@@ -704,7 +704,7 @@
         "when": [
           "W1.7b"
         ],
-        "text": "## Kırıcı değişiklik: MCP `approve_action` / `reject_action` kaldırıldı\n\n> **Güvenlik nedeniyle kırıcı (W1.7b).** `approve_action` ve `reject_action` MCP araçları\n> `/mcp` sunucusundan ve chat / compose / investigate / hunt / root-cause araç\n> kataloglarından kaldırıldı. **Neden:** bir model kendi önerdiği müdahale eylemini\n> onaylayamamalıdır; onay kararı yalnızca bir kişiden gelir. Bu adları çağıran MCP\n> istemcisi bilinmeyen araç hatası alır.\n>\n> **Geçiş:** kararı web konsolunda **Onaylar** ekranından ya da oturum açmış bir\n> kullanıcı olarak `POST /api/approvals/{action_id}/approve` ya da `.../reject` ile verin. Yükseltmeden önce bekletilmiş\n> onay satırları argüman özeti taşımaz ve devam ettirildiğinde reddedilir: o araç\n> çağrılarını yükseltmeden sonra yeniden çalıştırın.\n"
+        "text": "## Kırıcı değişiklik: MCP `approve_action` / `reject_action` kaldırıldı\n\n> **Güvenlik nedeniyle kırıcı (W1.7b).** `approve_action` ve `reject_action` MCP araçları\n> `/mcp` sunucusundan ve chat / compose / investigate / hunt / root-cause araç\n> kataloglarından kaldırıldı. **Neden:** bir model kendi önerdiği müdahale eylemini\n> onaylayamamalıdır; onay kararı yalnızca bir kişiden gelir. Bu adları çağıran MCP\n> istemcisi bilinmeyen araç hatası alır.\n>\n> **Geçiş:** kararı web konsolunda **Onaylar** ekranından ya da `POST /api/approvals/{action_id}/approve`\n> / `.../reject` ile verin. Karar için `ai_decisions.approve` yetkisi gerekir (varsayılan\n> rollerde Senior Analyst, Manager ve Admin; Analyst ve Viewer'da yoktur). Yükseltmeden önce bekletilmiş\n> onay satırları argüman özeti taşımaz ve devam ettirildiğinde reddedilir: o araç\n> çağrılarını yükseltmeden sonra yeniden çalıştırın.\n"
       }
     ]
   }

@@ -262,3 +262,22 @@ def test_tag_rulesets_restrict_create_and_forbid_update_delete() -> None:
     for f in ("release-tags-create.json", "release-tags-immutable.json"):
         assert f"scripts/release/rulesets/{f}" in doc
     assert "gh api --method POST repos/SingularityRD/autosecops2/rulesets" in doc
+
+
+def test_image_version_build_arg_is_the_bare_version(wf: dict) -> None:
+    """VIGIL_VERSION becomes the OCI version label and /app/VERSION
+    (/api/health): it must be 2.0.0 (or 2.0.0-rc.N), never the tag v2.0.0."""
+    job = wf["jobs"]["build-images"]
+    assert "version" in job["needs"]
+    args = [
+        line.strip()
+        for step in job["steps"]
+        for line in str(step.get("with", {}).get("build-args", "")).splitlines()
+        if line.strip().startswith("VIGIL_VERSION=")
+    ]
+    assert args == ["VIGIL_VERSION=${{ needs.version.outputs.version }}"]
+    for _, step in _steps(wf):
+        assert "VIGIL_VERSION=${{ github.ref_name }}" not in str(step.get("with", {}))
+    # The version output strips the v: v2.0.0 -> 2.0.0, v2.0.0-rc.1 -> 2.0.0-rc.1.
+    assert release_tool.parse_tag("v2.0.0", "2.0.0")[0] == "2.0.0"
+    assert release_tool.parse_tag("v2.0.0-rc.1", "2.0.0")[0] == "2.0.0-rc.1"

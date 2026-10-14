@@ -57,6 +57,12 @@ notes="$repo/docs/release/${version%%-*}.md"
 [ -f "$notes" ] || { echo "dry-run: release notes $notes missing" >&2; exit 1; }
 data="$repo/docs/release/${version%%-*}.json"
 shallow=$(git -C "$repo" rev-parse --is-shallow-repository 2>/dev/null || echo nogit)
+# An export unpacked inside some other checkout has no history of its own
+# (release_tool.py refuses it too): treat it like a plain export.
+top=$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null || true)
+if [ -z "$top" ] || [ "$(cd "$top" && pwd -P)" != "$(cd "$repo" && pwd -P)" ]; then
+  shallow=nogit
+fi
 if [ "$shallow" != false ]; then
   why="shallow clone"
   [ "$shallow" = true ] || why="no git repository"
