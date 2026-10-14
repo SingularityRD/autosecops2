@@ -118,9 +118,15 @@ def test_padding_cannot_push_the_target_out_of_what_the_approver_sees():
     assert params["args_canonical"] == canonical_args(PADDED)
     assert params["args_targets"] == [["machine_id", "host-b"]]
     assert "args_summary" not in params
-    assert canonical_args(PADDED) in row["description"]
     assert "Target: machine_id=host-b" in row["description"]
     assert "characters in all" not in row["description"]
+    # W0.16: the row holds the full arguments once (``args_canonical``, which
+    # the console shows); the description points at them instead of a cut.
+    assert canonical_args(PADDED) not in row["description"]
+    assert (
+        f"Arguments: {len(canonical_args(PADDED))} chars, shown whole on the "
+        "approval (args_canonical)" in row["description"]
+    )
 
 
 def test_a_sender_cannot_supply_the_shown_arguments():
@@ -228,5 +234,5 @@ def test_a_parked_compose_phase_names_its_target_even_behind_padding():
     # The compose question names only the tool; the title names the host.
     assert row["title"] == "Approve mde_isolate on machine_id=host-b"
     assert row["description"].startswith("parked on approval for mde_isolate\n")
-    assert '"machine_id":"host-b"' in row["description"]
+    assert "Target: machine_id=host-b" in row["description"]
     assert row["parameters"]["args_canonical"] == canonical_args(PADDED)

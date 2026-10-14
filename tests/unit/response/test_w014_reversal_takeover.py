@@ -157,3 +157,44 @@ def test_a_just_settled_claim_is_left_untouched(monkeypatch, stale_claim):
     assert old.status == "executed"
     assert old.execution_result == {"success": True}
     assert svc.get_action(original).reversed_at is not None
+
+
+def test_an_original_reversed_after_the_first_read_is_not_reversed_again(
+    monkeypatch, stale_claim
+):
+    """W0.16: the original is reversed (by another path) and the stale claim
+    rejected after begin_reversal's first, unlocked read of the original. Only
+    the locked re-read of the original sees ``reversed_at``; without it the
+    takeover opens a second reversal of a change that is already undone."""
+    from core.response import approval_service as mod
+    from core.response.approval_service import ApprovalService
+    from core.storage.models import ApprovalAction
+    from core.storage.unit_of_work import unit_of_work
+
+    original, claim = stale_claim
+    real = mod._nonfailed_by_key
+    done = []
+
+    def reverse_elsewhere(session, key, **kw):
+        if not done:
+            done.append(True)
+            with unit_of_work() as other:
+                other.get(ApprovalAction, original).reversed_at = utcnow()
+                other.get(ApprovalAction, claim).status = "rejected"
+        return real(session, key, **kw)
+
+    monkeypatch.setattr(mod, "_nonfailed_by_key", reverse_elsewhere)
+    svc = ApprovalService()
+    assert svc.begin_reversal(original, "carol", "again") is None
+    assert done
+    old = svc.get_action(claim)
+    assert old.status == "rejected"
+    assert not (old.execution_result or {}).get("superseded")
+    with unit_of_work() as session:
+        claims = [
+            row.action_id
+            for row in session.query(ApprovalAction).filter(
+                ApprovalAction.reverse_of == original
+            )
+        ]
+    assert claims == [claim]
