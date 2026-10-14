@@ -1,20 +1,23 @@
 # Yönetici kılavuzu
 
-> **English summary.** Day-to-day administration of AutoSecOps at `main` @
-> `7a22e8b6`: the five built-in roles and their permissions, local accounts with
-> TOTP MFA, lockout and session revocation (SSO is planned, not in this
-> release), integrations and where their credentials are stored, the response
+> **English summary.** Day-to-day administration of AutoSecOps at `integration` @
+> `b8795def`: the five built-in roles and their permissions, local accounts with
+> TOTP MFA, lockout and session revocation, OIDC single sign-on with group →
+> role mapping and break-glass local accounts, FIPS 140-3 mode (checkpoint and
+> evidence-pack signatures stay Ed25519; `ssh_tunnel` unsupported), integrations and where their credentials are stored, the response
 > approval flow (human approval, per-category autonomy tiers with a circuit
 > breaker, response policy with protected assets and hourly limits, executor
 > registry for Cloudflare / Defender / Entra ID / PAN-OS, TTL expiry and revert,
 > four-eyes approval with an optional distinct-role rule, the
 > segregation-of-duties report; models cannot approve, approvals are bound to
-> the tool call's arguments, approved agent MCP tools still bypass the response
+> the tool call's arguments (refused above 64 KB), people decide on the
+> AI Decisions → Approvals screen, approved agent MCP tools still bypass the response
 > policy, an open risk), the Assist/Act switch and the recommended
 > regulated-sector setting `DAEMON_FORCE_APPROVAL=true`, the local model lane
 > and lessons, retention policies, KVKK purge and legal hold, which audit
 > records exist and how to verify them (`python -m core.audit.verify`, signed
-> checkpoints, per-case evidence packs), encrypted restic backups with tested
+> checkpoints, per-case evidence packs), SIEM audit export over syslog/HTTPS
+> (free-text PII redaction is best effort), encrypted restic backups with tested
 > restore, the Helm backup CronJob and daemon hot standby, and where the 0.7 →
 > 2.0 upgrade procedure lives.
 
@@ -63,7 +66,11 @@ bunu değişiklik yönetimi sürecinize alın.
 
 | İşlem | İzin |
 |---|---|
-| Kullanıcı oluşturma / güncelleme (`POST /api/users/`, `PUT /api/users/{user_id}`) | `users.write` |
+| Kullanıcı oluşturma / güncelleme (`POST /api/users/`, `PUT /api/users/{user_id}`) | `users.write`; eş ya da üst hesabın e-postası, rolü ve etkinliği yalnızca Admin'ce değişir |
+| SSO yapılandırmasını görme (`GET /api/auth/sso/admin/config`) | `settings.write` **ve** `users.write` |
+| SSO sağlayıcısı ekleme, değiştirme, silme; giriş politikası (`PUT /api/auth/sso/admin/providers/{provider_id}`, `DELETE ...`, `PUT /api/auth/sso/admin/login-policy`) | yalnızca yönetici: Admin rolü ya da tüm rollerin tüm izinleri |
+| SIEM aktarımı yapılandırmasını ve durumunu görme (`GET /api/compliance/audit-export/config`, `.../status`) | `settings.read` |
+| SIEM aktarımını yapılandırma, test olayı gönderme (`PUT /api/compliance/audit-export/config`, `POST /api/compliance/audit-export/test`) | `settings.write` |
 | Kullanıcı silme (`DELETE /api/users/{user_id}`; kendini silemez) | `users.delete` |
 | Yapılandırma, AI sağlayıcıları, bütçe, orkestratör aç/kapa/öldür, otonomi anahtarı | `settings.write` |
 | Entegrasyon kaydetme (`POST /api/config/integrations`) | `integrations.write` |
@@ -96,8 +103,8 @@ bunu değişiklik yönetimi sürecinize alın.
 CI'daki `tests/security/test_route_permissions.py` iki şeyi sınar. Birincisi,
 testin rota listesindeki her rota, izni olmayan bir kullanıcıya 403 döner. Bu
 listede yukarıdaki tablonun onay, geri alma, iş akışı sürdürme, QA, kanarya, giden
-webhook, saklama, entegrasyon kaydetme, tüm bulguları silme, kanıt paketi ve kural
-kaynağı rotaları ile W0.11'in kapıladığı rotalar vardır. Ders (`/api/lessons`)
+webhook, saklama, entegrasyon kaydetme, tüm bulguları silme, kanıt paketi, SIEM
+aktarımı ve kural kaynağı rotaları ile W0.11'in kapıladığı rotalar vardır. Ders (`/api/lessons`)
 rotaları bu listede yoktur; rol matrisinde vardır.
 Kullanıcı yönetimi (`/api/users/`) ve düzenleyici sayaç rotaları bu listede
 **yoktur**. Bu rotaların izin denetimi kodda vardır ama bu testle sabitlenmez.
@@ -122,10 +129,16 @@ dosya yeniden üretilip gözden geçirilene kadar CI düşer.
 - Bir kullanıcı yalnızca **kendi sahip olduğu tüm izinleri** veren bir rolü
   atayabilir. Örneğin Manager `users.write` taşır ama `users.delete` taşımadığı için
   Admin rolünü atayamaz.
+- Admin rolü olmayan biri bir hesabın e-postasını, rolünü ya da etkinliğini yalnızca
+  kendisi için ya da izinleri kendisininkinden kesin olarak az olan bir hesap için
+  değiştirebilir veya o hesabı silebilir. Bir Admin'in, eşin ya da üstün hesabı
+  değişmez (403). E-posta parola sıfırlamanın gittiği yer olduğu için bu kural hesap
+  ele geçirmeyi kapatır (W1.9, W0.13). Son etkin Admin düşürülemez.
 - Rolü ya da e-postası değişen kullanıcının tüm oturumları anında geçersiz olur
   (kullanıcı başına iptal zamanı, Redis'te).
 - Hizmet hesapları (`users.service_account`) yalnızca Viewer olabilir; başarısız
-  girişlerle kilitlenmezler. Bugün tek hizmet hesabı Medic ağ geçididir ve
+  girişlerle kilitlenmezler, SSO ile giremezler ve e-postaları `PUT /api/auth/me`
+  ile değiştirilemez; parola sıfırlama e-postası almazlar. Bugün tek hizmet hesabı Medic ağ geçididir ve
   `python -m core.auth.service_account` ile yönetilir (bkz. [docs/medic/enable.md](../medic/enable.md)).
 
 ### İlk yönetici ve acil erişim
@@ -149,10 +162,11 @@ kodlarını kasada tutun; günlük yönetim için kişisel hesaplar açın.
 | Parola sıfırlama bağlantısı ömrü | 3600 sn | `PASSWORD_RESET_TTL_SECONDS` |
 | Redis erişilemezken iptal denetimi | kapalı başarısız (istek reddedilir) | `REVOCATION_FAIL_OPEN=false` |
 | Çerez | `Secure`, `SameSite=strict` | `VIGIL_COOKIE_SECURE`, `VIGIL_COOKIE_SAMESITE` |
-| CSRF (çift gönderim çerezi) | açık, **yalnızca raporlama** | `VIGIL_CSRF_ENABLED`, `VIGIL_CSRF_REPORT_ONLY` |
+| CSRF (çift gönderim çerezi) | açık; kodun varsayılanı **yalnızca raporlama**, Helm ve `env.example` zorlar | `VIGIL_CSRF_ENABLED`, `VIGIL_CSRF_REPORT_ONLY` |
+| FIPS 140-3 modu | kapalı | `FIPS_MODE` (bkz. aşağıda) |
 
 Önerilen üretim ayarları: `VIGIL_CSRF_REPORT_ONLY=false` (kodun varsayılanı
-yalnızca loglar; `env.example` engellemeyi önerir), `DEV_MODE=false`
+yalnızca loglar; Helm grafiği ve `env.example` engeller), `DEV_MODE=false`
 (Helm ve `env.example` varsayılanı). `DEV_MODE=true` tüm kimlik doğrulamayı kapatır
 ve her isteği tam yetkili sahte bir yönetici olarak çalıştırır; açılışta ve
 erişilebilir bir adreste bunu yüksek sesle loglar ama **engellemez**. Üretimde asla
@@ -162,17 +176,65 @@ açmayın; `JWT_SECRET_KEY` olmadan backend `DEV_MODE=false` iken açılmaz.
 → `/api/auth/mfa/verify`); 10 tek kullanımlık kurtarma kodu üretilir. TOTP sırrı
 veritabanında şifreli durur. Bu sürümde MFA'yı bir rol için **zorunlu kılan bir
 ayar yoktur**; yönetici ve onaylayıcı hesaplarında MFA'yı süreçle zorunlu tutun ve
-düzenli olarak kullanıcıların `mfa_enabled` alanını denetleyin.
+düzenli olarak kullanıcıların `mfa_enabled` alanını denetleyin. MFA açıkken onu
+kapatmak (`DELETE /api/auth/mfa`) ve yeni kurtarma kodu üretmek
+(`POST /api/auth/mfa/recovery-codes`) geçerli bir TOTP ya da kurtarma kodu ister;
+MFA açıkken yeniden kurulum 409 döner. Böylece çalınmış bir oturum MFA'yı sessizce
+kapatamaz. MFA'yı kapatmak kurtarma kodlarını da siler.
 
 **Hız sınırları.** Giriş, ilk hesap, parola değiştirme, MFA doğrulama ve kurtarma
 kodu uçları dakikada 5; parola sıfırlama isteği saatte 3, sıfırlamanın tamamlanması
 saatte 5 ile sınırlıdır.
 
-**SSO.** Bu sürümde OIDC ile tek oturum açma yoktur. Entra ID, Okta ve Keycloak
-desteği, grup → rol eşlemesi ve yerel acil erişim hesabı birlikte gelecektir
-(Planlı — `wp/w1.9-oidc`, bu sürümde yok).
-SAML ihtiyacı o pakette bir OIDC aracı (Keycloak/Dex) üzerinden karşılanacaktır
-(Planlı — `wp/w1.9-oidc`, bu sürümde yok).
+**SSO (OIDC).** Yönetici **Ayarlar → System → Single sign-on** bölümünden bir ya
+da daha çok OIDC sağlayıcısı tanımlar (türler: Entra ID, Okta, Keycloak, genel
+OIDC). Giriş ekranı her etkin sağlayıcı için bir "Sign in with …" düğmesi gösterir.
+Akış Authorization Code + PKCE'dir; geri dönüşte `state` (tek kullanımlık, Redis'te
+10 dk), `nonce`, ID token imzası (sağlayıcının JWKS'i, yalnızca RS256/ES256),
+`iss`/`aud`/`azp`/`exp`/`iat` ve saat kayması denetlenir. Başarılı SSO girişi yerel
+girişle aynı oturum çerezlerini verir; oturum süreleri ve iptal aynıdır.
+
+- **Geri dönüş adresi.** Sağlayıcıda kaydedilecek adres, konsol adresinin
+  arkasına eklenen `/api/auth/sso/{provider_id}/callback` yoludur; konsol adresi
+  `VIGIL_FRONTEND_URL`'den (boşsa isteğin adresinden) gelir. Yapılandırma ekranı
+  etkin adresi gösterir; sağlayıcı başına elle de verilebilir.
+- **İstemci sırrı** sır deposunda (`OIDC_CLIENT_SECRET_<ID>`) tutulur; API onu
+  asla geri döndürmez.
+- **Hesap ve rol.** Kullanıcı ilk girişte oluşturulur. Rolü sağlayıcıdaki grup ya
+  da claim eşlemesinden gelir; eşleşme yoksa Viewer olur. Admin rolüne eşleme
+  yalnızca sağlayıcıda açıkça izin verilmişse yapılır. Var olan bir yerel hesaba
+  doğrulanmış e-postayla bağlanma da yalnızca açıkça açılırsa olur. Bu iki ayarı
+  açık kaydetmek Admin rolü ister. Eşlemeyi kaydeden kişi, eşlenen her rolün tüm
+  izinlerine sahip olmalıdır. Hizmet hesapları SSO ile giremez. SSO ile oluşmuş
+  (parolasız) hesaba parola sıfırlama e-postası gitmez.
+- **Yerel girişi kapatma.** Giriş politikası
+  (`PUT /api/auth/sso/admin/login-policy`) yerel parola girişini break-glass
+  hesapları ve hizmet hesapları dışında kapatabilir. Kapatmak için en az bir etkin
+  sağlayıcı ve en az bir etkin Admin break-glass hesabı gerekir; parolasız bir hesap
+  break-glass olamaz. Yerel giriş kapalıyken son etkin sağlayıcı silinemez ya da
+  kapatılamaz (409). Kapalıyken diğer hesapların parolayla girişi 403 alır.
+- **Kayıt.** Her SSO girişi ve başarısızlığı `config_audit_log`'a
+  (`config_type='auth_event'`, `sso_login` / `sso_failure`) yazılır.
+- **Kapsam dışı.** SAML, SCIM, IdP'den başlatılan giriş ve IdP oturumu kapatma
+  (front/back-channel logout) yoktur. SAML gerekiyorsa Keycloak ya da Dex gibi bir
+  OIDC aracı kullanın. İşten ayrılan kişiyi IdP'de kapatmak yeni girişi engeller;
+  açık oturumu düşürmek için hesabı AutoSecOps'ta da devre dışı bırakın.
+
+**FIPS 140-3 modu.** `FIPS_MODE=true` (Helm: `config.FIPS_MODE`) iken API, daemon
+ve worker yalnızca OpenSSL 3 FIPS sağlayıcısı hem Python `hashlib` hem
+`cryptography` için etkinse başlar; değilse `configuration error: FIPS_MODE=true …`
+yazıp 78 ile çıkar. Bunun için FIPS etkin ayrı bir imaj gerekir (varsayılan imaj
+FIPS sağlayıcısı içermez). FIPS modunda yeni parola ve kurtarma kodu hash'leri
+PBKDF2-HMAC-SHA256 ile üretilir (`PASSWORD_PBKDF2_ITERATIONS`, varsayılan 600 000).
+Eski bcrypt parola hash'i doğru parolayla ilk girişte yeniden yazılır. Göç bitince
+`FIPS_LEGACY_BCRYPT_VERIFY=false` giriş parolalarında bcrypt doğrulamasını kapatır.
+`PASSWORD_HASH_SCHEME=pbkdf2_sha256` FIPS modu olmadan da seçilebilir; FIPS modunda
+`bcrypt` seçmek yapılandırma hatasıdır. Bu sürüme yükseltirken, önceden verilmiş ve
+kullanılmamış parola sıfırlama bağlantıları geçersiz olur (imza SHA-256'ya geçti).
+**Bilinen boşluklar:** denetim kontrol noktası ve kanıt paketi imzaları FIPS modunda
+da Ed25519 kalır ve FIPS onaylı sayılmaz. Veritabanı proxy'sinin `ssh_tunnel` türü
+FIPS modunda desteklenmez; TLS'li doğrudan bağlantı ya da HTTP proxy kullanın. İmaj
+hazırlığı, göç ve ayrıntı: [docs/fips.md](../fips.md).
 
 ## Entegrasyonlar
 
@@ -316,9 +378,28 @@ sayılır (onaysız yazma aracı = 0).
 
 `decision` sınıfı (onaylamak, reddetmek) yalnızca insana aittir: hiçbir model
 yüzeyi (sohbet, iş akışları, AutoSecOps'un `/mcp` sunucusu, `/internal/tools/invoke`)
-bir onayı veremez ya da reddedemez. Karar yalnızca kişinin konsoldaki onay
-kuyruğundan ya da `POST /api/v1/approvals/{action_id}/approve` / `.../reject`
-isteğiyle verilir. CI'da `tests/unit/_ratchets/test_no_model_approvals.py` sınar.
+bir onayı veremez ya da reddedemez. Önceki sürümde `/mcp` sunucusu
+`approve_action` ve `reject_action` araçlarını sunuyordu; MCP ile bağlanan bir model
+kendi önerdiği eylemi onaylayabiliyordu. W1.7b bu araçları kaldırdı: model artık
+kendi eylemini onaylayamaz. Onları çağıran bir MCP istemcisi ya da betik hata alır.
+Karar yalnızca kişinin konsoldaki **AI Decisions → Approvals** ekranından (iş akışı
+onay noktaları için iş akışı koşusunun faz kapısından) ya da kişinin kendi
+oturumuyla `POST /api/v1/approvals/{action_id}/approve` / `.../reject` isteğiyle
+verilir. Otomasyon onay vermek istiyorsa bir kişi yerine değil, Autonomous
+otonomi katmanı üzerinden (bkz. [Otonomi](#otonomi)) çalışmalıdır. CI'da
+`tests/unit/_ratchets/test_no_model_approvals.py` sınar.
+
+**Onay ekranında ne görünür.** Araç çağrısına bağlı onay, aracın adını, hedef
+alanlarını (`machine_id`, `hosts`, `ips`, `user_ids` gibi; büyük/küçük harf ve
+`_`/`-` farkı gözetilmez) ve kanonik argümanların **tamamını** gösterir. Hedef
+değeri en çok 200 karakterle gösterilir, kesilirse `… (N chars)` eki taşır. Satır
+sonu, kontrol karakterleri ve görünmez ya da yön değiştiren Unicode karakterleri
+`\n`, `\uXXXX` olarak kaçışlanır; böylece bir değer sahte bir `Arguments:`
+satırı başlatamaz ya da bir host adını görsel olarak ters çeviremez. Onay ham
+argümanlara bağlıdır. Kanonik argümanları 64 KB'ı (UTF-8) aşan bir araç çağrısı
+onaya **park edilmez**: ajan katmanına 413 döner, onay satırı yazılmaz ve çağrı
+çalışmaz (kapalı başarısız). Bu sınırı aşan bir iş akışı adımı onaysız kalır ve
+hata ile biter; argümanı küçültün.
 
 **Dikkat — açık risk.** Onay noktası onaylandıktan sonra bir MCP aracı (ör.
 `mde_isolate`, `aad_disable_user`, `pan_block_ip`, `cb_quarantine`,
@@ -595,20 +676,61 @@ Paket redaksiyon yapmaz: `cases.read` sahibine vakanın ham kayıtlarını verir
 
 Bu sürümde **olmayanlar**:
 
-- Denetim ve defter olaylarının syslog (RFC 5424/TLS) ya da HTTPS ile SIEM'e akışı
-  (Planlı — `wp/w3.6-audit-export`, bu sürümde yok).
 - `config_audit_log` ve `approval_decisions` tablolarının hash zinciri: bu iki
   tablo bu sürümde zincirsizdir ve bunun için bir iş paketi henüz yoktur.
 - Kontrol noktası ve kanıt paketi imza anahtarları için döndürme arayüzü yoktur;
   anahtarı değiştirmek sırrı değiştirip açık anahtarı doğrulayıcılara yeniden
   vermektir.
 
-Geçiş döneminde SIEM'e aktarım için yukarıdaki tabloları salt okuma yetkili bir
-veritabanı rolüyle periyodik okumanızı öneririz.
+### SIEM'e denetim aktarımı
+
+AutoSecOps güvenlikle ilgili olayları kurumun SIEM'ine akıtabilir. Aktarım
+**varsayılan olarak kapalıdır**; kapalıyken dosya yazılmaz, bağlantı açılmaz.
+Yönetici API'si (konsol ekranı yoktur):
+
+- `GET /api/compliance/audit-export/config` ve `.../status` (`settings.read`):
+  yapılandırma (gizli değerler dönmez) ve çalışma durumu: imleçler, son hata,
+  güvensiz ayar uyarıları.
+- `PUT /api/compliance/audit-export/config` (`settings.write`): açar, kaynakları ve
+  hedefleri tanımlar. Değişiklik `config_audit_log`'a yazılır ve kendisi de aktarılır.
+- `POST /api/compliance/audit-export/test` (`settings.write`): bir hedefe sentetik
+  bir test olayı gönderir.
+
+Kaynaklar: ajan defteri (`agent_events`), onay geçişleri (`approval_actions`),
+kimlik doğrulama olayları (giriş, çıkış, MFA, parola, kullanıcı ve rol
+değişiklikleri), `config_audit_log`, `case_audit_logs` ve imzalı kontrol noktaları
+(`audit_checkpoints`; SIEM böylece veritabanı dışındaki kopya olur). Hedefler: RFC
+5424 syslog (TLS; laboratuvar için TCP/UDP) ya da HTTPS (JSON `autosecops.audit.v1`
+ya da CEF). Teslim en az bir kezdir: her (hedef, kaynak) için kalıcı bir imleç
+tutulur, alıcı kapalıyken olaylar kaybolmaz ve yeniden denenir; SIEM'de olayın
+`id`'siyle tekilleştirin. TLS doğrulaması varsayılan açıktır; jetonlar ve istemci
+anahtarı sır deposunda (`AUDIT_EXPORT_<HEDEF>_TOKEN`) tutulur. Hedef adresi
+`url_safety` ile denetlenir; şirket içi (RFC 1918, CGNAT) SIEM'lere izin verilir,
+bulut metadata adresleri reddedilir.
+
+**Maskeleme.** Olaylar gönderilmeden önce sırlar ve (`redact_pii: true`,
+varsayılan) kişisel veri maskelenir. Güvenilir yol **yapısal alanlardır**: bir
+değeri kesin maskelemek için onu `details` içinde kendi anahtarıyla gönderin
+(`{"password": "…"}`, `{"diagnosis": "…"}`); karar anahtarın adına göre verilir.
+Serbest metindeki (`message`, `details` içindeki dizeler, `user_agent`) kişisel
+veri ve kimlik bilgisi maskelemesi **en iyi çabadır**: tanımadığı bir düzyazı
+biçimindeki değeri (ör. ayırıcısız `patient diagnosis HIV positive`, adı
+geçmeyen bir kişi adı) olduğu gibi aktarır. Aktör alanı denetim izinin amacı
+gereği maskelenmez.
+
+**Çok kopyalı kurulum.** Aktarımı Postgres danışma kilidini alan tek süreç yapar.
+Kimlik doğrulama olayları API sürecinde yerel bir biriktiriciye
+(`$VIGIL_DIR/audit_export/`) yazılır; birden çok API kopyası varsa bu dizin tüm
+kopyaların paylaştığı bir birimde olmalıdır, yoksa lider olmayan kopyaların olayları
+aktarılmaz. Mantıksal geri yüklemeden sonra imleç dosyasını (`cursors.json`)
+silin.
+
+Alan eşlemesi, biçimler, metrikler (`autosecops_audit_export_*`) ve bilinen sınırlar:
+[core/compliance/AUDIT_EXPORT.md](../../core/compliance/AUDIT_EXPORT.md).
 
 ## Sürüm yükseltme
 
-Vigil 0.7.x'ten AutoSecOps 2.0'a veritabanı yükseltmesi
+0.7.x sürümünden AutoSecOps 2.0'a veritabanı yükseltmesi
 `scripts/upgrade_database.py` ile yapılır: salt okunur ön kontroller, `--dry-run`
 ile plan, `--backup <dosya>` ile `pg_dump -Fc` yedeği, yeni init SQL dosyaları ve
 şema göçü, sonucun taze kurulum şemasıyla karşılaştırılması. Yükseltme yalnızca

@@ -1,7 +1,7 @@
 # Güvenlik teknik belgesi
 
-> **English summary.** Security architecture of AutoSecOps at `main` @
-> `7a22e8b6`: components and data flows (with the durable webhook ingest
+> **English summary.** Security architecture of AutoSecOps at `integration` @
+> `b8795def`: components and data flows (with the durable webhook ingest
 > spool), eight trust boundaries, the provenance/verdict contract (enforced on
 > the live daemon triage path, with known limits; analysis fields in a payload
 > are dropped), the human-approval rule, per-category autonomy tiers (default
@@ -9,15 +9,19 @@
 > false-negative bound holds, with a circuit breaker), and the response policy
 > (protected assets, hourly limits, TTL expiry and revert, four-eyes approval
 > with an optional distinct-role rule, a segregation-of-duties report). No
-> model-facing surface can approve or reject a pending action, and an approval
-> is bound to the tool call's arguments. Open gap: approved agent MCP tools
+> model-facing surface (including `/mcp`) can approve or reject a pending
+> action; people decide on the Approvals screen. An approval is bound to the
+> tool call's arguments, shows them in full and is refused above 64 KB. Open gap: approved agent MCP tools
 > bypass the response policy. Also: audit records and hash chains (approvals
 > and case audit records in a trigger-filled `audit_chain`, Ed25519-signed
 > checkpoints of the chain heads once a signing key is configured, the
 > `python -m core.audit.verify` CLI; configuration audit and approval decisions
 > are not chained), signed per-case evidence packs, three layers of egress
-> control, secret storage, a cryptography inventory, and the automated
-> red-team regression suite. FIPS mode is planned, not in this release.
+> control, SIEM audit export over syslog/HTTPS (free-text PII redaction is
+> best effort; structured fields are the reliable path), OIDC single sign-on,
+> secret storage, a cryptography inventory with FIPS 140-3 mode (checkpoint
+> and evidence-pack signatures stay Ed25519; `ssh_tunnel` is unsupported), and
+> the automated red-team regression suite.
 > Everything that is planned is marked **Planlı** with its branch.
 
 Bu belge, AutoSecOps'un güvenlik mimarisini denetçi ve güvenlik mimarı için
@@ -54,21 +58,36 @@ bulguya 200 dönmeden önce onu diskte, `fsync` edilmiş ve yalnızca eklenen bi
 kuyruğa (spool) yazar. Varsayılan yer durum dizininde `spool/webhook`'tur.
 Veritabanı yazımı başarısız olursa bulgu bırakılmaz, kuyruğa geri döner ve yeniden
 denenir. Daemon yeniden başlayınca kuyruk yeniden oynatılır; zaten yazılmış bulgu
-ikinci satır üretmez. Kuyruk doluysa ya da yazılamıyorsa webhook `503` ve
-`Retry-After` döner; gönderen yeniden denemelidir. Ayarlar:
+ikinci satır üretmez ve ikinci kez triage edilmez (W0.12b). Yazımı reddeden bir
+veritabanı (salt okunur, disk dolu, yetki, bağlantı hatası) kesinti sayılır; bulgu
+karantinaya değil kuyruğa döner. Okunamayan tek bir satır yalnızca kendisini
+karantinaya taşır. Kuyruk dosyaları `0600`, dizinleri `0700` izinlidir. Kuyruk
+doluysa ya da yazılamıyorsa webhook `503` ve `Retry-After` döner; gönderen yeniden
+denemelidir. Ayarlar:
 `DAEMON_INGEST_SPOOL_ENABLED`, `DAEMON_INGEST_SPOOL_DIR`,
 `DAEMON_INGEST_SPOOL_MAX_FINDINGS` (10000), `DAEMON_INGEST_SPOOL_MAX_MB` (128).
 Ayrıntı: [docs/operations/ingest-durability.md](../operations/ingest-durability.md).
+
+**Redis kesintisinde yeniden triage yok (W0.15).** Model kuyruğu Redis
+üzerindedir. Redis kapalıyken model çağrıları hata verir ve zenginleştirme devre
+kesicisi açılır. Kararı model gerektirmeyen bir bulgu (kural şeridi ya da kuyruğa
+alınmış verdict run) kesici açıkken de hemen kaydedilir. Kesici kapanınca çalışan
+backfill süpürmesi, bir bulguyu yeniden kuyruğa almadan önce `alert_lane_decisions`
+tablosuna bakar: kapatan bir kararı olan bulgu yeniden şeritlenmez ve triage
+edilmez, kayıtlı karar bulguya yazılır. Kararlar okunamazsa o turda hiçbir şey
+kuyruğa alınmaz (kapalı başarısız) ve sayaçta görünür. Modele ihtiyaç duyan
+bulgular kesici kapanınca triage edilir; bu verdict'ten önce olduğu için çift
+işlem değildir.
 
 ## 2. Güven sınırları
 
 | # | Sınır | Karşı taraf | Uygulanan denetim |
 |---|---|---|---|
-| G1 | Tarayıcı ↔ API | kimliği doğrulanmış kullanıcı | TLS ingress'te sonlanır; HS256 JWT (çerez, `Secure`, `SameSite=strict`); CSRF çift gönderim çerezi; rol izinleri her yazma rotasında sunucu tarafında; hız sınırları; Redis tabanlı oturum iptali (kapalı başarısız) |
+| G1 | Tarayıcı ↔ API | kimliği doğrulanmış kullanıcı | TLS ingress'te sonlanır; HS256 JWT (çerez, `Secure`, `SameSite=strict`); isteğe bağlı OIDC SSO (PKCE, imzalı ID token, tek kullanımlık `state`); CSRF çift gönderim çerezi (oturum çerezi taşıyan alım istekleri dahil); rol izinleri her yazma rotasında sunucu tarafında; hız sınırları; Redis tabanlı oturum iptali (kapalı başarısız) |
 | G2 | Alarm kaynakları → daemon/API | saldırganın etkileyebildiği veri | Daemon webhook'u (NetworkPolicy açıkken) `networkPolicies.daemon.webhookAllowFrom` CIDR'lerine sınırlı; alarm içeriği **güvenilmez** sayılır (bkz. §3); kanarya ve QA ile ölçüm |
 | G3 | API ↔ ajan katmanı | iç servis | `/internal` uçları yalnızca `AGENT_INTERNAL_TOKEN` paylaşılan sırrıyla (sabit zamanlı karşılaştırma); NetworkPolicy ile hangi pod'ların bağlanabileceği sınırlı; onay gerektiren araçlar, argümanları onaylanan çağrınınkiyle aynı olan onaylanmış bir onay noktası olmadan reddedilir; karar araçları her durumda reddedilir. Onaydan sonra araç müdahale politikasından geçmez (açık risk R2) |
 | G4 | Uygulama ↔ model | yerel ya da müşterinin seçtiği sağlayıcı | Tek çıkış Bifrost; air-gap'te bulut anahtarları boş ve egress kapalı; modelin çıktısı doğrudan hiçbir API çağrısına dönüşmez (araç etki sınıfları, onay kuyruğu); onay ve red kararı yalnızca kişinin kendi oturumlu HTTP isteğiyle verilir, hiçbir model yüzeyinde karar aracı yoktur |
-| G5 | Uygulama → dış entegrasyonlar | SIEM, EDR, IdP, güvenlik duvarı | Kimlik bilgileri şifreli sır deposunda; TLS doğrulaması açık (kapatma CI ratchet'iyle yasak); kullanıcı girdisi URL'ler için SSRF koruması; egress NetworkPolicy |
+| G5 | Uygulama → dış entegrasyonlar | SIEM, EDR, IdP, güvenlik duvarı | Kimlik bilgileri şifreli sır deposunda; TLS doğrulaması açık (kapatma CI ratchet'iyle yasak); SIEM aktarımı varsayılan kapalı, gönderimden önce maskeler; kullanıcı girdisi URL'ler için SSRF koruması; egress NetworkPolicy |
 | G6 | Uygulama ↔ veri depoları | Postgres, Redis | Uygulama sahip olmayan `vigil_app` rolüyle bağlanır; `agent_events` üzerinde bu rolün UPDATE/DELETE/TRUNCATE yetkisi yoktur; `audit_chain`'i yalnızca okuyabilir, `audit_checkpoints`'e yalnızca ekleyebilir |
 | G7 | Operatör ↔ küme/sunucu | yönetici | Sırlar Secret/ExternalSecrets'te; hizmet hesabı parolası argv/env değil stdin'den; pod'lar root olmayan kullanıcıyla, ayrıcalık yükseltmesi kapalı |
 | G8 | Tedarik zinciri → kurulum | sürüm mühendisi | İmzalı paket, bant dışı açık anahtar, hazırlık kopyasında doğrulama (TOCTOU kapalı), arşiv üyesi denetimi |
@@ -122,7 +141,10 @@ Bu sürümde injection'a karşı **etkin** olan savunmalar:
   bir insanın yanıtladığı onay noktası olmadan çalışamaz. Sohbet bu araçları
   sunmaz. Tabloda olmayan araç en kısıtlayıcı sınıfa düşer.
 - **Model onay veremez (W1.7b).** `decision` sınıfı yalnızca insana aittir
-  (`HUMAN_ONLY`). `approve_action` / `reject_action` araçları kaldırıldı. Sohbet,
+  (`HUMAN_ONLY`). `approve_action` / `reject_action` araçları kaldırıldı; önceki
+  sürümde `/mcp` sunucusu bunları sunuyordu ve MCP ile bağlanan bir model kendi
+  önerdiği eylemi onaylayabiliyordu. Kişiler konsolda **AI Decisions →
+  Approvals** ekranından karar verir. Sohbet,
   iş akışları, ajanların önerdiği araçlar, AutoSecOps'un `/mcp` sunucusu,
   `/internal/tools/invoke` ve MCP yürütücüsü karar araçlarını sunmaz ya da
   reddeder. Adı `approve`, `reject`, `decline` ya da `authorize` ile başlayan
@@ -134,7 +156,15 @@ Bu sürümde injection'a karşı **etkin** olan savunmalar:
   satırına aracın adını, argümanlarının kanonik JSON özetini (`args_sha256`) ve
   kişiye gösterilen kısa özetini yazar. `/internal/tools/invoke` onaylı çağrıyı
   yalnızca gelen argümanların özeti satırdakiyle eşleşirse çalıştırır: A makinesi
-  için onaylanan izolasyon B makinesi için tekrar oynatılamaz.
+  için onaylanan izolasyon B makinesi için tekrar oynatılamaz. Onay satırı
+  kanonik argümanların tamamını ve hedef alanlarını taşır; kişiye gösterilen hedef
+  değerleri 200 karakterle sınırlı, kontrol ve yön değiştiren Unicode karakterleri
+  kaçışlıdır (W0.14, W0.16).
+- **Argüman sınırı (W0.16).** Kanonik argümanları 64 KB'ı aşan bir araç çağrısı
+  onaya park edilmez: `/internal/runs/{run_id}/checkpoints` ve `.../phases` 413
+  döner, onay satırı yazılmaz; onay olmadığı için çağrı çalışamaz (kapalı
+  başarısız). Böylece bir kişinin okuyamayacağı kadar büyük bir argüman onaya
+  sunulamaz.
 - **İnsan onayı olmadan eylem yok** (§4); tek istisna, bir kişinin kanıtla açtığı
   ve QA sınırına bağlı Autonomous katmanıdır.
 - **Kanaryalar ve QA örneklemesi**: kaçırılan kötücül alarmların oranı ölçülür
@@ -281,7 +311,21 @@ Sınırlar (bu sürüm):
   kullanıcı iki tabloyu birlikte yeniden yazabilir (R27).
 - `config_audit_log` (imha tutanağı dahil) ve `approval_decisions` zincirde
   değildir.
-- Denetim olaylarının SIEM'e akışı (Planlı — `wp/w3.6-audit-export`, bu sürümde yok).
+- SIEM aktarımı (aşağıda) açılmadıkça olayların veritabanı dışında bir kopyası
+  yalnızca `AUDIT_CHECKPOINT_FILE` ile tutulur.
+
+**SIEM'e denetim aktarımı (W3.6).** Varsayılan kapalı. Açıldığında
+(`PUT /api/compliance/audit-export/config`, `settings.write`) ajan defteri, onay
+geçişleri, kimlik doğrulama olayları, `config_audit_log`, `case_audit_logs` ve
+imzalı kontrol noktaları RFC 5424 syslog (TLS) ya da HTTPS (JSON, CEF) ile SIEM'e
+akar. Kontrol noktaları gövde, imza ve açık anahtarla olduğu gibi gider; SIEM böylece
+zincir başlarının veritabanı dışındaki kopyası olur. Teslim en az bir kezdir
+(kalıcı imleç, kararlı `id`, üstel geri çekilme, sınırlı kuyruk). Olaylar
+gönderilmeden önce sırlar ve kişisel veri maskelenir. Yapısal alanlarda (anahtar adı
+`password`, `email`, `diagnosis` gibi) maskeleme güvenilirdir. Serbest metinde ise
+en iyi çaba ile yapılır ve tanınmayan düzyazı biçimleri olduğu gibi gider. Aktarımı
+tek bir süreç yapar (Postgres danışma kilidi). Ayrıntı:
+[core/compliance/AUDIT_EXPORT.md](../../core/compliance/AUDIT_EXPORT.md).
 
 **Kanıt paketi (W3.7).** Vaka sayfasındaki **Evidence pack** düğmesi
 (`GET /api/cases/{case_id}/evidence-pack`, `cases.read`) vakanın imzalı ZIP
@@ -321,8 +365,13 @@ Kullanıcının girdiği URL'ler (giden webhook hedefi, sağlayıcı adresi) iç
 `core/platform/url_safety.py`: çözümlenen her adres loopback, özel, link-local,
 multicast, ayrılmış ya da bulut metadata adresiyse reddedilir. Giden webhook
 teslimatında ayrıca doğrulanan adres bağlantıya sabitlenir (DNS rebinding'e karşı),
-yönlendirme izlenmez ve ortam vekili kullanılmaz. Bilinen açık: 100.64.0.0/10 (CGNAT) aralığı reddedilmez (bkz.
-[tehdit modeli](tehdit-modeli.md#açık-riskler)).
+yönlendirme izlenmez ve ortam vekili kullanılmaz. W3.6'dan beri global olmayan her
+adres, CGNAT 100.64.0.0/10 (ör. 100.100.100.200 metadata adresi) dahil, varsayılan
+olarak reddedilir. Şirket içi bir LLM ağ geçidi bu aralıktaysa
+`LLM_PROVIDER_ALLOWED_CIDRS` ile, giden webhook hedefi için `WEBHOOK_ALLOWED_CIDRS`
+ile izin verilir; metadata adresleri bu aralıkların içinde de reddedilir. SIEM
+aktarımı şirket içi (RFC 1918, CGNAT, ULA) hedeflere izin verir, metadata
+adreslerini reddeder.
 
 ## 7. Sırlar
 
@@ -332,6 +381,8 @@ yönlendirme izlenmez ve ortam vekili kullanılmaz. Bilinen açık: 100.64.0.0/1
 | `AUDIT_CHECKPOINT_SIGNING_KEY` | Sır deposu ya da ortam / Secret (Ed25519 tohumu; hex, base64 ya da PEM). Yalnızca daemon'un kontrol noktası işi ve `python -m core.audit.checkpoint` kullanır. Doğrulayıcıya yalnızca açık anahtar (`AUDIT_CHECKPOINT_PUBLIC_KEY`) verilmelidir |
 | `EVIDENCE_PACK_SIGNING_KEY` | Sır deposu ya da ortam / Secret (Ed25519); yalnızca kanıt paketini imzalayan API kullanır |
 | `JWT_SECRET_KEY` | Sır deposu (`secrets.enc`), ortam / Kubernetes Secret ya da `.env`; okuma önceliği aşağıda. Anahtar verilmemişse `start.sh` durum dizininde bir `jwt_secret` dosyası üretir ve onu ortama verir. `DEV_MODE=false` iken zorunlu, yoksa backend açılmaz |
+| OIDC istemci sırları | Sır deposu (`OIDC_CLIENT_SECRET_<ID>`); API geri döndürmez |
+| SIEM aktarım jetonları ve istemci anahtarları | Sır deposu (`AUDIT_EXPORT_<HEDEF>_TOKEN`, `AUDIT_EXPORT_<HEDEF>_CLIENT_KEY`); ad hedeften türetilir, başka bir sırra yöneltilemez; saklı jeton uç noktaya bağlıdır |
 | `AGENT_INTERNAL_TOKEN` | Ortam / Secret; API ile ajan katmanı arasındaki tek kimlik doğrulama |
 | Postgres / Redis parolaları | Secret (`existingSecret` desteklenir) |
 | TOTP sırları | Veritabanında, `JWT_SECRET_KEY`'den türetilen anahtarla Fernet şifreli |
@@ -364,7 +415,9 @@ anahtarı tanımlandığı yerde döndürün
 
 | Kullanım | Algoritma / yapı | Kütüphane |
 |---|---|---|
-| Parola ve kurtarma kodu özeti | bcrypt (tuzlu; 72 bayt üst sınır) | `bcrypt` |
+| Parola ve kurtarma kodu özeti | bcrypt (tuzlu; 72 bayt üst sınır); FIPS modunda ya da `PASSWORD_HASH_SCHEME=pbkdf2_sha256` ile PBKDF2-HMAC-SHA256 (16 bayt tuz, varsayılan 600 000 yineleme) | `bcrypt`, `hashlib` |
+| Parola sıfırlama belirteci | HMAC-SHA256 (itsdangerous, SHA-256 anahtar türetme) | `itsdangerous` |
+| OIDC ID token doğrulaması | RS256 / ES256 (sağlayıcının JWKS'i); PKCE S256 | PyJWT, `cryptography` |
 | Oturum belirteci | JWT, HMAC-SHA256 (HS256); erişim 30 dk, yenileme 7 gün | PyJWT |
 | Sır deposu, TOTP sırrı şifrelemesi | Fernet (AES-128-CBC + HMAC-SHA256) | `cryptography` |
 | MFA | TOTP (RFC 6238) | `pyotp` |
@@ -377,12 +430,21 @@ anahtarı tanımlandığı yerde döndürün
 | Air-gap paket imzası | Ed25519 (OpenSSL) ya da cosign / minisign; SHA-256 özetler | OpenSSL ve araçlar |
 | Yedekler (Compose/host) | restic deposu şifrelemesi (AES-256 + Poly1305-AES) | restic |
 | Yedekler (Helm CronJob) | şifreleme yok; özet SHA-256; PVC / nesne deposu şifrelemesi kurumun | `pg_dump` |
-| Taşıma | TLS (ingress'te ve entegrasyon istemcilerinde; sertifika doğrulaması açık) | platform |
+| Taşıma | TLS (ingress'te, entegrasyon istemcilerinde ve SIEM aktarımında; TLS 1.2+, sertifika doğrulaması açık) | platform |
 
-**FIPS:** bu sürümde FIPS modu yoktur. bcrypt FIPS onaylı bir algoritma değildir ve
-kullanılan kütüphaneler doğrulanmış bir FIPS modülü olarak yapılandırılmamıştır.
-OpenSSL 3 FIPS sağlayıcısı ve FIPS uyumlu karşılıklar
-(Planlı — `wp/w3.10-fips`, bu sürümde yok).
+**FIPS 140-3 modu (W3.10).** Varsayılan kapalı. `FIPS_MODE=true` iken API, daemon
+ve worker yalnızca OpenSSL 3 FIPS sağlayıcısı hem `hashlib` hem `cryptography`
+için etkinse başlar; değilse 78 (`EX_CONFIG`) ile çıkar. FIPS modunda yeni parola
+ve kurtarma kodu hash'leri PBKDF2-HMAC-SHA256'dır; eski bcrypt hash'i doğru parolayla
+ilk girişte yeniden yazılır (`FIPS_LEGACY_BCRYPT_VERIFY=false` göç bitince bcrypt
+doğrulamasını kapatır). MD5/SHA-1 yalnızca güvenlik dışı amaçla
+(`usedforsecurity=False`) kullanılır. FIPS dışı ilkellerin envanteri CI'da bir
+ratchet ile sayılır. JWT (HS256), Fernet ve TOTP (HMAC-SHA1) onaylı ilkellerdir ve
+değişmez. Modun kendisi FIPS etkin ayrı bir imaj gerektirir. **Bilinen boşluklar:**
+denetim kontrol noktası ve kanıt paketi imzaları FIPS modunda da **Ed25519 kalır**
+ve FIPS onaylı sayılmaz. Veritabanı proxy'sinin `ssh_tunnel` türü algoritma seçimini
+kısıtlamaz ve FIPS modunda desteklenmez. Medic'in Ed25519 güven kökü ayrı bir
+imajdadır. Ayrıntı: [docs/fips.md](../fips.md).
 
 ## 9. Güvenli geliştirme süreci
 

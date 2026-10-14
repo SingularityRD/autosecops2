@@ -2,7 +2,7 @@
 
 > **Bu belge hukuki görüş değildir.** Aşağıdaki tablolar, düzenlemelerin
 > AutoSecOps'u kullanan kurumdan beklediği bazı kontrolleri ürünün bu sürümdeki
-> (`main` @ `7a22e8b6`) özelliklerine ve bu özelliklerin üretebildiği kanıta
+> (`integration` @ `b8795def`) özelliklerine ve bu özelliklerin üretebildiği kanıta
 > eşler. Yükümlülük kurumundur; bir aracın varlığı uyumu kendi başına sağlamaz.
 > Eşleme, kurumun uyum ve hukuk ekibiyle doğrulanmalıdır. Madde numarası
 > verilmeyen satırlarda ilgili hükmün eşlenmesi kurumun uyum ekibine bırakılmıştır.
@@ -45,6 +45,9 @@ Tablolarda kısaltılarak anılan kanıtlar:
 | K14 | Saklama politikaları, yasal saklama listesi, periyodik imha tutanağı | `GET /api/compliance/retention/policies`, `GET /api/compliance/retention/legal-holds`, `GET /api/compliance/retention/reports` (JSON ya da Markdown) |
 | K16 | Görevler ayrılığı raporu ve onay kararları | `GET /api/response/segregation/export?format=csv` (öneren, onaylayan, ikinci onaylayan, yürüten, rolleri, ihlaller); `approval_decisions` tablosu; Ayarlar → System → Segregation of duties |
 | K18 | Vaka kanıt paketi | Vaka → Record → **Evidence pack** (`GET /api/cases/{case_id}/evidence-pack`); denetçi `scripts/autosecops verify-bundle <paket> --public-key <anahtar>` ile çevrimdışı doğrular |
+| K19 | Denetim olaylarının SIEM'e aktarımı | `GET /api/compliance/audit-export/status` (hedef ve kaynak başına imleç, son teslim, son hata); SIEM'deki `autosecops.audit.v1` / CEF / RFC 5424 olayları; `autosecops_audit_export_*` metrikleri |
+| K20 | Kimlik sağlayıcı (SSO) yapılandırması ve girişleri | `GET /api/auth/sso/admin/config` (sağlayıcılar, rol eşlemesi, giriş politikası, break-glass hesapları); `config_audit_log` içinde `sso_login` / `sso_failure` |
+| K21 | FIPS modu | `FIPS_MODE=true` ile çalışan süreçlerin açılış kaydı (FIPS sağlayıcısı yoksa süreç başlamaz); [docs/fips.md](../fips.md) |
 | K17 | Otonomi katmanları ve değişiklik kaydı | `GET /api/autonomy/tiers` (katman matrisi, kategori başına QA sınırı); `GET /api/autonomy/audit` (yükseltme, devre kesici düşürmesi, kanıt bağlantısı) |
 | K15 | Kubernetes yedek ve sıcak yedek kanıtı | yedek CronJob iş geçmişi ve döküm `.sha256` dosyaları; daemon `/health` `role` alanı; [docs/operations/rpo-rto.md](../operations/rpo-rto.md) tatbikat kaydı |
 
@@ -54,20 +57,20 @@ Tablolarda kısaltılarak anılan kanıtlar:
 |---|---|---|---|
 | Birincil ve ikincil sistemlerin yurt içinde bulundurulması; verinin kurum denetiminde kalması | Kendi altyapısında kurulum (Helm/Compose); internetsiz kurulum paketi; yerel model (Ollama); sıfır egress profili | K1, K2, K3 | Karşılanıyor (kurulum yeri kurumun kararı) |
 | İz kayıtlarının tutulması, bütünlüğünün korunması | Ajan defterinde koşu başına hash zinciri ve salt ekleme; onay ve vaka denetim kayıtları `audit_chain`'de zincirli; zincir başları Ed25519 imzalı kontrol noktasında; ayar kayıtları | K6, K7, K8, K9 | Kısmi — ayar kayıtları ve onay kararları zincirsiz; kontrol noktası imza anahtarı verilmeden yazılmaz (R6) |
-| İz kayıtlarının merkezi izleme sistemine aktarılması | — | — | Planlı — `wp/w3.6-audit-export`, bu sürümde yok (geçici: tabloların salt okuma rolüyle periyodik aktarımı) |
+| İz kayıtlarının merkezi izleme sistemine aktarılması | Denetim akışının syslog (TLS) ya da HTTPS ile SIEM'e aktarımı: ajan defteri, onaylar, kimlik doğrulama olayları, ayar ve vaka kayıtları, imzalı kontrol noktaları; en az bir kez teslim | K19 | Kısmi — aktarım varsayılan kapalı, kurum açmalı; serbest metinde kişisel veri maskelemesi en iyi çabadır (yapısal alanlar güvenilir); `approval_decisions` aktarılmaz |
 | Görevler ayrılığı | Rol matrisi; onay yetkisi (`ai_decisions.approve`) yalnız Senior Analyst ve üstünde; kimlik eylemlerinde dört göz onayı; sınıf başına farklı rol koşulu; karar başına rol kaydı ve görevler ayrılığı raporu; atayan kişi yalnızca kendi izinlerini aşmayan rolü atayabilir; model onay veremez | K4, K5, K7, K16 | Kısmi — farklı rol koşulu varsayılan kapalı (R3); onaylanmış MCP araçları tek onayla çalışır (R2) |
-| Erişim yönetimi, kimlik doğrulama | Yerel hesaplar, parola politikası, kilitleme, TOTP MFA, oturum iptali | K4, K5 | Kısmi — MFA zorunlu kılınamaz; SSO Planlı — `wp/w1.9-oidc`, bu sürümde yok |
+| Erişim yönetimi, kimlik doğrulama | Yerel hesaplar, parola politikası, kilitleme, TOTP MFA, oturum iptali; OIDC SSO, grup → rol eşlemesi, yerel girişi break-glass hesaplarına sınırlama | K4, K5, K20 | Kısmi — MFA AutoSecOps'ta zorunlu kılınamaz (SSO kullanılıyorsa IdP'de zorunlu kılınabilir) |
 | Yetkili kullanıcı işlemlerinin kayıt altına alınması | Onaylayan ve onay zamanı, ayar değiştiren kullanıcı | K6, K7 | Karşılanıyor |
 | Bilgi güvenliği olay yönetimi | Alarm alımı, triage, vaka yönetimi, SLA izleyicisi, vaka bildirimleri | K9, K7 | Karşılanıyor (süreç kurumun) |
 | Yedekleme ve iş sürekliliği | Şifreli ve doğrulanan restic yedeği, test geri yükleme, yükseltme öncesi otomatik yedek (Compose/host); Helm yedek CronJob'u; daemon sıcak yedeği; RPO/RTO belgesi | K11, K15 | Kısmi — CronJob varsayılan kapalı ve dökümü şifrelemez; RTO kurumun tatbikatıyla ölçülmeli (R17) |
 | Dış hizmet (model sağlayıcı) riskinin yönetimi | Yerel model ile dış sağlayıcıya bağımlılığın kaldırılması | K1, K2 | Karşılanıyor (air-gap profiliyle) |
-| Kriptografik anahtar yönetimi | Bant dışı imza anahtarı; şifreli sır deposu; Secret/ExternalSecrets | K3 | Kısmi — `master.key` için yerleşik döndürme yok |
+| Kriptografik anahtar yönetimi | Bant dışı imza anahtarı; şifreli sır deposu; Secret/ExternalSecrets; isteğe bağlı FIPS 140-3 modu | K3, K21 | Kısmi — `master.key` için yerleşik döndürme yok; FIPS modunda kontrol noktası ve kanıt paketi imzaları Ed25519 kalır |
 
 ## KVKK — 6698 sayılı Kişisel Verilerin Korunması Kanunu
 
 | Beklenti | AutoSecOps özelliği (bu sürüm) | Kanıt | Durum |
 |---|---|---|---|
-| Md. 12 — veri güvenliği için teknik tedbirler (erişim yetkisi, şifreleme, kayıt) | Rol matrisi; sırların şifreli saklanması; şifreli yedek; denetim kayıtları | K4, K6, K8, K11 | Kısmi — açık riskler tehdit modelinde (ör. R2, R6); idari tedbirler kurumun |
+| Md. 12 — veri güvenliği için teknik tedbirler (erişim yetkisi, şifreleme, kayıt) | Rol matrisi; sırların şifreli saklanması; şifreli yedek; denetim kayıtları; SIEM aktarımında kişisel veri maskelemesi | K4, K6, K8, K11, K19 | Kısmi — açık riskler tehdit modelinde (ör. R2, R6); idari tedbirler kurumun |
 | Md. 9 — yurt dışına aktarım kısıtları | Yerel model, internetsiz kurulum, bulut sağlayıcı anahtarları boş; egress kanıtı | K1, K2 | Karşılanıyor (air-gap profiliyle); bulut sağlayıcı seçilirse aktarım kurumun değerlendirmesine tabidir |
 | Md. 4 — işlendikleri amaç için gerekli süre kadar muhafaza | Veri sınıfı başına saklama süresi ve yöntemi (silme / anonimleştirme); yasal saklama | K14 | Karşılanıyor (sürelerin belirlenmesi kurumun; kurulumda politika yoktur) |
 | Md. 7 ve Silme, Yok Etme veya Anonim Hale Getirme Yönetmeliği — periyodik imha, imha kaydı | Zamanlanmış ya da elle başlatılan imha işi (kuru çalıştırma varsayılan); vaka bazında yasal saklama; periyodik imha tutanağı | K14 | Kısmi — tutanak kayıtları zincirsiz (R6); elle silme uçları tutanağa girmez (R8) |
@@ -97,16 +100,16 @@ Tablolarda kısaltılarak anılan kanıtlar:
 | Md. 21 — olay ele alma | Vaka yönetimi, onaylı müdahale | K7, K9 | Karşılanıyor |
 | Md. 21 — iş sürekliliği, yedek yönetimi | Şifreli yedek ve test geri yükleme; Helm yedek CronJob'u; daemon sıcak yedeği | K11, K15 | Kısmi — CronJob varsayılan kapalı, döküm şifresiz (R17) |
 | Md. 21 — tedarik zinciri güvenliği | İmzalı kurulum paketi; CI'da imaj taraması | K3 | Kısmi — SBOM ve imzalı imajlar Planlı — `wp/w4.7-release`, bu sürümde yok |
-| Md. 21 — kriptografi politikaları | Kriptografi envanteri (güvenlik teknik belgesi §8) | — | Kısmi — FIPS modu Planlı — `wp/w3.10-fips`, bu sürümde yok |
-| Md. 21 — erişim denetimi, çok faktörlü kimlik doğrulama | Rol matrisi, TOTP MFA | K4, K5 | Kısmi — MFA zorunlu kılınamaz; SSO Planlı — `wp/w1.9-oidc`, bu sürümde yok |
+| Md. 21 — kriptografi politikaları | Kriptografi envanteri (güvenlik teknik belgesi §8); FIPS 140-3 modu | K21 | Kısmi — FIPS modu FIPS etkin ayrı imaj ister; FIPS modunda kontrol noktası ve kanıt paketi imzaları Ed25519 kalır, `ssh_tunnel` desteklenmez |
+| Md. 21 — erişim denetimi, çok faktörlü kimlik doğrulama | Rol matrisi, TOTP MFA, OIDC SSO | K4, K5, K20 | Kısmi — MFA AutoSecOps'ta zorunlu kılınamaz (SSO ile IdP'de zorunlu kılınabilir) |
 
 ## SPK — Bilgi Sistemleri Yönetimi Tebliği (VII-128.9)
 
 | Beklenti | AutoSecOps özelliği (bu sürüm) | Kanıt | Durum |
 |---|---|---|---|
 | Bilgi güvenliği yönetimi, olay yönetimi | Alarm triage, vaka yönetimi, SLA izleme | K9 | Karşılanıyor (süreç kurumun) |
-| İz kayıtları ve bütünlüğü | Defter zinciri; zincirli onay/vaka kayıtları ve imzalı kontrol noktaları; ayar kayıtları | K6–K9 | Kısmi — ayar kayıtları zincirsiz (R6); SIEM aktarımı Planlı — `wp/w3.6-audit-export`, bu sürümde yok |
-| Kimlik doğrulama ve erişim yönetimi | Rol matrisi, MFA, kilitleme, oturum iptali | K4, K5 | Kısmi (MFA zorunlu kılınamaz) |
+| İz kayıtları ve bütünlüğü | Defter zinciri; zincirli onay/vaka kayıtları ve imzalı kontrol noktaları; ayar kayıtları; SIEM aktarımı | K6–K9, K19 | Kısmi — ayar kayıtları zincirsiz (R6); SIEM aktarımı varsayılan kapalı |
+| Kimlik doğrulama ve erişim yönetimi | Rol matrisi, MFA, kilitleme, oturum iptali, OIDC SSO | K4, K5, K20 | Kısmi (MFA AutoSecOps'ta zorunlu kılınamaz) |
 | Görevler ayrılığı | Onay yetkisinin rolle sınırlanması; kimlik eylemlerinde dört göz onayı; sınıf başına farklı rol koşulu; görevler ayrılığı raporu | K4, K7, K16 | Kısmi — farklı rol koşulu varsayılan kapalı (R3); R2 |
 | Yedekleme ve iş sürekliliği | Şifreli yedek, test geri yükleme, Helm yedek CronJob'u, daemon sıcak yedeği | K11, K15 | Kısmi (R17) |
 | Dış hizmet alımı | Yerel model, egress kanıtı | K1, K2 | Karşılanıyor (air-gap profiliyle) |
@@ -117,8 +120,8 @@ Tablolarda kısaltılarak anılan kanıtlar:
 |---|---|---|---|
 | A.5.3 Görevler ayrılığı | Onay yetkisi rolle sınırlı; kimlik eylemlerinde dört göz onayı; sınıf başına farklı rol koşulu; görevler ayrılığı raporu | K4, K7, K16 | Kısmi — farklı rol koşulu varsayılan kapalı (R3); R2 |
 | A.5.15 Erişim denetimi / A.5.18 Erişim hakları | Rol matrisi, rota başına izin, rol atama kısıtı | K4, K5 | Karşılanıyor |
-| A.5.16 Kimlik yönetimi | Yerel hesap yaşam döngüsü, hizmet hesabı Viewer'a kilitli | K5 | Kısmi — SSO Planlı — `wp/w1.9-oidc`, bu sürümde yok |
-| A.5.17 Kimlik doğrulama bilgisi / A.8.5 Güvenli kimlik doğrulama | Parola politikası, bcrypt, TOTP, kilitleme | K5 | Kısmi (MFA zorunlu değil) |
+| A.5.16 Kimlik yönetimi | Yerel hesap yaşam döngüsü, hizmet hesabı Viewer'a kilitli; OIDC SSO ile ilk girişte hesap oluşturma ve grup → rol eşlemesi | K5, K20 | Kısmi — SCIM yok: IdP'de kapatılan hesabın açık oturumu için AutoSecOps'ta da devre dışı bırakma gerekir |
+| A.5.17 Kimlik doğrulama bilgisi / A.8.5 Güvenli kimlik doğrulama | Parola politikası, bcrypt ya da PBKDF2-HMAC-SHA256, TOTP, kilitleme, OIDC SSO | K5, K20 | Kısmi (MFA AutoSecOps'ta zorunlu değil) |
 | A.5.21 BİT tedarik zinciri | İmzalı paket, Trivy, Dependabot | K3 | Kısmi — SBOM Planlı — `wp/w4.7-release`, bu sürümde yok |
 | A.5.24–A.5.26 Olay yönetimi planlama, değerlendirme, müdahale | Triage, vaka, onaylı müdahale, eylem zaman çizelgesi | K7, K9 | Karşılanıyor |
 | A.5.28 Kanıt toplama | Gözetim zinciri dışa aktarımı, defter ve denetim zinciri, vaka başına imzalı kanıt paketi | K8, K13, K18 | Karşılanıyor (imza anahtarı kurumun) |
@@ -127,10 +130,10 @@ Tablolarda kısaltılarak anılan kanıtlar:
 | A.8.2 Ayrıcalıklı erişim hakları | Admin/Manager izinleri, `DEV_MODE` uyarısı | K4 | Karşılanıyor |
 | A.8.10 Bilgi silme | Saklama politikası, imha işi, yasal saklama, imha tutanağı | K14 | Karşılanıyor (politikalar kurumun) |
 | A.8.13 Bilgi yedekleme | Şifreli, doğrulanan yedek; test geri yükleme; Helm yedek CronJob'u | K11, K15 | Karşılanıyor (Compose/host); Kısmi (Kubernetes: CronJob açılmalı, döküm şifresiz) |
-| A.8.15 Kayıt tutma | Ayar, vaka, onay, defter kayıtları | K6–K9 | Kısmi — SIEM aktarımı Planlı — `wp/w3.6-audit-export`, bu sürümde yok |
+| A.8.15 Kayıt tutma | Ayar, vaka, onay, defter kayıtları; SIEM aktarımı | K6–K9, K19 | Kısmi — SIEM aktarımı varsayılan kapalı; serbest metin maskelemesi en iyi çabadır |
 | A.8.16 İzleme faaliyetleri | Ürünün kendisi (alarm triage); kanarya ve QA ile ölçüm | K12 | Karşılanıyor |
 | A.8.20 Ağ güvenliği / A.8.22 Ağların ayrılması | NetworkPolicy, küme içi egress, daemon webhook CIDR kısıtı | K2 | Karşılanıyor (air-gap profiliyle) |
-| A.8.24 Kriptografi kullanımı | Kriptografi envanteri | — | Kısmi — FIPS Planlı — `wp/w3.10-fips`, bu sürümde yok |
+| A.8.24 Kriptografi kullanımı | Kriptografi envanteri; FIPS 140-3 modu | K21 | Kısmi — FIPS modunda kontrol noktası ve kanıt paketi imzaları Ed25519 kalır; `ssh_tunnel` desteklenmez |
 | A.8.25–A.8.29 Güvenli geliştirme ve test | Bağımsız doğrulayıcı, CI eşik testleri (ratchet), güvenlik testleri, otomatik kırmızı takım regresyon paketi (rol × rota matrisi, SSRF matrisi, injection eşiği) | CI kayıtları | Kısmi — dış pentest Planlı — dal yok, W4.4, bu sürümde yok |
 | A.8.32 Değişiklik yönetimi | Ayar değişikliği kaydı | K6 | Kısmi (rol izinlerinin veritabanında değişimi kaydedilmez) |
 
@@ -142,6 +145,7 @@ Tablolarda kısaltılarak anılan kanıtlar:
 4. Seçilmiş bir vaka için K18 (kanıt paketi ve çevrimdışı doğrulama çıktısı), K7, K9,
    K10, K13 ve K8 (`python -m core.audit.verify --agent-events --require-signature` çıktısı).
 5. K16 (dönemin görevler ayrılığı raporu) ve K17 (otonomi katmanları ve değişiklikleri).
+   SIEM aktarımı açıksa K19; SSO kullanılıyorsa K20; FIPS modu açıksa K21.
 6. Son K11 test geri yükleme çıktısı ve (Kubernetes'te) K15.
 7. K14: saklama politikaları ve son periyodik imha tutanağı.
 8. [Tehdit modeli — açık riskler](tehdit-modeli.md#açık-riskler) ve her biri için kurumun telafi edici kontrolü.

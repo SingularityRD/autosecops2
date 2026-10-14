@@ -228,9 +228,15 @@ değeri taşıdığı `tests/unit/airgap` testleriyle denetlenir.
    ayrıntı: [yönetici kılavuzu — otonomi](yonetici-kilavuzu.md#otonomi).
 5. **Güvenlik ayarlarını denetleyin:** `DEV_MODE=false` (Helm varsayılanı),
    `VIGIL_CSRF_REPORT_ONLY=false` (kodun varsayılanı yalnızca raporlamadır;
-   `env.example` `false` önerir), `VIGIL_COOKIE_SECURE=true`, TLS'i API'nin önünde
+   Helm grafiği ve `env.example` `false` kullanır), `VIGIL_COOKIE_SECURE=true`, TLS'i API'nin önünde
    sonlandırın (ingress).
 6. **Yedekleme**: [yönetici kılavuzu — yedekleme](yonetici-kilavuzu.md#yedekleme-ve-geri-yükleme).
+7. **İsteğe bağlı:** OIDC SSO ve SIEM aktarımı
+   ([yönetici kılavuzu — kimlik doğrulama](yonetici-kilavuzu.md#kimlik-doğrulama),
+   [SIEM'e denetim aktarımı](yonetici-kilavuzu.md#sieme-denetim-aktarımı)). FIPS 140-3
+   modu FIPS etkin ayrı bir imaj ister; imaj hazırlığı ve bilinen boşluklar
+   [docs/fips.md](../fips.md)'dedir. `FIPS_MODE=true` ile FIPS sağlayıcısı olmayan
+   bir imajda süreçler başlamaz (çıkış kodu 78).
 
 ## 8. Sıfır egress'i kanıtlama
 
@@ -264,6 +270,11 @@ Profil uygulandığında bile operatör eylemiyle dışarı çıkabilecek noktal
   git sunucusu reddedilir; ağ içi bir git sunucusu için
   `VIGIL_DETECTION_GIT_ALLOWED_CIDRS`'e yalnızca onun aralığını yazın. Air-gap'te
   yerel yol kaynakları kullanın.
+- SIEM'e denetim aktarımı: yalnızca `settings.write` sahibi bir operatör aktarımı
+  açıp bir syslog ya da HTTPS hedefi tanımlarsa. Hedef küme içinde ya da izin
+  listesinde olmalıdır; metadata adresleri reddedilir.
+- OIDC SSO: tanımlanmış bir sağlayıcının keşif belgesi, JWKS ve belirteç ucu API'den
+  çağrılır. Air-gap'te ağ içi bir IdP kullanın ve adresini izin listesine ekleyin.
 - Denetim kontrol noktası zaman damgası: yalnızca operatör `AUDIT_TSA_URL`'i
   doldurursa her kontrol noktası için bu adrese bir RFC 3161 isteği gider.
   Air-gap'te boş bırakın ya da ağ içi bir TSA verip izin listesine ekleyin.
@@ -280,10 +291,14 @@ Profil uygulandığında bile operatör eylemiyle dışarı çıkabilecek noktal
 - Compose/host kurulumlarında, veritabanının sürümü yeni imajdan geride ise
   `backup-pre-upgrade` servisi kurulumdan önce otomatik bir anlık görüntü alır
   (`python -m core.backup pre-upgrade`; atlamak için `VIGIL_SKIP_PREUPGRADE_BACKUP`).
-- Vigil 0.7.x'ten 2.0'a geçişte veritabanı `scripts/upgrade_database.py` ile
+- 0.7.x sürümünden 2.0'a geçişte veritabanı `scripts/upgrade_database.py` ile
   yükseltilir (ön kontrol, `--dry-run`, `--backup`); yol CI'da gerçek bir 0.7.1
   dökümüyle sınanır. Yükseltme yalnızca ileri yönlüdür, geri dönüş yedeğin geri
   yüklenmesidir. Prosedür: [docs/upgrade-0.7-to-2.0.md](../upgrade-0.7-to-2.0.md).
+- Bu sürüme yükseltirken: önceden verilmiş ve kullanılmamış parola sıfırlama
+  bağlantıları geçersiz olur (imza SHA-256'ya geçti). `url_safety` artık CGNAT
+  100.64.0.0/10 aralığını reddeder; şirket içi bir LLM ağ geçidi bu aralıktaysa
+  (ör. Tailscale) `LLM_PROVIDER_ALLOWED_CIDRS`'e yazın.
 - Helm'de db-init Job'u, hata veren bir SQL dosyasını uygulanmış saymaz; önceki
   sürümlerde uygulanmış sayılmış ama tablosu eksik kalan düzenleyici sayaç
   dosyalarını `helm upgrade` sırasında kendiliğinden yeniden uygular.
