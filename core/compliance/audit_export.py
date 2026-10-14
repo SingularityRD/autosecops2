@@ -2319,12 +2319,14 @@ def _redact_spaced(text_: str) -> str:
         strength = identifier_strength(ident)
         if not strength:
             continue
+        if m.start() > 0 and text_[m.start() - 1] == "<":
+            continue  # ``<password value="...">``: a tag name (locate_pairs)
         vm = _SPACE_VALUE.match(text_, m.end())
         if vm is None:
             continue
         value = vm.group(0)
-        if value.startswith("[REDACTED"):
-            continue
+        if value.startswith("[REDACTED") or value.endswith(("=", ":")):
+            continue  # ``password value=...``: the next key, not a value
         is_flag = ident.startswith("-")
         if value.startswith("-"):
             # ``--password -S3cr3t``: a dash-led secret, not the next flag.
@@ -2529,16 +2531,24 @@ SECRET_STATUS_VALUES = _STATUS_WORDS | frozenset(
 _JSON_LITERALS = frozenset({"true", "false", "null", "none"})
 
 
+def _bare_value(value: str) -> str:
+    """``"x"`` / ``'x'`` / ``\\"x\\"`` (JSON-escaped) -> ``x``."""
+    v = value.strip()
+    if len(v) >= 4 and v.startswith('\\"') and v.endswith('\\"'):
+        v = v[2:-2]
+    return v.strip("\"'").strip()
+
+
 def secret_status_value(value: str) -> bool:
     """A known non-secret status word (:data:`SECRET_STATUS_VALUES`)."""
-    return value.strip().strip("\"'").strip().lower() in SECRET_STATUS_VALUES
+    return _bare_value(value).lower() in SECRET_STATUS_VALUES
 
 
 def pii_value_exempt(kind: Optional[str], value: str) -> bool:
     """Whether a value under a personal-data key of ``kind`` (see
     :class:`KeyClass`) is let through. Shared by the structured path
     (:meth:`Redactor.value`) and both free-text passes."""
-    v = value.strip().strip("\"'").strip()
+    v = _bare_value(value)
     if kind == "health":
         return v.lower() in SERVICE_HEALTH_VALUES or v.lower() in _JSON_LITERALS
     if kind == "lookalike":
@@ -2607,12 +2617,13 @@ _PHRASE_STOP = re.compile(
     r"|(?P<key>(?:(?<=[\s(\[{])|[ \t]*[,;&|][ \t]*)(?=" + _PHRASE_KEY + r"))"
 )
 # A line that starts a new record: blank, a key token, a list item, a tag, a
-# comment, a bracket, a digit (timestamps, numbered lines).
+# comment, a bracket. (Not a digit: ``DUI\n2019`` is one value.)
 _RECORD_START = re.compile(
-    r"[ \t]*(?:$|[\-<#{}\[\]*|>\d]|" + _PHRASE_KEY + r"|[\"']?[^\s#\"'][^\n#:]{0,64}?"
+    r"[ \t]*(?:$|[\-<#{}\[\]*|>]|" + _PHRASE_KEY + r"|[\"']?[^\s#\"'][^\n#:]{0,64}?"
     r"[\"']?[ \t]*:(?:[ \t]|$))",
     re.M,
 )
+_AFTER_QUOTE = re.compile(r"[ \t]*[^\W_]")
 _LONE_QUOTE = re.compile(r"(?<![^\W\d_])'|'(?![^\W\d_])")
 _OPENER = {")": "(", "]": "[", "}": "{"}
 _TRIM = " \t,;|&"
@@ -2680,7 +2691,15 @@ def _phrase_end(text_: str, pair: _Pair, ctx: _LineContext) -> int:
     enclosing = {k: c.enclosed(k) for k in ")]}"}
     stack: list[str] = []
     start, token_end = pair.start, pair.end
-    pos = token_end if pair.form == "quoted" else start
+    pos = start
+    if pair.form == "quoted":
+        # A quoted value is delimited unless a word follows its closing
+        # quote on the line (``'HIV' positive``): ``"x"/>``, ``"x", ``,
+        # ``"x"}`` end at the quote.
+        nxt = _AFTER_QUOTE.match(text_, token_end)
+        if nxt is None:
+            return token_end
+        pos = token_end
     end = len(text_)
     while True:
         m = _PHRASE_STOP.search(text_, pos)
@@ -2871,13 +2890,18 @@ def _locate_xml(text_: str, pairs: list) -> None:
 
 def locate_pairs(text_: str) -> list:
     """Every ``(key, value span)`` pair in ``text_``, in every form of
-    :data:`PAIR_FORMS`, ordered by where the value starts. Pairs can nest
+    :data:`PAIR_FORMS`, ordered by where the value starts. ``k=v`` pairs
+    whose key no class cares about (:func:`classify_key`: neither a
+    credential nor personal data) are left out. Pairs can nest
     (``<a>password=x</a>``); :func:`_redact_located` skips a pair whose
     value starts inside one it already masked."""
     pairs: list[_Pair] = []
     if "=" in text_ or ":" in text_ or "%3" in text_ or "->" in text_:
         for m in _KEY_SEP.finditer(text_):
             ident = m.group(2)
+            cls = classify_key(ident)
+            if not cls.secret and cls.pii is None:
+                continue  # a key no pass acts on: its value is not looked at
             vstart = m.end()
             ks = m.start(2)
             if not m.group(1) and ks > 0 and text_[ks - 1] in "?&":
@@ -2958,9 +2982,14 @@ def _secret_decision(text_: str, p: _Pair, cls: KeyClass, ctx: _LineContext):
             text_, p.key_start, p.key
         )
         if p.form != "yaml_block" and not flag:
-            if not _secretish(body, _numeric_identifier(p.key), p.key):
+            if not _secretish(_bare_value(body), _numeric_identifier(p.key), p.key):
                 return None
         end = p.extend(text_)
+        if p.form not in _DELIMITED_FORMS:
+            # The token judged, not the phrase (``pin=1234 accepted``), but
+            # never past a bracket that closes one opened before the key
+            # (``(token: S) done``).
+            end = min(end, _phrase_end(text_, p, ctx))
     elif p.form in _DELIMITED_FORMS:
         end = p.end
     else:
@@ -3484,19 +3513,27 @@ def _pgpass_redaction(match: "re.Match[str]") -> str:
     return match.group(1) + REDACTED
 
 
-def _redact_json_text(value: str, depth: int) -> Optional[str]:
-    """A string that is itself JSON (an object, an array, or an encoded
-    string): redact it as a structure, so a secret nested in JSON nested in a
-    string is still found. None when it is not JSON or nothing changed."""
+def _json_candidate(value: str) -> bool:
     s = value.strip()
-    if len(s) < 2 or len(s) > 1_000_000:
-        return None
-    if not (
+    return 2 <= len(s) <= 1_000_000 and (
         (s[0] == "{" and s[-1] == "}")
         or (s[0] == "[" and s[-1] == "]")
         or (s[0] == '"' and s[-1] == '"')
-    ):
+    )
+
+
+def _redact_json_text(
+    value: str, depth: int, redact_pii: bool = False
+) -> Optional[str]:
+    """A string that is itself JSON (an object, an array, or an encoded
+    string): redact it as a structure, so a secret nested in JSON nested in a
+    string is still found. None when it is not JSON or nothing changed.
+    With ``redact_pii`` (the personal-data pass of :class:`Redactor`) the
+    structure is walked with personal-data keys too: ``{"tan\\u0131": ...}``
+    is judged on its decoded key, as a dict would be."""
+    if not _json_candidate(value):
         return None
+    s = value.strip()
     budget = _BUDGET.get()
     if budget is not None and not budget.json_parse():
         return REDACTED_BUDGET
@@ -3506,17 +3543,19 @@ def _redact_json_text(value: str, depth: int) -> Optional[str]:
         return None
     if isinstance(parsed, str):
         inner = redact_text(parsed, _depth=depth + 1)
+        if redact_pii:
+            inner = mask_personal_data(inner)
         return None if inner == parsed else json.dumps(inner)
     if not isinstance(parsed, (dict, list)):
         return None
-    walker = Redactor(redact_pii=False, max_string=10**9, _depth=depth + 1)
+    walker = Redactor(redact_pii=redact_pii, max_string=10**9, _depth=depth + 1)
     out = walker.value("", parsed)
     if walker.count == 0 or out == parsed:
         return None
     return json.dumps(out)
 
 
-def redact_text(value: str, *, _depth: int = 0) -> str:
+def redact_text(value: str, *, _depth: int = 0, _json: bool = True) -> str:
     """Cut every credential this module recognises out of free text.
 
     A string that is JSON is walked as a structure (recursively: JSON in a
@@ -3529,8 +3568,11 @@ def redact_text(value: str, *, _depth: int = 0) -> str:
     Input longer than :data:`MAX_FIELD_CHARS` is cut to it first (and marked
     ``...[truncated]``): the scan is bounded per field."""
     if len(value) > MAX_FIELD_CHARS:
-        return redact_text(value[:MAX_FIELD_CHARS], _depth=_depth) + _TRUNCATED
-    if _depth < _MAX_NEST:
+        return (
+            redact_text(value[:MAX_FIELD_CHARS], _depth=_depth, _json=_json)
+            + _TRUNCATED
+        )
+    if _depth < _MAX_NEST and _json:
         structured = _redact_json_text(value, _depth)
         if structured is not None:
             return structured
@@ -3787,7 +3829,20 @@ class Redactor:
         return REDACTED
 
     def _scan(self, value: str, pii: bool) -> str:
-        out = redact_text(value, _depth=self._nest)
+        if (
+            self.redact_pii
+            and pii
+            and self._nest < _MAX_NEST
+            and _json_candidate(value)
+        ):
+            # JSON in a string: walked once, as a structure, with personal
+            # data keys as well as credential keys (one parse, not two).
+            structured = _redact_json_text(value, self._nest, redact_pii=True)
+            if structured is not None:
+                return structured
+            out = redact_text(value, _depth=self._nest, _json=False)
+        else:
+            out = redact_text(value, _depth=self._nest)
         if self.redact_pii and pii:
             out = mask_personal_data(out)
         return out
