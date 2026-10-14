@@ -39,13 +39,13 @@
       "site": "core/detections/detection_rules_service.py",
       "category": "operator-action",
       "kinds": {
-        "exec:git": 3,
+        "exec:git": 4,
         "host:github.com": 4
       },
       "gates": [
         "operator-action:detection rule source add/sync"
       ],
-      "note": "git clone of SigmaHQ/Splunk/Elastic rule repos happens only when an operator (settings.write) adds or syncs a git source; startup only seeds 'not_cloned' entries. W0.11: https:// only, host must resolve to a public address or one in VIGIL_DETECTION_GIT_ALLOWED_CIDRS; the third git call is a local `git config --get remote.origin.url` (no network). Air-gap: use local-path sources."
+      "note": "git clone of SigmaHQ/Splunk/Elastic rule repos happens only when an operator (settings.write) adds or syncs a git source; startup only seeds 'not_cloned' entries. W0.11: https:// only, host must resolve to a public address or one in VIGIL_DETECTION_GIT_ALLOWED_CIDRS; git calls: clone and update fetch (`fetch --depth 1 --no-tags -- <stored url> HEAD` with the checked address pinned) reach the network; the local `git config` allowlist read and `reset --hard FETCH_HEAD` do not. Air-gap: use local-path sources."
     },
     {
       "site": "core/documents/extract.py",
