@@ -324,13 +324,17 @@ jobs:
 
       # Same rule as Agent Image: an unfixed base-image CVE is not something
       # this repo can act on, and failing every PR on one teaches people to
-      # ignore the job.
+      # ignore the job. Vulnerabilities only: the secret scanner (still in the
+      # report above) rates the SPA's GCP key-file placeholder, the text
+      # '"type": "service_account"' in AiProvidersPanel, as a CRITICAL
+      # service-account key.
       - name: Trivy — fail on fixable CRITICAL
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.75.0
           image-ref: ${{ env.IMAGE }}
           format: table
+          scanners: vuln
           severity: CRITICAL
           ignore-unfixed: true
           exit-code: '1'

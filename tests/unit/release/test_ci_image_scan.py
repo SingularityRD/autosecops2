@@ -134,6 +134,9 @@ def test_trivy_reports_high_critical_and_fails_on_fixable_critical(job: dict) ->
     assert report["with"]["severity"] == "HIGH,CRITICAL"
     assert gate["with"]["severity"] == "CRITICAL"
     assert gate["with"]["ignore-unfixed"] is True
+    # the gate is about vulnerabilities; secrets are reported, not gated
+    assert gate["with"]["scanners"] == "vuln"
+    assert "scanners" not in report["with"]
     assert str(gate["with"]["exit-code"]) == "1"
     names = [s.get("name", "") for s in job["steps"]]
     assert names.index(report["name"]) < names.index(gate["name"])
