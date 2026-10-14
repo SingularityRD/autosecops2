@@ -11510,6 +11510,8 @@ export interface components {
             agent: string;
             /** Approval State */
             approval_state?: string | null;
+            /** Args */
+            args?: unknown | null;
             /** Checkpoint Id */
             checkpoint_id?: string | null;
             /** Error */
@@ -11528,6 +11530,8 @@ export interface components {
             question?: string | null;
             /** Status */
             status: string;
+            /** Tool */
+            tool?: string | null;
         };
         /**
          * PlatformDatabaseProxyConfig
