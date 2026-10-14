@@ -8,6 +8,7 @@ import { Markdown } from '../../shared/Markdown'
 import { type Workflow, type AgentTemplate, type Skill, prettyHandle, skillUsageText } from '../../data/appData'
 import { useWorkflows, useAgents, useAgentMeta, useSkills, workflowsOffered, modelSource, type Phase } from './useWorkflowsData'
 import { TITLES } from '../../data/data'
+import { ToolCallDetail, questionOf, toolCallOf } from '../decisions/ToolCallDetail'
 import { approvalsApi, workflowApi, agentsApi, findingsApi, casesApi, type GeneratedDraft, type ReplayReport } from '../../services/api'
 import DescribeDialog from './DescribeDialog'
 import WorkflowReaderPane from './WorkflowReaderPane'
@@ -1995,6 +1996,7 @@ interface GateApproval {
   title?: string
   description?: string
   reason?: string
+  parameters?: Record<string, unknown>
 }
 
 /** Approve / Reject for a phase the playbook marked approval_required. Same calls
@@ -2050,9 +2052,20 @@ function PhaseGate({ runId, onAnswered }: { runId: string; onAnswered: () => voi
       {actions?.map((action) => (
         <div key={action.action_id} className="mt-2">
           <div className="text-[12.5px] leading-[1.55]">{action.title || action.action_id}</div>
-          {action.description && action.description !== action.title && (
-            <div className="muted text-[12px] mt-1">{action.description}</div>
-          )}
+          {(() => {
+            // The whole bound call, read off the row: a cut summary once hid
+            // the target host behind a padded argument (W0.14).
+            const call = toolCallOf(action.parameters)
+            const question = questionOf(action.description, call)
+            return (
+              <>
+                {question && question !== action.title && (
+                  <div className="muted text-[12px] mt-1" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{question}</div>
+                )}
+                {call && <ToolCallDetail call={call} />}
+              </>
+            )
+          })()}
           {action.reason && <div className="text-[12.5px] mt-1">{action.reason}</div>}
           <div className="flex gap-2 items-center flex-wrap mt-2">
             <button className="btn primary" disabled={busy} onClick={() => settle(action.action_id, approvalsApi.approve(action.action_id))}>

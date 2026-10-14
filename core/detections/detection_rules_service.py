@@ -151,9 +151,16 @@ def check_git_url(url: Optional[str]) -> List[str]:
     )
 
 
-def _git_env() -> Dict[str, str]:
-    """Environment for every git subprocess: https only, never prompt."""
+def _git_env(repo_path: Optional[str] = None) -> Dict[str, str]:
+    """Environment for every git subprocess: https only, never prompt.
+
+    With ``repo_path``, git may look for a repository there and nowhere above
+    it (W0.14): a source folder that is not itself a repository must not let
+    git walk up into whatever repository holds it and fetch / reset that one.
+    """
     env = dict(os.environ)  # noqa: ENV001 - child process env
+    for inherited in ("GIT_DIR", "GIT_WORK_TREE", "GIT_CEILING_DIRECTORIES"):
+        env.pop(inherited, None)
     env.update(
         {
             "GIT_ALLOW_PROTOCOL": "https",
@@ -163,6 +170,8 @@ def _git_env() -> Dict[str, str]:
             "SSH_ASKPASS": "",
         }
     )
+    if repo_path is not None:
+        env["GIT_CEILING_DIRECTORIES"] = os.path.dirname(os.path.realpath(repo_path))
     return env
 
 
@@ -335,6 +344,18 @@ class DetectionRulesService:
             raise ValueError(f"Path must stay inside {base}: {rel}")
         return full
 
+    @classmethod
+    def _inside(cls, base: str, rel: str) -> str:
+        """``_under``, minus ``base`` itself: the directory one source owns.
+
+        A clone directory equal to the base would make every source's files,
+        and whatever repository the base sits in, that source's (W0.14).
+        """
+        full = cls._under(base, rel)
+        if full == os.path.realpath(base):
+            raise ValueError(f"Path must be a directory inside {base}, not it: {rel!r}")
+        return full
+
     def _local_roots(self) -> List[str]:
         extra = get_settings().vigil_detection_local_roots
         return [str(_safe_home())] + [r for r in extra.split(os.pathsep) if r]
@@ -443,7 +464,7 @@ class DetectionRulesService:
             clone_name = url.rstrip("/").split("/")[-1].replace(".git", "")
             if not _CLONE_NAME_RE.match(clone_name):
                 raise ValueError(f"Cannot derive a clone directory from URL: {url}")
-            local_path = self._under(str(self.base_dir), clone_name)
+            local_path = self._inside(str(self.base_dir), clone_name)
         elif source_type == "local":
             if not path:
                 raise ValueError("Path is required for type 'local'")
@@ -540,7 +561,7 @@ class DetectionRulesService:
             import shutil
 
             try:
-                clone_dir = Path(self._under(str(self.base_dir), source["local_path"]))
+                clone_dir = Path(self._inside(str(self.base_dir), source["local_path"]))
             except ValueError:
                 logger.error(
                     f"Refusing to delete {source['local_path']}: outside {self.base_dir}"
@@ -567,7 +588,7 @@ class DetectionRulesService:
         # local_path comes from detection_sources.json, which predates the
         # add_source checks: hold it to the same roots before using it.
         if source["type"] == "git":
-            local_path = self._under(str(self.base_dir), source["local_path"])
+            local_path = self._inside(str(self.base_dir), source["local_path"])
             if not Path(local_path).exists():
                 # Not cloned yet, clone it
                 self._git_clone(source["git_url"], local_path)
@@ -677,8 +698,8 @@ class DetectionRulesService:
 
     def _git_clone(self, url: str, target_path: str):
         """Shallow-clone an https git repository, refusing any other URL."""
+        target_path = self._inside(str(self.base_dir), target_path)
         addresses = check_git_url(url)
-        target_path = self._under(str(self.base_dir), target_path)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Cloning {url} to {target_path}...")
         result = subprocess.run(
@@ -716,6 +737,33 @@ class DetectionRulesService:
         r"|branch\.[^\s]+\.(remote|merge))$"
     )
 
+    @staticmethod
+    def _check_own_repository(repo_path: str) -> None:
+        """Refuse unless ``repo_path`` is the top of its own work tree (W0.14).
+
+        Without this a source folder that lost (or never had) its ``.git``
+        would hand every later git command the repository above it.
+        """
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=_git_env(repo_path),
+            stdin=subprocess.DEVNULL,
+        )
+        top = result.stdout.strip()
+        if result.returncode != 0 or not top:
+            raise ValueError(
+                f"Refusing to update {repo_path}: it is not a git repository"
+            )
+        if os.path.realpath(top) != os.path.realpath(repo_path):
+            raise ValueError(
+                f"Refusing to update {repo_path}: it is inside the repository "
+                f"at {top}, not a repository of its own"
+            )
+
     def _check_clone_config(self, repo_path: str) -> None:
         """Refuse a clone whose own .git/config holds keys git could act on."""
         result = subprocess.run(
@@ -724,7 +772,7 @@ class DetectionRulesService:
             capture_output=True,
             text=True,
             timeout=30,
-            env=_git_env(),
+            env=_git_env(repo_path),
             stdin=subprocess.DEVNULL,
         )
         if result.returncode != 0:
@@ -750,7 +798,7 @@ class DetectionRulesService:
         explicit ``reset --hard FETCH_HEAD`` (a depth-1 clone cannot
         fast-forward-merge a depth-1 fetch anyway).
         """
-        repo_path = self._under(str(self.base_dir), repo_path)
+        repo_path = self._inside(str(self.base_dir), repo_path)
         try:
             addresses = check_git_url(url)
         except ValueError as exc:
@@ -758,13 +806,14 @@ class DetectionRulesService:
                 f"Refusing to update {repo_path}: its URL is not an allowed "
                 f"https URL ({exc})"
             ) from exc
+        self._check_own_repository(repo_path)
         self._check_clone_config(repo_path)
         logger.info(f"Fetching updates for {repo_path}...")
         common = dict(
             cwd=repo_path,
             capture_output=True,
             text=True,
-            env=_git_env(),
+            env=_git_env(repo_path),
             stdin=subprocess.DEVNULL,
         )
         result = subprocess.run(
