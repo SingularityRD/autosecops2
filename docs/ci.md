@@ -15,8 +15,19 @@ secret gerektirmez.
 | `nightly.yml` | Her gün 02:00 UTC | Actions dakikası harcar. |
 | `release-please.yml`, `release.yml` | — | **Kapalı.** Upstream'e (`ghcr.io/vigil-soc/*`) yayın yapar; koşul hâlâ `Vigil-SOC/vigil`, burada asla çalışmaz. |
 
-`ci-cd.yml` içindeki `build-images` ve `scan-images` işleri de `if: false` ile
-kapalıdır (registry'ye imaj iter).
+`ci-cd.yml` hiçbir registry'ye imaj itmez; imajları yalnızca `release.yml` bir
+etikette yayımlar (imza, SBOM, provenance). Eskiden `if: false` ile kapalı duran
+ve ghcr'a iten `build-images` / `scan-images` işleri W0.22'de kaldırıldı.
+
+## İmaj taraması (etiketten önce)
+
+`Agent Image` ve `Service Image (backend)` / `Service Image (daemon)` işleri her
+PR'da ve `main` push'unda imajı yerelde derler (`push: false`, `load: true`),
+Trivy ile HIGH/CRITICAL bulguları raporlar, **düzeltmesi olan** bir CRITICAL
+zafiyette düşer ve imajın içinde uygulamanın içe aktarıldığını doğrulayan bir
+duman testi çalıştırır. Servis imajı işleri yalnızca `contents: read` izniyle
+çalışır, secret kullanmaz; eylemler commit SHA'sıyla, Trivy sürümü açıkça
+sabitlenmiştir (`tests/unit/release/test_ci_image_scan.py`).
 
 ## `main` için zorunlu (required) kontroller
 
@@ -28,6 +39,7 @@ görünen adlarıyla):
 - `Generated API Types`
 - `Lint Dockerfiles`
 - `Agent Image`
+- `Service Image (backend)`, `Service Image (daemon)`
 - `Unit Tests - Backend`
 - `Unit Tests - Backend (DB-backed)`
 - `Unit Tests - Frontend`
