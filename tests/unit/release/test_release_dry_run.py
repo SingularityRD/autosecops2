@@ -139,6 +139,18 @@ def test_release_versions_are_consistent() -> None:
     assert rt.check_versions() == rt.read_version() == "2.0.0"
 
 
+# These two check the real docs/release/2.0.0.md against this checkout's own
+# merge history, so they need it; a shallow CI checkout (actions/checkout with
+# the default fetch-depth: 1) or a source export has none. The same logic runs
+# on fixture repositories below, which always have their history.
+needs_repo_history = pytest.mark.skipif(
+    not (REPO / ".git").exists() or rt.is_shallow(REPO),
+    reason="needs the repository's full merge history (shallow clone or no .git);"
+    " run `git fetch --unshallow --tags`",
+)
+
+
+@needs_repo_history
 def test_release_notes_included_items_are_merged() -> None:
     rows = rt.check_notes(REPO / "docs/release/2.0.0.md", REPO)
     included = {r["wp"] for r in rows if r["included"]}
@@ -147,12 +159,18 @@ def test_release_notes_included_items_are_merged() -> None:
     # "Dahil" exactly for the merged wp/<id>-* branches (W4.7 itself excepted).
     merged = set(rt.merged_wps(rt.merged_branches(REPO))) - {"W4.7"}
     assert {r["wp"] for r in rows if r["wp"] in merged} == merged
-    assert included - {"W0.2"} == merged
+    # WPs whose work landed under another branch name (W0.2: brand/...,
+    # W4.2: wp/w4.1-load-chaos) name it in the data file.
+    data = json.loads((REPO / "docs/release/2.0.0.json").read_text())
+    explicit = {w["id"] for w in data["wps"] if w.get("branch")}
+    assert {"W0.2", "W4.2"} <= explicit
+    assert included - explicit == merged
     for r in rows:
         if not r["included"]:
             assert r["wp"] not in merged, r["wp"]
 
 
+@needs_repo_history
 def test_release_notes_are_rendered_from_history() -> None:
     """docs/release/2.0.0.md and the CHANGELOG block are fresh for HEAD."""
     data = REPO / "docs/release/2.0.0.json"
@@ -747,3 +765,172 @@ def test_check_on_main(tmp_path: Path, history: Path) -> None:
     )
     with pytest.raises(rt.ReleaseError, match="cannot resolve"):
         rt.check_on_main(history, "HEAD", "origin/main")
+
+
+# --- merge subjects: GitHub PR merges and squash merges (Round 6) -----------------
+
+
+@pytest.mark.parametrize(
+    "subject,parents,branch",
+    [
+        ("Merge pull request #12 from SingularityRD/wp/w3.6-audit-export", 2,
+         "wp/w3.6-audit-export"),
+        ("Merge pull request #7 from acme/feature/x\n\nbody", 2, "feature/x"),
+        ("Merge remote-tracking branch 'origin/wp/w1.9-oidc' into integration", 2,
+         "wp/w1.9-oidc"),
+        ("Merge branch 'wp/w1.9-oidc' into integration", 2, "wp/w1.9-oidc"),
+        ("Merge branch 'integration' into wp/w4.7-release", 2, "integration"),
+        ("Merge wp/w0.11-security-hotfix into integration (verified PASS)", 2,
+         "wp/w0.11-security-hotfix"),
+        ("Merge brand/autosecops-ui: the product shows AutoSecOps", 2,
+         "brand/autosecops-ui"),
+        ("W1.9: OIDC SSO (#13)", 1, "PR #13 (W1.9)"),
+        ("W0.12b spool hardening (#21)", 1, "PR #21 (W0.12b)"),
+        ("W1.9: OIDC SSO, no PR number", 1, None),
+        ("fix: something (#14)", 1, None),
+        ("Merge pull request #12 from x/wp/w3.6-audit-export", 1, None),
+    ],
+)
+def test_branch_of_subject(subject: str, parents: int, branch: Optional[str]) -> None:
+    assert rt.branch_of_subject(subject.split("\n")[0], parents) == branch
+
+
+def test_wp_id_of_squash_label() -> None:
+    assert rt.wp_id_of_branch("PR #13 (W1.9)") == "W1.9"
+    assert rt.wp_id_of_branch("PR #13 (feature)") is None
+
+
+def test_github_pr_merge_and_squash_merge_count_as_merged(
+    tmp_path: Path, history: Path
+) -> None:
+    _merge(
+        history,
+        "wp/w3.6-audit-export",
+        "Merge pull request #12 from SingularityRD/wp/w3.6-audit-export",
+    )
+    _git(history, "commit", "-q", "--allow-empty", "-m", "W1.9: OIDC SSO (#13)")
+    merged = rt.merged_branches(history)
+    assert {"wp/w3.6-audit-export", "PR #13 (W1.9)"} <= merged
+    assert "pull" not in merged
+    by_wp = rt.merged_wps(merged)
+    assert by_wp["W3.6"] == "wp/w3.6-audit-export"
+    assert by_wp["W1.9"] == "PR #13 (W1.9)"
+
+    # strict: both must be "Dahil", W1.9 with its PR label as the merge cell.
+    stale = _notes(
+        tmp_path, w22="Dahil", w22b="`wp/w2.2-alert-lanes`", w19="Dahil değil", w19b="—"
+    )
+    with pytest.raises(rt.ReleaseError) as exc:
+        rt.check_notes(stale, history, strict=True)
+    assert "W1.9: marked 'Dahil değil' but PR #13 (W1.9) is merged" in str(exc.value)
+    assert "W3.6: wp/w3.6-audit-export is merged" in str(exc.value)
+    fresh = _notes(
+        tmp_path,
+        w22="Dahil",
+        w22b="`wp/w2.2-alert-lanes`",
+        w19="Dahil",
+        w19b="`PR #13 (W1.9)`",
+    )
+    fresh.write_text(fresh.read_text() + "| W3.6 | Export | Dahil | `wp/w3.6-audit-export` |\n")
+    rows = rt.check_notes(fresh, history, strict=True)
+    assert {r["wp"] for r in rows if r["included"]} == {"W1.1", "W2.2", "W1.9", "W3.6"}
+
+
+def test_render_lists_every_merged_branch_of_a_wp(tmp_path: Path, history: Path) -> None:
+    data = _render_fixture(tmp_path, history)
+    _merge(history, "wp/w0.10-review-a")
+    _merge(history, "wp/w0.10-review-b")
+    notes = rt.render_notes(rt._load_notes_data(data), history)[
+        (history / "docs/release/n.md").resolve()
+    ]
+    assert "| W0.10 | Takip | Dahil | `wp/w0.10-review-a`, `wp/w0.10-review-b` |" in notes
+    p = tmp_path / "multi.md"
+    p.write_text(notes)
+    rows = {r["wp"]: r for r in rt.check_notes(p, history, strict=True, data=None)}
+    assert rows["W0.10"]["branches"] == ["wp/w0.10-review-a", "wp/w0.10-review-b"]
+    # A listed branch that is not merged is an error even if the other one is.
+    p.write_text(notes.replace("wp/w0.10-review-b", "wp/w0.10-review-c"))
+    with pytest.raises(rt.ReleaseError, match="wp/w0.10-review-c has no merge commit"):
+        rt.check_notes(p, history)
+
+
+# --- shallow clones (Round 6) ------------------------------------------------------
+
+
+def _shallow_clone(src: Path, dst: Path) -> Path:
+    subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", "--no-local", f"file://{src}", str(dst)],
+        check=True,
+        capture_output=True,
+    )
+    return dst
+
+
+def test_shallow_clone_is_refused_not_misread(tmp_path: Path, history: Path) -> None:
+    _git(history, "branch", "main", "integration")
+    _git(history, "checkout", "-q", "-b", "feature", "integration")
+    _git(history, "commit", "-q", "--allow-empty", "-m", "not on main")
+    _git(history, "checkout", "-q", "integration")
+    clone = _shallow_clone(history, tmp_path / "shallow")
+    assert rt.is_shallow(clone) and not rt.is_shallow(history)
+    # A depth-1 clone sees no merge commits: refusing beats "nothing merged".
+    with pytest.raises(rt.ReleaseError, match="shallow clone.*git fetch --unshallow"):
+        rt.merged_branches(clone)
+    notes = _notes(
+        tmp_path, w22="Dahil", w22b="`wp/w2.2-alert-lanes`", w19="Dahil değil", w19b="—"
+    )
+    assert rt.main(["--repo", str(clone), "check-notes", "--notes", str(notes)]) == 1
+    # check-on-main: "not an ancestor" in a shallow clone may be missing history.
+    _git(clone, "fetch", "-q", "--depth", "1", "origin", "feature:feature")
+    with pytest.raises(rt.ReleaseError, match="shallow clone"):
+        rt.check_on_main(clone, "feature", "HEAD")
+    # The documented fix works.
+    _git(clone, "fetch", "-q", "--unshallow", "origin")
+    assert not rt.is_shallow(clone)
+    assert {"wp/w1.1-eval-harness", "wp/w2.2-alert-lanes"} <= rt.merged_branches(clone)
+    rt.check_notes(notes, clone, strict=True)
+    with pytest.raises(rt.ReleaseError, match="is not on"):
+        rt.check_on_main(clone, "feature", "HEAD")
+
+
+def _dry_run_fixture(tmp_path: Path) -> Path:
+    """A small repo with the release scripts, version files, notes and lockfiles."""
+    src = _mini_repo(tmp_path / "src")
+    rels = [
+        "scripts/release/dry-run.sh",
+        "scripts/release/release_tool.py",
+        "docs/release/2.0.0.md",
+        *[rel for _, _, rel, _ in rt.LOCKFILES],
+    ]
+    for rel in rels:
+        (src / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(REPO / rel, src / rel)
+    _git(src, "init", "-q", "-b", "main")
+    _git(src, "add", "-A")
+    _git(src, "commit", "-q", "-m", "one")
+    _git(src, "commit", "-q", "--allow-empty", "-m", "two")
+    return src
+
+
+def test_dry_run_on_a_shallow_clone(tmp_path: Path) -> None:
+    clone = _shallow_clone(_dry_run_fixture(tmp_path), tmp_path / "shallow")
+    dry = clone / "scripts/release/dry-run.sh"
+
+    def run(*extra: str):
+        return subprocess.run(
+            ["sh", str(dry), "--out", str(tmp_path / "out"), *extra],
+            env=_offline_env(tmp_path),
+            capture_output=True,
+            text=True,
+            cwd=clone,
+            timeout=600,
+        )
+
+    proc = run()
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "SKIP release notes: shallow clone" in proc.stdout
+    assert "DRY RUN OK" in proc.stdout
+    proc = run("--strict-notes")
+    assert proc.returncode != 0
+    assert "--strict-notes needs the full merge history (shallow clone)" in proc.stderr
+    assert "git fetch --unshallow" in proc.stderr
