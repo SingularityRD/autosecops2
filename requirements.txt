@@ -63,7 +63,7 @@ uv>=0.12.22
 
 # Authentication
 bcrypt>=5.0.0
-pyjwt>=2.13.0
+pyjwt>=2.14.0
 pyotp>=2.9.0
 cryptography>=50.0.2
 slowapi>=0.1.10

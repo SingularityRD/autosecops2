@@ -533,7 +533,7 @@
       "when": [
         "W0.22"
       ],
-      "text": "**Etiketten önce imaj taraması:** backend ve daemon imajları her PR'da ve `main`'de yerelde derlenip Trivy ile taranır (HIGH/CRITICAL rapor, düzeltmesi olan CRITICAL'da CI düşer) ve imajın içinde duman testinden geçer; `ci-cd.yml` hiçbir registry'ye imaj itmez (W0.22)."
+      "text": "**Etiketten önce imaj taraması:** backend ve daemon imajları her PR'da ve `main`'de yerelde derlenip Trivy ile taranır (HIGH/CRITICAL rapor, düzeltmesi olan CRITICAL'da CI düşer) ve imajın içinde duman testinden geçer; `ci-cd.yml` hiçbir registry'ye imaj itmez. İlk taramanın bulduğu CVE-2026-102268 (PyJWT, açık anahtar doğrulamasında kimlik doğrulama atlatması; CRITICAL) için PyJWT 2.14.0'a yükseltildi (W0.22)."
     },
     {
       "when": [],
