@@ -21,6 +21,13 @@ FAILED = "failed"
 OUTAGE = "outage"  # the database cannot take writes now: back off, keep it
 DATA = "data"  # this finding is the problem: may be quarantined
 UNKNOWN = "unknown"  # neither is certain: the caller's heuristic decides
+# A unique-key collision (23505). Usually a concurrent insert of the same
+# finding, which the in-place retry resolves as EXISTS; one the retry does not
+# resolve is a row this finding cannot be stored beside (the database answered),
+# so it counts toward quarantine instead of waiting forever as an outage.
+CONFLICT = "conflict"
+
+_UNIQUE_VIOLATION = "23505"
 
 # SQLSTATE classes / codes (PostgreSQL appendix A).
 _OUTAGE_CLASSES = (
@@ -39,7 +46,6 @@ _OUTAGE_CODES = frozenset(
         "55P03",  # lock_not_available
         "55006",  # object_in_use
         "55000",  # object_not_in_prerequisite_state (e.g. recovery in progress)
-        "23505",  # unique_violation: a concurrent insert; the retry sees EXISTS
         "0A000",  # feature_not_supported: e.g. writes on a hot standby
     }
 )
@@ -116,11 +122,13 @@ def _sqlstate(exc: BaseException) -> Optional[str]:
 
 
 def classify_store_error(exc: Optional[BaseException]) -> str:
-    """OUTAGE, DATA or UNKNOWN for an exception raised while storing."""
+    """OUTAGE, CONFLICT, DATA or UNKNOWN for an exception raised while storing."""
     if exc is None:
         return UNKNOWN
     code = _sqlstate(exc)
     if code is not None:
+        if code == _UNIQUE_VIOLATION:
+            return CONFLICT
         if code in _OUTAGE_CODES or code.startswith(_OUTAGE_CLASSES):
             return OUTAGE
         if code.startswith(_DATA_CLASSES):

@@ -15,6 +15,7 @@ from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.orm import joinedload, lazyload, noload, selectinload
 
 from core.exceptions import default_on_error
+from core.findings.external_id import normalize_external_id
 from core.storage.arrays import text_array
 from core.storage.canary_exclusion import not_canary_finding
 from core.storage.case_repository import CaseRepository
@@ -54,8 +55,8 @@ def _external_key(row: Dict[str, Any]) -> Optional[tuple]:
     external id is keyed by it. Rows default their source to "imported"
     at insert, so the key does the same.
     """
-    external_id = row.get("external_id")
-    if not external_id:
+    external_id = normalize_external_id(row.get("external_id"))
+    if external_id is None:
         return None
     return (row.get("data_source", "imported"), external_id)
 
@@ -154,7 +155,7 @@ class DatabaseService:
                 anomaly_score=anomaly_score,
                 timestamp=timestamp,
                 data_source=data_source,
-                external_id=kwargs.get("external_id"),
+                external_id=normalize_external_id(kwargs.get("external_id")),
                 title=kwargs.get("title"),
                 description=kwargs.get("description"),
                 entity_context=kwargs.get("entity_context"),
@@ -298,7 +299,7 @@ class DatabaseService:
                     anomaly_score=r.get("anomaly_score"),
                     timestamp=r.get("timestamp"),
                     data_source=r.get("data_source", "imported"),
-                    external_id=r.get("external_id"),
+                    external_id=normalize_external_id(r.get("external_id")),
                     title=r.get("title"),
                     description=r.get("description"),
                     entity_context=r.get("entity_context"),

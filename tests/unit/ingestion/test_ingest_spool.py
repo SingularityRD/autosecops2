@@ -318,3 +318,119 @@ def test_waiting_findings_counts_without_opening(tmp_path):
     finally:
         watch_standby(None)
     assert standby_pending() == 0
+
+
+# -- W0.12b round 6 ------------------------------------------------------------
+
+
+def _unreadable(monkeypatch, name: str):
+    """``read_bytes`` of the file called ``name`` fails with EACCES (the tests
+    run as root, which a mode of 0000 would not stop)."""
+    import errno
+    from pathlib import Path
+
+    real = Path.read_bytes
+
+    def read_bytes(self):
+        if self.name == name:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+
+def _two_segments(path):
+    first = _spool(path)
+    first.append([{"finding_id": "a"}], "webhook")
+    first.append([{"finding_id": "b"}], "webhook")
+    first.close()
+    return _segments(path)
+
+
+def test_an_unreadable_segment_is_set_aside_and_the_rest_replays(tmp_path, monkeypatch):
+    """Round 6: EACCES on one segment raised SpoolError and disabled the spool."""
+    bad, good = _two_segments(tmp_path)
+    _unreadable(monkeypatch, bad)
+    spool = IngestSpool(tmp_path)
+    assert spool.open() == 1
+    assert [e.finding_id for e in spool.claim(10)] == ["b"]
+    assert spool.stats["unreadable_segments"] == 1
+    assert (tmp_path / CORRUPT_DIR / bad).exists()  # kept, not deleted
+    assert _segments(tmp_path) == [good]
+    spool.append([{"finding_id": "c"}], "webhook")  # still takes writes
+
+
+def test_an_unreadable_segment_that_cannot_be_moved_is_left_in_place(
+    tmp_path, monkeypatch
+):
+    bad, good = _two_segments(tmp_path)
+    _unreadable(monkeypatch, bad)
+    real_replace = os.replace
+
+    def replace(src, dst, *a, **kw):
+        if os.path.basename(str(src)) == bad:
+            raise PermissionError(13, "Permission denied")
+        return real_replace(src, dst, *a, **kw)
+
+    monkeypatch.setattr(os, "replace", replace)
+    spool = IngestSpool(tmp_path)
+    assert spool.open() == 1
+    assert [e.finding_id for e in spool.claim(10)] == ["b"]
+    assert sorted(_segments(tmp_path)) == sorted([bad, good])  # left as it was
+
+
+def test_unreadable_done_marks_leave_the_segment_alone(tmp_path, monkeypatch):
+    first = _spool(tmp_path)
+    first.append([{"finding_id": "a"}, {"finding_id": "b"}], "webhook")
+    first.append([{"finding_id": "c"}], "webhook")
+    first.done(first.claim(1)[0])  # a: stored, marked done
+    first.close()
+    bad = sorted(p.name for p in tmp_path.glob("seg-*.done"))[0]
+    _unreadable(monkeypatch, bad)
+    spool = IngestSpool(tmp_path)
+    assert spool.open() == 1  # c only: a is never replayed (nor is b)
+    assert [e.finding_id for e in spool.claim(10)] == ["c"]
+    assert (tmp_path / bad).exists()
+
+
+def test_tightening_permissions_never_follows_a_symlink(tmp_path):
+    """Round 6: is_file()/chmod followed a symlink in the spool to its target."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "config.yaml"
+    target.write_text("x")
+    os.chmod(target, 0o644)
+    target_dir = outside / "shared"
+    target_dir.mkdir()
+    os.chmod(target_dir, 0o755)
+    root = tmp_path / "spool"
+    root.mkdir()
+    (root / "link.jsonl").symlink_to(target)
+    (root / "seg-00000000000000000001-1-00000001.jsonl.done").symlink_to(target)
+    (root / DEAD_DIR).mkdir()
+    (root / DEAD_DIR / "dead.jsonl").symlink_to(target)
+    (root / CORRUPT_DIR).symlink_to(target_dir)  # a whole sub-directory
+    regular = root / "note"
+    regular.write_text("y")
+    os.chmod(regular, 0o644)
+
+    _spool(root)
+    assert os.stat(target).st_mode & 0o777 == 0o644
+    assert os.stat(target_dir).st_mode & 0o777 == 0o755
+    assert os.stat(regular).st_mode & 0o777 == 0o600  # a real file still is
+
+
+def test_a_symlinked_sub_directory_is_never_written_through(tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    os.chmod(elsewhere, 0o755)
+    root = tmp_path / "spool"
+    root.mkdir()
+    (root / DEAD_DIR).symlink_to(elsewhere)
+    spool = _spool(root)
+    spool.append([{"finding_id": "q"}], "webhook")
+    [q] = spool.claim(1)
+    with pytest.raises(OSError):
+        spool.quarantine(q, "refused")
+    assert not list(elsewhere.iterdir())
+    assert os.stat(elsewhere).st_mode & 0o777 == 0o755

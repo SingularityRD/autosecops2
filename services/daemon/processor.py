@@ -7,7 +7,7 @@ import math
 import re
 import time
 import unicodedata
-from collections import Counter
+from collections import Counter, OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import ValidationError
@@ -29,6 +29,7 @@ from core.ingestion.dedup import RedisDedupSet
 from core.ingestion.handoff import envelope, put_or_shutdown
 from core.ingestion.spool import IngestSpool, SpoolEntry
 from core.ingestion.spool import count as spool_count
+from core.ingestion.store_outcome import CONFLICT as STORE_CONFLICT
 from core.ingestion.store_outcome import DATA as STORE_DATA
 from core.ingestion.store_outcome import EXISTS as STORE_EXISTS
 from core.ingestion.store_outcome import OUTAGE as STORE_OUTAGE
@@ -82,6 +83,8 @@ _SPOOL_BACKOFF_MAX = 10.0  # seconds
 # is not an outage but a finding the store refuses: set aside under dead/.
 _SPOOL_POISON_ATTEMPTS = 5
 _SPOOL_CLAIM_BATCH = 64
+# How many recently ended enrich tasks the replay remembers (see _enrich_ended).
+_ENRICH_ENDED_KEEP = 4096
 
 _FENCE = re.compile(r"<\s*/?\s*alert_data\s*>", re.IGNORECASE)
 
@@ -491,6 +494,11 @@ class FindingProcessor:
         # Finding ids being stored or triaged right now (by count); the
         # backfill sweep skips them so a finding is not triaged twice.
         self._inflight: Counter = Counter()
+        # When each recent enrich task ended, as a sequence number (bounded):
+        # a replay that read "not triaged" before a triage of the same finding
+        # ended here must not triage it again (W0.12b round 6).
+        self._enrich_seq = 0
+        self._enrich_ended: "OrderedDict[str, int]" = OrderedDict()
 
         # Caps concurrent background AI enrichment (not the ingest/store path).
         self._semaphore = asyncio.Semaphore(config.max_concurrent_tasks)
@@ -806,6 +814,7 @@ class FindingProcessor:
             except Exception as e:  # noqa: BLE001
                 logger.debug(f"Sanitization hook error (non-fatal): {e}")
 
+            enrich_seq = self._enrich_seq
             outcome = await self._store_spooled(finding)
             if not outcome.stored:
                 await self._spooled_store_failed(entry, outcome)
@@ -816,7 +825,13 @@ class FindingProcessor:
                 spool.done(entry)
             if outcome.status == STORE_EXISTS:
                 # _process_finding holds one in-flight count for this call.
-                if outcome.triaged is False and self._inflight[finding_id] <= 1:
+                # Not when a triage of it is running here, nor when one ended
+                # while the store looked (its "not triaged" may predate it).
+                if (
+                    outcome.triaged is False
+                    and self._inflight[finding_id] <= 1
+                    and self._enrich_ended.get(finding_id, 0) <= enrich_seq
+                ):
                     self.stats["spool_existing_enriched"] += 1
                     await self._spawn_enrich(finding, source)
                     return
@@ -876,7 +891,9 @@ class FindingProcessor:
         A write the database rejects as a whole (read-only after a failover,
         disk full, no privilege: :func:`classify_store_error` OUTAGE) is an
         outage like a refused connection: the entry waits in the spool however
-        long it lasts. Only a failure that is this finding's (DATA), or an
+        long it lasts. Only a failure that is this finding's (DATA), a unique
+        key collision the in-place retries did not resolve as "already stored"
+        (CONFLICT: the database answered, so it is not an outage), or an
         unclassified one while the database answers, counts toward quarantine.
         """
         self.stats["store_retried"] += 1
@@ -909,7 +926,8 @@ class FindingProcessor:
             return
         # Without a data service the failure is ours, not the finding's.
         if self._data_service is not None and (
-            outcome.kind == STORE_DATA or await self._database_answers()
+            outcome.kind in (STORE_DATA, STORE_CONFLICT)
+            or await self._database_answers()
         ):
             entry.reachable_failures += 1
             if entry.reachable_failures >= _SPOOL_POISON_ATTEMPTS:
@@ -1031,6 +1049,11 @@ class FindingProcessor:
         def _done(t: asyncio.Task) -> None:
             self._enrich_tasks.discard(t)
             self._enrich_slots.release()
+            self._enrich_seq += 1
+            self._enrich_ended[finding_id] = self._enrich_seq
+            self._enrich_ended.move_to_end(finding_id)
+            while len(self._enrich_ended) > _ENRICH_ENDED_KEEP:
+                self._enrich_ended.popitem(last=False)
             self._inflight_done(finding_id)
 
         task.add_done_callback(_done)

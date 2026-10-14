@@ -22,6 +22,7 @@ from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
+from core.findings.external_id import normalize_external_id
 from core.findings.source_evidence import (
     normalize_finding_source_evidence,
     source_evidence_from_loglm_row,
@@ -356,8 +357,8 @@ class IngestionService:
                 # same duplicate, counted the same way; without this check
                 # the insert fails on the unique (source, external_id) index
                 # and the row is reported as an error (#1935).
-                external_id = finding_data.get("external_id")
-                if external_id:
+                external_id = normalize_external_id(finding_data.get("external_id"))
+                if external_id is not None:
                     lookup = getattr(
                         self.db_service, "get_finding_by_external_id", None
                     )
@@ -408,7 +409,7 @@ class IngestionService:
             anomaly_score=_optional_float(finding_data.get("anomaly_score")),
             timestamp=self.parse_timestamp(finding_data.get("timestamp")),
             data_source=finding_data.get("data_source", "imported"),
-            external_id=finding_data.get("external_id"),
+            external_id=normalize_external_id(finding_data.get("external_id")),
             title=finding_data.get("title"),
             description=finding_data.get("description"),
             entity_context=finding_data.get("entity_context"),
@@ -462,9 +463,12 @@ class IngestionService:
                     status=EXISTS,
                     triaged=has_triage(getattr(existing, "ai_enrichment", None)),
                 )
-            external_id = finding_data.get("external_id")
+            # Looked up whenever the insert would carry it into the unique
+            # (data_source, external_id) index: any non-None value, matching
+            # the index's IS NOT NULL predicate (blank ones are None by now).
+            external_id = create_kwargs["external_id"]
             lookup = getattr(db, "get_finding_by_external_id", None)
-            if external_id and lookup is not None:
+            if external_id is not None and lookup is not None:
                 if _raising(lookup)(
                     finding_data.get("data_source", "imported"), external_id
                 ):

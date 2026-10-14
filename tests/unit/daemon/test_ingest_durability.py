@@ -448,6 +448,113 @@ async def test_quarantine_needs_the_findings_own_error(monkeypatch, tmp_path):
     assert os.stat(dead).st_mode & 0o777 == 0o600
 
 
+@pytest.mark.asyncio
+async def test_a_unique_violation_the_retry_does_not_resolve_is_quarantined(
+    monkeypatch, tmp_path
+):
+    """Round 6: 23505 was always an outage, assuming the retry finds the row.
+    One it never finds (a lookup that misses it) held its spool slot forever,
+    kept the pending count from draining and paused the feeder."""
+    db = _Db()
+    db.refuse["dup"] = _PgError(
+        'duplicate key value violates unique constraint "uniq_findings_source_extid"',
+        "23505",
+    )
+    spool = _open(tmp_path)
+    processor = _processor(monkeypatch, db, spool)
+    spool.append([{"finding_id": "dup"}, {"finding_id": "ok"}], "webhook")
+    for _ in range(_SPOOL_POISON_ATTEMPTS):
+        await _drain_once(processor, spool)
+    assert len(spool) == 0
+    assert db.inserts == ["ok"]
+    assert processor.stats["spool_quarantined"] == 1
+    assert processor.stats["spool_store_outages"] == 0
+    [dead] = list((tmp_path / DEAD_DIR).glob("seg-*.jsonl"))
+    assert '"dup"' in dead.read_text()
+
+
+@pytest.mark.asyncio
+async def test_a_unique_violation_from_a_race_stores_nothing_twice(
+    monkeypatch, tmp_path
+):
+    """The race 23505 used to be an outage for: a concurrent insert of the same
+    finding. The in-place retry sees the row, so it is not quarantined."""
+    db = _Db()
+    real_create = db.create_finding
+
+    def racing_create(finding_id: str, **kw):
+        if finding_id not in db.rows:  # the other writer wins the race
+            db.store(finding_id, triaged=True)
+            raise _PgError("duplicate key value", "23505")
+        return real_create(finding_id, **kw)
+
+    db.create_finding = racing_create  # type: ignore[method-assign]
+    spool = _open(tmp_path)
+    processor = _processor(monkeypatch, db, spool)
+    spool.append([{"finding_id": "r"}], "webhook")
+    await _drain_once(processor, spool)
+    assert len(spool) == 0
+    assert db.inserts == ["r"]
+    assert processor.stats["spool_quarantined"] == 0
+    assert processor.stats["spool_replay_skipped"] == 1
+    assert processor.enriched == []
+
+
+@pytest.mark.asyncio
+async def test_a_triage_that_ends_while_replay_looks_is_not_repeated(
+    monkeypatch, tmp_path
+):
+    """Round 6 (INFO): the backfill's triage of a stored, untriaged finding
+    ended between the replay's "not triaged" read and its in-flight check; the
+    replay then triaged it a second time."""
+    import time as _time
+
+    from services.daemon.processor import BACKFILL_SOURCE
+
+    class _SlowDb(_Db):
+        armed = False
+
+        @default_on_error(None)
+        def get_finding(self, finding_id: str):
+            row = self.rows.get(finding_id)
+            snapshot = SimpleNamespace(**row) if row is not None else None
+            if self.armed:  # the replay's read: then the backfill triage ends
+                self.armed = False
+                loop.call_soon_threadsafe(gate.set)
+                deadline = _time.monotonic() + 10
+                while finding_id not in processor._enrich_ended:
+                    assert _time.monotonic() < deadline, "triage never ended"
+                    _time.sleep(0.01)
+            return snapshot
+
+    loop = asyncio.get_running_loop()
+    gate = asyncio.Event()
+    db = _SlowDb()
+    db.store("x", triaged=False)
+    spool = _open(tmp_path)
+    processor = _processor(monkeypatch, db, spool)
+    # The real spawn (in-flight and ended bookkeeping), a stub triage.
+    processor._spawn_enrich = FindingProcessor._spawn_enrich.__get__(processor)
+    triaged: List[str] = []
+
+    async def triage(finding, source=None):
+        await gate.wait()
+        triaged.append(source)
+        db.rows[finding["finding_id"]]["ai_enrichment"] = {"ai_triage": {}}
+
+    processor._enrich_in_background = triage  # type: ignore[method-assign]
+
+    await processor._spawn_enrich({"finding_id": "x"}, BACKFILL_SOURCE)
+    spool.append([{"finding_id": "x"}], "webhook")  # a replay of the same one
+    db.armed = True
+    await _drain_once(processor, spool)
+    await asyncio.gather(*list(processor._enrich_tasks))
+
+    assert triaged == [BACKFILL_SOURCE]  # once, not again by the replay
+    assert len(spool) == 0
+    assert processor.stats["spool_replay_skipped"] == 1
+
+
 # -- backfill (W4.1 finding 5) ---------------------------------------------------
 
 

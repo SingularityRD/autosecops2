@@ -42,6 +42,7 @@ import errno
 import json
 import logging
 import os
+import stat
 import threading
 import time
 import zlib
@@ -167,6 +168,7 @@ class IngestSpool:
             "quarantined": 0,
             "corrupt_segments": 0,
             "corrupt_lines": 0,
+            "unreadable_segments": 0,
         }
 
     # -- lifecycle -----------------------------------------------------------
@@ -224,14 +226,13 @@ class IngestSpool:
         targets = [(self.directory, _DIR_MODE)]
         for sub in (DEAD_DIR, CORRUPT_DIR):
             path = self.directory / sub
-            if path.is_dir():
+            if _is_real(path, stat.S_ISDIR):
                 targets.append((path, _DIR_MODE))
-                targets.extend((f, _FILE_MODE) for f in path.iterdir() if f.is_file())
-        targets.extend((f, _FILE_MODE) for f in self.directory.iterdir() if f.is_file())
+                targets.extend(_real_files(path))
+        targets.extend(_real_files(self.directory))
         for path, mode in targets:
             try:
-                if (path.stat().st_mode & 0o777) != mode:
-                    os.chmod(path, mode)
+                _chmod_no_follow(path, mode)
             except OSError as e:  # not ours to change (e.g. another owner)
                 logger.warning(
                     "Ingest spool: could not set mode %o on %s: %s", mode, path, e
@@ -240,8 +241,9 @@ class IngestSpool:
     def _subdir(self, name: str) -> Path:
         path = self.directory / name
         path.mkdir(exist_ok=True, mode=_DIR_MODE)
-        if (path.stat().st_mode & 0o777) != _DIR_MODE:
-            os.chmod(path, _DIR_MODE)
+        if not _is_real(path, stat.S_ISDIR):  # a symlink: never write through it
+            raise NotADirectoryError(f"{path} is not a directory of the spool")
+        _chmod_no_follow(path, _DIR_MODE)
         return path
 
     def _done_path(self, segment: str) -> Path:
@@ -294,11 +296,30 @@ class IngestSpool:
             corrupt,
         )
 
+    def _skip_unreadable(self, path: Path, error: OSError) -> None:
+        """Move a segment that cannot be read to ``corrupt/``; if even that
+        fails, leave it where it is. Either way it is logged and skipped."""
+        self.stats["unreadable_segments"] += 1
+        try:
+            self._set_aside(path, error)
+        except OSError as e:
+            logger.error(
+                "Ingest spool segment %s is unreadable (%s) and could not be "
+                "moved to %s/ (%s); left in place and not replayed",
+                path.name,
+                error,
+                CORRUPT_DIR,
+                e,
+            )
+
     def _read_segment(self, path: Path) -> Optional[List[SpoolEntry]]:
         try:
             raw = path.read_bytes()
         except OSError as e:
-            raise SpoolError(f"spool segment {path.name}: {e}") from e
+            # One unreadable file (EACCES, EIO) costs only itself: the rest of
+            # the spool keeps working (W0.12b round 6).
+            self._skip_unreadable(path, e)
+            return None
         lines = raw.split(b"\n")
         if lines and lines[-1] == b"":
             lines.pop()  # the newline that ends the last line
@@ -312,7 +333,19 @@ class IngestSpool:
             self._set_aside(path, e)
             return None
         source = str(header.get("source") or "webhook")
-        done = self._read_done(path.name)
+        try:
+            done = self._read_done(path.name)
+        except OSError as e:
+            # Without its done marks a replay would store (and triage) entries
+            # again: leave the segment as it is for an operator, skip it.
+            self.stats["unreadable_segments"] += 1
+            logger.error(
+                "Ingest spool segment %s: its done marks are unreadable (%s); "
+                "left in place and not replayed",
+                path.name,
+                e,
+            )
+            return None
         entries: List[SpoolEntry] = []
         bad: List[tuple] = []
         for index, line in enumerate(lines[1:]):
@@ -634,6 +667,51 @@ class IngestSpool:
                 "directory": str(self.directory),
                 "open": self.is_open,
             }
+
+
+def _is_real(path: Path, kind) -> bool:
+    """``kind`` (``stat.S_ISDIR``/``S_ISREG``) of ``path`` itself: a symlink
+    is never one, whatever it points at."""
+    try:
+        return kind(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
+def _real_files(directory: Path) -> List[tuple]:
+    """Regular files directly in ``directory`` (not symlinks), as targets."""
+    try:
+        children = list(directory.iterdir())
+    except OSError as e:
+        logger.warning("Ingest spool: could not list %s: %s", directory, e)
+        return []
+    return [(f, _FILE_MODE) for f in children if _is_real(f, stat.S_ISREG)]
+
+
+def _chmod_no_follow(path: Path, mode: int) -> None:
+    """Set ``mode`` on ``path`` itself. Never through a symlink: one planted in
+    the spool must not change its target's mode (W0.12b round 6)."""
+    st = path.lstat()
+    if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
+        return  # a symlink, a FIFO, a device: not a spool file
+    if (st.st_mode & 0o777) == mode:
+        return
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    if stat.S_ISDIR(st.st_mode):
+        flags |= getattr(os, "O_DIRECTORY", 0)
+    try:
+        # Open without following, then fchmod the descriptor: no window in
+        # which the path could be swapped for a symlink before the chmod.
+        fd = os.open(path, flags)
+    except PermissionError:
+        # Ours but not readable (e.g. mode 0200): lstat said it is no symlink.
+        os.chmod(path, mode)
+        return
+    try:
+        if stat.S_ISREG(os.fstat(fd).st_mode) or stat.S_ISDIR(os.fstat(fd).st_mode):
+            os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
 
 
 def waiting_segments(directory: Path | str) -> int:

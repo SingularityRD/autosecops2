@@ -10,6 +10,7 @@ from sqlalchemy.exc import DataError, IntegrityError, OperationalError
 from core.exceptions import default_on_error
 from core.ingestion.ingestion_service import IngestionService
 from core.ingestion.store_outcome import (
+    CONFLICT,
     CREATED,
     DATA,
     EXISTS,
@@ -38,7 +39,10 @@ class _Pg(Exception):
         (_Pg("the database system is in recovery mode", "57P03"), OUTAGE),
         (_Pg("terminating connection", "57P01", attr="pgcode"), OUTAGE),
         (_Pg("deadlock detected", "40P01"), OUTAGE),
-        (_Pg("duplicate key value", "23505"), OUTAGE),  # a race: retry sees it
+        # Not an outage (round 6): the database answered. Retried in place
+        # (a race resolves as EXISTS), then counted toward quarantine.
+        (_Pg("duplicate key value", "23505"), CONFLICT),
+        (IntegrityError("x", {}, _Pg("duplicate key", "23505", "pgcode")), CONFLICT),
         (_Pg("invalid byte sequence", "22021"), DATA),
         (_Pg("value too long", "22001"), DATA),
         (_Pg("null value in column", "23502"), DATA),
@@ -176,3 +180,33 @@ def test_ingest_finding_is_unchanged_for_its_callers():
     assert service.ingest_finding({"finding_id": "a"}) is True  # exists
     assert service.stats["findings_imported"] == 1
     assert service.stats["findings_skipped"] == 1
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_external_id_is_stored_as_none(blank):
+    """Round 6: "" reached the unique (source, external_id) index but was never
+    looked up, so a second blank-id finding of a source failed forever."""
+    db = _Db()
+    seen = []
+    real = db.create_finding
+
+    def create(finding_id, **kw):
+        seen.append(kw.get("external_id"))
+        return real(finding_id, **kw)
+
+    db.create_finding = create
+    service = _service(db)
+    for fid in ("x", "y"):
+        assert (
+            service.store_finding({"finding_id": fid, "external_id": blank}).status
+            == CREATED
+        )
+    assert seen == [None, None]
+
+
+def test_a_non_blank_external_id_is_looked_up_whatever_it_is():
+    db = _Db()
+    service = _service(db)
+    assert service.store_finding({"finding_id": "a", "external_id": "0"}).stored
+    again = service.store_finding({"finding_id": "b", "external_id": "0"})
+    assert (again.status, again.triaged) == (EXISTS, None)
