@@ -158,7 +158,7 @@ class Enumerator:
         self.merged = deep_merge(self.upstream, overlay or {})
         g = self.upstream.get("global") or {}
         self.registry = image_registry or g.get("imageRegistry") or "ghcr.io"
-        self.namespace = image_namespace or g.get("imageNamespace") or "vigil-soc/vigil"
+        self.namespace = image_namespace or g.get("imageNamespace") or "singularityrd/autosecops"
         self.compose_profiles = {p for p in compose_profiles if p}
         self.ollama_image = ollama_image
         self.images: Dict[str, Dict[str, Any]] = {}

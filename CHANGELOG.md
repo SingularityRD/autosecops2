@@ -12,9 +12,9 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
 
 * **images:** release images are published as
   `ghcr.io/singularityrd/autosecops-{backend,daemon,agent}` instead of
-  `ghcr.io/vigil-soc/vigil-*`. The Helm chart default still points at the old
-  namespace: install with `--set global.imageNamespace=singularityrd/autosecops`
-  (air-gap bundle: `--image-namespace singularityrd/autosecops`).
+  `ghcr.io/vigil-soc/vigil-*`. The Helm chart (`global.imageNamespace`) and the
+  air-gap bundle default to the new names (W0.21); an install that pinned the
+  old namespace must drop that override.
 * **product:** the product is AutoSecOps everywhere (W0.2).
 * **mcp (breaking, security):** the frozen MCP tools `approve_action` and
   `reject_action` are removed (W1.7b): no model can approve or reject a response

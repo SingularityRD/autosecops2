@@ -548,7 +548,7 @@
       "text": "**MCP (kırıcı, güvenlik):** `approve_action` ve `reject_action` araçları `/mcp` sunucusundan ve chat / compose / investigate / hunt / root-cause araç kataloglarından kaldırıldı; bu adları çağıran MCP istemcisi bilinmeyen araç hatası alır. Karar Onaylar ekranından ya da `POST /api/approvals/{action_id}/approve` / `.../reject` ile, `ai_decisions.approve` yetkisi olan bir kullanıcı tarafından (varsayılan rollerde Senior Analyst, Manager, Admin; Analyst ve Viewer'da yok) verilir. Yükseltmeden önce bekletilmiş onay satırları argüman özeti taşımaz ve devam ettirildiğinde reddedilir: o araç çağrılarını yükseltmeden sonra yeniden çalıştırın (W1.7b)."
     },
     {
-      "text": "**İmaj adları değişti.** 2.0 imajları `ghcr.io/singularityrd/autosecops-{backend,daemon,agent}:2.0.0` adıyla yayımlanır. Helm grafiğinin varsayılanı henüz eski ad alanını gösterir; kurulumda `--set global.imageNamespace=singularityrd/autosecops` verin. Air-gap paketi için: `infra/airgap/build-bundle.sh --version 2.0.0 --image-namespace singularityrd/autosecops`."
+      "text": "**İmaj adları değişti.** 2.0 imajları `ghcr.io/singularityrd/autosecops-{backend,daemon,agent}:2.0.0` adıyla yayımlanır. Helm grafiği (`global.imageNamespace`) ve air-gap paketi bu adları varsayılan olarak kullanır (W0.21); eski ad alanını `--set` ile sabitleyen bir kurulum bu ayarı kaldırmalıdır."
     },
     {
       "unless": [

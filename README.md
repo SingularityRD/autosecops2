@@ -124,15 +124,15 @@ Then open http://localhost:6988 and create the admin account on the bootstrap sc
 - **`AGENT_INTERNAL_TOKEN`** lets the agent layer talk to the API. Generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Without it the stack still starts, but workflow runs stay queued.
 - **Authentication is on by default.** No account or default password ships; the first visit creates the admin. `start.sh` creates the JWT signing secret at `~/.vigil/jwt_secret`. For an unauthenticated instance on your own machine, set `DEV_MODE=true` in `.env`; the backend announces the bypass on every startup, naming each gate it opens, and says so separately when it is bound to anything but loopback (`BIND_HOST`). `scripts/reset-setup.sh` and `scripts/generate_sample_data.py --api` sign in with `VIGIL_TOKEN`, or `VIGIL_USERNAME` and `VIGIL_PASSWORD`.
 
-> **Stable vs. development build:** `main` is the active development branch. For a tested build, check out a release tag (`git checkout v<version>`) or pull a published image (`docker pull ghcr.io/vigil-soc/vigil-backend:<version>`). Releases are listed on the [releases page](https://github.com/Vigil-SOC/vigil/releases/latest).
+> **Stable vs. development build:** `main` is the active development branch. For a tested build, check out a release tag (`git checkout v<version>`) or pull a published image (`docker pull ghcr.io/singularityrd/autosecops-backend:<version>`). Releases are listed on the [releases page](https://github.com/SingularityRD/autosecops2/releases/latest).
 >
 > Released images are signed keyless by [`.github/workflows/release.yml`](.github/workflows/release.yml). To verify (the image tag drops the leading `v`; the certificate identity uses the git tag):
 >
 > ```bash
 > cosign verify \
->   --certificate-identity https://github.com/Vigil-SOC/vigil/.github/workflows/release.yml@refs/tags/v<version> \
+>   --certificate-identity https://github.com/SingularityRD/autosecops2/.github/workflows/release.yml@refs/tags/v<version> \
 >   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
->   ghcr.io/vigil-soc/vigil-backend:<version>
+>   ghcr.io/singularityrd/autosecops-backend:<version>
 > ```
 
 ### Prerequisites

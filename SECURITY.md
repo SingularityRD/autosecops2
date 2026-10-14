@@ -22,8 +22,8 @@ we do not backport to earlier minors.
 | Older `0.x` minors | ❌ | No backports. What may change between releases is in [VERSIONING.md](VERSIONING.md). |
 | `main` (unreleased) | ✅ | Reports welcome; note the commit SHA. |
 
-Container images (`ghcr.io/vigil-soc/vigil-backend`, `vigil-daemon`,
-`vigil-agent`) and the Helm chart at `infra/helm/vigil/` follow the same window.
+Container images (`ghcr.io/singularityrd/autosecops-backend`, `autosecops-daemon`,
+`autosecops-agent`) and the Helm chart at `infra/helm/vigil/` follow the same window.
 Chart `version` and `appVersion` move in lockstep, so the chart version
 identifies the app release it deploys.
 
@@ -34,12 +34,12 @@ drop the leading `v`; the certificate identity uses the git tag:
 
 ```bash
 cosign verify \
-  --certificate-identity https://github.com/Vigil-SOC/vigil/.github/workflows/release.yml@refs/tags/v<version> \
+  --certificate-identity https://github.com/SingularityRD/autosecops2/.github/workflows/release.yml@refs/tags/v<version> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/vigil-soc/vigil-backend:<version>
+  ghcr.io/singularityrd/autosecops-backend:<version>
 ```
 
-The same invocation works for `vigil-daemon` and `vigil-agent`.
+The same invocation works for `autosecops-daemon` and `autosecops-agent`.
 
 ---
 

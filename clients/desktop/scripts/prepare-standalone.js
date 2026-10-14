@@ -9,7 +9,7 @@ const fs = require("fs");
 const path = require("path");
 
 const version = require("../package.json").version;
-const image = `ghcr.io/vigil-soc/vigil-backend:${version}`;
+const image = `ghcr.io/singularityrd/autosecops-backend:${version}`;
 const repoRoot = path.join(__dirname, "..", "..", "..");
 const outDir = path.join(__dirname, "..", "standalone");
 const dbInit = path.join(outDir, "db-init");
