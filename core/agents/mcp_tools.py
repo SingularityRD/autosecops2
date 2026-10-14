@@ -123,6 +123,18 @@ def _text_of(result: Dict[str, Any]) -> str:
 async def execute_mcp_tool(
     tool_name: str, args: Dict[str, Any], timeout_s: float, registry: "MCPRegistry"
 ) -> Tuple[Any, bool]:
+    from core.llm.tool_effects import is_human_only
+
+    # A decision on the approval queue is a person's HTTP request (W1.7b): no
+    # checkpoint, approved or not, lets a tool call make one -- whichever
+    # server offers it, connected or not.
+    if is_human_only(tool_name):
+        raise MCPFailure(
+            "refused",
+            f"{tool_name} decides an approval; only a person does that, on the "
+            "approvals screen",
+        )
+
     servers = registry.get_active_servers()
     if not servers:
         return None, False

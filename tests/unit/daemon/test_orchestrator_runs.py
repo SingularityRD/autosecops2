@@ -692,6 +692,23 @@ class TestReconcile:
         assert raised.call_args.kwargs["checkpoint_id"] == "apr-c0ffee"
         assert raised.call_args.kwargs["run_id"] == run_id_for(INV)
         assert orch._update_investigation_status.call_args[0][1] == "waiting_approval"
+        assert raised.call_args.kwargs["tool_call"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_parked_tool_call_binds_the_approval_to_its_arguments(self):
+        # W1.7b: the harness names the call it parked; the approval carries it.
+        orch = _orchestrator()
+        call = {"tool": "mde_isolate", "args": {"machine_id": "host-a"}}
+        checkpoint = {
+            "checkpoint_id": "apr-c0ffee",
+            "question": "isolate host-a?",
+            "context": {"tool_call": call},
+        }
+        raised = await self._reconcile(
+            orch, {"status": "waiting_approval", "open_checkpoint": checkpoint}
+        )
+
+        assert raised.call_args.kwargs["tool_call"] == call
 
     @pytest.mark.asyncio
     async def test_records_progress_before_deciding_anything(self):

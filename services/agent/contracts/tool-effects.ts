@@ -9,6 +9,9 @@ export type Effect = (typeof EFFECTS)[number];
 // Runs only once a person approves it, on every surface.
 export const GATED: ReadonlySet<Effect> = new Set<Effect>(["destructive", "write"]);
 
+// Never on a model's tool list, approved or not: a person decides these over HTTP.
+export const HUMAN_ONLY: ReadonlySet<Effect> = new Set<Effect>(["decision"]);
+
 export const TOOL_EFFECTS: Readonly<Record<string, Effect>> = {
   "aad_disable_user": "destructive",
   "aad_get_sign_ins": "read_only",
