@@ -744,6 +744,22 @@
    "role-manager": "allow",
    "role-admin": "allow"
   },
+  "GET /api/compliance/audit-export/config": {
+   "gate": "login + perm:settings.read",
+   "role-viewer": "deny",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "GET /api/compliance/audit-export/status": {
+   "gate": "login + perm:settings.read",
+   "role-viewer": "deny",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
   "GET /api/compliance/regulatory-clocks/config": {
    "gate": "login + perm:settings.read",
    "role-viewer": "deny",
@@ -2412,6 +2428,14 @@
    "role-manager": "allow",
    "role-admin": "allow"
   },
+  "POST /api/compliance/audit-export/test": {
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
   "POST /api/compliance/retention/purge": {
    "gate": "login + perm:settings.read + perm:settings.write",
    "role-viewer": "deny",
@@ -3365,6 +3389,14 @@
    "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "PUT /api/compliance/audit-export/config": {
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },

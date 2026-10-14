@@ -361,6 +361,11 @@ class Settings(BaseSettings):
     # addresses are refused unless inside one of these CIDRs (comma-separated).
     # The cloud-metadata address is refused regardless.
     webhook_allowed_cidrs: str = ""
+    # LLM provider base URLs (model discovery and calls) resolving to a range
+    # refused by default (loopback, RFC 1918, carrier-grade NAT 100.64.0.0/10
+    # such as a Tailscale on-prem gateway, ...) are allowed inside these
+    # comma-separated CIDRs. Cloud-metadata addresses are refused regardless.
+    llm_provider_allowed_cidrs: str = ""
     webhook_max_attempts: int = 8
     daemon_threat_hunt_interval: int = 86400
     # Known-answer probes (#923): an hourly sweep, injected once a day by id.

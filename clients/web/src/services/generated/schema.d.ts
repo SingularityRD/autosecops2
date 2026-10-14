@@ -2733,6 +2733,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/compliance/audit-export/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Config
+         * @description The stored configuration (never a secret's value).
+         */
+        get: operations["get_api_compliance_audit-export_config"];
+        /**
+         * Put Config
+         * @description Validate and store the configuration, and any destination secrets.
+         */
+        put: operations["put_api_compliance_audit-export_config"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/compliance/audit-export/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Status
+         * @description Whether this process exports, per-destination metrics and cursors.
+         */
+        get: operations["get_api_compliance_audit-export_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/compliance/audit-export/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send Test
+         * @description Send one synthetic event to a configured destination.
+         */
+        post: operations["post_api_compliance_audit-export_test"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/compliance/regulatory-clocks/config": {
         parameters: {
             query?: never;
@@ -9750,6 +9814,17 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** ConfigUpdate */
+        ConfigUpdate: {
+            /** Config */
+            config: {
+                [key: string]: unknown;
+            };
+            /** Secrets */
+            secrets?: {
+                [key: string]: components["schemas"]["DestinationSecrets"];
+            };
+        };
         /**
          * ContentBlock
          * @description Content block for message (text or image).
@@ -10082,6 +10157,23 @@ export interface components {
              * @default false
              */
             enabled: boolean;
+        };
+        /** DestinationSecrets */
+        DestinationSecrets: {
+            /**
+             * Clear Client Key
+             * @default false
+             */
+            clear_client_key: boolean;
+            /**
+             * Clear Token
+             * @default false
+             */
+            clear_token: boolean;
+            /** Client Key Pem */
+            client_key_pem?: string | null;
+            /** Token */
+            token?: string | null;
         };
         /** DirectiveRequest */
         DirectiveRequest: {
@@ -13070,6 +13162,11 @@ export interface components {
              * @default
              */
             summary: string;
+        };
+        /** TestRequest */
+        TestRequest: {
+            /** Destination */
+            destination: string;
         };
         /** TestSendResult */
         TestSendResult: {
@@ -18390,6 +18487,138 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_compliance_audit-export_config": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "put_api_compliance_audit-export_config": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfigUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_compliance_audit-export_status": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "post_api_compliance_audit-export_test": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
