@@ -171,17 +171,47 @@ SHALLOW_HINT = (
 )
 
 
+def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    """git -C repo ...; a missing git binary or a failing command (with check)
+    is a ReleaseError with git's own message, never a traceback."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), *args], capture_output=True, text=True
+        )
+    except OSError as exc:
+        raise ReleaseError(f"cannot run git: {exc}") from exc
+    if check and proc.returncode != 0:
+        why = proc.stderr.strip().splitlines()
+        raise ReleaseError(
+            f"git {' '.join(args[:2])} failed in {repo}: {why[-1] if why else proc.returncode}"
+        )
+    return proc
+
+
+def require_git_repo(repo: Path, why: str) -> None:
+    """Notes come from the merge history: a source export without .git has none."""
+    proc = _git(repo, "rev-parse", "--show-toplevel", check=False)
+    top = Path(proc.stdout.strip()).resolve() if proc.returncode == 0 else None
+    # A source export unpacked inside some other checkout must not borrow
+    # that checkout's history.
+    if top != Path(repo).resolve():
+        raise ReleaseError(
+            f"{repo} is not a git checkout (no .git); {why} needs the repository's"
+            " merge history: run it in a clone (`git clone` + `git fetch --tags`)"
+        )
+
+
 def is_shallow(repo: Path) -> bool:
-    proc = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--is-shallow-repository"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        proc = _git(repo, "rev-parse", "--is-shallow-repository", check=False)
+    except ReleaseError:
+        return False
     return proc.returncode == 0 and proc.stdout.strip() == "true"
 
 
 def require_full_history(repo: Path, why: str) -> None:
-    """A shallow clone lacks merges: refuse instead of answering wrongly."""
+    """No .git or a shallow clone lacks merges: refuse instead of answering wrongly."""
+    require_git_repo(repo, why)
     if is_shallow(repo):
         raise ReleaseError(f"{repo} is a shallow clone; {why} needs the full history: {SHALLOW_HINT}")
 
@@ -202,12 +232,7 @@ def branch_of_subject(subject: str, parents: int = 2) -> Optional[str]:
 def merged_branches(repo: Path, ref: str = "HEAD") -> set[str]:
     """Branches merged into ref (merge commits and squash-merged WP PRs)."""
     require_full_history(repo, "reading the merged branches")
-    proc = subprocess.run(
-        ["git", "-C", str(repo), "log", "--format=%P%x09%s", ref],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    proc = _git(repo, "log", "--format=%P%x09%s", ref)
     out = set()
     for line in proc.stdout.splitlines():
         parents, _, subject = line.partition("\t")
@@ -276,12 +301,25 @@ def parse_notes(text: str) -> list[dict]:
     return rows
 
 
+def late_branches(rows: list[dict], merged: Iterable[str], self_wps: Iterable[str] = ()) -> list[str]:
+    """Merged WP branches the notes do not list: merged after the notes were
+    rendered (or forgotten). The release's own WP is not listed by design."""
+    listed = {b for r in rows for b in r["branches"]}
+    skip = set(self_wps)
+    return sorted(
+        b
+        for b in merged
+        if wp_id_of_branch(b) and wp_id_of_branch(b) not in skip and b not in listed
+    )
+
+
 def check_notes(
     notes: Path,
     repo: Path,
     ref: str = "HEAD",
     strict: bool = False,
     data: Optional[Path] = None,
+    allow_late: bool = False,
 ) -> list[dict]:
     """Release notes against the merge history of ref.
 
@@ -290,7 +328,15 @@ def check_notes(
     missing from the table (the release's own WP, ``self`` in the data file,
     excepted). With data: the notes (and the CHANGELOG block) are exactly what
     ``render-notes`` produces for ref, so stale notes fail the tag.
+
+    allow_late (unit tests on integration/main, never the tag pipeline): WP
+    branches merged after the notes were rendered (``late_branches``) are
+    tolerated, and while there are any the byte-for-byte freshness check is
+    skipped (it cannot hold). A "Dahil" row whose branch is not merged still
+    fails, as does stale output when nothing merged late.
     """
+    if strict and allow_late:
+        raise ReleaseError("check-notes: --strict and --allow-late exclude each other")
     rows = parse_notes(notes.read_text(encoding="utf-8"))
     merged = merged_branches(repo, ref)
     by_wp = merged_wps(merged)
@@ -325,7 +371,8 @@ def check_notes(
                     f"{wp}: {branch} is merged on {ref} but has no row in the"
                     " release notes; add it to the data file and re-render"
                 )
-    if data is not None:
+    late = late_branches(rows, merged, _load_notes_data(data).get("self", []) if data else ())
+    if data is not None and not (allow_late and late):
         for path, want in render_notes(_load_notes_data(data), repo, ref).items():
             have = path.read_text(encoding="utf-8") if path.is_file() else ""
             if have != want:
@@ -374,6 +421,10 @@ def _load_notes_data(path: Path) -> dict:
     dup = sorted({i for i in ids if ids.count(i) > 1})
     if dup:
         raise ReleaseError(f"{path}: WPs listed twice: {dup}")
+    for w in doc["wps"]:
+        wrong = [b for b in w.get("expected_branches", []) if wp_id_of_branch(b) != w["id"]]
+        if wrong:
+            raise ReleaseError(f"{path}: {w['id']}: expected_branches of another WP: {wrong}")
     doc["_base"] = path.resolve().parent
     return doc
 
@@ -383,12 +434,7 @@ def _repo_path(repo: Path, rel: str) -> Path:
 
 
 def init_sql_numbers(repo: Path, ref: str, start: int) -> list[int]:
-    proc = subprocess.run(
-        ["git", "-C", str(repo), "ls-tree", "--name-only", ref, "infra/database/init/"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    proc = _git(repo, "ls-tree", "--name-only", ref, "infra/database/init/")
     nums = set()
     for line in proc.stdout.splitlines():
         m = re.match(r"^(\d+)_.*\.sql$", line.rsplit("/", 1)[-1])
@@ -431,7 +477,7 @@ def render_notes(data: dict, repo: Path, ref: str = "HEAD") -> dict[Path, str]:
     merged = merged_branches(repo, ref)
     by_wp = merged_wps(merged)
     all_by_wp = merged_wp_branches(merged)
-    rows, included = [], set()
+    rows, included, en = [], set(), {}
     for wp in data["wps"]:
         if wp.get("branch"):
             branches = [wp["branch"]] if wp["branch"] in merged else []
@@ -440,9 +486,18 @@ def render_notes(data: dict, repo: Path, ref: str = "HEAD") -> dict[Path, str]:
         inc = bool(branches)
         if inc:
             included.add(wp["id"])
+        topic, topic_en = wp["topic"], wp.get("topic_en", wp["topic"])
+        # A WP split over several branches (W0.13's reviews): the ones not yet
+        # merged come from history, not from hand-written topic text.
+        late = [b for b in wp.get("expected_branches", []) if b not in merged]
+        if inc and late:
+            names = ", ".join(f"`{b}`" for b in late)
+            topic += f" ({names} birleşmedi)"
+            topic_en += f" ({names} not merged)"
+        en[wp["id"]] = topic_en
         cell = ", ".join(f"`{b}`" for b in branches) if inc else "—"
         rows.append(
-            f"| {wp['id']} | {wp['topic']} | {'Dahil' if inc else 'Dahil değil'} | {cell} |"
+            f"| {wp['id']} | {topic} | {'Dahil' if inc else 'Dahil değil'} | {cell} |"
         )
     self_ids = set(data.get("self", []))
     known = {w["id"] for w in data["wps"]} | self_ids
@@ -464,7 +519,6 @@ def render_notes(data: dict, repo: Path, ref: str = "HEAD") -> dict[Path, str]:
             open_issues.append(f"- {issue['wp']}: {issue['text']}{note}")
     inc_sorted = sorted(included, key=_wp_key)
     not_inc = [w["id"] for w in data["wps"] if w["id"] not in included]
-    en = {w["id"]: w.get("topic_en", w["topic"]) for w in data["wps"]}
     values = {
         "wp_table": "\n".join(
             ["| WP | Konu | Durum | Birleştirme |", "|---|---|---|---|", *rows]
@@ -520,22 +574,16 @@ def render_notes(data: dict, repo: Path, ref: str = "HEAD") -> dict[Path, str]:
 def check_on_main(repo: Path, commit: str, main_ref: str) -> str:
     """The tagged commit must already be on main (an ancestor of main_ref)."""
 
+    require_git_repo(repo, "check-on-main")
+
     def rev(r: str) -> str:
-        proc = subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", r + "^{commit}"],
-            capture_output=True,
-            text=True,
-        )
+        proc = _git(repo, "rev-parse", "--verify", "--quiet", r + "^{commit}", check=False)
         if proc.returncode != 0:
             raise ReleaseError(f"cannot resolve {r!r}; fetch it first")
         return proc.stdout.strip()
 
     sha, main_sha = rev(commit), rev(main_ref)
-    proc = subprocess.run(
-        ["git", "-C", str(repo), "merge-base", "--is-ancestor", sha, main_sha],
-        capture_output=True,
-        text=True,
-    )
+    proc = _git(repo, "merge-base", "--is-ancestor", sha, main_sha, check=False)
     if proc.returncode == 1:
         # In a shallow clone "not an ancestor" may just be missing history.
         require_full_history(repo, "check-on-main")
@@ -1002,6 +1050,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     s.add_argument(
         "--data", help="WP data file; the notes must equal render-notes output"
     )
+    s.add_argument(
+        "--allow-late",
+        action="store_true",
+        help="tolerate WP branches merged after the notes were rendered (not for tags)",
+    )
 
     s = sub.add_parser("render-notes")
     s.add_argument("--data", required=True)
@@ -1065,9 +1118,18 @@ def main(argv: Optional[list[str]] = None) -> int:
                 a.ref,
                 a.strict,
                 Path(a.data) if a.data else None,
+                a.allow_late,
             )
             inc = sum(r["included"] for r in rows)
             print(f"notes ok: {inc} included, {len(rows) - inc} not included")
+            if a.allow_late:
+                self_wps = _load_notes_data(Path(a.data)).get("self", []) if a.data else ()
+                late = late_branches(rows, merged_branches(repo, a.ref), self_wps)
+                if late:
+                    print(
+                        "notes: merged after rendering (re-render before tagging): "
+                        + ", ".join(late)
+                    )
         elif a.cmd == "render-notes":
             rendered = render_notes(_load_notes_data(Path(a.data)), repo, a.ref)
             for path, text in rendered.items():
