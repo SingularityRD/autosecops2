@@ -1,5 +1,5 @@
 """
-FastAPI Backend for Vigil SOC Web Application
+FastAPI Backend for the AutoSecOps Web Application
 
 Main application entry point for the REST API server.
 """
@@ -530,7 +530,7 @@ def _announce_mcp_surface() -> None:
 async def _startup(app: FastAPI):
     """Initialize database and MCP tools on startup."""
     logger.info("=" * 60)
-    logger.info("Starting Vigil SOC Backend")
+    logger.info("Starting AutoSecOps Backend")
     logger.info("=" * 60)
 
     _build_services(app)
@@ -1037,7 +1037,7 @@ if frontend_build_dir.exists() and (frontend_build_dir / "index.html").exists():
 if __name__ == "__main__":
     import uvicorn
 
-    logger.info("Starting Vigil SOC API server...")
+    logger.info("Starting AutoSecOps API server...")
     uvicorn.run(
         "services.api.main:app",
         # settings.bind_host, not a hardcoded 0.0.0.0: the DEV_MODE banner reports

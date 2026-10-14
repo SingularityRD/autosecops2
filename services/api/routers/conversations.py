@@ -16,6 +16,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from core.auth.permissions import permission_gate
 from core.chat import conversation_service
 from core.routing import Auth, RouterMeta
 from core.storage.models import User
@@ -66,7 +67,7 @@ async def list_conversations(
     return {"conversations": items}
 
 
-@router.post("/import")
+@router.post("/import", dependencies=[permission_gate("ai_chat.use")])
 async def import_conversations(
     body: ImportConversationsRequest,
     current_user: User = Depends(get_current_user),

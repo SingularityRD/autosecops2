@@ -11,7 +11,7 @@ import yaml
 
 from core.agents.enablement import disabled_agent_ids, disabled_message
 from core.llm.defaults import DEFAULT_MODEL
-from core.llm.tool_effects import effect_of, gated_ids, is_gated
+from core.llm.tool_effects import effect_of, gated_ids, is_gated, is_human_only
 from core.skills.skill_library import READ_SKILL_TOOL
 
 if TYPE_CHECKING:
@@ -56,7 +56,9 @@ def _tool_catalogue(registry: Optional["MCPRegistry"]) -> Dict[str, Dict[str, An
     # server that is not connected reports nothing, so it binds nothing.
     for tool in _mcp_catalogue(registry):
         catalogue.setdefault(tool["name"], tool)
-    return catalogue
+    # A decision on the approval queue is a person's, never a run's (W1.7b):
+    # whatever a server offers, no compose, investigate, hunt or trace binds one.
+    return {name: tool for name, tool in catalogue.items() if not is_human_only(name)}
 
 
 def _mcp_catalogue(registry: Optional["MCPRegistry"]) -> List[Dict[str, Any]]:

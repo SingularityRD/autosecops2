@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import ValidationError
 
 from core.agents.builtins import AgentId
+from core.autonomy import AutonomyWatchOnly
 from core.response.approval_service import (
     ActionStatus,
     ActionType,
@@ -22,7 +23,7 @@ from core.response.approval_service import (
     PendingAction,
     Reversibility,
 )
-from core.response.config import ResponseConfig
+from core.response.config import ResponseConfig, decision_rule
 from core.response.executors.base import (
     ExecResult,
     ExecutorRegistry,
@@ -213,6 +214,8 @@ class AutonomousResponseService:
         reverse carries no ttl: undoing a change does not expire.
         """
         params = dict(action.parameters or {})
+        # The autonomy record is the approval row's, not the executor's input.
+        params.pop("autonomy", None)
         params.setdefault("reason", action.reason)
         ttl: Optional[timedelta] = (
             None if reverse_of is not None else ttl_from_parameters(params)
@@ -262,6 +265,72 @@ class AutonomousResponseService:
         self.approval_service.mark_failed(action.action_id, error)
         return {"success": False, "error": error, "status": "failed"}
 
+    def _forced_manual(self) -> bool:
+        """The emergency stop: force-manual approval, this process's or stored."""
+        svc = self.approval_service
+        if getattr(svc, "force_manual_approval", False):
+            return True
+        try:
+            return bool(svc._stored_force_manual_approval())
+        except Exception:  # noqa: BLE001
+            # Cannot tell whether the stop is on: treat it as on.
+            return True
+
+    def _hold(
+        self, action: PendingAction, rule: str, reasons: List[str]
+    ) -> Dict[str, Any]:
+        self.approval_service.hold_for_person(action.action_id, rule)
+        logger.warning(
+            "Action %s held for a person at dispatch: %s (%s)",
+            action.action_id,
+            rule,
+            "; ".join(reasons),
+        )
+        return {
+            "success": False,
+            "status": ActionStatus.PENDING.value,
+            "error": f"autonomy_held: {rule}",
+            "reasons": list(reasons),
+        }
+
+    def _autonomy_recheck(
+        self, action: PendingAction
+    ) -> tuple[Optional[Dict[str, Any]], Optional[int]]:
+        """Hold a row released with no person's name if autonomy no longer holds.
+
+        The tier is decided again at dispatch, with the registry's
+        reversibility rather than the row's: force-manual approval (the
+        emergency stop, checked first), a demotion, a broken bound or an
+        executor that cannot undo the type puts the row back in the approval
+        queue. Returns ``(held, ttl_cap)``: ``held`` is the result to return
+        when the row is held, else None and the row may proceed (to the
+        policy, which always runs); ``ttl_cap`` is the current tier's
+        ``max_ttl_seconds``, which the dispatcher holds the action's ttl to.
+        """
+        if self._forced_manual():
+            rule = decision_rule("approval.force_manual", True)
+            return (
+                self._hold(action, rule, ["force-manual approval is on"]),
+                None,
+            )
+        record = (action.parameters or {}).get("autonomy") or {}
+        reversibility = (
+            self.executors.reversibility_of(action.action_type)
+            if self.executors.get(action.action_type) is not None
+            else action.reversibility
+        )
+        decision = self.approval_service.autonomy_decision(
+            action.action_type,
+            record.get("category") if isinstance(record, dict) else None,
+            reversibility,
+            action.confidence,
+        )
+        if decision is None:
+            return None, None
+        if decision.autonomous:
+            return None, decision.ttl_seconds
+        return self._hold(action, decision.rule, list(decision.reasons)), None
+
     def _dispatch(self, action: PendingAction) -> Optional[Dict[str, Any]]:
         """Run one approved row through the policy and its executor.
 
@@ -280,6 +349,10 @@ class AutonomousResponseService:
         if executor is None:
             if action.action_type != ActionType.ISOLATE_HOST.value:
                 return None
+            if not action.approved_by and not action.reverse_of:
+                held, _cap = self._autonomy_recheck(action)
+                if held is not None:
+                    return held
             if not self.approval_service.claim_execution(action.action_id):
                 return dict(_NOT_CLAIMED)
             params = action.parameters or {}
@@ -322,6 +395,15 @@ class AutonomousResponseService:
                     action,
                     f"{action.action_type} needs a second approver distinct from the first",
                 )
+        # Released with no person's name on it: the autonomy tier (W3.1) is
+        # decided again, after the policy allowed the action and before the
+        # executor sees it.
+        if not action.approved_by and not action.reverse_of:
+            held, ttl_cap = self._autonomy_recheck(action)
+            if held is not None:
+                return held
+            if ttl_cap:
+                typed = self._cap_ttl(typed, executor, ttl_cap)
 
         # Everything recorded about the run is computed before it runs: a
         # failure here must stop the action, not strand an executed change on
@@ -374,6 +456,20 @@ class AutonomousResponseService:
         verify_status = self._verify(executor, typed, outcome)
         self.approval_service.record_verification(action.action_id, verify_status)
         return {**result, "verify_status": verify_status}
+
+    @staticmethod
+    def _cap_ttl(typed: TypedAction, executor: Any, cap_seconds: int) -> TypedAction:
+        """Hold a tier-released action's ttl to the tier's current maximum.
+
+        The row's ttl was capped when it was created; the tier may since have
+        been lowered, so the dispatcher caps again. No ttl on the action means
+        the executor's default, which is capped the same way.
+        """
+        cap = timedelta(seconds=int(cap_seconds))
+        current = typed.ttl if typed.ttl is not None else executor.default_ttl
+        if current is not None and timedelta(0) < current <= cap:
+            return typed
+        return typed.model_copy(update={"ttl": cap})
 
     def _takes_ttl(self, action_type: str) -> bool:
         try:
@@ -467,19 +563,22 @@ class AutonomousResponseService:
                 "; ".join(verdict.reasons),
             )
             return {"status": "refused", "reasons": list(verdict.reasons)}
-        action = self.approval_service.create_action(
-            action_type=atype,
-            title=title,
-            description=description,
-            target=target,
-            confidence=confidence,
-            reason=reason,
-            evidence=evidence,
-            created_by=proposed_by,
-            parameters=dict(parameters or {}),
-            reversibility=Reversibility(typed.reversibility),
-            human_only=True,
-        )
+        try:
+            action = self.approval_service.create_action(
+                action_type=atype,
+                title=title,
+                description=description,
+                target=target,
+                confidence=confidence,
+                reason=reason,
+                evidence=evidence,
+                created_by=proposed_by,
+                parameters=dict(parameters or {}),
+                reversibility=Reversibility(typed.reversibility),
+                human_only=True,
+            )
+        except AutonomyWatchOnly as e:
+            return {"status": "watch", "reasons": [str(e)]}
         return {
             "status": action.status,
             "action_id": action.action_id,
@@ -494,6 +593,7 @@ class AutonomousResponseService:
         reason: str,
         evidence: List[str],
         correlation_data: Dict,
+        category: Optional[str] = None,
     ) -> Optional[Dict]:
         """
         Create an isolation action (auto-executes when the approval gate
@@ -509,6 +609,9 @@ class AutonomousResponseService:
             reason: Reason for isolation
             evidence: List of evidence IDs
             correlation_data: Data from correlation analysis
+            category: the alert category the autonomy tier is looked up by
+                (W3.1); under ``watch`` nothing is recorded and the result's
+                status is ``watch``
 
         Returns:
             Action result
@@ -545,23 +648,34 @@ class AutonomousResponseService:
                     "reasons": list(verdict.reasons),
                 }
 
-            action, inserted = self.approval_service._put_action(
-                action_type=ActionType.ISOLATE_HOST,
-                title=f"Isolate Host: {hostname or ip_address}",
-                description=f"Network isolation of compromised host based on correlated detections.\n\n"
-                f"Indicators: {', '.join(correlation_data.get('indicators', []))}\n"
-                f"Reasoning: {' | '.join(correlation_data.get('reasoning', []))}",
-                target=ip_address,
-                confidence=confidence,
-                reason=reason,
-                evidence=evidence,
-                created_by=AgentId.AUTO_RESPONDER.value,
-                parameters={"hostname": hostname, "correlation": correlation_data},
-                idempotency_key=f"{ActionType.ISOLATE_HOST.value}:{target_key}",
-                reversibility=Reversibility(screen.reversibility),
-                human_only=verdict.requires_approval
-                or verdict.requires_second_approver,
-            )
+            try:
+                action, inserted = self.approval_service._put_action(
+                    action_type=ActionType.ISOLATE_HOST,
+                    title=f"Isolate Host: {hostname or ip_address}",
+                    description=f"Network isolation of compromised host based on correlated detections.\n\n"
+                    f"Indicators: {', '.join(correlation_data.get('indicators', []))}\n"
+                    f"Reasoning: {' | '.join(correlation_data.get('reasoning', []))}",
+                    target=ip_address,
+                    confidence=confidence,
+                    reason=reason,
+                    evidence=evidence,
+                    created_by=AgentId.AUTO_RESPONDER.value,
+                    parameters={"hostname": hostname, "correlation": correlation_data},
+                    idempotency_key=f"{ActionType.ISOLATE_HOST.value}:{target_key}",
+                    reversibility=Reversibility(screen.reversibility),
+                    human_only=verdict.requires_approval
+                    or verdict.requires_second_approver,
+                    category=category,
+                )
+            except AutonomyWatchOnly as e:
+                logger.info(
+                    "Isolation of %s observed only: %s", hostname or ip_address, e
+                )
+                return {
+                    "status": "watch",
+                    "message": str(e),
+                    "confidence": confidence,
+                }
 
             if not inserted:
                 if action.status == ActionStatus.EXECUTED.value:
@@ -592,6 +706,15 @@ class AutonomousResponseService:
                     "success": False,
                     "error": "unsupported_action_type",
                 }
+
+                if execution_result.get("status") == ActionStatus.PENDING.value:
+                    return {
+                        "status": "pending_approval",
+                        "action_id": action.action_id,
+                        "message": "Isolation action held for analyst approval",
+                        "confidence": confidence,
+                        "requires_approval": True,
+                    }
 
                 if execution_result.get("success"):
                     return {
@@ -658,8 +781,13 @@ class AutonomousResponseService:
         """
         try:
             # Get approved but not executed actions
+            # Only rows something here can run, oldest first: see
+            # ApprovalService.list_actions(undispatched=True).
             approved_actions = self.approval_service.list_actions(
-                status=ActionStatus.APPROVED
+                status=ActionStatus.APPROVED,
+                action_types=self.executors.action_types()
+                | {ActionType.ISOLATE_HOST.value},
+                undispatched=True,
             )
             results = []
 
@@ -672,7 +800,18 @@ class AutonomousResponseService:
                     continue
                 # Released by a confidence figure and no person: whoever
                 # supplied that figure also chose the outcome.
-                if not action.requires_approval and not action.approved_by:
+                # An autonomous row (W3.1) is the exception: the tier released
+                # it, and _dispatch decides the tier again before it runs.
+                autonomy = (action.parameters or {}).get("autonomy") or {}
+                autonomous = (
+                    isinstance(autonomy, dict)
+                    and autonomy.get("effective") == "autonomous"
+                )
+                if (
+                    not action.requires_approval
+                    and not action.approved_by
+                    and not autonomous
+                ):
                     logger.warning(
                         "Action %s was never decided by a person; not executing",
                         action.action_id,
@@ -728,6 +867,28 @@ class AutonomousResponseService:
             before_state=action.before_state,
             after_state=action.after_state,
         )
+
+    def _original_no_longer_in_effect(
+        self, executor: Any, original: PendingAction
+    ) -> bool:
+        """Whether the original's change is observably gone (a takeover check).
+
+        Asks the executor's verify about the current state, the way it checks
+        a settled noop: no external_ref, so Defender reads the machine rather
+        than the old machine action. Only a definite ``failed`` (the change is
+        not in effect) counts; ``unknown`` or an error reverses as before.
+        """
+        try:
+            typed = self._typed(original)
+        except ValueError:
+            return False
+        probe = ExecResult(
+            status="noop",
+            message="takeover state check",
+            before_state=original.before_state,
+            after_state=original.after_state,
+        )
+        return self._verify(executor, typed, probe) == "failed"
 
     def reverse_action(
         self, action_id: str, *, actor: str, reason: str
@@ -792,18 +953,35 @@ class AutonomousResponseService:
             actor,
             reason,
         )
-        try:
-            outcome = executor.reverse(typed, self._original_result(original))
-        except Exception as e:  # noqa: BLE001
-            logger.exception("Reverse of %s raised", action_id)
+        already_undone = bool(
+            (claim.parameters or {}).get("supersedes")
+        ) and self._original_no_longer_in_effect(executor, original)
+        if already_undone:
+            # The superseded claimant may have been slow, not dead: its
+            # reverse landed. Running it again would act on a state someone
+            # may have set since (W0.13 review).
             outcome = ExecResult(
-                status="failed", error=f"executor error: {type(e).__name__}"
+                status="noop",
+                message="original no longer in effect at takeover; not reversed again",
+                before_state=original.after_state,
+                after_state=original.after_state,
             )
+        else:
+            try:
+                outcome = executor.reverse(typed, self._original_result(original))
+            except Exception as e:  # noqa: BLE001
+                logger.exception("Reverse of %s raised", action_id)
+                outcome = ExecResult(
+                    status="failed", error=f"executor error: {type(e).__name__}"
+                )
 
         verify_status: Optional[str] = None
         succeeded = outcome.ok
         result = outcome.to_execution_result()
-        if succeeded:
+        if already_undone:
+            verify_status = "verified"
+            result = {**result, "superseded_claim": claim.parameters["supersedes"]}
+        elif succeeded:
             verify_status = self._verify(executor, typed, outcome)
             if verify_status == "failed":
                 succeeded = False
@@ -828,10 +1006,16 @@ class AutonomousResponseService:
             "reversed" if succeeded else "failed",
             verify_status,
         )
+        superseded = settled is not None and settled.status != (
+            ActionStatus.EXECUTED.value if succeeded else ActionStatus.FAILED.value
+        )
         return {
             "outcome": "reversed" if succeeded else "failed",
             "action_id": action_id,
             "reverse_action_id": claim.action_id,
+            # This claim was taken over while it ran; the outcome is recorded
+            # on it as late_outcome, and the takeover's row holds the key.
+            "superseded": superseded,
             "verify_status": verify_status,
             "message": outcome.message or (outcome.error or ""),
             "reversed_at": (

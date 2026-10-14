@@ -18,6 +18,7 @@ from core.agents.custom_agent_service import (
 )
 from core.agents.enablement import set_agent_enabled
 from core.agents.manager import CUSTOM_AGENT_ID_PREFIX
+from core.auth.permissions import permission_gate
 from core.deps import provide_agent_ai, provide_mcp_registry
 from core.integrations.mcp.registry import MCPRegistry
 from core.llm.chat_layers import changes_for_tool
@@ -196,7 +197,7 @@ def list_available_tools(
     }
 
 
-@router.post("/agents/custom/generate")
+@router.post("/agents/custom/generate", dependencies=[permission_gate("ai_chat.use")])
 async def generate_custom_agent(
     payload: GenerateAgentRequest,
     generator: AgentAIGenerator = Depends(provide_agent_ai),
@@ -231,7 +232,11 @@ def get_custom_agent(agent_id: str) -> Dict[str, Any]:
     return _with_effective_prompt(row)
 
 
-@router.post("/agents/{source_agent_id}/fork", status_code=201)
+@router.post(
+    "/agents/{source_agent_id}/fork",
+    status_code=201,
+    dependencies=[permission_gate("ai_chat.use")],
+)
 def fork_agent(
     source_agent_id: str,
     request: Optional[ForkAgentRequest] = None,
@@ -269,7 +274,9 @@ def fork_agent(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/agents/custom", status_code=201)
+@router.post(
+    "/agents/custom", status_code=201, dependencies=[permission_gate("ai_chat.use")]
+)
 def create_custom_agent(
     request: CustomAgentCreate,
     current_user: User = Depends(get_current_active_user),
@@ -289,7 +296,9 @@ def create_custom_agent(
         raise
 
 
-@router.patch("/agents/custom/{agent_id}")
+@router.patch(
+    "/agents/custom/{agent_id}", dependencies=[permission_gate("ai_chat.use")]
+)
 def update_custom_agent(
     agent_id: str,
     request: CustomAgentUpdate,
@@ -315,7 +324,11 @@ def update_custom_agent(
         raise
 
 
-@router.delete("/agents/custom/{agent_id}", status_code=204)
+@router.delete(
+    "/agents/custom/{agent_id}",
+    status_code=204,
+    dependencies=[permission_gate("ai_chat.use")],
+)
 def delete_custom_agent(
     agent_id: str,
     current_user: User = Depends(get_current_active_user),

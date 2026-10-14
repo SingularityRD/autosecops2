@@ -23,6 +23,19 @@
 --    chain from a short one. An append that does not extend the head (wrong
 --    seq or prev_hash, e.g. a row forged after deleting the tail) is
 --    remembered in broken_at and never cleared.
+--
+--    W0.11 (amended here, unreleased): TRUNCATE skips row triggers, so a
+--    statement trigger refuses it on both tables (a TRUNCATE ... CASCADE from
+--    cases included); the vigil_app runtime role holds no TRUNCATE grant
+--    either (30_vigil_app_role.sql). verify_chain reports a chain whose head
+--    table or head row is missing as broken, never as merely unanchored.
+--
+--    The limit, stated plainly: this detects tampering by anyone who can
+--    write rows (the application role, an SQL injection through it). It does
+--    not stop the table owner or a superuser, who can DROP or DISABLE these
+--    triggers, set session_replication_role = replica, or rewrite events and
+--    heads together. Evidence against that actor has to live outside this
+--    database (an exported audit trail, backups held elsewhere).
 
 DO $$
 BEGIN
@@ -131,6 +144,30 @@ SELECT DISTINCT ON (e.tenant_id, e.case_id) e.tenant_id, e.case_id, e.seq, e.row
        SELECT 1 FROM regulatory_clock_heads h
         WHERE h.tenant_id = e.tenant_id AND h.case_id = e.case_id)
  ORDER BY e.tenant_id, e.case_id, e.seq DESC;
+
+-- TRUNCATE fires no row trigger: refuse it outright on both tables (W0.11).
+-- A case's events and head still go with the case (DELETE cascades row by row).
+CREATE OR REPLACE FUNCTION regulatory_clock_no_truncate()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+BEGIN
+  RAISE EXCEPTION '% may not be truncated: delete the case instead', TG_TABLE_NAME;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS regulatory_clock_heads_no_truncate ON regulatory_clock_heads;
+CREATE TRIGGER regulatory_clock_heads_no_truncate
+  BEFORE TRUNCATE ON regulatory_clock_heads
+  FOR EACH STATEMENT
+  EXECUTE FUNCTION regulatory_clock_no_truncate();
+
+DROP TRIGGER IF EXISTS regulatory_clock_events_no_truncate ON regulatory_clock_events;
+CREATE TRIGGER regulatory_clock_events_no_truncate
+  BEFORE TRUNCATE ON regulatory_clock_events
+  FOR EACH STATEMENT
+  EXECUTE FUNCTION regulatory_clock_no_truncate();
 
 COMMENT ON TABLE regulatory_clock_heads IS
     'Last seq and row hash of each case''s regulatory_clock_events chain, kept by trigger, so a deleted tail shows (W0.10).';

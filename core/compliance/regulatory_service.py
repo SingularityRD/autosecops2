@@ -147,8 +147,8 @@ class ClockStore(Protocol):
     def append(self, event: ClockEvent) -> None: ...
 
     # Optional: the case's chain head as {"seq", "row_hash", "broken_at"} or
-    # None when no event was ever appended. Raises AnchorUnavailable when the
-    # store keeps none.
+    # None when no event was ever appended. Raises AnchorUnavailable when its
+    # head table is missing; verify_chain then reports the chain broken.
     # def head(self, case_id: str) -> Optional[Dict[str, Any]]: ...
 
     def audit(
@@ -608,36 +608,42 @@ class RegulatoryService:
         if head_of is not None:
             try:
                 head = head_of(case_id)
-                anchored = True
             except AnchorUnavailable:
-                head = None
-            if anchored:
-                last = events[-1] if events else None
-                if head is None:
-                    if last is not None:
-                        return {
-                            "ok": False,
-                            "broken_at": 1,
-                            "why": "chain head missing",
-                        }
-                elif head.get("broken_at") is not None:
+                # A store that keeps heads but whose head table is gone (dropped,
+                # or never installed) cannot show a deleted tail: that is a
+                # broken chain, not an unanchored one (W0.11).
+                return {
+                    "ok": False,
+                    "broken_at": None,
+                    "why": "chain head unavailable",
+                }
+            anchored = True
+            last = events[-1] if events else None
+            if head is None:
+                if last is not None:
                     return {
                         "ok": False,
-                        "broken_at": head["broken_at"],
-                        "why": "append out of sequence",
+                        "broken_at": 1,
+                        "why": "chain head missing",
                     }
-                elif last is None or last.seq < head["seq"]:
-                    return {
-                        "ok": False,
-                        "broken_at": (last.seq + 1) if last else 1,
-                        "why": "missing row",
-                    }
-                elif last.seq != head["seq"] or last.row_hash != head["row_hash"]:
-                    return {
-                        "ok": False,
-                        "broken_at": last.seq,
-                        "why": "chain head mismatch",
-                    }
+            elif head.get("broken_at") is not None:
+                return {
+                    "ok": False,
+                    "broken_at": head["broken_at"],
+                    "why": "append out of sequence",
+                }
+            elif last is None or last.seq < head["seq"]:
+                return {
+                    "ok": False,
+                    "broken_at": (last.seq + 1) if last else 1,
+                    "why": "missing row",
+                }
+            elif last.seq != head["seq"] or last.row_hash != head["row_hash"]:
+                return {
+                    "ok": False,
+                    "broken_at": last.seq,
+                    "why": "chain head mismatch",
+                }
         return {
             "ok": True,
             "broken_at": None,

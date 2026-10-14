@@ -1156,6 +1156,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/autonomy/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Audit
+         * @description Tier changes and demotions, newest first.
+         */
+        get: operations["get_api_autonomy_audit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autonomy/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Check
+         * @description Run the circuit breaker now: demote tiers whose QA bound broke.
+         */
+        post: operations["post_api_autonomy_check"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autonomy/tiers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Tiers
+         * @description Every (category, action class) with its tier, and each category's QA bound.
+         */
+        get: operations["get_api_autonomy_tiers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autonomy/tiers/{category}/{action_type}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Tier
+         * @description Set one tier. Raising needs a person and an evidence link.
+         */
+        put: operations["put_api_autonomy_tiers_category_action_type"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/bifrost/routability": {
         parameters: {
             query?: never;
@@ -1954,6 +2034,29 @@ export interface paths {
          * @description Add evidence to case.
          */
         post: operations["post_api_cases_case_id_evidence"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/evidence-pack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Evidence Pack
+         * @description The case's signed, self-verifying evidence pack as a ZIP.
+         *
+         *     Verify it offline with ``autosecops verify-bundle <file>`` (or the
+         *     ``verify_bundle.py`` inside it).
+         */
+        get: operations["get_api_cases_case_id_evidence-pack"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4388,6 +4491,130 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/lessons": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Lessons */
+        get: operations["get_api_lessons"];
+        put?: never;
+        /**
+         * Propose Lesson
+         * @description Propose a lesson. It does nothing until promoted.
+         *
+         *     ``analyst_override`` requires ``source_id``, and any ``source_id`` given
+         *     must name an existing finding. The scope and text are traced against that
+         *     finding's free text (title, description, raw event, adversary-authored
+         *     entities); a lesson built from it is tagged ``adversary_text`` and can
+         *     never be promoted.
+         */
+        post: operations["post_api_lessons"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lessons/{lesson_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Lesson */
+        get: operations["get_api_lessons_lesson_id"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lessons/{lesson_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Lesson Events */
+        get: operations["get_api_lessons_lesson_id_events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lessons/{lesson_id}/promote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Promote Lesson
+         * @description Replay now; activate only if no historical verdict got worse.
+         *
+         *     A failed replay answers 409 with the report. It is returned rather than
+         *     raised so the refusal's audit row is committed.
+         */
+        post: operations["post_api_lessons_lesson_id_promote"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lessons/{lesson_id}/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Replay Lesson
+         * @description Replay over labelled historical alerts; the status does not change.
+         */
+        post: operations["post_api_lessons_lesson_id_replay"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lessons/{lesson_id}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rollback Lesson
+         * @description Retire a proposed or active lesson. It stops applying at once.
+         */
+        post: operations["post_api_lessons_lesson_id_rollback"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/llm/providers": {
         parameters: {
             query?: never;
@@ -5240,6 +5467,89 @@ export interface paths {
          *     Sync on purpose: the executor speaks to the vendor synchronously.
          */
         post: operations["post_api_response_actions_action_id_revert"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/response/four-eyes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Four Eyes
+         * @description The action classes under the two-person rule and its distinct-role condition.
+         */
+        get: operations["get_api_response_four-eyes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/response/four-eyes/{action_type}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Distinct Role
+         * @description Require (or stop requiring) a second approver of a different role.
+         *
+         *     Turning it on also puts the class under the two-person rule. Turning it off
+         *     leaves the two-person rule as it was.
+         */
+        put: operations["put_api_response_four-eyes_action_type"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/response/segregation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Segregation
+         * @description Who proposed, approved and executed each action, in which role, and violations.
+         */
+        get: operations["get_api_response_segregation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/response/segregation/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Segregation
+         * @description The report as a download (CSV cells cannot start a spreadsheet formula).
+         */
+        get: operations["get_api_response_segregation_export"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -7855,6 +8165,39 @@ export interface components {
              */
             approved_by?: string | null;
         };
+        /** AutonomyAuditEntry */
+        AutonomyAuditEntry: {
+            /** Action */
+            action: string;
+            /** At */
+            at?: string | null;
+            /** Changed By */
+            changed_by: string;
+            /** Id */
+            id: number;
+            /** Key */
+            key: string;
+            /** New Value */
+            new_value?: {
+                [key: string]: unknown;
+            } | null;
+            /** Old Value */
+            old_value?: {
+                [key: string]: unknown;
+            } | null;
+            /** Reason */
+            reason?: string | null;
+        };
+        /** AutonomyAuditList */
+        AutonomyAuditList: {
+            /** Entries */
+            entries?: components["schemas"]["AutonomyAuditEntry"][];
+        };
+        /** AutonomyCheckResult */
+        AutonomyCheckResult: {
+            /** Demoted */
+            demoted?: components["schemas"]["AutonomyDemotion"][];
+        };
         /**
          * AutonomyConfig
          * @description The two flags the console chip folds into Assist or Act.
@@ -7868,6 +8211,46 @@ export interface components {
             auto_response_enabled: boolean;
             /** Force Manual Approval */
             force_manual_approval: boolean;
+        };
+        /** AutonomyDemotion */
+        AutonomyDemotion: {
+            /** Action Type */
+            action_type: string;
+            /** Category */
+            category: string;
+            /** From */
+            from: string;
+            /** Reason */
+            reason: string;
+            /** To */
+            to: string;
+        };
+        /** AutonomyMatrix */
+        AutonomyMatrix: {
+            /** Action Classes */
+            action_classes: string[];
+            /** Bounds */
+            bounds?: {
+                [key: string]: components["schemas"]["BoundModel"];
+            };
+            /** Bounds Readable */
+            bounds_readable: boolean;
+            /** Categories */
+            categories: string[];
+            /** Default Tier */
+            default_tier: string;
+            /** Eligible */
+            eligible: string[];
+            /** Entries */
+            entries?: components["schemas"]["TierEntryModel"][];
+            /** Fn Bound Min Reviews */
+            fn_bound_min_reviews: number;
+            /** Fn Bound Target */
+            fn_bound_target: number;
+            /** Max Ttl Seconds */
+            max_ttl_seconds: number;
+            /** Tiers */
+            tiers: string[];
         };
         /** AutostartRequest */
         AutostartRequest: {
@@ -7947,6 +8330,38 @@ export interface components {
         BootstrapStatusResponse: {
             /** Required */
             required: boolean;
+        };
+        /** BoundModel */
+        BoundModel: {
+            /** Category */
+            category: string;
+            /** Fn Upper Bound */
+            fn_upper_bound?: number | null;
+            /**
+             * Holds
+             * @default false
+             */
+            holds: boolean;
+            /**
+             * Misses
+             * @default 0
+             */
+            misses: number;
+            /**
+             * Readable
+             * @default true
+             */
+            readable: boolean;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Reviewed
+             * @default 0
+             */
+            reviewed: number;
         };
         /** Bounds */
         Bounds: {
@@ -9036,6 +9451,8 @@ export interface components {
         };
         /** ChainResponse */
         ChainResponse: {
+            /** Anchored */
+            anchored?: boolean | null;
             /** Broken At */
             broken_at?: number | null;
             /** Ok */
@@ -9668,6 +10085,13 @@ export interface components {
             /** Kind */
             kind: string;
         };
+        /** DistinctRoleUpdate */
+        DistinctRoleUpdate: {
+            /** Distinct Role */
+            distinct_role: boolean;
+            /** Reason */
+            reason: string;
+        };
         /** DraftLine */
         DraftLine: {
             /** Cites */
@@ -10166,6 +10590,13 @@ export interface components {
             specialization?: string | null;
             /** System Prompt Override */
             system_prompt_override?: string | null;
+        };
+        /** FourEyesConfig */
+        FourEyesConfig: {
+            /** Distinct Role Types */
+            distinct_role_types: string[];
+            /** Four Eyes Types */
+            four_eyes_types: string[];
         };
         /**
          * GeneralConfig
@@ -10688,6 +11119,115 @@ export interface components {
             /** Reason */
             reason: string;
         };
+        /** LessonEventResponse */
+        LessonEventResponse: {
+            /** Action */
+            action: string;
+            /** Actor */
+            actor: string;
+            /** At */
+            at: string;
+            /** Detail */
+            detail: {
+                [key: string]: unknown;
+            };
+            /** Id */
+            id?: number | null;
+            /** Lesson Id */
+            lesson_id: string;
+        };
+        /** LessonEventsResponse */
+        LessonEventsResponse: {
+            /** Events */
+            events: components["schemas"]["LessonEventResponse"][];
+        };
+        /** LessonResponse */
+        LessonResponse: {
+            /** Applies To */
+            applies_to: {
+                [key: string]: unknown;
+            };
+            /** Approved At */
+            approved_at?: string | null;
+            /** Approved By */
+            approved_by?: string | null;
+            /** Category */
+            category?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /** Created By */
+            created_by: string;
+            /** Effect */
+            effect: string;
+            /** Expired */
+            expired: boolean;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Id */
+            id: string;
+            /** Lesson */
+            lesson: string;
+            /**
+             * Provenance
+             * @enum {string}
+             */
+            provenance: "analyst" | "adversary_text" | "system";
+            /** Provenance Detail */
+            provenance_detail: {
+                [key: string]: unknown;
+            };
+            /** Replay */
+            replay?: {
+                [key: string]: unknown;
+            } | null;
+            /** Replay Passed */
+            replay_passed: boolean;
+            /** Replayed At */
+            replayed_at?: string | null;
+            /** Retire Reason */
+            retire_reason?: string | null;
+            /** Retired At */
+            retired_at?: string | null;
+            /** Retired By */
+            retired_by?: string | null;
+            /** Source Id */
+            source_id?: string | null;
+            /** Source Kind */
+            source_kind: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "proposed" | "active" | "retired";
+        };
+        /** LessonScope */
+        LessonScope: {
+            /** Data Source */
+            data_source?: string | null;
+            /** File Hashes */
+            file_hashes?: string[] | null;
+            /** Hostnames */
+            hostnames?: string[] | null;
+            /**
+             * Max Severity
+             * @default medium
+             * @enum {string}
+             */
+            max_severity: "low" | "medium" | "high";
+            /** Mitre Technique */
+            mitre_technique?: string | null;
+            /** Rule Name */
+            rule_name?: string | null;
+            /** Src Ips */
+            src_ips?: string[] | null;
+            /** Usernames */
+            usernames?: string[] | null;
+        };
+        /** LessonsResponse */
+        LessonsResponse: {
+            /** Lessons */
+            lessons: components["schemas"]["LessonResponse"][];
+        };
         /**
          * LoginRequest
          * @description Login request.
@@ -11062,6 +11602,8 @@ export interface components {
             agent: string;
             /** Approval State */
             approval_state?: string | null;
+            /** Args */
+            args?: unknown | null;
             /** Checkpoint Id */
             checkpoint_id?: string | null;
             /** Error */
@@ -11080,6 +11622,8 @@ export interface components {
             question?: string | null;
             /** Status */
             status: string;
+            /** Tool */
+            tool?: string | null;
         };
         /**
          * PlatformDatabaseProxyConfig
@@ -11161,6 +11705,32 @@ export interface components {
             count: number;
             /** Priority */
             priority: string;
+        };
+        /** ProposeLessonRequest */
+        ProposeLessonRequest: {
+            applies_to: components["schemas"]["LessonScope"];
+            /** Category */
+            category?: ("phishing" | "malware" | "identity" | "network" | "cloud" | "other") | null;
+            /**
+             * Effect
+             * @enum {string}
+             */
+            effect: "benign_hint" | "escalate";
+            /**
+             * Expires In Days
+             * @default 30
+             */
+            expires_in_days: number;
+            /** Lesson */
+            lesson: string;
+            /** Source Id */
+            source_id?: string | null;
+            /**
+             * Source Kind
+             * @default analyst_override
+             * @enum {string}
+             */
+            source_kind: "analyst_override" | "manual";
         };
         /** PurgeBody */
         PurgeBody: {
@@ -11516,6 +12086,16 @@ export interface components {
             /** Relationship Type */
             relationship_type: string;
         };
+        /** ReplayResultResponse */
+        ReplayResultResponse: {
+            lesson: components["schemas"]["LessonResponse"];
+            /** Promoted */
+            promoted?: boolean | null;
+            /** Replay */
+            replay: {
+                [key: string]: unknown;
+            };
+        };
         /**
          * ResolutionStepAdd
          * @description Add resolution step to case.
@@ -11567,6 +12147,11 @@ export interface components {
             action: string;
             /** Notes */
             notes?: string | null;
+        };
+        /** RollbackRequest */
+        RollbackRequest: {
+            /** Reason */
+            reason: string;
         };
         /**
          * Routability
@@ -11812,6 +12397,84 @@ export interface components {
             status?: string[] | null;
             /** Tags */
             tags?: string[] | null;
+        };
+        /** SegregationPolicy */
+        SegregationPolicy: {
+            /** Distinct Role Types */
+            distinct_role_types: string[];
+            /** Four Eyes Types */
+            four_eyes_types: string[];
+        };
+        /** SegregationReport */
+        SegregationReport: {
+            /** Action Type */
+            action_type?: string | null;
+            policy: components["schemas"]["SegregationPolicy"];
+            /** Rows */
+            rows?: components["schemas"]["SegregationRow"][];
+            /** Since */
+            since?: string | null;
+            summary: components["schemas"]["SegregationSummary"];
+            /** Until */
+            until?: string | null;
+        };
+        /** SegregationRow */
+        SegregationRow: {
+            /** Action Id */
+            action_id: string;
+            /** Action Type */
+            action_type: string;
+            /** Approved By */
+            approved_by?: string | null;
+            /** Approved Role */
+            approved_role?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /**
+             * Distinct Role
+             * @default false
+             */
+            distinct_role: boolean;
+            /** Executed At */
+            executed_at?: string | null;
+            /** Executed By */
+            executed_by?: string | null;
+            /** Execution */
+            execution?: string | null;
+            /**
+             * Four Eyes
+             * @default false
+             */
+            four_eyes: boolean;
+            /** Proposed By */
+            proposed_by?: string | null;
+            /** Proposed Role */
+            proposed_role?: string | null;
+            /** Reverse Of */
+            reverse_of?: string | null;
+            /** Role Source */
+            role_source?: string | null;
+            /** Second Approver */
+            second_approver?: string | null;
+            /** Second Role */
+            second_role?: string | null;
+            /** Status */
+            status: string;
+            /** Target */
+            target?: string | null;
+            /** Violations */
+            violations?: string[];
+        };
+        /** SegregationSummary */
+        SegregationSummary: {
+            /** By Kind */
+            by_kind: {
+                [key: string]: number;
+            };
+            /** Total */
+            total: number;
+            /** With Violations */
+            with_violations: number;
         };
         /**
          * ServerEnabledRequest
@@ -12247,6 +12910,52 @@ export interface components {
              * @default dark
              */
             theme: string;
+        };
+        /** TierEntryModel */
+        TierEntryModel: {
+            /** Action Type */
+            action_type: string;
+            /** Category */
+            category: string;
+            /**
+             * Eligible
+             * @default false
+             */
+            eligible: boolean;
+            /**
+             * Explicit
+             * @default false
+             */
+            explicit: boolean;
+            /** Max Ttl Seconds */
+            max_ttl_seconds?: number | null;
+            /** Min Confidence */
+            min_confidence?: number | null;
+            /** Tier */
+            tier: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Updated By */
+            updated_by?: string | null;
+        };
+        /** TierUpdate */
+        TierUpdate: {
+            /**
+             * Evidence Url
+             * @description Link to the evidence (Scorecard, eval run) a raise rests on.
+             */
+            evidence_url?: string | null;
+            /** Max Ttl Seconds */
+            max_ttl_seconds?: number | null;
+            /** Min Confidence */
+            min_confidence?: number | null;
+            /** Reason */
+            reason: string;
+            /**
+             * Tier
+             * @enum {string}
+             */
+            tier: "watch" | "suggest" | "approve" | "autonomous";
         };
         /**
          * TimelineEvent
@@ -14616,6 +15325,139 @@ export interface operations {
             };
         };
     };
+    get_api_autonomy_audit: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomyAuditList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_autonomy_check: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomyCheckResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_autonomy_tiers: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomyMatrix"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_api_autonomy_tiers_category_action_type: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                category: string;
+                action_type: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TierUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TierEntryModel"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_api_bifrost_routability: {
         parameters: {
             query?: never;
@@ -16023,6 +16865,46 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["CaseEvidenceSchema"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_cases_case_id_evidence-pack": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The signed evidence pack (ZIP). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": unknown;
+                };
+            };
+            /** @description Case not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -20520,6 +21402,257 @@ export interface operations {
             };
         };
     };
+    get_api_lessons: {
+        parameters: {
+            query?: {
+                status?: ("proposed" | "active" | "retired") | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LessonsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_lessons: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProposeLessonRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LessonResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_lessons_lesson_id: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                lesson_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LessonResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_lessons_lesson_id_events: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                lesson_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LessonEventsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_lessons_lesson_id_promote: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                lesson_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplayResultResponse"];
+                };
+            };
+            /** @description The proposer cannot promote their own lesson */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Replay failed or the lesson cannot be promoted */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_lessons_lesson_id_replay: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                lesson_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplayResultResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_lessons_lesson_id_rollback: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                lesson_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RollbackRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LessonResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_api_llm_providers: {
         parameters: {
             query?: never;
@@ -22047,6 +23180,151 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RevertResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_response_four-eyes": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FourEyesConfig"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "put_api_response_four-eyes_action_type": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                action_type: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DistinctRoleUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FourEyesConfig"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_response_segregation: {
+        parameters: {
+            query?: {
+                /** @description Actions created at or after */
+                since?: string | null;
+                /** @description Actions created before */
+                until?: string | null;
+                action_type?: string | null;
+                violations_only?: boolean;
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SegregationReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_response_segregation_export: {
+        parameters: {
+            query?: {
+                format?: "csv" | "json";
+                since?: string | null;
+                until?: string | null;
+                action_type?: string | null;
+                violations_only?: boolean;
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

@@ -269,7 +269,12 @@ export function RegulatoryClocks({ caseId }: { caseId: string }) {
           </div>
           {!status.chain.ok && (
             <p className="reg-error" role="alert">
-              The instant history does not verify (row {status.chain.broken_at}: {status.chain.why}). Treat these clocks as unreliable.
+              The instant history does not verify ({status.chain.broken_at != null ? `row ${status.chain.broken_at}: ` : ''}{status.chain.why}). Treat these clocks as unreliable.
+            </p>
+          )}
+          {status.chain.ok && status.chain.anchored === false && (
+            <p className="muted reg-unanchored">
+              The instant history verifies row by row, but no chain head was checked, so deleted latest entries would not show.
             </p>
           )}
           <ul className="reg-clocks">

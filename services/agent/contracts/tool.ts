@@ -1,4 +1,4 @@
-import { GATED, type Effect } from "./tool-effects.js";
+import { GATED, HUMAN_ONLY, type Effect } from "./tool-effects.js";
 
 export type { Effect } from "./tool-effects.js";
 
@@ -69,6 +69,12 @@ export interface RegisteredTool {
 // Whether a call to this tool may run only once a person approves it.
 export function isGated(tool: Pick<RegisteredTool, "effect">): boolean {
   return tool.effect !== undefined && GATED.has(tool.effect);
+}
+
+// Whether a tool decides an approval: never on a model's tool list, approved or
+// not (W1.7b). A person decides those on the approvals screen, over HTTP.
+export function isHumanOnly(tool: Pick<RegisteredTool, "effect">): boolean {
+  return tool.effect !== undefined && HUMAN_ONLY.has(tool.effect);
 }
 
 // An adapter returning more rows than it was told to is a defect in the adapter,

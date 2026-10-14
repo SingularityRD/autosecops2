@@ -18,8 +18,9 @@ from fastapi.testclient import TestClient
 
 from services.api.errors import register_exception_handlers
 from services.api.routers.orchestrator import router as orchestrator_router
+from tests.unit._signed_in import signed_in  # noqa: E402,F401 - fixture
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("signed_in")]
 
 OLDER = datetime(2026, 9, 16, 12, 0, 0, tzinfo=timezone.utc)
 NEWER = datetime(2026, 9, 17, 12, 0, 0, tzinfo=timezone.utc)

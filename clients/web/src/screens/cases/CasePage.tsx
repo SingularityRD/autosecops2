@@ -20,6 +20,7 @@ import { EvidenceTrail } from './EvidenceTrail'
 import { EvidenceCard, IOCsCard } from './CaseSections'
 import { CaseActions, useCaseActions } from './CaseActions'
 import { CaseSide } from './CaseSide'
+import { EvidencePackButton } from './EvidencePackButton'
 import { fmtCost } from '../../shared/cost'
 import { timeLeft, when } from './caseFormat'
 import {
@@ -1136,6 +1137,7 @@ export function CasePage({
                       <InfoTip label="Why Export audit is unavailable" text="This run has no investigation record to export." />
                     </>
                   ))}
+                  <EvidencePackButton caseId={id} report={setRecStatus} />
                 </div>
               </div>
               {recordPhase === 'loading' && <EmptyState loading compact icon="clock" title="Loading the record…" />}

@@ -14,7 +14,11 @@ from pydantic import BaseModel, Field
 from core.agents.internal_auth import authorise
 from core.deps import provide_approvals, provide_workflow_runs
 from core.response.approval_service import ApprovalService
-from core.response.checkpoints import raise_for_checkpoint, withdraw_for_run
+from core.response.checkpoints import (
+    raise_for_checkpoint,
+    split_tool_call,
+    withdraw_for_run,
+)
 from core.routing import Auth, RouterMeta
 from core.time import utcnow
 from core.workflows.workflow_run_service import WorkflowRunService
@@ -61,6 +65,10 @@ class PhaseUpdate(BaseModel):
     error: Optional[str] = None
     checkpoint_id: Optional[str] = None
     question: Optional[str] = None
+    # The gated tool call the step parked on, when it parked on one: the
+    # approval is bound to these arguments and shows them (W1.7b).
+    tool: Optional[str] = None
+    args: Optional[Any] = None
 
 
 class TerminalHandoff(BaseModel):
@@ -604,6 +612,7 @@ def record_checkpoint(
 
     # Idempotent per checkpoint inside raise_for_checkpoint, because a parked run
     # is announced on every sweep and would otherwise queue the question each time.
+    context, tool_call = split_tool_call(raised.context)
     raise_for_checkpoint(
         run_id=run_id,
         checkpoint_id=raised.checkpoint_id,
@@ -613,11 +622,12 @@ def record_checkpoint(
             raised.checkpoint_class, "The run is waiting on your answer."
         ),
         parameters={
+            **context,
             "checkpoint_class": raised.checkpoint_class,
             "run_kind": raised.run_kind,
-            **(raised.context or {}),
         },
         approvals=approvals,
+        tool_call=tool_call,
     )
 
 
@@ -668,4 +678,5 @@ def _raise_approval(
         parameters={"phase_id": update.phase_id, "agent_id": update.agent},
         phase_id=update.phase_id,
         approvals=approvals,
+        tool_call=({"tool": update.tool, "args": update.args} if update.tool else None),
     )

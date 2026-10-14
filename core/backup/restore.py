@@ -309,7 +309,7 @@ def _load_manifest(
         if isinstance(database, dict) and database.get("path") == dump:
             found.append((dump, payload))
     if len(found) != 1:
-        raise BackupError("snapshot does not contain one Vigil manifest")
+        raise BackupError("snapshot does not contain one AutoSecOps manifest")
     return found[0][1], found[0][0], _snapshot_id(restic, env, snapshot, priority)
 
 

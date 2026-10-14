@@ -55,7 +55,7 @@ port_pids() {
     fi
 }
 
-echo "Stopping Vigil SOC..."
+echo "Stopping AutoSecOps..."
 
 # Kill by PID files
 for pidfile in logs/backend.pid logs/daemon.pid logs/frontend.pid logs/llm_worker.pid \
@@ -107,7 +107,7 @@ fi
 if [ "$DOCKER_STOP" -eq 1 ]; then
     if command -v docker &>/dev/null; then
         if [ "$FULL" -eq 1 ]; then
-            echo "All Vigil data volumes are about to be deleted." >&2
+            echo "All AutoSecOps data volumes are about to be deleted." >&2
             save_project_container_logs
             dc down -v || true
         else
