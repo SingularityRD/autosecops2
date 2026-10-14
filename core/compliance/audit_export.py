@@ -45,6 +45,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import bisect
 import contextlib
 import contextvars
 import fcntl
@@ -2118,21 +2119,75 @@ def _value_end(text_: str, vm: "re.Match[str]", tail: "re.Pattern[str]") -> int:
     return end
 
 
-# HCL / shell heredoc: ``password = <<EOF`` ... ``EOF``.
-_HEREDOC = re.compile(
-    r"(?ms)^([ \t]*[\"']?)([^\W\d][\w.\-]*)([\"']?[ \t]*[=:][ \t]*<<-?[ \t]*)"
-    r"([\"']?)([A-Za-z_]\w*)\4[ \t]*\n(.*?)(^[ \t]*\5[ \t]*$)"
+# HCL / shell heredoc: ``password = <<EOF`` ... ``EOF``. The opening line;
+# the body runs to the first line that is the delimiter alone
+# (:func:`_heredocs`: found by lookup, not by a lazy ``.*?``, which made a
+# flood of unterminated openers quadratic).
+_HEREDOC_OPEN = re.compile(
+    r"(?m)^([ \t]*[\"']?)([^\W\d][\w.\-]*)([\"']?[ \t]*[=:][ \t]*<<-?[ \t]*)"
+    r"([\"']?)([A-Za-z_]\w*)\4[ \t]*\n"
 )
+_HEREDOC_END = re.compile(r"(?m)^[ \t]*([A-Za-z_]\w*)[ \t]*$")
+
+
+def _heredocs(text_: str):
+    """``(key, key start, body start, body end)`` of each heredoc, in
+    order, not nested: what ``^opener\n(.*?)^[ \t]*DELIM[ \t]*$`` found."""
+    ends: dict = {}
+    for t in _HEREDOC_END.finditer(text_):
+        ends.setdefault(t.group(1), []).append(t.start())
+    pos = 0
+    for m in _HEREDOC_OPEN.finditer(text_):
+        if m.start() < pos:
+            continue
+        at = ends.get(m.group(5))
+        if not at:
+            continue
+        k = bisect.bisect_left(at, m.end())
+        if k == len(at):
+            continue
+        yield m.group(2), m.start(2), m.end(), at[k]
+        line_end = text_.find("\n", at[k])
+        pos = len(text_) if line_end < 0 else line_end
+
+
 # ``<password>x</password>``, ``<ns:ApiKey attr="1">x</ns:ApiKey>``.
 _XML_ELEMENT = re.compile(
     r"<((?:[^\W\d][\w.\-]*:)?([^\W\d][\w.\-]*))(\s[^<>]*)?>([^<]*)</\1\s*>"
 )
-# ``<password><![CDATA[x]]></password>``.
-_XML_CDATA = re.compile(
+# ``<password><![CDATA[x]]></password>``: the opening tag; the content runs
+# to the next ``]]>`` (a CDATA section cannot hold one), which must be
+# followed by the close tag (:func:`_cdata_elements`).
+_XML_CDATA_OPEN = re.compile(
     r"<((?:[^\W\d][\w.\-]*:)?([^\W\d][\w.\-]*))(\s[^<>]*)?>(\s*<!\[CDATA\[)"
-    r"(.*?)(\]\]>\s*</\1\s*>)",
-    re.DOTALL,
 )
+
+
+_XML_CDATA_CLOSE = re.compile(r"\]\]>\s*</((?:[^\W\d][\w.\-]*:)?[^\W\d][\w.\-]*)\s*>")
+
+
+def _cdata_elements(text_: str):
+    """``(name, name start, content start, content end)`` of each
+    ``<k><![CDATA[...]]></k>``, not overlapping: what a lazy
+    ``(.*?)]]></k>`` found, with every ``]]></k>`` indexed once (the lazy
+    scan from every opener made a flood of them quadratic)."""
+    closes: dict = {}
+    for c in _XML_CDATA_CLOSE.finditer(text_):
+        closes.setdefault(c.group(1), []).append((c.start(), c.end()))
+    pos = 0
+    for m in _XML_CDATA_OPEN.finditer(text_):
+        if m.start() < pos:
+            continue
+        at = closes.get(m.group(1))
+        if not at:
+            continue
+        k = bisect.bisect_left(at, (m.end(), -1))
+        if k == len(at):
+            continue
+        yield m.group(2), m.start(2), m.end(), at[k][0]
+        pos = at[k][1]
+
+
 # ``<Password><Value>x</Value></Password>``: the secret's name on the parent.
 _XML_NESTED = re.compile(
     r"<((?:[^\W\d][\w.\-]*:)?([^\W\d][\w.\-]*))(\s[^<>]*)?>"
@@ -2876,11 +2931,9 @@ def _locate_yaml(text_: str, pairs: list) -> None:
 
 
 def _locate_xml(text_: str, pairs: list) -> None:
-    for m in _XML_CDATA.finditer(text_):
-        if m.group(5).strip():
-            pairs.append(
-                _Pair(m.group(2), m.start(2), m.start(5), m.end(5), "xml", rank=0)
-            )
+    for name, ns, cs, ce in _cdata_elements(text_):
+        if text_[cs:ce].strip():
+            pairs.append(_Pair(name, ns, cs, ce, "xml", rank=0))
     for m in _XML_NESTED.finditer(text_):
         if m.group(6).strip():
             pairs.append(_Pair(m.group(2), m.start(2), m.start(6), m.end(6), "xml"))
@@ -2905,6 +2958,111 @@ def _locate_xml(text_: str, pairs: list) -> None:
         if named:  # ``<add key="Password" value="x"/>``
             pairs.append(_Pair(named.group(2), m.start(2), s, e, "xml_attr", rank=0))
         pairs.append(_Pair(m.group(2), m.start(2), s, e, "xml_attr"))
+
+
+# ``user[password]=x`` / ``data[User][password]=x`` / ``password[]=x`` /
+# ``user%5Bpassword%5D=x`` (Rails / PHP form fields, plain or
+# percent-encoded): a base name and one or more bracket segments.
+_BRACKET_KEY = re.compile(
+    r"(?<![\w.\-%\[\]])([^\W\d][\w.\-]{0,255})"
+    r"((?:\[[\w.\-]{0,64}\]|%5[Bb][\w.\-]{0,64}%5[Dd]){1,8})"
+    r"[ \t]*(=(?!=)|%3[Dd])"
+)
+_BRACKET_SEGMENT = re.compile(r"\[([\w.\-]*)\]|%5[Bb]([\w.\-]*)%5[Dd]")
+
+
+def _bracket_key(base: str, brackets: str) -> Optional[str]:
+    """The name a bracket key is classified on: its innermost named segment
+    (``user[password]`` -> ``password``; an index or ``[]`` is not a name:
+    ``password[0]`` -> ``password``) or, when that names nothing a pass acts
+    on, the whole key without its indexes (``data[User][x]``). ``None`` when
+    neither does."""
+    segs = [a or b for a, b in _BRACKET_SEGMENT.findall(brackets)]
+    named = [x for x in segs if x and not x.isdigit()]
+    for key in (named[-1] if named else base, base + "".join(f"[{x}]" for x in named)):
+        c = classify_key(key)
+        if c.secret or c.pii is not None:
+            return key
+    return None
+
+
+def _locate_brackets(text_: str, pairs: list) -> None:
+    for m in _BRACKET_KEY.finditer(text_):
+        key = _bracket_key(m.group(1), m.group(2))
+        if key is None:
+            continue
+        ks, vstart = m.start(1), m.end()
+        query = (
+            (ks > 0 and text_[ks - 1] in "?&") or "%" in m.group(2) or m.group(3) != "="
+        )
+        if query:
+            vm = _QUERY_VALUE.match(text_, vstart)
+            form = "query"
+        else:
+            vm = _VALUE.match(text_, vstart)
+            first = text_[vstart : vstart + 1]
+            form = "quoted" if first in ('"', "'") else "inline"
+        if vm is None:
+            continue
+        pair = _Pair(key, ks, vstart, vm.end(), form)
+        pair.tail = form == "inline" and vm.end() - vstart >= _VALUE_MAX
+        pairs.append(pair)
+
+
+# A sensitive element whose content is child elements
+# (``<password><hash>h</hash><value>x</value></password>``, FHIR
+# ``<diagnosis><code>B20</code><text>HIV</text></diagnosis>``): the text of
+# every descendant, up to the matching close tag (or the end of the line).
+_XML_PARENT = re.compile(
+    r"<((?:[^\W\d][\w.\-]*:)?([^\W\d][\w.\-]*))(\s[^<>]{0,4096})?>(?=\s*<[^\W\d])"
+)
+_XML_TEXT = re.compile(r"(?<=>)[^<>]+")
+_XML_ANY_TAG = re.compile(
+    r"<(/?)((?:[^\W\d][\w.\-]*:)?[^\W\d][\w.\-]*)(\s[^<>]{0,4096})?>"
+)
+
+
+def _xml_closes(text_: str) -> dict:
+    """``{open tag start: start of its matching close tag}`` for every
+    element in ``text_``, in one pass (an element left open has none)."""
+    open_at: dict = {}
+    closes: dict = {}
+    for t in _XML_ANY_TAG.finditer(text_):
+        name = t.group(2)
+        if t.group(1):
+            stack = open_at.get(name)
+            if stack:
+                closes[stack.pop()] = t.start()
+        elif not (t.group(3) or "").endswith("/"):
+            open_at.setdefault(name, []).append(t.start())
+    return closes
+
+
+def _locate_xml_descendants(text_: str, pairs: list) -> None:
+    covered = 0
+    closes: Optional[dict] = None
+    for m in _XML_PARENT.finditer(text_):
+        if m.start() < covered or (m.group(3) or "").endswith("/"):
+            continue
+        cls = classify_key(m.group(2))
+        if not cls.secret and cls.pii is None:
+            continue
+        if closes is None:
+            closes = _xml_closes(text_)
+        end = closes.get(m.start(), -1)
+        if end < 0:  # no close tag: to the end of the line
+            end = min(
+                (k for k in (text_.find(c, m.end()) for c in "\r\n") if k >= 0),
+                default=len(text_),
+            )
+        covered = end
+        for t in _XML_TEXT.finditer(text_, m.end(), end):
+            body = t.group(0)
+            if not body.strip():
+                continue
+            s = t.start() + (len(body) - len(body.lstrip()))
+            e = t.end() - (len(body) - len(body.rstrip()))
+            pairs.append(_Pair(m.group(2), m.start(2), s, e, "xml"))
 
 
 def locate_pairs(text_: str) -> list:
@@ -2945,16 +3103,19 @@ def locate_pairs(text_: str) -> list:
             pair = _Pair(ident, ks, vstart, vm.end(), form, ctx=m.start())
             pair.tail = form == "inline" and vm.end() - vstart >= _VALUE_MAX
             pairs.append(pair)
+    if "[" in text_ or "%5" in text_:
+        _locate_brackets(text_, pairs)
     if "\n" in text_:
         _locate_yaml(text_, pairs)
     if "<" in text_ and ">" in text_:
         _locate_xml(text_, pairs)
+        _locate_xml_descendants(text_, pairs)
     if "<<" in text_:
-        for m in _HEREDOC.finditer(text_):
-            body = m.group(6)
+        for key, ks, bs, be in _heredocs(text_):
+            body = text_[bs:be]
             if body.strip():
-                e = m.end(6) - (1 if body.endswith("\n") else 0)
-                pairs.append(_Pair(m.group(2), m.start(2), m.start(6), e, "heredoc"))
+                e = be - (1 if body.endswith("\n") else 0)
+                pairs.append(_Pair(key, ks, bs, e, "heredoc"))
     if "=" in text_ and ("value" in text_.lower() or "val" in text_.lower()):
         for m in _NAMED_VALUE_ATTR.finditer(text_):
             pairs.append(
@@ -2979,6 +3140,24 @@ def _only_marks(value: str) -> bool:
     return not _MARK.sub("", value).strip(" \t\"'\\,;.:()[]{}")
 
 
+# Forms whose value is one value even with spaces in it: a quoted string,
+# a YAML scalar or list item (``token: "S S2"``, ``token:\n  S\n  S2``).
+_WHOLE_VALUE_FORMS = frozenset({"quoted", "yaml_scalar", "yaml_item"})
+
+
+def _weak_secretish(p: _Pair, body: str) -> bool:
+    """Whether the value of a WEAK-key pair reads as a credential. A
+    quoted or YAML value is judged as a whole: it is one when any of its
+    words is (up to :data:`_SECRETISH_SCAN` characters)."""
+    bare = _bare_value(body)
+    numeric = _numeric_identifier(p.key)
+    if _secretish(bare, numeric, p.key):
+        return True
+    if p.form not in _WHOLE_VALUE_FORMS or not _WHITESPACE.search(bare):
+        return False
+    return any(_secretish(w, numeric, p.key) for w in bare[:_SECRETISH_SCAN].split())
+
+
 def _secret_decision(text_: str, p: _Pair, cls: KeyClass, ctx: _LineContext):
     """``(end, replacement)`` when the secret pass masks pair ``p``."""
     strength = cls.secret
@@ -3001,7 +3180,7 @@ def _secret_decision(text_: str, p: _Pair, cls: KeyClass, ctx: _LineContext):
             text_, p.key_start, p.key
         )
         if p.form != "yaml_block" and not flag:
-            if not _secretish(_bare_value(body), _numeric_identifier(p.key), p.key):
+            if not _weak_secretish(p, body):
                 return None
         end = p.extend(text_)
         if p.form not in _DELIMITED_FORMS:

@@ -116,6 +116,25 @@ FORMS = {
         "query",
     ),
     "url_encoded_pair": (lambda k, v: f"q={k}%3D{quote(v)}", [], "inline"),
+    # Round 11: Rails / PHP bracket keys, plain and percent-encoded.
+    "bracket_key": (
+        lambda k, v: f"data[User][{k}]={v}\nnext=1",
+        ["\nnext=1", "data[User]["],
+        "inline",
+    ),
+    "bracket_index": (lambda k, v: f"{k}[0]={v}; n=1", ["; n=1"], "inline"),
+    "bracket_list": (lambda k, v: f"{k}[]={v}\nn=1", ["\nn=1"], "inline"),
+    "bracket_query": (
+        lambda k, v: f"POST /login?user[{k}]={quote(v)}&commit=Log+in",
+        ["&commit=Log+in", "POST /login?user["],
+        "query",
+    ),
+    "bracket_query_encoded": (
+        lambda k, v: f"utf8=%E2%9C%93&user%5B{k}%5D={quote(v)}&commit=Log+in",
+        ["&commit=Log+in", "utf8=%E2%9C%93&user%5B"],
+        "query",
+    ),
+    "dotted_key": (lambda k, v: f"user.{k}={v}\nn=1", ["\nn=1", "user."], "inline"),
     "xml_element": (
         lambda k, v: f"<r><{k}>{v}</{k}><n>1</n></r>",
         ["<n>1</n></r>"],
@@ -124,6 +143,21 @@ FORMS = {
     "xml_ns_attrs": (lambda k, v: f'<ns:{k} id="1">{v}</ns:{k}>', ['id="1">'], "xml"),
     "xml_cdata": (lambda k, v: f"<{k}><![CDATA[{v}]]></{k}>", ["]]>"], "xml"),
     "xml_nested": (lambda k, v: f"<{k}><Value>{v}</Value></{k}>", ["</Value>"], "xml"),
+    # Round 11: a sensitive element whose content is child elements (FHIR
+    # ``<diagnosis><coding><display>``): every descendant's text.
+    "xml_descendants": (
+        lambda k, v: (
+            f"<{k}>\n  <coding>\n    <display>{v}</display>\n  </coding>\n"
+            f"</{k}>\n<n>1</n>"
+        ),
+        ["</display>\n  </coding>\n", "\n<n>1</n>"],
+        "xml",
+    ),
+    "xml_descendants_unclosed": (
+        lambda k, v: f"<{k}><a><b>{v}</b></a>\nnext=1",
+        ["</b></a>\nnext=1"],
+        "xml",
+    ),
     "xml_value_attr": (lambda k, v: f'<{k} value="{v}"/>', ['"/>'], "xml_attr"),
     "xml_key_value_attr": (
         lambda k, v: f'<add key="{k}" value="{v}"/>',
@@ -220,7 +254,7 @@ def test_the_locator_reports_each_form(form):
     if form in ("json_document", "url_encoded_pair"):
         pytest.skip("walked as JSON / decoded first")
     text = template("diagnosis", "HIV positive")
-    forms = {p.form for p in locate_pairs(text) if p.key == "diagnosis"}
+    forms = {p.form for p in locate_pairs(text) if p.key.endswith("diagnosis")}
     assert kind in forms, (text, forms)
 
 
