@@ -359,6 +359,37 @@ yeniden kullanılır.
   tarayıcıdır, değer kalıplarındaki tüm niceleyiciler sınırlıdır. Bir
   partinin maskelenmesi olay döngüsünde değil, işçi iş parçacığında
   (`asyncio.to_thread`) çalışır.
+- **Özel nitelikli veri (GDPR md. 9/10, KVKK md. 6).** `redact_pii` açıkken
+  sağlık, genetik/biyometrik veri, ırk/etnik köken, din/inanç, cinsel hayat,
+  sendika üyeliği ve ceza mahkûmiyeti anahtarları sıralı bir liste ile değil
+  sözcük kökü ile tanınır: anahtarın herhangi bir parçası `health`, `medical`,
+  `medicat`, `diagnos`, `illness`, `disease`, `allerg`, `patient`, `mental`,
+  `disabilit`, `pregnan`, `blood`, `genetic`, `biometr`, `criminal`,
+  `convict`, `religio`, `ethnic`, `racial`, `sexual`, `saglik`/`sağlık`,
+  `sabika`, `engelli`, `mezhep`, … ile başlıyorsa (ya da tam olarak `race`,
+  `faith`, `belief`, `dna`) değer maskelenir; `*_status`, `*_type`, `*_id`
+  burada bahane değildir (`health_status`, `patient_id`). Bilinçli
+  istisnalar: `healthcheck`, `healthz`, `healthy`, `diagnostics`, `disabled`
+  (`disab` kök değildir), `race_condition`, `*_count`/`*_enabled`/`*_consent`;
+  `health` ile birlikte altyapı sözcüğü (`check`, `probe`, `service`,
+  `integration`, `endpoint`, `url`, …) geçen anahtarlar sistem sağlığıdır.
+  Yalnız `health` içeren bir anahtar (`health_status`) altında sistem durumu
+  sözcükleri (`ok`, `healthy`, `degraded`, `down`, `unknown`, …) geçer, diğer
+  her değer (`HIV positive`, `stable`) maskelenir. Ödünleşim: bir kişinin
+  sağlığını `service_health` gibi bir anahtarla yazan kaynak maskelenmez.
+- **Unicode.** Anahtarlar ve metin NFKC + biçim karakterleri (Cf: sıfır
+  genişlikli boşluk, yumuşak tire, BOM, bidi) silinmiş + her Unicode boşluğu
+  düz boşluk + Latin'e benzeyen Kiril/Yunan harfleri ve Türkçe harfler ASCII
+  karşılığı olarak eşleştirilir (`ｐａｓｓｗｏｒｄ`, `pass\u200bword`,
+  `password\u00a0=`, `pаssword`). Çıktı özgün metindir; katlanmış biçim
+  özgün metnin göstermediği bir gizli/PII ortaya çıkarırsa katlanmış ve
+  maskelenmiş biçim aktarılır (yüzde/kaçış çözümündeki gibi).
+- **Sözlük anahtarları da taranır.** Kısa düz ASCII olmayan bir anahtar
+  (`{"password=S": true}`, `{"alice@example.com": …}`) metin gibi maskelenir
+  ve böyle maskelenen anahtarın skaler değeri de kesilir; aynı biçime düşen
+  anahtarlar `#2`, `#3` ekiyle ayrı kalır. Anahtar gücü, 128 karakterlik
+  çıktı kesiminden önce bütün anahtar üzerinden hesaplanır; 256 karakterden
+  uzun anahtarın değeri maskelenir.
 - Dizeler 2048 karakterde, iç içe yapı 6 seviyede, listeler/sözlükler 100
   öğede kesilir. Maskelenen değer sayısı `redactions` metriğindedir.
 
@@ -424,7 +455,11 @@ Jeton ve istemci anahtarı `core/secrets_manager.py` ile
 `AUDIT_EXPORT_<HEDEF>_TOKEN` ve `AUDIT_EXPORT_<HEDEF>_CLIENT_KEY` adlarıyla
 saklanır (`<HEDEF>` = büyük harfli ad, `-` → `_`). Ad hedeften türetilir ve
 yapılandırılamaz; böylece bir yapılandırma yazımı başka bir gizliyi (ör. bir
-LLM anahtarını) seçip dışarı gönderemez. İstemci anahtarı diske yalnızca
+LLM anahtarını) seçip dışarı gönderemez. `siem-a` ile `siem_a` aynı gizliye düşeceği
+için birlikte tanımlanamaz. Saklı jeton girildiği uç noktaya (şema, ana
+makine, port) bağlıdır: bir `PUT` jetonu olan bir HTTP hedefini başka bir uç
+noktaya çevirirse (ya da eski jetonu hâlâ saklı bir adı yeniden yaratırsa)
+jeton yeniden girilmeli veya `clear_token` verilmelidir, yoksa 409 döner. İstemci anahtarı diske yalnızca
 `load_cert_chain` süresince, 0700 izinli geçici bir dizinde yazılır.
 
 ### Ağ güvenliği

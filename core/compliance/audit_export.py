@@ -62,6 +62,7 @@ import ssl
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
@@ -270,6 +271,9 @@ class AuditExportConfig(_Strict):
         names = [d.name for d in self.destinations]
         if len(names) != len(set(names)):
             raise ValueError("destination names must be unique")
+        if len({secret_name(n, "TOKEN") for n in names}) != len(names):
+            # ``siem-a`` and ``siem_a`` would share one stored credential.
+            raise ValueError("destination names must stay unique with '-' read as '_'")
         if self.enabled and not self.destinations:
             raise ValueError("enabled needs at least one destination")
         return self
@@ -414,6 +418,117 @@ def as_utc(value: Any) -> datetime:
 
 def iso_utc(value: datetime) -> str:
     return as_utc(value).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+# -- Unicode folding (matching only) ------------------------------------------
+#
+# Keys and free text are matched after NFKC (fullwidth ``ｐａｓｓｗｏｒｄ`` ->
+# ``password``), with format characters (category Cf: zero-width space/joiner,
+# soft hyphen, BOM, bidi controls) removed, every Unicode space (NBSP,
+# ideographic space, ...) read as a plain space, and the Cyrillic/Greek
+# letters that look like Latin ones (``pаssword`` with a Cyrillic ``а``)
+# and the Turkish letters read as their ASCII base letters. What is exported stays the original text unless the folded
+# form reveals a secret the original did not show (then the folded, redacted
+# form is exported, as with percent-/escape-decoding; see :meth:`Redactor.text`).
+_CONFUSABLES = str.maketrans(
+    {
+        # Cyrillic
+        "\u0430": "a",
+        "\u0410": "A",
+        "\u0412": "B",
+        "\u0441": "c",
+        "\u0421": "C",
+        "\u0501": "d",
+        "\u0435": "e",
+        "\u0415": "E",
+        "\u04bb": "h",
+        "\u041d": "H",
+        "\u0456": "i",
+        "\u0406": "I",
+        "\u0458": "j",
+        "\u0408": "J",
+        "\u041a": "K",
+        "\u041c": "M",
+        "\u043e": "o",
+        "\u041e": "O",
+        "\u0440": "p",
+        "\u0420": "P",
+        "\u0455": "s",
+        "\u0405": "S",
+        "\u0422": "T",
+        "\u0443": "y",
+        "\u0445": "x",
+        "\u0425": "X",
+        "\u0461": "w",
+        # Greek
+        "\u03b1": "a",
+        "\u0391": "A",
+        "\u0392": "B",
+        "\u0395": "E",
+        "\u0396": "Z",
+        "\u0397": "H",
+        "\u03b9": "i",
+        "\u0399": "I",
+        "\u03ba": "k",
+        "\u039a": "K",
+        "\u039c": "M",
+        "\u039d": "N",
+        "\u03bd": "v",
+        "\u03bf": "o",
+        "\u039f": "O",
+        "\u03c1": "p",
+        "\u03a1": "P",
+        "\u03c4": "t",
+        "\u03a4": "T",
+        "\u03c5": "u",
+        "\u03a5": "Y",
+        "\u03c7": "x",
+        "\u03a7": "X",
+        # Turkish letters, so ``sağlık_durumu=...`` in free text meets the
+        # ASCII key matchers (``saglik``)
+        "ç": "c",
+        "Ç": "C",
+        "ğ": "g",
+        "Ğ": "G",
+        "ı": "i",
+        "İ": "I",
+        "ö": "o",
+        "Ö": "O",
+        "ş": "s",
+        "Ş": "S",
+        "ü": "u",
+        "Ü": "U",
+    }
+)
+_KEEP_SPACE = frozenset("\n\r\t")
+
+
+@functools.lru_cache(maxsize=8192)
+def _fold_short(value: str) -> str:
+    return _fold(value)
+
+
+def _fold(value: str) -> str:
+    folded = unicodedata.normalize("NFKC", value)
+    out = []
+    for ch in folded:
+        if ch.isascii():
+            out.append(ch)
+        elif unicodedata.category(ch) == "Cf":
+            continue
+        elif ch.isspace() and ch not in _KEEP_SPACE:
+            out.append(" ")
+        else:
+            out.append(ch)
+    return "".join(out).translate(_CONFUSABLES)
+
+
+def fold_unicode(value: str) -> str:
+    """``value`` as the matchers should read it (see above). ASCII is
+    returned unchanged (the common case costs one ``isascii``)."""
+    if value.isascii():
+        return value
+    return _fold_short(value) if len(value) <= 256 else _fold(value)
 
 
 REDACTED = "[REDACTED]"
@@ -766,6 +881,9 @@ _PII_SEGMENTS = frozenset(
         "biometric",
         "biometrics",
         "genetic",
+        "nationality",
+        "salary",
+        "plaka",
     }
 )
 _PII_PHRASES = tuple(
@@ -825,6 +943,15 @@ _PII_PHRASES = tuple(
         "medical_condition",
         "medical_record",
         "medical_records",
+        "place_of_birth",
+        "birth_place",
+        "marital_status",
+        "license_plate",
+        "licence_plate",
+        "credit_score",
+        "kan_grubu",
+        "dogum_tarihi",
+        "medeni_hal",
     )
 )
 # Whole keys only: ``health_check`` / ``political_risk_score`` are not
@@ -832,13 +959,225 @@ _PII_PHRASES = tuple(
 _PII_LEAVES = frozenset({"pan", "zip", "postcode", "health", "political", "sex"})
 
 
+# Special categories (GDPR Art. 9 and 10, KVKK md. 6 "özel nitelikli kişisel
+# veri"): health, genetic and biometric data, racial or ethnic origin,
+# religious or philosophical beliefs, sex life, trade-union membership,
+# criminal convictions. Matched by word stem at the start of any key segment
+# (``health_status``, ``mentalHealth``, ``medical_history``, ``diagnosis``,
+# ``criminal_convictions``, ``bloodType``, ``pregnancy_status``,
+# ``religious_affiliation``, ``sağlık_durumu``) rather than by enumerating
+# keys, and the ``_status`` / ``_type`` / ``_id`` leaves that make an
+# ordinary key "about" something are not an excuse here: a health status is
+# health data, a patient id identifies a patient.
+_SPECIAL_STEMS = (
+    "health",
+    "medical",
+    "medicat",
+    "medicine",
+    "prescript",
+    "diagnos",
+    "illness",
+    "disease",
+    "allerg",
+    "symptom",
+    "patient",
+    "mental",
+    "psychiatr",
+    "disabilit",
+    "handicap",
+    "pregnan",
+    "matern",
+    "blood",
+    "genetic",
+    "genom",
+    "biometr",
+    "criminal",
+    "convict",
+    "religio",
+    "ethnic",
+    "racial",
+    "sexual",
+    "sexlife",
+    # Turkish (ASCII and native spelling; KVKK md. 6)
+    "saglik",
+    "sağlık",
+    "hastalik",
+    "hastalık",
+    "engelli",
+    "sabika",
+    "sabıka",
+    "mahkum",
+    "mahkûm",
+    "mezhep",
+    "biyometr",
+    "genetik",
+    "etnik",
+    "cinsel",
+    "sendika",
+)
+# Whole segments only: as stems these would catch ``trace``/``racing``,
+# ``faithful``, ``dinner``.
+_SPECIAL_SEGMENTS = frozenset(
+    {"race", "races", "faith", "belief", "beliefs", "dna", "hiv", "din", "ırk"}
+)
+# Segments that start with a stem above but are not about a person:
+# service health checks, ``diagnostics`` bundles, ``disabled`` flags are not
+# caught in the first place (``disab`` is not a stem).
+_NOT_SPECIAL = frozenset(
+    {
+        "healthcheck",
+        "healthchecks",
+        "healthchecker",
+        "healthy",
+        "unhealthy",
+        "healthz",
+        "healthiness",
+        "diagnostic",
+        "diagnostics",
+    }
+)
+# A ``health`` key alongside one of these words is about a system, not a
+# person (``health_check_url``, ``service_health``, ``integration_health``,
+# ``health_probe_interval``). Any other special stem in the key still wins.
+_HEALTH_INFRA = frozenset(
+    {
+        "check",
+        "checks",
+        "checker",
+        "probe",
+        "probes",
+        "endpoint",
+        "url",
+        "uri",
+        "path",
+        "port",
+        "interval",
+        "timeout",
+        "monitor",
+        "monitoring",
+        "ping",
+        "api",
+        "server",
+        "service",
+        "services",
+        "cluster",
+        "node",
+        "nodes",
+        "pod",
+        "pods",
+        "integration",
+        "integrations",
+        "connector",
+        "agent",
+        "worker",
+        "queue",
+        "db",
+        "database",
+        "system",
+        "pipeline",
+        "sensor",
+        "feed",
+        "source",
+        "destination",
+        "exporter",
+        "export",
+        "provider",
+        "component",
+        "app",
+        "application",
+        "host",
+        "llm",
+        "model",
+    }
+)
+# Leaves that make a special-category key a count or a switch, not the data.
+_SPECIAL_ABOUT_LEAVES = frozenset(
+    {"count", "counts", "enabled", "required", "consent", "policy", "version"}
+)
+
+
+def _special_segment(seg: str) -> bool:
+    if seg in _SPECIAL_SEGMENTS:
+        return True
+    if seg in _NOT_SPECIAL or seg.startswith(("healthcheck", "diagnostic")):
+        return False
+    return seg.startswith(_SPECIAL_STEMS)
+
+
+def special_category_key(name: str) -> bool:
+    """Whether a key names special-category personal data (see
+    :data:`_SPECIAL_STEMS`). ``health_check_url``, ``diagnostics``,
+    ``disabled``, ``race_condition``, ``trace_id`` and ``*_count`` are not."""
+    segments = key_segments(fold_unicode(name))
+    hits = [s for s in segments if _special_segment(s)]
+    if not hits:
+        return False
+    if len(segments) > 1 and segments[-1] in _SPECIAL_ABOUT_LEAVES:
+        return False
+    if all(s == "race" or s == "races" for s in hits) and {
+        "condition",
+        "conditions",
+    } & set(segments):
+        return False
+    if all(s.startswith("health") for s in hits) and _HEALTH_INFRA & set(segments):
+        return False
+    return True
+
+
+def health_only_key(name: str) -> bool:
+    """A special-category key whose only special word is ``health`` (see
+    :data:`SERVICE_HEALTH_VALUES`)."""
+    segments = key_segments(fold_unicode(name))
+    hits = [s for s in segments if _special_segment(s)]
+    return bool(hits) and all(s.startswith("health") for s in hits)
+
+
+# Under a ``health``-only key (``health_status``, ``health``) these values
+# are a system's state, not a person's: they are exported. Everything else
+# (``"HIV positive"``, ``"stable"``, ``"critical"``) is masked.
+SERVICE_HEALTH_VALUES = frozenset(
+    {
+        "ok",
+        "healthy",
+        "unhealthy",
+        "degraded",
+        "up",
+        "down",
+        "unknown",
+        "green",
+        "yellow",
+        "red",
+        "passing",
+        "failing",
+        "pass",
+        "fail",
+        "warn",
+        "warning",
+        "error",
+        "starting",
+        "running",
+        "stopped",
+        "ready",
+        "not_ready",
+        "available",
+        "unavailable",
+        "online",
+        "offline",
+    }
+)
+
+
 def pii_key(name: str) -> bool:
     """Whether a key names personal data (``email``, ``userPhone``,
-    ``first_name``, ``date_of_birth``, ``iban``, ``pan``), so its value is
+    ``first_name``, ``date_of_birth``, ``iban``, ``pan``, and every
+    special-category key: :func:`special_category_key`), so its value is
     masked whatever it looks like. ``email_count`` / ``phone_type`` are about
-    personal data, not personal data."""
+    personal data, not personal data. Matched after :func:`fold_unicode`."""
+    name = fold_unicode(name)
     lowered = name.lower()
     if lowered in _PII_KEYS or lowered in _PII_LEAVES:
+        return True
+    if special_category_key(name):
         return True
     segments = key_segments(name)
     if _has_phrase(segments, _PII_PHRASES):
@@ -1257,7 +1596,7 @@ def identifier_strength(name: str) -> int:
     ``session_id`` are WEAK; ``max_tokens``, ``bypass``, ``token_count``,
     ``config_key``, ``partition_key``, ``public_key``, ``key_id`` are 0.
     """
-    bare = name.strip("\"'-\\ :")
+    bare = fold_unicode(name).strip("\"'-\\ :")
     if not bare or len(bare) > 256:
         return 0
     segments = key_segments(bare)
@@ -1541,7 +1880,11 @@ _OTP_CODE = re.compile(
 )
 # ``the new password is S``, ``pin was 1234``.
 _PROSE_SECRET = re.compile(
-    r"(?i)\b((?:password|passphrase|passwd|passcode|pin|secret|token|api[ _-]?key)"
+    r"(?i)\b((?:(?:set|change|changed|reset|update|updated)[ \t]+"
+    r"(?:(?:the|their|his|her|my|your|its)[ \t]+)?(?:\w+[ \t]+)?"
+    r"(?:password|passphrase|passwd|passcode|pin|secret|token|api[ _-]?key)"
+    r"[ \t]+to[ \t]+)"
+    r"|(?:password|passphrase|passwd|passcode|pin|secret|token|api[ _-]?key)"
     r"[ \t]+(?:is|was|=|set[ \t]+to|changed[ \t]+to|reset[ \t]+to)[ \t]+)"
     r"([\"']?)([^\s\"']+?)\2(?=[\s,;)]|\.(?:\s|$)|$)"
 )
@@ -2493,6 +2836,32 @@ def _secret_argument(args: Any, index: int) -> bool:
     return secret_identifier(prev)
 
 
+MAX_KEY_CHARS = 128
+
+
+def _redaction_marks(text_: str) -> int:
+    return text_.count("[REDACTED")
+
+
+# Longest key whose name is matched word by word; a longer one masks its value.
+_KEY_CHECK_MAX = 256
+# Keys that need no scan: short ASCII identifiers (``user_id``,
+# ``webhookUrl``, ``x-api-key``) that cannot carry an e-mail, a ``k=v`` pair
+# or a token (random-looking ones go through the scan: _looks_random).
+_PLAIN_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_\-]{0,63}")
+
+
+@functools.lru_cache(maxsize=8192)
+def _plain_key(raw: str) -> bool:
+    """A short ASCII identifier that no text pattern would change (keys
+    repeat across events, so the verdict is cached)."""
+    return (
+        _PLAIN_KEY.fullmatch(raw) is not None
+        and redact_text(raw) == raw
+        and mask_personal_data(raw) == raw
+    )
+
+
 class Redactor:
     """Scrub secrets (and, by default, PII) from what an event carries.
 
@@ -2538,7 +2907,11 @@ class Redactor:
         """Key first: a key naming a credential or personal data masks its
         value whatever the value looks like (patterns come second, in
         :meth:`text`)."""
-        leaf = path.rsplit(".", 1)[-1]
+        leaf = fold_unicode(path.rsplit(".", 1)[-1])
+        if len(leaf) > _KEY_CHECK_MAX:
+            # Not an ordinary key name, and too long for the word matchers
+            # (``identifier_strength`` stops at 256): mask the value.
+            return STRONG
         segments = key_segments(leaf)
         if self.redact_pii and pii_key(leaf):
             return STRONG
@@ -2549,7 +2922,7 @@ class Redactor:
             return strength
         if self._scrubber._should_redact(leaf.lower(), None):
             return WEAK if {"session", "cookie"} & set(segments) else STRONG
-        lowered = path.lower()
+        lowered = fold_unicode(path).lower()
         if any(c in lowered for c in _CONTENT_KEY_SUBSTRINGS):
             return STRONG
         return 0
@@ -2568,9 +2941,17 @@ class Redactor:
         if budget is not None and not budget.chars(len(scanned)):
             self.count += 1
             return REDACTED_BUDGET
-        out = redact_text(scanned, _depth=self._nest)
-        if self.redact_pii and pii:
-            out = mask_personal_data(out)
+        out = self._scan(scanned, pii)
+        folded = fold_unicode(scanned)
+        if folded != scanned:
+            # Match on the folded form too (fullwidth, zero-width, NBSP,
+            # homoglyphs); export it only when it hides more than the original.
+            if budget is not None and not budget.chars(len(folded)):
+                self.count += 1
+                return REDACTED_BUDGET
+            alt = self._scan(folded, pii)
+            if _redaction_marks(alt) > _redaction_marks(out):
+                out = alt
         if out != scanned:
             self.count += 1
         if len(out) > self.max_string:
@@ -2579,9 +2960,33 @@ class Redactor:
             out += _TRUNCATED
         return out
 
+    def _scan(self, value: str, pii: bool) -> str:
+        out = redact_text(value, _depth=self._nest)
+        if self.redact_pii and pii:
+            out = mask_personal_data(out)
+        return out
+
     def _redact(self) -> str:
         self.count += 1
         return REDACTED
+
+    def key(self, raw: str, taken: dict) -> str:
+        """A dict key as exported: scanned like text (``{"password=S": 1}``,
+        ``{"alice@example.com": ...}`` with ``redact_pii``), then cut to
+        :data:`MAX_KEY_CHARS`. Two keys that redact to the same text stay
+        distinct (``#2``, ``#3``, ...) so neither value is lost."""
+        if _plain_key(raw):
+            key = raw
+        else:
+            key = self.text(raw, pii=self.redact_pii)
+            if len(key) > MAX_KEY_CHARS:
+                key = key[:MAX_KEY_CHARS]
+        if key in taken:
+            n = 2
+            while f"{key}#{n}" in taken:
+                n += 1
+            key = f"{key}#{n}"
+        return key
 
     def value(
         self,
@@ -2605,6 +3010,13 @@ class Redactor:
         if strength == STRONG and not _is_argv(value):
             if value == "" or value == {} or value == []:
                 return value
+            if (
+                isinstance(value, str)
+                and value.strip().lower() in SERVICE_HEALTH_VALUES
+                and health_only_key(path.rsplit(".", 1)[-1])
+                and not identifier_strength(path.rsplit(".", 1)[-1])
+            ):
+                return value  # ``health_status: degraded`` is a system's state
             return self._redact()
         if strength == WEAK:
             weak_key = path.rsplit(".", 1)[-1]
@@ -2619,7 +3031,19 @@ class Redactor:
                 if i >= self.max_items:
                     out["_truncated"] = True
                     break
-                key = str(k)[:128]
+                raw_key = str(k)
+                key = self.key(raw_key, out)
+                if (
+                    not key.startswith(raw_key[:MAX_KEY_CHARS])
+                    and isinstance(v, (str, int, float))
+                    and not isinstance(v, bool)
+                    and v != ""
+                ):
+                    # The key itself carried a secret or personal data
+                    # (``{"alice@example.com": "admin"}``): its scalar value
+                    # is about that, so it goes too.
+                    out[key] = self._redact()
+                    continue
                 if jwk and key in _JWK_PRIVATE and v not in (None, "", {}, []):
                     out[key] = self._redact()
                     continue
@@ -2630,8 +3054,11 @@ class Redactor:
                     ):
                         out[key] = self._redact()
                         continue
+                # The value's strength is judged on the whole original key
+                # (dots and all), not on the cut or redacted one.
+                child = raw_key.replace(".", "_")
                 out[key] = self.value(
-                    f"{path}.{key}" if path else key, v, depth + 1, weak, weak_key
+                    f"{path}.{child}" if path else child, v, depth + 1, weak, weak_key
                 )
             return out
         if isinstance(value, (list, tuple)):

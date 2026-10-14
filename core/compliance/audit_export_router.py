@@ -10,6 +10,7 @@ derived from the destination, and reads only say whether one is set.
 from __future__ import annotations
 
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, ValidationError
@@ -72,6 +73,50 @@ def _view(cfg: AuditExportConfig) -> dict:
     return out
 
 
+def _endpoint(dest) -> Optional[tuple]:
+    """Where a destination's token is sent: (scheme, host, port) of an HTTP
+    URL. Syslog destinations send no token."""
+    if getattr(dest, "type", None) != "http":
+        return None
+    parsed = urlparse(dest.url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return (parsed.scheme, (parsed.hostname or "").lower(), port)
+
+
+def _refuse_moved_token(
+    service: AuditExportService,
+    cfg: AuditExportConfig,
+    secrets: dict[str, "DestinationSecrets"],
+) -> None:
+    """A stored token is bound to the endpoint it was entered for. A PUT that
+    points a destination holding a token at another scheme/host/port (or
+    re-creates a destination whose old token is still stored) must re-enter
+    the token or clear it; otherwise a ``settings.write`` holder could send
+    the existing credential to a host of their choosing."""
+    try:
+        previous = {d.name: d for d in service.load_config().destinations}
+    except ValidationError:
+        previous = {}
+    for dest in cfg.destinations:
+        target = _endpoint(dest)
+        if target is None:
+            continue
+        old = previous.get(dest.name)
+        if old is not None and _endpoint(old) == target:
+            continue
+        supplied = secrets.get(dest.name)
+        if supplied is not None and (supplied.token or supplied.clear_token):
+            continue
+        if get_secret(secret_name(dest.name, "TOKEN")):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"destination {dest.name!r} now points elsewhere; re-enter "
+                    "its token or set clear_token"
+                ),
+            )
+
+
 @router.get("/config", dependencies=_READ)
 def get_config(request: Request):
     """The stored configuration (never a secret's value)."""
@@ -111,6 +156,7 @@ def put_config(
             status_code=422,
             detail=f"secrets for unknown destinations: {', '.join(unknown)}",
         )
+    _refuse_moved_token(service, cfg, body.secrets)
     for name, secret in body.secrets.items():
         for kind, value, clear in (
             ("TOKEN", secret.token, secret.clear_token),
