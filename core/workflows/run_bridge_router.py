@@ -8,13 +8,16 @@ import hashlib
 import logging
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from core.agents.internal_auth import authorise
 from core.deps import provide_approvals, provide_workflow_runs
 from core.response.approval_service import ApprovalService
 from core.response.checkpoints import (
+    ArgumentsTooLarge,
+    check_args_size,
+    display_safe,
     raise_for_checkpoint,
     split_tool_call,
     target_line,
@@ -127,6 +130,15 @@ def record_phase(
 ) -> None:
     authorise(authorization, "run progress")
 
+    # An oversized gated call is refused before it is parked (W0.16): the
+    # phase row says why, and the agent layer gets the refusal back.
+    refused = None
+    if update.status == WAITING and update.checkpoint_id and update.tool:
+        try:
+            check_args_size(update.args)
+        except ArgumentsTooLarge as exc:
+            refused = str(exc)
+
     now = utcnow()
     run_service.upsert_phase(
         run_id,
@@ -135,7 +147,7 @@ def record_phase(
         agent_id=update.agent,
         status=update.status,
         output=update.output,
-        error=update.error,
+        error=refused or update.error,
         # The agent layer says how a gate was answered; a waiting step is the only
         # state this side can name on its own.
         approval_state=update.approval_state
@@ -145,6 +157,9 @@ def record_phase(
     )
     run_service.set_status(run_id, RUN_STATUS.get(update.status, "running"))
 
+    if refused:
+        logger.warning("run %s: %s", run_id, refused)
+        raise HTTPException(status_code=413, detail=refused)
     if update.status == WAITING and update.checkpoint_id:
         _raise_approval(run_id, update, approvals)
 
@@ -614,22 +629,28 @@ def record_checkpoint(
     # Idempotent per checkpoint inside raise_for_checkpoint, because a parked run
     # is announced on every sweep and would otherwise queue the question each time.
     context, tool_call = split_tool_call(raised.context)
-    raise_for_checkpoint(
-        run_id=run_id,
-        checkpoint_id=raised.checkpoint_id,
-        title=raised.question[:120] or raised.checkpoint_class,
-        description=raised.question,
-        reason=_CHECKPOINT_REASONS.get(
-            raised.checkpoint_class, "The run is waiting on your answer."
-        ),
-        parameters={
-            **context,
-            "checkpoint_class": raised.checkpoint_class,
-            "run_kind": raised.run_kind,
-        },
-        approvals=approvals,
-        tool_call=tool_call,
-    )
+    try:
+        raise_for_checkpoint(
+            run_id=run_id,
+            checkpoint_id=raised.checkpoint_id,
+            title=raised.question[:120] or raised.checkpoint_class,
+            description=raised.question,
+            reason=_CHECKPOINT_REASONS.get(
+                raised.checkpoint_class, "The run is waiting on your answer."
+            ),
+            parameters={
+                **context,
+                "checkpoint_class": raised.checkpoint_class,
+                "run_kind": raised.run_kind,
+            },
+            approvals=approvals,
+            tool_call=tool_call,
+        )
+    except ArgumentsTooLarge as exc:
+        # Nothing was parked, so nothing can be approved and the call never
+        # runs (W0.16); the agent layer gets the reason.
+        logger.warning("run %s checkpoint %s: %s", run_id, raised.checkpoint_id, exc)
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
 
 
 # The approvals table is the inbox. An analyst answers there, the agent layer
@@ -678,7 +699,9 @@ def _raise_approval(
         # target before opening anything (W0.14). The question stays the first
         # line of the description.
         targets = target_line(update.args)
-        title = f"Approve {update.tool}" + (f" on {targets}" if targets else "")
+        title = f"Approve {display_safe(update.tool)}" + (
+            f" on {targets}" if targets else ""
+        )
     raise_for_checkpoint(
         run_id=run_id,
         checkpoint_id=str(update.checkpoint_id),

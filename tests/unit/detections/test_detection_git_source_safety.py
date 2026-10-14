@@ -307,11 +307,11 @@ def test_update_fetches_the_stored_url_not_the_clone_origin(service):
         calls.append(argv)
         out = "core.bare\nremote.origin.url\n" if "config" in argv else ""
         if "rev-parse" in argv:
-            out = f"{clone}\n"
+            out = f"{clone}\n{clone}/.git\n"
         return subprocess.CompletedProcess(argv, 0, out, "")
 
     clone = service.base_dir / "rules"
-    clone.mkdir(parents=True)
+    (clone / ".git").mkdir(parents=True)
     with (
         patch.object(drs, "resolve_allowed_addresses", side_effect=_public),
         patch.object(drs.subprocess, "run", side_effect=fake_run),
@@ -526,3 +526,98 @@ def test_a_repository_whose_top_is_elsewhere_is_refused(service, tmp_path, monke
 def test_a_real_clone_still_passes_the_own_repository_check(service, tmp_path):
     _, clone = _upstream_and_clone(service, tmp_path)
     service._check_own_repository(str(clone))
+
+
+# --- W0.16 ---
+
+
+def _other_repository(tmp_path):
+    """A second repository with uncommitted work, standing in for "anything
+    else on the host" a planted pointer could aim fetch / reset at."""
+    other = tmp_path / "other"
+    other.mkdir()
+    _git("init", "-q", "-b", "main", cwd=other)
+    (other / "keep.txt").write_text("other's own work\n")
+    _git("add", ".", cwd=other)
+    _git("commit", "-qm", "other", cwd=other)
+    (other / "keep.txt").write_text("uncommitted edit in other\n")
+    return other
+
+
+def _head(repo):
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True
+    ).stdout
+
+
+def _file_transport(monkeypatch):
+    real_env = drs._git_env
+    monkeypatch.setattr(
+        drs,
+        "_git_env",
+        lambda *a, **k: {**real_env(*a, **k), "GIT_ALLOW_PROTOCOL": "file"},
+    )
+
+
+@pytest.mark.skipif(not HAS_GIT, reason="git not installed")
+@pytest.mark.parametrize("pointer", ["gitdir-file", "symlink"])
+def test_a_planted_git_pointer_to_another_repository_is_refused(
+    service, tmp_path, monkeypatch, pointer
+):
+    """``<source>/.git`` as a ``gitdir:`` file (or a symlink) aimed at another
+    repository's git directory: --show-toplevel still says the source folder,
+    so only the --absolute-git-dir check stops fetch / reset there."""
+    up, clone = _upstream_and_clone(service, tmp_path)
+    other = _other_repository(tmp_path)
+    head = _head(other)
+    shutil.rmtree(clone / ".git")
+    if pointer == "gitdir-file":
+        (clone / ".git").write_text(f"gitdir: {other / '.git'}\n")
+    else:
+        (clone / ".git").symlink_to(other / ".git", target_is_directory=True)
+    _file_transport(monkeypatch)
+    with (
+        patch.object(drs, "check_git_url", return_value=[]),
+        patch.object(drs, "_GIT_SAFE_CONFIG", ("-c", "protocol.file.allow=always")),
+    ):
+        with pytest.raises(ValueError, match="not its own .git directory"):
+            service._git_pull(str(clone), f"file://{up}")
+    assert _head(other) == head
+    assert not (other / ".git" / "FETCH_HEAD").exists()
+    assert (other / "keep.txt").read_text() == "uncommitted edit in other\n"
+
+
+def test_inherited_git_dir_and_work_tree_never_reach_git(monkeypatch, tmp_path):
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "other" / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path / "other"))
+    for env in (drs._git_env(), drs._git_env(str(tmp_path / "rules"))):
+        assert "GIT_DIR" not in env
+        assert "GIT_WORK_TREE" not in env
+
+
+@pytest.mark.skipif(not HAS_GIT, reason="git not installed")
+def test_an_update_ignores_another_repositorys_git_dir_in_the_environment(
+    service, tmp_path, monkeypatch
+):
+    """With GIT_DIR / GIT_WORK_TREE of another repository in the process
+    environment, an update still updates the source's own clone and leaves
+    the other repository alone: the variables are dropped, not obeyed."""
+    up, clone = _upstream_and_clone(service, tmp_path)
+    other = _other_repository(tmp_path)
+    head = _head(other)
+    (up / "a.yml").write_text("two\n")
+    _git("commit", "-qam", "two", cwd=up)
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(other))
+    _file_transport(monkeypatch)
+    with (
+        patch.object(drs, "check_git_url", return_value=[]),
+        patch.object(drs, "_GIT_SAFE_CONFIG", ("-c", "protocol.file.allow=always")),
+    ):
+        service._git_pull(str(clone), f"file://{up}")
+    assert (clone / "a.yml").read_text() == "two\n"
+    monkeypatch.delenv("GIT_DIR")
+    monkeypatch.delenv("GIT_WORK_TREE")
+    assert _head(other) == head
+    assert not (other / ".git" / "FETCH_HEAD").exists()
+    assert (other / "keep.txt").read_text() == "uncommitted edit in other\n"
