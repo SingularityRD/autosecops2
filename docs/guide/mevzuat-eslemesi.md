@@ -2,7 +2,7 @@
 
 > **Bu belge hukuki görüş değildir.** Aşağıdaki tablolar, düzenlemelerin
 > AutoSecOps'u kullanan kurumdan beklediği bazı kontrolleri ürünün bu sürümdeki
-> (`integration` @ `b8795def`) özelliklerine ve bu özelliklerin üretebildiği kanıta
+> (`main` @ `b8795def`) özelliklerine ve bu özelliklerin üretebildiği kanıta
 > eşler. Yükümlülük kurumundur; bir aracın varlığı uyumu kendi başına sağlamaz.
 > Eşleme, kurumun uyum ve hukuk ekibiyle doğrulanmalıdır. Madde numarası
 > verilmeyen satırlarda ilgili hükmün eşlenmesi kurumun uyum ekibine bırakılmıştır.

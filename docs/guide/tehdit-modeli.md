@@ -1,7 +1,7 @@
 # Tehdit modeli (STRIDE)
 
 > **English summary.** STRIDE threat model per component of AutoSecOps at
-> `integration` @ `b8795def`. For each threat it lists the mitigation that is actually
+> `main` @ `b8795def`. For each threat it lists the mitigation that is actually
 > implemented in this release and points to the open risk when there is one.
 > The open-risk register at the end combines the non-blocking follow-ups the
 > independent verifiers recorded for merged work packages, findings of the
@@ -39,7 +39,7 @@ sağlayıcısı ya da model çıktısını yönlendiren taraf.
 |---|---|---|---|
 | S | Parola tahmini, kimlik bilgisi doldurma | bcrypt (FIPS modunda PBKDF2-HMAC-SHA256); 5 hatalı girişte 15 dk kilit; giriş dakikada 5 istek; parola politikası (12+ karakter, zxcvbn ≥ 3, geçmiş 5, yasaklı liste); TOTP MFA; OIDC SSO ile yerel girişi break-glass hesaplarına sınırlama | MFA AutoSecOps'ta zorunlu kılınamaz (R9); yanlış MFA kodu kilitleme sayacına yazılmaz, sınır IP başına 5/dk |
 | S | SSO geri dönüşünde sahte ya da tekrar oynatılmış kimlik | PKCE (S256); `state` tek kullanımlık ve tarayıcıya bağlı; `nonce`; ID token imzası sağlayıcının JWKS'iyle, yalnızca RS256/ES256; `iss`/`aud`/`azp`/`exp`/`iat` ve saat kayması; geri dönüş sonrası yalnızca göreli yola yönlendirme | IdP oturumu kapatma ve SCIM yok (R10) |
-| E | SSO rol eşlemesiyle Admin yetkisi | Eşleşme yoksa Viewer; Admin'e eşleme ve doğrulanmış e-postayla var olan hesaba bağlanma yalnızca açıkça açılırsa ve bunu kaydetmek Admin rolü ister; hizmet hesapları SSO ile giremez | — |
+| E | SSO rol eşlemesiyle Admin yetkisi | Eşleşme yoksa sağlayıcının varsayılan rolü (varsayılan Viewer; Admin olamaz). Bu önlem, yöneticinin varsayılan rolü düşük tutmasına bağlıdır: Manager gibi bir role ayarlanırsa IdP'deki her kullanıcı o rolü alır; Viewer önerilir; Admin'e eşleme ve doğrulanmış e-postayla var olan hesaba bağlanma yalnızca açıkça açılırsa ve bunu kaydetmek Admin rolü ister; hizmet hesapları SSO ile giremez | — |
 | S | Çalınmış oturumla MFA'yı kapatma ya da kendine kurtarma kodu üretme | MFA açıkken kapatma ve kurtarma kodu üretme geçerli TOTP ya da kurtarma kodu ister; MFA açıkken yeniden kurulum 409; kapatma kurtarma kodlarını siler | — |
 | S | Çalınan belirteçle oturum | Kısa erişim belirteci (30 dk); çıkışta JTI, parola/rol/e-posta değişiminde kullanıcı bazında iptal; Redis yokken kapalı başarısız; `Secure` + `SameSite=strict` çerez | — |
 | T | CSRF ile durum değiştirme | Çift gönderim çerezi CSRF ara katmanı; Helm ve `env.example` zorlar; oturum çerezi taşıyan alım istekleri muaf değildir | Kodun varsayılanı yalnızca raporlama (R12) |
@@ -64,7 +64,7 @@ sağlayıcısı ya da model çıktısını yönlendiren taraf.
 | I | Alarm içeriğinin modele/dışarı gitmesi | Air-gap profili: yalnızca yerel model, bulut anahtarları boş, egress kapalı; kanarya alarmları dış zenginleştirmeye gitmez | Bulut sağlayıcı seçilirse alarm içeriği sağlayıcıya gider (R15) |
 | D | Alarm seli, bütçe tükenmesi | Bütçe baskısında alarm düşürülmez, sıraya alınır; orkestratör bütçeleri; alım kuyruğu doluysa webhook 503 + `Retry-After` döner | Kapasite ölçülmedi (R20) |
 | D | Veritabanı kesintisinde ya da daemon çökünce kabul edilmiş alarmın kaybı | Webhook 200'ü bulgu diskteki kalıcı kuyruğa (`fsync`) yazıldıktan sonra döner; yazım başarısızsa bulgu yeniden denenir; yazımı reddeden veritabanı (salt okunur, disk dolu, yetki) kesinti sayılır, bulgu karantinaya gitmez; açılışta kuyruk yeniden oynatılır, çift satır ve çift triage yok | Helm'de `daemon.persistence.enabled=false` ise kuyruk pod silinince kaybolur ([docs/operations/ingest-durability.md](../operations/ingest-durability.md)) |
-| T | Redis kesintisinden sonra kararı verilmiş bulgunun yeniden triage edilip yanıtın iki kez çalışması | Kural şeridi ya da kuyruğa alınmış verdict run kararı kesici açıkken de kaydedilir; backfill `alert_lane_decisions`'ta kapatan kararı olan bulguyu yeniden şeritlemez; kararlar okunamazsa o tur hiçbir şey kuyruğa alınmaz (kapalı başarısız) | `alert_lane_decisions` tablosu yoksa eski davranış, hata logu ve metrik |
+| T | Redis kesintisinden sonra kararı verilmiş bulgunun yeniden triage edilip yanıtın iki kez çalışması | Kural şeridi ya da kuyruğa alınmış verdict run kararı kesici açıkken de kaydedilir; backfill `alert_lane_decisions`'ta kapatan kararı olan bulguyu yeniden şeritlemez; kararlar okunamazsa o tur hiçbir şey kuyruğa alınmaz (kapalı başarısız) | `alert_lane_decisions` tablosu yoksa eski davranış, hata logu ve metrik (bu durumda çift triage yeniden mümkün) |
 | E | Alarmın otonom soruşturmayı tetikleyip yetkili araç çağırması | Onay gerektiren araçlar onay noktası olmadan reddedilir; onay araç argümanlarına bağlıdır; kanarya otonom soruşturmaya giremez | Onaydan sonra politika yok (R2) |
 
 ## 3. Ajan katmanı ve araçlar (MCP)
@@ -77,7 +77,7 @@ sağlayıcısı ya da model çıktısını yönlendiren taraf.
 | I | Araç çıktısıyla sır sızması | Kimlik bilgileri ajanlarda değil sır deposunda; log ve telemetri maskeleme | — |
 | D | Sonsuz döngü/maliyet | Koşu ve saatlik bütçe tavanları, acil durdurma (`POST /api/orchestrator/kill`) | — |
 | E | Yıkıcı aracın onaysız çağrılması | Tek tablo (`core/llm/tool_effects.py`); tabloda olmayan ad, açıkça okuma fiiliyle başlamıyorsa en kısıtlayıcı sınıfa; sohbet onay gerektiren araç sunmaz; TS çalıştırıcısı ve `/internal/tools/invoke` iki ayrı kapı; onay araç adına ve argümanlarının özetine (`args_sha256`) bağlı; ratchet: onaysız yazma aracı = 0 | — |
-| E | Modelin (prompt injection ile) bekleyen bir eylemi onaylaması ya da reddetmesi | `decision` sınıfı yalnızca insana ait; `/mcp` sunucusu dahil karar araçları hiçbir model yüzeyinde yok, `/internal/tools/invoke` ve MCP yürütücüsü reddeder; kişi AI Decisions → Approvals ekranından karar verir; ratchet `tests/unit/_ratchets/test_no_model_approvals.py` | — (R30 kapatıldı) |
+| E | Modelin (prompt injection ile) bekleyen bir eylemi onaylaması ya da reddetmesi | `decision` sınıfı yalnızca insana ait; `/mcp` sunucusu dahil karar araçları hiçbir model yüzeyinde yok, `/internal/tools/invoke` ve MCP yürütücüsü reddeder; kişi AI Decisions → Pending Approvals ekranından karar verir; ratchet `tests/unit/_ratchets/test_no_model_approvals.py` | — (R30 kapatıldı) |
 | T | Onaylayanı yanıltan argüman: çok uzun değer, sahte `Arguments:` satırı, görsel olarak ters çevrilmiş host adı | Onay satırı kanonik argümanların tamamını taşır; hedef değerleri 200 karakterde kesilir ve kaçışlanır (kontrol, bidi, sıfır genişlik karakterleri); 64 KB'ı aşan argümanlı çağrı onaya park edilmez (413) ve çalışmaz | Ters eğik çizgi kaçışlanmaz (yalnızca gösterim belirsizliği; bağlama ham değerle) |
 | E | Onaylanmış yıkıcı aracın korunan varlığa uygulanması | Bir kişinin onay noktasını onaylaması | Bu yolda müdahale politikası, korunan varlık listesi, saatlik sınır, süre dolumu ve dört göz onayı yok (R2) |
 

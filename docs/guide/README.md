@@ -1,8 +1,7 @@
 # AutoSecOps 2.0 — Belge seti
 
 > **English summary.** Customer documentation for AutoSecOps 2.0 (regulated-sector
-> release candidate). Every page describes the code at `integration` @ `b8795def`
-> (the release candidate branch; `main` receives it when the release is cut).
+> release candidate). Every page describes the code at `main` @ `b8795def`.
 > Features from work packages that are not merged yet are marked **Planlı**
 > ("planned") with the branch that carries them and are *not* part of this
 > release. Start with [kapsam.md](kapsam.md) (release scope), then the install
@@ -10,7 +9,7 @@
 > model and the regulatory mapping (not legal advice).
 
 Bu dizin, düzenlenmiş sektör (banka, kamu, kritik altyapı) müşterisine verilen
-belge setidir. Belgeler yalnızca bu sürümün kodunda (`integration` @ `b8795def`) olanı
+belge setidir. Belgeler yalnızca bu sürümün kodunda (`main` @ `b8795def`) olanı
 anlatır. Henüz birleşmemiş bir iş paketinin getireceği özellik, satırında
 **Planlı** işareti ve onu taşıyan dalın adıyla yazılır ve bu sürüme dahil değildir.
 Örnek: injection setinin ≤ %5 kapısı (Planlı — `wp/w1.4-injection-set`, bu sürümde yok).
@@ -64,7 +63,7 @@ anlatır. Henüz birleşmemiş bir iş paketinin getireceği özellik, satırın
    `tests/unit/docs/merged_wps.txt` dosyasında listelenir ve bir işaret bu
    listedeki bir dalı anarsa test başarısız olur. Git geçmişi ve `wp/*` dalları
    erişilebilirse liste git'e karşı iki yönde denetlenir ve tüm sayfaların aynı
-   temel commit'i (`integration` @ `<sha>` ya da `main` @ `<sha>`) anlattığı, bu commit'in listedeki her dalı
+   temel commit'i (`main` @ `<sha>`; aday sürüm sırasında `integration` @ `<sha>`) anlattığı, bu commit'in listedeki her dalı
    içerdiği doğrulanır. Bir iş paketi birleşince: dalı listeye ekleyin, Planlı
    satırlarını şimdiki zamana çevirin ve sayfalardaki temel commit'i güncelleyin.
 

@@ -1,7 +1,6 @@
 # Güvenlik teknik belgesi
 
-> **English summary.** Security architecture of AutoSecOps at `integration` @
-> `b8795def`: components and data flows (with the durable webhook ingest
+> **English summary.** Security architecture of AutoSecOps at `main` @ `b8795def`: components and data flows (with the durable webhook ingest
 > spool), eight trust boundaries, the provenance/verdict contract (enforced on
 > the live daemon triage path, with known limits; analysis fields in a payload
 > are dropped), the human-approval rule, per-category autonomy tiers (default
@@ -10,7 +9,7 @@
 > (protected assets, hourly limits, TTL expiry and revert, four-eyes approval
 > with an optional distinct-role rule, a segregation-of-duties report). No
 > model-facing surface (including `/mcp`) can approve or reject a pending
-> action; people decide on the Approvals screen. An approval is bound to the
+> action; people decide on the AI Decisions → Pending Approvals tab. An approval is bound to the
 > tool call's arguments, shows them in full and is refused above 64 KB. Open gap: approved agent MCP tools
 > bypass the response policy. Also: audit records and hash chains (approvals
 > and case audit records in a trigger-filled `audit_chain`, Ed25519-signed
@@ -75,7 +74,12 @@ alınmış verdict run) kesici açıkken de hemen kaydedilir. Kesici kapanınca 
 backfill süpürmesi, bir bulguyu yeniden kuyruğa almadan önce `alert_lane_decisions`
 tablosuna bakar: kapatan bir kararı olan bulgu yeniden şeritlenmez ve triage
 edilmez, kayıtlı karar bulguya yazılır. Kararlar okunamazsa o turda hiçbir şey
-kuyruğa alınmaz (kapalı başarısız) ve sayaçta görünür. Modele ihtiyaç duyan
+kuyruğa alınmaz (kapalı başarısız) ve sayaçta görünür. İstisna:
+`alert_lane_decisions` tablosu hiç yoksa (56 numaralı init SQL uygulanmamış kurulum)
+backfill eski davranışa döner ve her bulguyu yeniden şeritler; bunu bir ERROR logu
+ve daemon metriğiyle (`backfill_lane_decisions_missing` sayacı) bildirir. Bu
+durumda Redis kesintisinden sonra çift triage yeniden mümkündür; init SQL'i
+uygulayın. Modele ihtiyaç duyan
 bulgular kesici kapanınca triage edilir; bu verdict'ten önce olduğu için çift
 işlem değildir.
 
@@ -144,7 +148,7 @@ Bu sürümde injection'a karşı **etkin** olan savunmalar:
   (`HUMAN_ONLY`). `approve_action` / `reject_action` araçları kaldırıldı; önceki
   sürümde `/mcp` sunucusu bunları sunuyordu ve MCP ile bağlanan bir model kendi
   önerdiği eylemi onaylayabiliyordu. Kişiler konsolda **AI Decisions →
-  Approvals** ekranından karar verir. Sohbet,
+  Pending Approvals** ekranından karar verir. Sohbet,
   iş akışları, ajanların önerdiği araçlar, AutoSecOps'un `/mcp` sunucusu,
   `/internal/tools/invoke` ve MCP yürütücüsü karar araçlarını sunmaz ya da
   reddeder. Adı `approve`, `reject`, `decline` ya da `authorize` ile başlayan

@@ -683,6 +683,32 @@ def test_old_name_check_detects_vigil_in_prose(tmp_path):
     assert len(problems) == 1 and problems[0].startswith("x.md:1:"), problems
 
 
+# W1.9: an unmatched SSO user gets the provider's configurable default role
+# (Viewer by default, never Admin; core/auth/oidc_accounts.py), not always Viewer.
+SSO_ALWAYS_VIEWER = re.compile(r"eşleşme yoksa\s+Viewer", re.IGNORECASE)
+
+
+def sso_default_role_problems(docs: list[Path]) -> list[str]:
+    problems: list[str] = []
+    for doc in docs:
+        text = re.sub(r"\n>?\s*", " ", doc.read_text(encoding="utf-8"))
+        for m in SSO_ALWAYS_VIEWER.finditer(text):
+            problems.append(f"{doc.name}: '{m.group(0)}' (the default role is configurable)")
+    return problems
+
+
+def test_sso_unmatched_role_is_the_configurable_default():
+    assert sso_default_role_problems(_guide_docs()) == []
+    admin = (GUIDE / "yonetici-kilavuzu.md").read_text(encoding="utf-8")
+    assert "varsayılan rolü" in admin and "Admin olamaz" in admin
+
+
+def test_sso_default_role_check_detects_always_viewer(tmp_path):
+    doc = tmp_path / "x.md"
+    doc.write_text("Rol eşlemeden gelir; eşleşme\nyoksa Viewer olur.\n", encoding="utf-8")
+    assert len(sso_default_role_problems([doc])) == 1
+
+
 def test_planned_markers_do_not_name_merged_branches():
     assert planned_merged_problems(_guide_docs(), merged_list()) == []
 

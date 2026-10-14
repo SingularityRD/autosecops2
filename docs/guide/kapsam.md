@@ -1,6 +1,6 @@
 # Sürüm kapsamı: bu sürümde ne var, ne yok
 
-> **English summary.** What `integration` @ `b8795def` contains and what it does not.
+> **English summary.** What `main` @ `b8795def` contains and what it does not.
 > Merged: the measurement core, structured JSON triage with code-assigned field
 > provenance and `prompt_version` on the live path, tool-effect gating (models
 > can no longer approve or reject a pending action; an approval is bound to the
@@ -27,14 +27,14 @@
 > the full tool arguments and refuse to park arguments over 64 KB (W0.14,
 > W0.16), and no re-triage of already-decided findings after a Redis outage
 > (W0.15). Models cannot approve their own actions: `/mcp` and every other
-> model surface have no approve/reject tool; people decide on the Approvals
-> screen. Not merged: the injection-set gate, SBOM / signed images and an
+> model surface have no approve/reject tool; people decide on the AI
+> Decisions → Pending Approvals tab. Not merged: the injection-set gate, SBOM / signed images and an
 > external pentest. Those are marked **Planlı** everywhere in this guide.
 
 Bu sayfa, belge setinin geri kalanının dayandığı tek kapsam listesidir. Bir özellik
 burada "var" değilse, belgelerin hiçbirinde "var" diye anlatılmaz.
 
-## Bu sürümde olanlar (integration @ b8795def)
+## Bu sürümde olanlar (main @ b8795def)
 
 | İş paketi | Özellik | Varsayılan | Nerede |
 |---|---|---|---|
@@ -76,14 +76,14 @@ burada "var" değilse, belgelerin hiçbirinde "var" diye anlatılmaz.
 | W3.11 | Dersler: analist düzeltmesinden kapsamlı ve süreli ders, geçmiş alarmlarda replay ile terfi, geri alma, olay kaydı; Karne → Lessons sekmesi | açık; **canlı triage dersleri henüz uygulamaz** | `core/lessons/`, `services/api/routers/lessons.py` |
 | W4.1 | Yük ve kaos test araçları (sürekli/ani yük, şerit başına gecikme raporu; model, Postgres, Redis, daemon ve yavaş satıcı arızaları) | isteğe bağlı, CI'da koşmaz | `tests/perf/`, `docs/operations/load-chaos-runbook.md` |
 | W4.5 | 0.7.x → AutoSecOps 2.0 veritabanı yükseltme betiği (ön kontrol, deneme, yedek, şema karşılaştırması) ve CI'da 0.7.1 dökümünden yükseltme testi | elle çalıştırılır | `scripts/upgrade_database.py`, `docs/upgrade-0.7-to-2.0.md` |
-| W1.9 | OIDC ile tek oturum açma (Entra ID, Okta, Keycloak, genel OIDC): Authorization Code + PKCE, ID token imzası JWKS ile (yalnızca RS256/ES256); ilk girişte hesap oluşturma, grup/claim → rol eşlemesi (eşleşme yoksa Viewer, Admin'e eşleme yalnızca açıkça izinliyse); yerel girişi break-glass hesapları dışında kapatma; her SSO girişi `config_audit_log`'da | sağlayıcı tanımlanana kadar **yok**; yerel giriş açık | `core/auth/oidc.py`, `core/auth/oidc_router.py`, Ayarlar → System → Single sign-on |
+| W1.9 | OIDC ile tek oturum açma (Entra ID, Okta, Keycloak, genel OIDC): Authorization Code + PKCE, ID token imzası JWKS ile (yalnızca RS256/ES256); ilk girişte hesap oluşturma, grup/claim → rol eşlemesi (eşleşme yoksa sağlayıcının varsayılan rolü: varsayılan Viewer, Admin olamaz; Admin'e eşleme yalnızca açıkça izinliyse); yerel girişi break-glass hesapları dışında kapatma; her SSO girişi `config_audit_log`'da | sağlayıcı tanımlanana kadar **yok**; yerel giriş açık | `core/auth/oidc.py`, `core/auth/oidc_router.py`, Ayarlar → System → Single sign-on |
 | W0.13 | Kimlik/API incelemesi: e-posta değişikliğiyle hesap ele geçirme kapatıldı (eş ya da üst hesabın e-postası, rolü ve etkinliği yalnızca Admin'ce değişir); MFA'yı kapatmak ve kurtarma kodu üretmek geçerli TOTP ya da kurtarma kodu ister; oturum çerezi taşıyan alım istekleri CSRF denetiminden geçer; Helm'de CSRF zorlanır | her zaman açık | `services/api/routers/users.py`, `services/api/routers/auth.py`, `services/api/middleware/csrf.py` |
 | W3.10 | FIPS 140-3 modu: OpenSSL 3 FIPS sağlayıcısı etkin değilse API, daemon ve worker başlamaz; yeni parola ve kurtarma kodu hash'leri PBKDF2-HMAC-SHA256; eski bcrypt hash'i doğru parolayla ilk girişte yeniden yazılır. Bilinen boşluklar: denetim kontrol noktası ve kanıt paketi imzaları FIPS modunda da Ed25519 kalır; veritabanı proxy'sinin `ssh_tunnel` türü FIPS modunda desteklenmez | **kapalı** (`FIPS_MODE=false`); FIPS etkin ayrı bir imaj gerekir | `core/crypto/fips.py`, `core/auth/passwords.py`, [docs/fips.md](../fips.md) |
 | W3.6 | Denetim akışının SIEM'e aktarımı: ajan defteri, onay geçişleri, kimlik doğrulama olayları, ayar ve vaka denetim kayıtları, imzalı kontrol noktaları; RFC 5424 syslog (TLS) ya da HTTPS (JSON, CEF); kalıcı imleç, en az bir kez teslim; sırların ve kişisel verinin maskelenmesi (serbest metinde en iyi çaba); `url_safety` artık CGNAT aralığını reddeder | **kapalı**; yönetici API'siyle açılır | `core/compliance/audit_export.py`, [core/compliance/AUDIT_EXPORT.md](../../core/compliance/AUDIT_EXPORT.md) |
 | W0.12b | Alım kuyruğu sertleştirmesi: yeniden oynatma bir bulguyu iki kez triage etmez; yazımı reddeden veritabanı (salt okunur, disk dolu, yetki, bağlantı) kesinti sayılır ve bulgu kuyrukta bekler; bozuk satır yalnızca kendisini karantinaya taşır; kuyruk dosyaları `0600`; takipçideki bekleyen kuyruk metrikte | açık (kuyrukla birlikte) | `core/ingestion/spool.py`, [docs/operations/ingest-durability.md](../operations/ingest-durability.md) |
 | W0.14 | Takip düzeltmeleri: araç çağrısına bağlı onay, kanonik argümanların tamamını ve hedef alanlarını gösterir; git kaynağı klon kökünün dışına çıkamaz; geri alma devralması kilitle yeniden okur | her zaman açık | `core/response/checkpoints.py`, `core/detections/detection_rules_service.py` |
 | W0.16 | Onay argüman sınırları: kanonik argümanları 64 KB'ı aşan bir araç çağrısı onaya park edilmez (413, onay yok, çağrı çalışmaz); gösterilen hedef değeri en çok 200 karakter; kontrol ve bidi karakterleri kaçışlanır | her zaman açık | `core/response/checkpoints.py`, `core/workflows/run_bridge_router.py` |
-| W0.15 | Redis kesintisinden sonra yeniden triage yok: kararı verilmiş (kural şeridi ya da kuyruğa alınmış verdict run) bir bulgu, kesici açıkken de kaydedilir; backfill önce `alert_lane_decisions`'a bakar ve kapatılmış bulguyu yeniden şeritlemez; kararlar okunamazsa o tur hiçbir şey kuyruğa alınmaz | her zaman açık | `services/daemon/processor.py`, `core/lanes/decision_store.py` |
+| W0.15 | Redis kesintisinden sonra yeniden triage yok: kararı verilmiş (kural şeridi ya da kuyruğa alınmış verdict run) bir bulgu, kesici açıkken de kaydedilir; backfill önce `alert_lane_decisions`'a bakar ve kapatılmış bulguyu yeniden şeritlemez; kararlar okunamazsa o tur hiçbir şey kuyruğa alınmaz; `alert_lane_decisions` tablosu hiç yoksa eski davranışa döner (her bulgu yeniden şeritlenir) ve hata logu ile metrikle alarm verir | her zaman açık | `services/daemon/processor.py`, `core/lanes/decision_store.py` |
 | W0.17 | Test altyapısı düzeltmeleri (pytest süreci yapılandırılmış veritabanının şemasını silemez); ürün davranışı değişmez | — | `tests/conftest.py` |
 
 Bu belgelerin dayandığı ve 0.7.1'den gelen temel özellikler de bu sürümdedir:
@@ -112,7 +112,7 @@ gibi gösterilmez (bkz. [yönetici kılavuzu](yonetici-kilavuzu.md#müdahale-pol
 artık `approve_action` ve `reject_action` araçlarını sunmaz; sohbet, iş akışları ve
 `/internal/tools/invoke` için de aynısı geçerlidir. Önceki sürümde MCP üzerinden
 bağlanan bir model, beklemedeki kendi önerisini onaylayabiliyordu. Bekleyen eylemleri
-bir kişi konsolda **AI Decisions → Approvals** ekranından onaylar ya da reddeder (bkz.
+bir kişi konsolda **AI Decisions → Pending Approvals** ekranından onaylar ya da reddeder (bkz.
 [yönetici kılavuzu](yonetici-kilavuzu.md#araçların-etki-sınıfları)). Bu araçları
 çağıran bir MCP istemcisi ya da betik artık hata alır.
 

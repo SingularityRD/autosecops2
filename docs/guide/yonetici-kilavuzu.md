@@ -1,7 +1,6 @@
 # Yönetici kılavuzu
 
-> **English summary.** Day-to-day administration of AutoSecOps at `integration` @
-> `b8795def`: the five built-in roles and their permissions, local accounts with
+> **English summary.** Day-to-day administration of AutoSecOps at `main` @ `b8795def`: the five built-in roles and their permissions, local accounts with
 > TOTP MFA, lockout and session revocation, OIDC single sign-on with group →
 > role mapping and break-glass local accounts, FIPS 140-3 mode (checkpoint and
 > evidence-pack signatures stay Ed25519; `ssh_tunnel` unsupported), integrations and where their credentials are stored, the response
@@ -11,7 +10,7 @@
 > four-eyes approval with an optional distinct-role rule, the
 > segregation-of-duties report; models cannot approve, approvals are bound to
 > the tool call's arguments (refused above 64 KB), people decide on the
-> AI Decisions → Approvals screen, approved agent MCP tools still bypass the response
+> AI Decisions → Pending Approvals screen, approved agent MCP tools still bypass the response
 > policy, an open risk), the Assist/Act switch and the recommended
 > regulated-sector setting `DAEMON_FORCE_APPROVAL=true`, the local model lane
 > and lessons, retention policies, KVKK purge and legal hold, which audit
@@ -201,7 +200,9 @@ girişle aynı oturum çerezlerini verir; oturum süreleri ve iptal aynıdır.
 - **İstemci sırrı** sır deposunda (`OIDC_CLIENT_SECRET_<ID>`) tutulur; API onu
   asla geri döndürmez.
 - **Hesap ve rol.** Kullanıcı ilk girişte oluşturulur. Rolü sağlayıcıdaki grup ya
-  da claim eşlemesinden gelir; eşleşme yoksa Viewer olur. Admin rolüne eşleme
+  da claim eşlemesinden gelir; eşleşme yoksa sağlayıcının varsayılan rolü verilir
+  (konsolda "Default role"; varsayılanı Viewer, Admin olamaz, ama Manager gibi
+  başka bir role ayarlanabilir; Viewer bırakmanızı öneririz). Admin rolüne eşleme
   yalnızca sağlayıcıda açıkça izin verilmişse yapılır. Var olan bir yerel hesaba
   doğrulanmış e-postayla bağlanma da yalnızca açıkça açılırsa olur. Bu iki ayarı
   açık kaydetmek Admin rolü ister. Eşlemeyi kaydeden kişi, eşlenen her rolün tüm
@@ -382,7 +383,7 @@ bir onayı veremez ya da reddedemez. Önceki sürümde `/mcp` sunucusu
 `approve_action` ve `reject_action` araçlarını sunuyordu; MCP ile bağlanan bir model
 kendi önerdiği eylemi onaylayabiliyordu. W1.7b bu araçları kaldırdı: model artık
 kendi eylemini onaylayamaz. Onları çağıran bir MCP istemcisi ya da betik hata alır.
-Karar yalnızca kişinin konsoldaki **AI Decisions → Approvals** ekranından (iş akışı
+Karar yalnızca kişinin konsoldaki **AI Decisions → Pending Approvals** ekranından (iş akışı
 onay noktaları için iş akışı koşusunun faz kapısından) ya da kişinin kendi
 oturumuyla `POST /api/v1/approvals/{action_id}/approve` / `.../reject` isteğiyle
 verilir. Otomasyon onay vermek istiyorsa bir kişi yerine değil, Autonomous
