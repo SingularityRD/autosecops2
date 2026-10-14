@@ -739,13 +739,18 @@ class DetectionRulesService:
 
     @staticmethod
     def _check_own_repository(repo_path: str) -> None:
-        """Refuse unless ``repo_path`` is the top of its own work tree (W0.14).
+        """Refuse unless ``repo_path`` is the top of its own work tree (W0.14)
+        and its repository is the ``.git`` directory inside it (W0.16).
 
-        Without this a source folder that lost (or never had) its ``.git``
-        would hand every later git command the repository above it.
+        Without the first a source folder that lost (or never had) its ``.git``
+        would hand every later git command the repository above it. Without
+        the second a planted ``.git`` *file* (``gitdir: /elsewhere``) or a
+        ``.git`` symlink would point fetch / reset at another repository's
+        git directory while the work tree still looks like the source's own.
+        One git call answers both (no network: rev-parse reads local files).
         """
         result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+            ["git", "rev-parse", "--show-toplevel", "--absolute-git-dir"],
             cwd=repo_path,
             capture_output=True,
             text=True,
@@ -753,15 +758,26 @@ class DetectionRulesService:
             env=_git_env(repo_path),
             stdin=subprocess.DEVNULL,
         )
-        top = result.stdout.strip()
-        if result.returncode != 0 or not top:
+        lines = result.stdout.splitlines()
+        if result.returncode != 0 or len(lines) != 2 or not all(lines):
             raise ValueError(
                 f"Refusing to update {repo_path}: it is not a git repository"
             )
+        top, git_dir = lines
         if os.path.realpath(top) != os.path.realpath(repo_path):
             raise ValueError(
                 f"Refusing to update {repo_path}: it is inside the repository "
                 f"at {top}, not a repository of its own"
+            )
+        own = os.path.join(os.path.realpath(repo_path), ".git")
+        if (
+            os.path.islink(own)
+            or not os.path.isdir(own)
+            or os.path.realpath(git_dir) != own
+        ):
+            raise ValueError(
+                f"Refusing to update {repo_path}: its git directory is "
+                f"{git_dir}, not its own .git directory"
             )
 
     def _check_clone_config(self, repo_path: str) -> None:

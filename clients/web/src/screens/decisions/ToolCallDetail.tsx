@@ -8,6 +8,18 @@ export interface ToolCall {
   targets: [string, string][]
 }
 
+// Control, line/paragraph-separator and format characters (bidi embeddings,
+// overrides and isolates, LRM/RLM, ALM, zero-width, BOM ...). Shown as escapes
+// so a value cannot reorder what is around it (W0.16); the server escapes the
+// targets already, this also covers the canonical arguments and older rows.
+// eslint-disable-next-line no-control-regex
+const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb]/g
+
+/** `text` with every unsafe character written as `\uXXXX`. Display only. */
+export function displaySafe(text: string): string {
+  return text.replace(UNSAFE, (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'))
+}
+
 /** The bound call on an approval row, or null when it binds none. */
 export function toolCallOf(parameters: Record<string, unknown> | undefined | null): ToolCall | null {
   const p = parameters || {}
@@ -33,12 +45,12 @@ export function ToolCallDetail({ call }: { call: ToolCall }) {
   return (
     <div className="mt-1" style={{ fontSize: 12 }} data-testid="tool-call">
       <div>
-        Tool: <span className="mono">{call.tool}</span>
+        Tool: <span className="mono">{displaySafe(call.tool)}</span>
       </div>
       {call.targets.length > 0 && (
         <div style={{ fontWeight: 600 }}>
           Target:{' '}
-          <span className="mono">{call.targets.map(([k, v]) => `${k}=${v}`).join(', ')}</span>
+          <span className="mono">{call.targets.map(([k, v]) => `${displaySafe(k)}=${displaySafe(v)}`).join(', ')}</span>
         </div>
       )}
       <pre
@@ -46,7 +58,7 @@ export function ToolCallDetail({ call }: { call: ToolCall }) {
         aria-label="Arguments"
         style={{ margin: '4px 0 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 240, overflowY: 'auto', fontSize: 11 }}
       >
-        {call.args}
+        {displaySafe(call.args)}
       </pre>
     </div>
   )

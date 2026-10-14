@@ -2,7 +2,7 @@
    used to push the target host out of a 600-character summary. */
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { ToolCallDetail, questionOf, toolCallOf } from './ToolCallDetail'
+import { ToolCallDetail, displaySafe, questionOf, toolCallOf } from './ToolCallDetail'
 
 const padded = JSON.stringify({ comment: 'x'.repeat(5000), machine_id: 'host-b' })
 
@@ -26,5 +26,17 @@ describe('the tool call an approval binds', () => {
       'parked on approval for mde_isolate',
     )
     expect(questionOf('plain question', null)).toBe('plain question')
+  })
+
+  it('shows bidi and control characters as escapes (W0.16)', () => {
+    const args = JSON.stringify({ machine_id: 'evil\u202emoc.knab\u2066' })
+    const call = toolCallOf({ tool: 'mde\u200fisolate', args_canonical: args, args_targets: [['machine_id', 'evil\u202emoc.knab']] })
+    render(<ToolCallDetail call={call!} />)
+    const text = screen.getByTestId('tool-call').textContent || ''
+    for (const ch of ['\u202e', '\u2066', '\u200f']) expect(text).not.toContain(ch)
+    expect(screen.getByLabelText('Arguments').textContent).toBe('{"machine_id":"evil\\u202emoc.knab\\u2066"}')
+    expect(screen.getByText('machine_id=evil\\u202emoc.knab')).toBeInTheDocument()
+    expect(displaySafe('a\nb\u0000c')).toBe('a\\u000ab\\u0000c')
+    expect(displaySafe('plain host-a')).toBe('plain host-a')
   })
 })
