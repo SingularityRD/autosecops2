@@ -260,6 +260,9 @@ main() {
     local next="$STAGING_SRC_DIR/infra/staging/nightly.sh"
     shopt -s execfail
     set +e
+    # execfail above makes a failed exec return; ShellCheck 0.11 knows that,
+    # 0.9/0.10 (Ubuntu's, as on CI) do not and warn that nothing runs after it.
+    # shellcheck disable=SC2093
     exec "$next" --no-update
     set -e
     die "güncellenmiş nightly.sh çalıştırılamadı: $next"
