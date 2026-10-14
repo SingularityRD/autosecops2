@@ -15,9 +15,15 @@ wp/w0.9-cleanups
 wp/w0.10-merged-followups
 wp/w0.11-security-hotfix
 wp/w0.12-ingest-durability
+wp/w0.12b-spool-hardening
+wp/w0.13-review-auth-api
 wp/w0.13-review-data-infra-ci
 wp/w0.13-review-response-integrations
 wp/w0.13-review-triage-agents
+wp/w0.14-round9-followups
+wp/w0.15-redis-restart-retriage
+wp/w0.16-approval-args-bounds
+wp/w0.17-integ-test-fixes
 wp/w1.1-eval-harness
 wp/w1.2-triage-provenance
 wp/w1.5-canary
@@ -25,6 +31,7 @@ wp/w1.6-qa-scorecard
 wp/w1.7-tool-effects
 wp/w1.7b-chat-approval
 wp/w1.8-webhooks
+wp/w1.9-oidc
 wp/w1.10-audit-chain
 wp/w2.1-verdict-run
 wp/w2.2-alert-lanes
@@ -39,9 +46,11 @@ wp/w3.2-sod
 wp/w3.3-airgap
 wp/w3.4-egress-zero
 wp/w3.5-retention
+wp/w3.6-audit-export
 wp/w3.7-evidence-pack
 wp/w3.8-reg-clocks
 wp/w3.9-daemon-standby
+wp/w3.10-fips
 wp/w3.11-lessons
 wp/w4.1-load-chaos
 wp/w4.3-redteam

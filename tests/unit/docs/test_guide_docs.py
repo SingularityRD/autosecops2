@@ -58,7 +58,16 @@ MERGED_FILE = Path(__file__).resolve().parent / "merged_wps.txt"
 # The branch that carries this documentation set: merged into itself by
 # definition, never into the base the pages describe.
 SELF_BRANCH = "wp/w4.6-docs"
-BASE = re.compile(r"`main` @ `([0-9a-f]{7,40})`|main @ ([0-9a-f]{7,40})")
+# The pages name the branch they were checked against: `main` once released,
+# `integration` while the release candidate is still being assembled.
+BASE = re.compile(
+    r"`(?:main|integration)` @ `([0-9a-f]{7,40})`"
+    r"|(?:main|integration) @ ([0-9a-f]{7,40})"
+)
+# The user-visible product name is AutoSecOps. The old name survives only in
+# internal identifiers, which the pages write as code (`VIGIL_*`, `vigil_app`,
+# `infra/helm/vigil`); in prose it is a branding regression.
+OLD_PRODUCT_NAME = re.compile(r"\bvigil\b", re.IGNORECASE)
 PLANNED_LINE_MAX = 200
 # Where a sentence a marker governs ends.
 SENTENCE_BREAK = re.compile(r"[.;:!?]\s")
@@ -550,6 +559,23 @@ def merged_list_problems(
     return problems
 
 
+def old_name_problems(docs: list[Path]) -> list[str]:
+    """Lines whose prose (outside inline code and link targets) says Vigil."""
+    problems: list[str] = []
+    for doc in docs:
+        fenced = False
+        for no, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
+            if line.lstrip().startswith("```"):
+                fenced = not fenced
+                continue
+            if fenced:
+                continue
+            prose = re.sub(r"\]\([^)]*\)", "]", INLINE_CODE.sub(" ", line))
+            if OLD_PRODUCT_NAME.search(prose):
+                problems.append(f"{doc.name}:{no}: {line.strip()[:80]}")
+    return problems
+
+
 def doc_bases(docs: list[Path]) -> dict[str, set[str]]:
     """Base commit each page says it describes -> pages."""
     found: dict[str, set[str]] = {}
@@ -638,6 +664,23 @@ def test_planned_lines_name_their_branch():
                 if not BRANCH.search(m.group(0)) and "dal yok" not in m.group(0):
                     bad.append(f"{doc.name}:{no}")
     assert not bad, bad
+
+
+def test_pages_use_the_product_name_not_vigil():
+    assert old_name_problems(_guide_docs()) == []
+
+
+def test_old_name_check_detects_vigil_in_prose(tmp_path):
+    doc = tmp_path / "x.md"
+    doc.write_text(
+        "Vigil 0.7.x'ten yükseltme.\n"
+        "Rol `vigil_app`, grafik `infra/helm/vigil`, `VIGIL_DIR`.\n"
+        "[upgrade](../vigil/x.md) bağlantısı.\n"
+        "```\nvigil komutu\n```\n",
+        encoding="utf-8",
+    )
+    problems = old_name_problems([doc])
+    assert len(problems) == 1 and problems[0].startswith("x.md:1:"), problems
 
 
 def test_planned_markers_do_not_name_merged_branches():
