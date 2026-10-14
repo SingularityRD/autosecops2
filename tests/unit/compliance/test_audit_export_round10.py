@@ -920,3 +920,32 @@ def test_locator_is_linear_on_adversarial_fields(name):
     start = time.perf_counter()
     r.text(s)
     assert time.perf_counter() - start < 3.0, name
+
+
+# -- found by fuzzing the matrix forms inside random surrounding text -----------
+
+
+def test_escaped_json_key_inside_longer_text_is_decoded():
+    """``{"tan\\u0131": ...}`` inside a longer string is not JSON as a whole:
+    the personal-data pass decodes ``\\uXXXX`` like the secret pass does."""
+    text = 'event x {"tan\\u0131": "HIV pozitif", "n": 1} y'
+    out = _message(text)
+    assert "HIV" not in out and "pozitif" not in out, out
+    plain = 'event {"caf\\u00e9": "ok"} 50%25 &amp; more'
+    assert _message(plain) == plain
+
+
+@pytest.mark.parametrize(
+    "text,leaks,kept",
+    [
+        ("tanı: HIV\npozitif action: login", ("HIV", "pozitif"), " action: login"),
+        ("password: Zq8vR2xL\np9TkW4mN action: login", ("p9TkW4mN",), " action: login"),
+        ("dateOfBirth: 01\nJan 1980 action: login", ("Jan", "1980"), " action: login"),
+    ],
+)
+def test_continuation_line_with_a_later_pair_is_still_part_of_the_value(
+    text, leaks, kept
+):
+    out = _message(text)
+    assert not any(w in out for w in leaks), out
+    assert out.endswith(kept), out

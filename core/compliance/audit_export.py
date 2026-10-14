@@ -819,9 +819,32 @@ def _phone_redaction(m: "re.Match[str]") -> str:
     return REDACTED_PII if 8 <= digits <= 15 else m.group(0)
 
 
-def mask_personal_data(text_: str) -> str:
+def mask_personal_data(text_: str, *, _decode: bool = True) -> str:
     """Mask e-mail addresses, payment card numbers, IBANs, US SSNs, Turkish
-    national ids (T.C. kimlik) and ``+``-prefixed phone numbers in text."""
+    national ids (T.C. kimlik), ``+``-prefixed phone numbers and the values
+    of personal-data pairs in text. Text carrying ``\\uXXXX`` / ``\\xXX``
+    escapes, HTML entities or percent-escapes is also masked after decoding
+    (``{"tan\\u0131": "..."}`` inside a longer string), as
+    :func:`redact_text` does for credentials: when the decoded form masks
+    more, the decoded, masked text is what is exported."""
+    out = _mask_personal_data(text_)
+    if not _decode or len(text_) > MAX_FIELD_CHARS:
+        return out
+    decoded = text_
+    if _PERCENT.search(decoded):
+        decoded = unquote(decoded)
+    for _ in range(2):
+        if not _ESCAPES.search(decoded):
+            break
+        decoded = _ESCAPES.sub(_unescape, decoded)
+    if decoded != text_:
+        decoded_out = _mask_personal_data(decoded)
+        if _redaction_marks(decoded_out) > _redaction_marks(out):
+            return decoded_out
+    return out
+
+
+def _mask_personal_data(text_: str) -> str:
     out = mask_emails(text_)
     out = _IBAN.sub(_iban_redaction, out)
     out = _CARD.sub(_card_redaction, out)
@@ -2618,11 +2641,7 @@ _PHRASE_STOP = re.compile(
 )
 # A line that starts a new record: blank, a key token, a list item, a tag, a
 # comment, a bracket. (Not a digit: ``DUI\n2019`` is one value.)
-_RECORD_START = re.compile(
-    r"[ \t]*(?:$|[\-<#{}\[\]*|>]|" + _PHRASE_KEY + r"|[\"']?[^\s#\"'][^\n#:]{0,64}?"
-    r"[\"']?[ \t]*:(?:[ \t]|$))",
-    re.M,
-)
+_RECORD_START = re.compile(r"[ \t]*(?:$|[\-<#{}\[\]*|>]|" + _PHRASE_KEY + ")", re.M)
 _AFTER_QUOTE = re.compile(r"[ \t]*[^\W_]")
 _LONE_QUOTE = re.compile(r"(?<![^\W\d_])'|'(?![^\W\d_])")
 _OPENER = {")": "(", "]": "[", "}": "{"}
