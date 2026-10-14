@@ -131,6 +131,9 @@ Aşağıdakilerden herhangi biri olursa `REFUSED: ...` ile durur ve hiçbir
 Paketin içinde bir açık anahtar olsa bile kullanılmaz; yalnızca `--pubkey` ile
 verdiğiniz anahtar geçerlidir.
 
+İmza paketin tamamını kapsar; paketteki konteyner imajları tek tek imzalı değildir
+ve bir SBOM eşlik etmez (Planlı — `wp/w4.7-release`, bu sürümde yok).
+
 ## 5. Kurulum (Kubernetes)
 
 ```bash
@@ -197,6 +200,7 @@ grupları:
 | Model sağlayıcıları | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, `ANTHROPIC_BASE_URL` | **boş**: bulut sağlayıcıya hiç gidilmez |
 | Dış satıcı alt sistemleri | `KAFKA_ENABLED`, `DARKTRACE_ENABLED`, `DAEMON_ESCALATION_ENABLED`, `DAEMON_SLACK_ENABLED`, `DAEMON_PAGERDUTY_ENABLED`, `JOE_SANDBOX_ENABLED`, `CAPE_SANDBOX_ENABLED`, `HYBRID_ANALYSIS_ENABLED`, `ANYRUN_ENABLED`, `VIGIL_MEDIC_ENABLED` | `false` |
 | E-posta | `SMTP_HOST`, `VIGIL_EMAIL_BACKEND` | boş, `console` (e-posta loga yazılır) |
+| Denetim zaman damgası | `AUDIT_TSA_URL` | boş: imzalı denetim kontrol noktaları için RFC 3161 zaman damgası sunucusuna gidilmez |
 | OCR verisi | `TESSDATA_PREFIX` | `eng.traineddata`'nın bulunduğu yerel dizin |
 | Paket yöneticileri | `NPM_CONFIG_OFFLINE`, `UV_OFFLINE`, `PIP_NO_INDEX` | açık: MCP alt süreçleri yalnızca yerel önbellekten paket çözer |
 
@@ -255,8 +259,14 @@ Profil uygulandığında bile operatör eylemiyle dışarı çıkabilecek noktal
 - Bir entegrasyon kimlik bilgileriyle etkinleştirildiğinde onun hedefi (SIEM, EDR,
   güvenlik duvarı). Hedef küme içinde ya da `extraCIDRs`/`AIRGAP_EGRESS_ALLOWLIST`
   listesinde olmalıdır.
-- Kural deposu senkronu (`git clone`): yalnızca operatör kaynak ekler/senkronlarsa;
-  air-gap'te yerel yol kaynakları kullanın.
+- Kural deposu senkronu (`git clone` / `git fetch`): yalnızca `settings.write` sahibi
+  bir operatör `https://` kaynak ekler/senkronlarsa. İç ya da özel adrese çözülen
+  git sunucusu reddedilir; ağ içi bir git sunucusu için
+  `VIGIL_DETECTION_GIT_ALLOWED_CIDRS`'e yalnızca onun aralığını yazın. Air-gap'te
+  yerel yol kaynakları kullanın.
+- Denetim kontrol noktası zaman damgası: yalnızca operatör `AUDIT_TSA_URL`'i
+  doldurursa her kontrol noktası için bu adrese bir RFC 3161 isteği gider.
+  Air-gap'te boş bırakın ya da ağ içi bir TSA verip izin listesine ekleyin.
 - `tiktoken` kurulursa ilk kullanımda BPE dosyası indirme denemesi (bilinen açık,
   `known-gap`; paket gereksinimlerinde yoktur).
 - `security-detections` MCP sunucusu `npx` ile başlar; paket kurulum imajında
@@ -270,8 +280,13 @@ Profil uygulandığında bile operatör eylemiyle dışarı çıkabilecek noktal
 - Compose/host kurulumlarında, veritabanının sürümü yeni imajdan geride ise
   `backup-pre-upgrade` servisi kurulumdan önce otomatik bir anlık görüntü alır
   (`python -m core.backup pre-upgrade`; atlamak için `VIGIL_SKIP_PREUPGRADE_BACKUP`).
-- 0.7.1'den 2.0'a yükseltme yolunun CI testi
-  (Planlı — `wp/w4.5-upgrade-path`, bu sürümde yok).
+- Vigil 0.7.x'ten 2.0'a geçişte veritabanı `scripts/upgrade_database.py` ile
+  yükseltilir (ön kontrol, `--dry-run`, `--backup`); yol CI'da gerçek bir 0.7.1
+  dökümüyle sınanır. Yükseltme yalnızca ileri yönlüdür, geri dönüş yedeğin geri
+  yüklenmesidir. Prosedür: [docs/upgrade-0.7-to-2.0.md](../upgrade-0.7-to-2.0.md).
+- Helm'de db-init Job'u, hata veren bir SQL dosyasını uygulanmış saymaz; önceki
+  sürümlerde uygulanmış sayılmış ama tablosu eksik kalan düzenleyici sayaç
+  dosyalarını `helm upgrade` sırasında kendiliğinden yeniden uygular.
 
 ## 10. Sorun giderme
 

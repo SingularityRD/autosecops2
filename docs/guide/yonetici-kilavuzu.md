@@ -1,20 +1,22 @@
 # Yönetici kılavuzu
 
 > **English summary.** Day-to-day administration of AutoSecOps at `main` @
-> `18d0bf09`: the five built-in roles and their permissions, local accounts with
+> `7a22e8b6`: the five built-in roles and their permissions, local accounts with
 > TOTP MFA, lockout and session revocation (SSO is planned, not in this
 > release), integrations and where their credentials are stored, the response
 > approval flow (human approval, per-category autonomy tiers with a circuit
 > breaker, response policy with protected assets and hourly limits, executor
 > registry for Cloudflare / Defender / Entra ID / PAN-OS, TTL expiry and revert,
 > four-eyes approval with an optional distinct-role rule, the
-> segregation-of-duties report; approved agent MCP tools bypass that policy and
-> chat can approve under the chatting user's name, both open risks), the
-> Assist/Act switch and the recommended regulated-sector setting
-> `DAEMON_FORCE_APPROVAL=true`, retention policies, KVKK purge and legal hold,
-> which audit records exist and how to read and verify them, encrypted restic
-> backups with tested restore, and the Helm backup CronJob and daemon hot
-> standby.
+> segregation-of-duties report; models cannot approve, approvals are bound to
+> the tool call's arguments, approved agent MCP tools still bypass the response
+> policy, an open risk), the Assist/Act switch and the recommended
+> regulated-sector setting `DAEMON_FORCE_APPROVAL=true`, the local model lane
+> and lessons, retention policies, KVKK purge and legal hold, which audit
+> records exist and how to verify them (`python -m core.audit.verify`, signed
+> checkpoints, per-case evidence packs), encrypted restic backups with tested
+> restore, the Helm backup CronJob and daemon hot standby, and where the 0.7 →
+> 2.0 upgrade procedure lives.
 
 Bu kılavuz, kurulumdan sonra AutoSecOps'u işleten yöneticiye yöneliktir. Kurulum
 için [internetsiz kurulum kılavuzu](kurulum-internetsiz.md), neyin bu sürümde
@@ -80,17 +82,34 @@ bunu değişiklik yönetimi sürecinize alın.
 | Vakada düzenleyici an kaydı (`POST /api/cases/{case_id}/regulatory/events`) | `cases.write` |
 | Uygulanmış eylemi geri alma (`POST /api/response/actions/{action_id}/revert`, gerekçe zorunlu) | `ai_decisions.approve` |
 | Saklama politikası, yasal saklama, imha çalıştırma (`/api/compliance/retention/...`) | okuma `settings.read`, yazma ve imha `settings.write` |
+| Vaka kanıt paketini indirme (`GET /api/cases/{case_id}/evidence-pack`) | `cases.read` |
+| Dersleri görme (`GET /api/lessons`, `GET /api/lessons/{lesson_id}`, `.../events`) | `findings.read` |
+| Ders önerme, replay, geri alma (`POST /api/lessons`, `POST /api/lessons/{lesson_id}/replay`, `.../rollback`) | `findings.write` |
+| Dersi etkinleştirme (`POST /api/lessons/{lesson_id}/promote`; öneren kendi dersini etkinleştiremez, 403) | `ai_decisions.approve` |
+| Kural kaynağı ekleme, silme, güncelleme, yeniden yükleme (`POST /api/detection-rules/sources`, `DELETE /api/detection-rules/sources/{source_id}`, `.../update`, `POST /api/detection-rules/update-all`, `POST /api/detection-rules/reload`) | `settings.write` |
+| AI bileşen yapılandırması, Kafka ayarı, federasyon ayarı, ajan ve iş akışı açma/kapama, iş akışı koşusu silme, maliyet yeniden hesabı (`POST /api/analytics/recalculate-cost`) | `settings.write` |
+| Federasyon kaynağını düzenleme ve hemen çekme (`PATCH /api/federation/sources/{source_id}`, `.../poll-now`) | `integrations.write` |
+| Dosya/metin/S3 alımı (`POST /api/ingest/upload`, `POST /api/ingest/ingest-string`, `.../sync-s3-folder`, `.../s3-file`), gürültü işaretleme (`/api/findings/{finding_id}/noise`), soruşturma incelemesi, AI kararına geri bildirim (`POST /api/ai/decisions/{decision_id}/feedback`) | `findings.write` |
+| Beceriler, özel ajanlar, özel iş akışları, iş akışı üretme, sohbet içe aktarma, bulgu alımı, vaka raporu üretme, soruşturma başlatma/durdurma, AI karar kaydı oluşturma (`POST /api/ai/decisions`) | `ai_chat.use` |
+| SLA politikaları (`/api/sla-policies`), vaka şablonları (`/api/cases/templates`) | `cases.write` |
 
 CI'daki `tests/security/test_route_permissions.py` iki şeyi sınar. Birincisi,
 testin rota listesindeki her rota, izni olmayan bir kullanıcıya 403 döner. Bu
 listede yukarıdaki tablonun onay, geri alma, iş akışı sürdürme, QA, kanarya, giden
-webhook, saklama, entegrasyon kaydetme ve tüm bulguları silme rotaları vardır.
+webhook, saklama, entegrasyon kaydetme, tüm bulguları silme, kanıt paketi ve kural
+kaynağı rotaları ile W0.11'in kapıladığı rotalar vardır. Ders (`/api/lessons`)
+rotaları bu listede yoktur; rol matrisinde vardır.
 Kullanıcı yönetimi (`/api/users/`) ve düzenleyici sayaç rotaları bu listede
 **yoktur**. Bu rotaların izin denetimi kodda vardır ama bu testle sabitlenmez.
 İkincisi, API'deki her yazma rotası ya bir izin bağımlılığı taşır ya da
 gözden geçirilmiş `tests/security/auth_only_write_routes.txt` listesindedir. O
-listedeki rotalar yalnızca oturum ister; bazıları (ör. kural kaynakları) bugün
-Viewer'a açıktır (bkz. [tehdit modeli R26, R28](tehdit-modeli.md#açık-riskler)).
+listedeki rotalar yalnızca oturum ister. W0.11 bu listeyi küçülttü; kalanlar
+bilinçlidir: kimlik ve kendi hesabı (`/api/auth/...`, `PUT /api/auth/me`), kendi
+sohbetleri, izni yardımcı işlevde denetlenenler (`PUT /api/users/{user_id}`,
+`/api/services/...`, `/api/exclusions`), POST ile yapılan okumalar
+(`POST /api/cases/search`, `POST /api/findings/export`,
+`POST /api/analytics/estimate-cost`) ve bulgu açılınca üretilen zenginleştirme
+(bkz. [tehdit modeli R28](tehdit-modeli.md#açık-riskler)).
 Ayrıca `tests/security/test_route_role_matrix.py`, API'nin **her** rotası için
 her yerleşik rolün sonucunu (`allow`, `deny`, `conditional`)
 `tests/security/route_role_matrix.json` dosyasına karşı sınar. Kullanıcı yönetimi ve
@@ -223,7 +242,8 @@ link-local hedefler reddedilir, bulut metadata adresi her durumda reddedilir),
    reddedilir. Bir sınıf için farklı rol koşulu açıksa ikinci onaylayan, birincinin
    onay anındaki rolünden farklı bir rolde olmalıdır; aynı rol ya da bulunamayan
    rol de 409 alır.
-4. **Uygulama.** Daemon'un yanıtlayıcı döngüsü onaylı satırları uygular. Her satır
+4. **Uygulama.** Daemon'un yanıtlayıcı döngüsü onaylı satırları en eskiden
+   başlayarak uygular; hiçbir yürütücünün alamayacağı satırlar kuyruğu tıkamaz. Her satır
    önce yeniden politikadan, sonra yürütücü kayıt defterinden geçer. **Bir kişinin
    onaylamadığı satır uygulanmaz; tek istisna Autonomous katmanının serbest
    bıraktığı satırdır.** Bu satır için katman, politikadan sonra ve yürütücüden önce
@@ -243,7 +263,10 @@ link-local hedefler reddedilir, bulut metadata adresi her durumda reddedilir),
    `POST /api/response/actions/{action_id}/revert`'i çağırır (`ai_decisions.approve`,
    gerekçe zorunlu). Geri alınamaz eylem, yürütülmemiş eylem ya da zaten geri
    alınmış eylem 409 alır; geri alma ya da doğrulama başarısızsa 502 döner ve
-   ayrıntısı konsolda gösterilir.
+   ayrıntısı konsolda gösterilir. Süreç geri alma sırasında ölürse yarım kalan
+   geri alma talebi 1 saat sonra yeni bir talebe devredilir; yeni talep önce
+   eylemin hâlâ yürürlükte olup olmadığını doğrular. Geri alma satırları onaylanamaz
+   ve reddedilemez.
 7. **İzleme.** Vaka sayfasındaki **Actions** sekmesi önerildi → onaylandı → uygulandı
    → doğrulandı → süresi doldu/geri alındı adımlarını ve kararı veren kuralı gösterir
    (`GET /api/cases/{case_id}/actions/timeline`).
@@ -284,27 +307,28 @@ bir sınıf alır: `read_only`, `records`, `approval`, `decision`, `write`,
 `destructive`. `write` ve `destructive` araçlar ("onay gerektiren araçlar") her
 yüzeyde yalnızca bir kişinin yanıtladığı onay noktasından sonra çalışır. Sohbet bu
 araçları sunmaz. İş akışları onay noktasında bekler. `/internal/tools/invoke`
-onaylanmış bir onay noktası olmadan çağrıyı reddeder. Tabloda olmayan bir araç,
-adı açıkça okuma fiiliyle başlamıyorsa en kısıtlayıcı sınıfa (`destructive`) düşer.
-Bu kural CI'da `tests/unit/_ratchets/test_no_ungated_write_tools.py` ile sayılır
-(onaysız yazma aracı = 0).
+onaylanmış bir onay noktası olmadan çağrıyı reddeder. Onay noktası, kişiye çalışacak
+aracın adını ve argümanlarını gösterir (`Tool: …`, `Arguments: …`) ve onay o
+argümanlara bağlıdır: farklı argümanla gelen çağrı reddedilir. Tabloda olmayan bir
+araç, adı açıkça okuma fiiliyle başlamıyorsa en kısıtlayıcı sınıfa (`destructive`)
+düşer. Bu kural CI'da `tests/unit/_ratchets/test_no_ungated_write_tools.py` ile
+sayılır (onaysız yazma aracı = 0).
+
+`decision` sınıfı (onaylamak, reddetmek) yalnızca insana aittir: hiçbir model
+yüzeyi (sohbet, iş akışları, AutoSecOps'un `/mcp` sunucusu, `/internal/tools/invoke`)
+bir onayı veremez ya da reddedemez. Karar yalnızca kişinin konsoldaki onay
+kuyruğundan ya da `POST /api/v1/approvals/{action_id}/approve` / `.../reject`
+isteğiyle verilir. CI'da `tests/unit/_ratchets/test_no_model_approvals.py` sınar.
 
 **Dikkat — açık risk.** Onay noktası onaylandıktan sonra bir MCP aracı (ör.
 `mde_isolate`, `aad_disable_user`, `pan_block_ip`, `cb_quarantine`,
 `cf_waf_block_ip`) satıcı API'sini doğrudan çağırır. Bu yol yukarıdaki müdahale
 politikasından ve yürütücülerden geçmez. Korunan varlık listesi, saatlik sınır,
 süre dolumu, geri alma ve dört göz onayı burada uygulanmaz; onay tek
-kişiliktir ve araç argümanlarına bağlı değildir. Telafi: bu entegrasyonları iş
-akışlarında kullanmayın ya da bu araçları içeren iş akışı onaylarını yalnızca
-kıdemli kişilere verin (bkz. [tehdit modeli R2](tehdit-modeli.md#açık-riskler)).
-
-**Dikkat — açık risk: sohbetten onay.** Sohbet `approve_action` aracını sunar.
-Model bu aracı çağırırsa bekleyen eylem, sohbet eden kişinin adıyla ve onun
-`ai_decisions.approve` izniyle onaylanır. Sohbete alınan bir alarm metnindeki
-talimat modeli buna yönlendirebilir. Telafi: `ai_decisions.approve` izni olan
-kişiler, onay bekleyen eylem varken sohbette güvenilmez alarm metni işlemesin;
-kritik türler için dört göz onayı ve farklı rol koşulunu açın (bkz.
-[tehdit modeli R30](tehdit-modeli.md#açık-riskler)).
+kişiliktir. Onay sorusundaki argümanlar (hedef) çalışacak olanlardır; onaylamadan
+önce okuyun. Telafi: bu entegrasyonları iş akışlarında kullanmayın ya da bu araçları
+içeren iş akışı onaylarını yalnızca kıdemli kişilere verin (bkz.
+[tehdit modeli R2](tehdit-modeli.md#açık-riskler)).
 
 ### Görevler ayrılığı raporu
 
@@ -392,6 +416,17 @@ Diğer otonomi düğmeleri:
 - **Alarm şeritleri**: `ALERT_LANES_ENABLED=false` varsayılan; açıkken eşikler
   `INTENT.md`'nin `alert_lanes:` bölümünden okunur ve uygulanır, kural şeridi
   `suppression_rules` tablosunu okur. Bütçe baskısında hiçbir alarm düşürülmez.
+- **Yerel model şeridi**: varsayılan kapalıdır. Yalnızca alarm şeritleri açıkken
+  ve küçük model şeridine düşen alarm için çalışır: triage istemi Bifrost
+  üzerinden `ollama/<model>` olarak, JSON şemasıyla kısıtlı çıktı istenerek
+  gönderilir. Model `LOCAL_LANE_MODEL` ile verilir; boşsa
+  `python -m evalkit.local_lane rank`'ın eval korpusunda yaptığı sıralamanın
+  yazdığı seçim dosyası (`LOCAL_LANE_SELECTION_FILE`) okunur; ikisi de yoksa şerit
+  kapalıdır. Bifrost adresi yerel ya da özel değilse şerit kurulmaz
+  (`LOCAL_LANE_ALLOW_NONLOCAL_GATEWAY=false`). Diğer ayarlar:
+  `LOCAL_LANE_TIMEOUT_S` (60), `LOCAL_LANE_MAX_TOKENS` (512). Yerel model hata
+  verirse bulut modele geçilmez, bulut sağlayıcı düşerse de yerel modele
+  geçilmez; bulgu triage hatasıyla kaydedilir.
 - **Verdict run** (tek alarm için kısa, eleştirmenli soruşturma; sonucu karar
   şemasına uyar): `VERDICT_RUN_ENABLED=false` varsayılan. Bütçe:
   `VERDICT_RUN_MAX_ITERATIONS` (4), `VERDICT_RUN_MAX_COST_USD` (1.0),
@@ -417,6 +452,26 @@ Diğer otonomi düğmeleri:
   rastgele örnek çekilir, analist inceler; Karne (Scorecard) kategori başına
   yanlış negatif oranının tek taraflı %95 Clopper–Pearson üst sınırını gösterir
   (`GET /api/qa/scorecard`).
+
+### Dersler
+
+Bir analist düzeltmesi (ör. "bu adresten gelen Entra uyarıları bizim
+tarayıcımız") bir **ders** olarak kaydedilir: yapısal alan eşleyicileriyle
+kapsamlı, en çok 90 gün süreli, en çok `medium` (ya da `high`) şiddete uygulanır;
+`critical` alarma hiçbir zaman uygulanmaz ve ders hiçbir bulguyu ya da vakayı
+kapatmaz. Ders `proposed` olarak doğar (`POST /api/lessons`, `findings.write`).
+Etkinleştirme (`POST /api/lessons/{lesson_id}/promote`, `ai_decisions.approve`,
+öneren dışında bir kişi) dersi geçmiş etiketli alarmlarda çevrimdışı yeniden
+oynatır (replay); hiçbir kötücül vakanın kararı kötüleşmez, hiçbir zararsız vaka
+yeni yanlış pozitif olmaz ve en az bir iyileşme varsa ders `active` olur, yoksa
+terfi reddedilir ve ret kaydedilir. Kapsam değeri yalnızca alarmın serbest
+metninden geliyorsa ders analist kökenli sayılmaz ve etkinleşemez. Etkin ders tek
+istekle geri alınır (`POST /api/lessons/{lesson_id}/rollback`). Her geçiş
+`lesson_events` tablosunda yalnızca eklenerek tutulur. Konsol: **Karne → Lessons**
+sekmesi.
+
+**Sınır:** bu sürümde daemon'un canlı triage yolu etkin dersleri okumaz ve
+uygulamaz; dersler yalnızca saklanır, replay edilir ve yönetilir.
 
 ## Saklama ve imha
 
@@ -471,37 +526,96 @@ imhayı yalnızca imha işiyle yapın.
 
 ## Denetim kayıtları ve dışa aktarım
 
-| Kayıt | İçerik | Nasıl okunur |
-|---|---|---|
-| `config_audit_log` | Her ayar değişikliği: anahtar, eski/yeni değer, değiştiren kullanıcı, gerekçe, zaman | veritabanı; ilgili ekranlar |
-| `case_audit_logs` | Vaka alanı değişiklikleri, düzenleyici an kayıtları, taslaklar | Vaka sayfası → Record sekmesi |
-| `approval_actions` | Önerilen her eylem, kararı veren kural, uygulanan otonomi katmanı, onaylayan/reddeden, uygulama sonucu | onay kuyruğu, vaka Actions sekmesi, `GET /api/v1/approvals` |
-| `approval_decisions` | Her onay kararı (onay, ilk onay, ikinci onay, red), karar veren ve o anki rolü; yalnızca eklenir, değiştirilemez | görevler ayrılığı raporu, `GET /api/response/segregation` |
-| Otonomi katmanı değişiklikleri (`config_audit_log`, `config_type='autonomy_tier'`) | Yükseltme, düşürme (devre kesici dahil), kanıt bağlantısı, gerekçe | Ayarlar → Limits & autonomy, `GET /api/autonomy/audit` |
-| `agent_events` (ajan defteri) | Her ajan koşusunun olayları; koşu başına SHA-256 hash zinciri | `GET /api/workflows/runs/{run_id}/verify` ya da toplu doğrulama (aşağıda) |
-| `regulatory_clock_events` | DORA/NIS2 başlangıç anları; vaka başına hash zinciri, güncelleme tetikleyiciyle reddedilir | `GET /api/cases/{case_id}/regulatory/events` (zincir kontrolü dahil) |
-| Soruşturma gözetim zinciri | Bir soruşturmanın dosyaları ve kayıtları | `GET /api/orchestrator/investigations/{investigation_id}/chain-of-custody` |
+| Kayıt | İçerik | Bütünlük | Nasıl okunur / doğrulanır |
+|---|---|---|---|
+| `config_audit_log` | Her ayar değişikliği: anahtar, eski/yeni değer, değiştiren kullanıcı, gerekçe, zaman; otonomi katmanı değişiklikleri (`config_type='autonomy_tier'`), saklama/imha | zincirsiz | veritabanı; ilgili ekranlar; `GET /api/autonomy/audit` |
+| `case_audit_logs` | Vaka alanı değişiklikleri, düzenleyici an kayıtları, taslaklar | `audit_chain`'de zincirli | Vaka sayfası → Record sekmesi; `python -m core.audit.verify` |
+| `approval_actions` | Önerilen her eylem, kararı veren kural, uygulanan otonomi katmanı, araç çağrısının argüman özeti, onaylayan/reddeden, uygulama sonucu | `audit_chain`'de zincirli | onay kuyruğu, vaka Actions sekmesi, `GET /api/v1/approvals`; `python -m core.audit.verify` |
+| `approval_decisions` | Her onay kararı (onay, ilk onay, ikinci onay, red), karar veren ve o anki rolü | yalnızca eklenir, değiştirilemez; zincirsiz | görevler ayrılığı raporu, `GET /api/response/segregation` |
+| `agent_events` (ajan defteri) | Her ajan koşusunun olayları | koşu başına SHA-256 hash zinciri; başı imzalı kontrol noktasında | `GET /api/workflows/runs/{run_id}/verify`, `npm run ledger:verify`, `python -m core.audit.verify --agent-events` |
+| `audit_checkpoints` | Ajan defteri ve `audit_chain` başlarının Ed25519 imzalı kontrol noktaları | imzalı, birbirine bağlı | `python -m core.audit.verify` |
+| `regulatory_clock_events` | DORA/NIS2 başlangıç anları | vaka başına hash zinciri; güncelleme ve `TRUNCATE` tetikleyiciyle reddedilir | `GET /api/cases/{case_id}/regulatory/events` (zincir kontrolü dahil) |
+| `lesson_events` | Derslerin her geçişi (öneri, replay, terfi, ret, geri alma) | yalnızca eklenir; zincirsiz | `GET /api/lessons/{lesson_id}/events` |
+| Soruşturma gözetim zinciri | Bir soruşturmanın dosyaları ve kayıtları | — | `GET /api/orchestrator/investigations/{investigation_id}/chain-of-custody` |
 
-Ajan defterinin tamamını doğrulama (Postgres'e erişen bir makineden):
+### İmzalı kontrol noktalarını açma
+
+Zincir (`audit_chain`) kurulumla birlikte çalışır. Kontrol noktaları ise imza
+anahtarı verilene kadar yazılmaz (daemon her aralıkta uyarı loglar):
+
+1. Anahtar çiftini üretin: `python -m core.audit.checkpoint keygen`. İlk satır
+   (`AUDIT_CHECKPOINT_SIGNING_KEY=…`) gizlidir: sır deposuna ya da
+   Secret/ExternalSecrets'e koyun ve daemon'a verin. İkinci satır
+   (`AUDIT_CHECKPOINT_PUBLIC_KEY=…`) açık anahtardır: doğrulamayı yapacak kişiye,
+   veritabanının dışında verin.
+2. Aralık: `AUDIT_CHECKPOINT_INTERVAL_SECONDS` (varsayılan 3600; `0` işi kapatır).
+   Sıcak yedekli kurulumda iş yalnızca lider daemon'da çalışır.
+3. Veritabanı dışı kopya için `AUDIT_CHECKPOINT_FILE`'ı başka bir depolamaya
+   yazılan bir dosyaya yöneltin. İsteğe bağlı RFC 3161 zaman damgası:
+   `AUDIT_TSA_URL` (varsayılan boş; air-gap'te yalnızca ağ içi bir TSA ve izin
+   listesiyle).
+4. Elle bir kontrol noktası: `python -m core.audit.checkpoint run`.
+
+Doğrulama (Postgres'e erişen bir makineden; çıkış 0 temiz, 1 kırılma, 2 kullanım
+ya da bağlantı hatası):
 
 ```bash
+python -m core.audit.verify --agent-events --require-signature --public-key <acik-anahtar>
+python -m core.audit.verify --json --checkpoint-file /baska-depolama/checkpoints.jsonl
 cd services/agent && npm run ledger:verify
 cd services/agent && npm run ledger:verify -- --run-id <uuid>
 ```
 
-Çıktı ilk kırılan satırı (`run_id`, `seq`, neden: `prev_hash` ya da `payload`) ya da
-toplam olay/koşu sayısını verir.
+`core.audit.verify` ilk kırılmayı nedeniyle verir (ör. `hash`, `gap`,
+`source_modified`, `history_modified`, `checkpoint_signature`,
+`checkpoint_head`, `signature_required`). Zamanlanmış doğrulamada
+`--require-signature` kullanın: güvenilir açık anahtar ya da imzalı kontrol noktası
+yoksa da başarısız olur. `ledger:verify` ilk kırılan defter satırını (`run_id`,
+`seq`, neden) ya da toplam olay/koşu sayısını verir. Denetlenen bir tabloda
+bilinçli olarak kolon silinir ya da yeniden adlandırılırsa doğrulayıcı
+`schema_column_missing` raporlar; şema sahibi rolüyle
+`python -m core.audit.checkpoint rebaseline --table <tablo> --reason "<neden>"`
+imzalı bir yeniden temel alma kaydı yazar.
+
+### Vaka kanıt paketi
+
+Vaka sayfasında **Evidence pack** düğmesi (`GET /api/cases/{case_id}/evidence-pack`,
+`cases.read`) vakanın imzalı ZIP arşivini indirir (içerik:
+[güvenlik teknik belgesi §5](guvenlik-teknik-belgesi.md#5-denetim-kayıtları-ve-zincir)).
+Kalıcı imza anahtarı için `scripts/autosecops evidence-keygen` çıktısındaki gizli
+anahtarı `EVIDENCE_PACK_SIGNING_KEY` sırrı olarak verin ve açık anahtarı denetçiye
+ayrıca iletin. Anahtar yoksa her paket geçici bir anahtarla imzalanır ve bu manifestte
+yazılıdır. Denetçi paketi ağsız doğrular:
+
+```bash
+scripts/autosecops verify-bundle vaka-paketi.zip --public-key <acik-anahtar>
+```
+
+Paket redaksiyon yapmaz: `cases.read` sahibine vakanın ham kayıtlarını verir.
 
 Bu sürümde **olmayanlar**:
 
 - Denetim ve defter olaylarının syslog (RFC 5424/TLS) ya da HTTPS ile SIEM'e akışı
   (Planlı — `wp/w3.6-audit-export`, bu sürümde yok).
-- Onay ve vaka denetim kayıtlarının hash zincirine alınması, Ed25519 imzalı kontrol
-  noktası (Planlı — `wp/w1.10-audit-chain`, bu sürümde yok).
-- Vaka başına imzalı kanıt paketi (Planlı — `wp/w3.7-evidence-pack`, bu sürümde yok).
+- `config_audit_log` ve `approval_decisions` tablolarının hash zinciri: bu iki
+  tablo bu sürümde zincirsizdir ve bunun için bir iş paketi henüz yoktur.
+- Kontrol noktası ve kanıt paketi imza anahtarları için döndürme arayüzü yoktur;
+  anahtarı değiştirmek sırrı değiştirip açık anahtarı doğrulayıcılara yeniden
+  vermektir.
 
 Geçiş döneminde SIEM'e aktarım için yukarıdaki tabloları salt okuma yetkili bir
 veritabanı rolüyle periyodik okumanızı öneririz.
+
+## Sürüm yükseltme
+
+Vigil 0.7.x'ten AutoSecOps 2.0'a veritabanı yükseltmesi
+`scripts/upgrade_database.py` ile yapılır: salt okunur ön kontroller, `--dry-run`
+ile plan, `--backup <dosya>` ile `pg_dump -Fc` yedeği, yeni init SQL dosyaları ve
+şema göçü, sonucun taze kurulum şemasıyla karşılaştırılması. Yükseltme yalnızca
+ileri yönlüdür; geri dönüş yedeğin geri yüklenmesidir. Adım adım prosedür (Compose,
+Helm, kurulum dışı), doğrulama ve geri alma:
+[docs/upgrade-0.7-to-2.0.md](../upgrade-0.7-to-2.0.md). 2.0 içindeki sonraki
+sürümler için bkz. [kurulum kılavuzu §9](kurulum-internetsiz.md#9-güncelleme-ve-geri-alma).
 
 ## Yedekleme ve geri yükleme
 

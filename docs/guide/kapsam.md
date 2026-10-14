@@ -1,27 +1,31 @@
 # Sürüm kapsamı: bu sürümde ne var, ne yok
 
-> **English summary.** What `main` @ `18d0bf09` contains and what it does not.
+> **English summary.** What `main` @ `7a22e8b6` contains and what it does not.
 > Merged: the measurement core, structured JSON triage with code-assigned field
-> provenance and `prompt_version` on the live path, tool-effect gating,
-> outbound webhooks, canaries and QA scorecard, alert lanes behind a flag, the
-> executor registry with response policy (protected assets, hourly limits,
-> TTL expiry and revert, four-eyes approval for identity actions) driving the
-> Cloudflare, Defender, Entra ID and PAN-OS executors, per-category autonomy
-> tiers with a circuit breaker (default Approve), an optional distinct-role
-> rule for the second approver and a segregation-of-duties report, a durable
-> webhook ingest spool, the automated red-team regression suite, verdict runs
-> behind a flag, retention / KVKK purge with legal hold, daemon hot standby
-> and a Helm backup CronJob, a nightly staging environment, action timeline,
-> DORA/NIS2 clocks, air-gap bundle and zero-egress proof. Not merged: OIDC SSO,
-> extended audit chain, SIEM audit export, evidence packs, FIPS mode, lessons,
-> injection-set gate, local model lane, load tests, the chat-approval fix and
-> the W0.11 security hotfix (detection-rule source). Those are marked
-> **Planlı** everywhere in this guide.
+> provenance and `prompt_version` on the live path, tool-effect gating (models
+> can no longer approve or reject a pending action; an approval is bound to the
+> tool call's arguments), outbound webhooks, canaries and QA scorecard, alert
+> lanes and a local model lane behind flags, the executor registry with response
+> policy (protected assets, hourly limits, TTL expiry and revert, four-eyes
+> approval for identity actions) driving the Cloudflare, Defender, Entra ID and
+> PAN-OS executors, per-category autonomy tiers with a circuit breaker (default
+> Approve), an optional distinct-role rule for the second approver and a
+> segregation-of-duties report, the tamper-evident audit chain for approvals and
+> case audit records with signed checkpoints, signed per-case evidence packs,
+> lessons (store, replay-gated promotion and API; not yet applied to live
+> triage), a durable webhook ingest spool, the automated red-team regression
+> suite, the security hotfix for detection-rule sources and viewer write routes,
+> verdict runs behind a flag, retention / KVKK purge with legal hold, daemon hot
+> standby and a Helm backup CronJob, load/chaos tooling, the 0.7 → 2.0 upgrade
+> script, a nightly staging environment, action timeline, DORA/NIS2 clocks,
+> air-gap bundle and zero-egress proof. Not merged: OIDC SSO, SIEM audit export,
+> FIPS mode, the injection-set gate, SBOM / signed images and an external
+> pentest. Those are marked **Planlı** everywhere in this guide.
 
 Bu sayfa, belge setinin geri kalanının dayandığı tek kapsam listesidir. Bir özellik
 burada "var" değilse, belgelerin hiçbirinde "var" diye anlatılmaz.
 
-## Bu sürümde olanlar (main @ 18d0bf09)
+## Bu sürümde olanlar (main @ 7a22e8b6)
 
 | İş paketi | Özellik | Varsayılan | Nerede |
 |---|---|---|---|
@@ -53,6 +57,16 @@ burada "var" değilse, belgelerin hiçbirinde "var" diye anlatılmaz.
 | W3.8 | DORA / NIS2 bildirim sayaçları ve rapor taslakları | açık | `core/compliance/` |
 | W4.3 | Otomatik kırmızı takım regresyon paketi: her rota × her rol yetki matrisi, SSRF matrisi, injection başarı oranının kayıtlı tabanı aşmaması; bulgu raporu | CI'da her PR | `tests/security/`, `docs/security/w4.3-redteam-findings.md` |
 | W3.9 | Daemon sıcak yedeği (lider seçimi, çitleme), Helm yedek CronJob'u, RPO/RTO belgesi | Helm'de lider seçimi açık, CronJob **kapalı** | `core/coordination/leader.py`, `docs/operations/rpo-rto.md` |
+| W0.11 | Güvenlik acil düzeltmesi: kural kaynağı uçları `settings.write` ister, git kaynağı yalnızca `https://` ve dış (ya da izinli iç) adres, sertleştirilmiş git çağrısı; düzenleyici an tabloları `TRUNCATE`'i reddeder; Viewer'a açık yazma uçlarının çoğu izinle kapılandı | her zaman açık | `core/detections/detection_rules_service.py`, `tests/security/auth_only_write_routes.txt` |
+| W0.13 | Veri/altyapı incelemesi: Helm db-init Job'u hatalı SQL dosyasını uygulanmış saymaz, uygulama tablolarını bekler ve eski kurulumlardaki eksik düzenleyici tabloları kendiliğinden onarır | Helm'de açık | `infra/helm/vigil/templates/db-init-job.yaml` |
+| W0.13 | Müdahale incelemesi: onaylı eylemlerin dağıtımı en eskiden başlar ve çalışamayacak satırları atlar; geri alma tipleri (`unblock_ip`, `unisolate_host`, `enable_user`) kayıtta; yarım kalan geri alma talebi 1 saat sonra devralınır | her zaman açık | `core/response/approval_service.py`, `core/response/autonomous_response_service.py` |
+| W1.7b | Hiçbir model yüzeyi (sohbet, iş akışları, `/mcp`, `/internal/tools/invoke`) bir onayı veremez ya da reddedemez; onay, kişiye gösterilen araç argümanlarının özetine (`args_sha256`) bağlıdır | her zaman açık | `core/llm/tool_effects.py`, `core/response/checkpoints.py` |
+| W1.10 | `approval_actions` ve `case_audit_logs` için tetikleyiciyle doldurulan, yalnızca eklenen tek hash zinciri (`audit_chain`); ajan defteri ve bu zincirin başları için Ed25519 imzalı kontrol noktaları; `python -m core.audit.verify` | zincir her zaman açık; kontrol noktası işi saatlik ama imza anahtarı verilmeden **atlanır** | `core/audit/`, `infra/database/init/51_audit_chain.sql` |
+| W2.3 | Yerel model şeridi: küçük model şeridindeki triage, Bifrost üzerinden yerel Ollama modeline JSON şemasıyla kısıtlı gider; model eval ile seçilir | **kapalı** (seçim dosyası ya da `LOCAL_LANE_MODEL` yoksa); yalnızca alarm şeritleri açıkken | `core/llm/local_lane.py` |
+| W3.7 | Vaka başına imzalı kanıt paketi (ZIP, Ed25519 imzalı manifest) ve çevrimdışı doğrulayıcı | açık (`cases.read`) | `core/compliance/evidence_bundle.py`, `scripts/autosecops` |
+| W3.11 | Dersler: analist düzeltmesinden kapsamlı ve süreli ders, geçmiş alarmlarda replay ile terfi, geri alma, olay kaydı; Karne → Lessons sekmesi | açık; **canlı triage dersleri henüz uygulamaz** | `core/lessons/`, `services/api/routers/lessons.py` |
+| W4.1 | Yük ve kaos test araçları (sürekli/ani yük, şerit başına gecikme raporu; model, Postgres, Redis, daemon ve yavaş satıcı arızaları) | isteğe bağlı, CI'da koşmaz | `tests/perf/`, `docs/operations/load-chaos-runbook.md` |
+| W4.5 | Vigil 0.7.x → AutoSecOps 2.0 veritabanı yükseltme betiği (ön kontrol, deneme, yedek, şema karşılaştırması) ve CI'da 0.7.1 dökümünden yükseltme testi | elle çalıştırılır | `scripts/upgrade_database.py`, `docs/upgrade-0.7-to-2.0.md` |
 
 Bu belgelerin dayandığı ve 0.7.1'den gelen temel özellikler de bu sürümdedir:
 
@@ -60,7 +74,8 @@ Bu belgelerin dayandığı ve 0.7.1'den gelen temel özellikler de bu sürümded
   parola politikası, Redis tabanlı oturum iptali;
 - onay kuyruğu (`approval_actions`);
 - ajan defterinde (`agent_events`) koşu başına SHA-256 hash zinciri, ayar değişikliği
-  denetim kaydı (`config_audit_log`), vaka denetim kaydı (`case_audit_logs`);
+  denetim kaydı (`config_audit_log`), vaka denetim kaydı (`case_audit_logs`; W1.10
+  ile zincirli);
 - Fernet ile şifreli sır deposu;
 - restic ile şifreli ve doğrulanan yedek/geri yükleme (`python -m core.backup`);
 - Helm grafiği (NetworkPolicy, ExternalSecrets desteği) ve Docker Compose kurulumu.
@@ -78,37 +93,35 @@ gibi gösterilmez (bkz. [yönetici kılavuzu](yonetici-kilavuzu.md#müdahale-pol
 **Önemli istisna.** Ajan iş akışlarının kullandığı onay gerektiren MCP araçları
 (`mde_isolate`, `aad_disable_user`, `pan_block_ip`, `cb_quarantine`, `cf_waf_block_ip`
 gibi) bu yoldan geçmez. Bir kişi iş akışının onay noktasını onaylayınca araç,
-`/internal/tools/invoke` üzerinden doğrudan çalışır. Müdahale politikası, korunan
-varlık listesi, saatlik sınır, süre dolumu, otonomi katmanı ve dört göz onayı burada
-uygulanmaz.
+`/internal/tools/invoke` üzerinden doğrudan çalışır. Onay, kişiye gösterilen
+argümanlara bağlıdır (W1.7b): başka bir hedefle tekrar oynatılamaz. Ama müdahale
+politikası, korunan varlık listesi, saatlik sınır, süre dolumu, otonomi katmanı ve
+dört göz onayı burada uygulanmaz.
 Bu açık risk [tehdit modelinde R2](tehdit-modeli.md#açık-riskler) olarak kayıtlıdır.
 
 ## Bu sürümde olmayanlar (Planlı)
 
 Aşağıdaki iş paketleri kodlanmıştır ya da kodlanmaktadır, ancak bağımsız
 doğrulamadan geçip `main`'e birleşmemiştir. Bu sürüme dahil değildirler.
+Birleşmiş dalların tam listesi `tests/unit/docs/merged_wps.txt` dosyasındadır;
+belge testi bu listedeki bir dalı "Planlı" diye anan satırı reddeder.
 
 | İş paketi | Özellik | Durum |
 |---|---|---|
-| W0.11 | Kural kaynağı ekleme ucundaki SSRF ve git argüman enjeksiyonu açığının kapatılması, düzenleyici tabloların TRUNCATE koruması, Viewer'ın erişebildiği yazma uçlarının kapılanması | Planlı — `wp/w0.11-security-hotfix` (acil düzeltme), bu sürümde yok |
 | W1.4 | Injection test setinin kapı olarak kullanılması (≤ %5) | Planlı — `wp/w1.4-injection-set`, bu sürümde yok |
-| W1.7b | Sohbetin bekleyen eylemi onaylayamaması (R30) | Planlı — `wp/w1.7b-chat-approval`, bu sürümde yok |
 | W1.9 | OIDC SSO (Entra ID, Okta, Keycloak), grup → rol eşlemesi | Planlı — `wp/w1.9-oidc`, bu sürümde yok |
-| W1.10 | Denetim zincirinin onaylara ve vaka denetimine genişlemesi, Ed25519 imzalı kontrol noktası | Planlı — `wp/w1.10-audit-chain`, bu sürümde yok |
-| W2.3 | Yerel model şeridi ve model seçimi | Planlı — `wp/w2.3-local-model-lane`, bu sürümde yok |
-| W3.6 | Denetim akışının syslog/HTTPS ile SIEM'e aktarımı | Planlı — `wp/w3.6-audit-export`, bu sürümde yok |
-| W3.7 | Vaka başına imzalı kanıt paketi ve çevrimdışı doğrulama | Planlı — `wp/w3.7-evidence-pack`, bu sürümde yok |
+| W3.6 | Denetim akışının syslog/HTTPS ile SIEM'e aktarımı; `url_safety`'nin CGNAT aralığını reddetmesi | Planlı — `wp/w3.6-audit-export`, bu sürümde yok |
 | W3.10 | FIPS modu | Planlı — `wp/w3.10-fips`, bu sürümde yok |
-| W3.11 | Dersler (analist düzeltmesinden öğrenme) | Planlı — `wp/w3.11-lessons`, bu sürümde yok |
-| W4.1 | Yük testleri ve alım dışı kaos testleri (alım kaos testleri W0.12 ile geldi) | Planlı — `wp/w4.1-load-chaos`, bu sürümde yok |
 | W4.4 | Dış pentest | Planlı — dal yok, bu sürümde yok |
-| W4.5 | 0.7.1 → 2.0 yükseltme yolu testi | Planlı — `wp/w4.5-upgrade-path`, bu sürümde yok |
 | W4.7 | SBOM, imzalı imajlar, sürüm notları | Planlı — `wp/w4.7-release`, bu sürümde yok |
 
-Veritabanında Planlı bir özelliğin tablosu şimdiden vardır (`lessons`; W0.5
-iskeleti). Bu sürümde bu tabloyu okuyan ya da uygulayan kod yoktur.
-`autonomy_tiers` otonomi denetleyicisi (W3.1), `retention_policies` imha işi (W3.5)
-tarafından okunur.
+Canlı triage'ın etkin dersleri karar ipucu olarak kullanması ayrı bir iş
+paketidir; dalı yoktur (Planlı — dal yok, bu sürümde yok).
+
+W0.5 iskeletindeki tabloların durumu: `lessons` tablosunu ders deposu
+(`core/lessons/store.py`) ve `/api/lessons` uçları okur ve yazar; daemon'un canlı
+triage yolu dersleri okumaz. `autonomy_tiers` otonomi denetleyicisi (W3.1),
+`retention_policies` imha işi (W3.5) tarafından okunur.
 `suppression_rules` yalnızca alarm şeritleri açıkken okunur.
 
 ## Bilinen açıklar
@@ -116,12 +129,7 @@ tarafından okunur.
 Birleşmiş paketlerin doğrulamada "engelleyici değil" diye kaydedilen takip
 maddeleri, incelemelerde bulunan açıklar ve birleşmemiş paketlerin yokluğundan
 doğan riskler [tehdit modelinin açık riskler bölümünde](tehdit-modeli.md#açık-riskler)
-tek tek listelenmiştir. En önemlileri R26 ve R30'dur. R26: oturum açmış her
-kullanıcı (Viewer dahil) bir kural kaynağı ekleyebilir. Git adresi denetlenmediği
-için bu uç üzerinden iç adreslere istek (SSRF) ve sunucudaki yerel git depolarının
-okunması mümkündür. Komut çalıştırma ise sunucunun git yapılandırmasına bağlıdır.
-Düzeltmesi planlı bir acil düzeltmedir
-(Planlı — `wp/w0.11-security-hotfix`, bu sürümde yok).
-Birleşene kadar telafi edici önlem gerekir (bkz. R26). R30: sohbet, bekleyen bir
-eylemi sohbet eden kişinin adıyla onaylayabilir; düzeltmesi planlıdır
-(Planlı — `wp/w1.7b-chat-approval`, bu sürümde yok).
+tek tek listelenmiştir. En önemlisi R2'dir: onaylanmış MCP araçları müdahale
+politikasından geçmez. Önceki sürümün iki yüksek riski bu sürümde kapandı: kural
+kaynağı ucundaki SSRF ve git argüman enjeksiyonu (R26, W0.11) ve sohbetten onay
+(R30, W1.7b).

@@ -1,20 +1,24 @@
 # Güvenlik teknik belgesi
 
 > **English summary.** Security architecture of AutoSecOps at `main` @
-> `18d0bf09`: components and data flows (with the durable webhook ingest
+> `7a22e8b6`: components and data flows (with the durable webhook ingest
 > spool), eight trust boundaries, the provenance/verdict contract (enforced on
 > the live daemon triage path, with known limits; analysis fields in a payload
 > are dropped), the human-approval rule, per-category autonomy tiers (default
 > Approve; Autonomous only for reversible, TTL-bound actions while the QA
 > false-negative bound holds, with a circuit breaker), and the response policy
 > (protected assets, hourly limits, TTL expiry and revert, four-eyes approval
-> with an optional distinct-role rule, a segregation-of-duties report). Open
-> gaps: approved agent MCP tools bypass that policy, and chat can approve a
-> pending action under the chatting user's identity. Also: audit records and
-> hash chains (no signed checkpoints yet), three layers of egress control,
-> secret storage, a cryptography inventory, and the automated red-team
-> regression suite. FIPS mode is planned, not in this release. Everything that
-> is planned is marked **Planlı** with its branch.
+> with an optional distinct-role rule, a segregation-of-duties report). No
+> model-facing surface can approve or reject a pending action, and an approval
+> is bound to the tool call's arguments. Open gap: approved agent MCP tools
+> bypass the response policy. Also: audit records and hash chains (approvals
+> and case audit records in a trigger-filled `audit_chain`, Ed25519-signed
+> checkpoints of the chain heads once a signing key is configured, the
+> `python -m core.audit.verify` CLI; configuration audit and approval decisions
+> are not chained), signed per-case evidence packs, three layers of egress
+> control, secret storage, a cryptography inventory, and the automated
+> red-team regression suite. FIPS mode is planned, not in this release.
+> Everything that is planned is marked **Planlı** with its branch.
 
 Bu belge, AutoSecOps'un güvenlik mimarisini denetçi ve güvenlik mimarı için
 anlatır. Bileşen başına tehditler [tehdit modelinde](tehdit-modeli.md), işletim
@@ -27,7 +31,7 @@ ayarları [yönetici kılavuzunda](yonetici-kilavuzu.md), kapsam
 |---|---|---|---|
 | Web konsolu | React SPA (`clients/web`) | Analist ve yönetici arayüzü | backend tarafından sunulur |
 | API | Python / FastAPI (`services/api`) | Bulgular, vakalar, onaylar, ayarlar, kimlik doğrulama | `backend` Deployment |
-| SOC daemon | Python (`services/daemon`) | Alarm çekme (federation) ve webhook alımı, triage, yanıtlayıcı (onaylı eylemleri politika ve yürütücü kayıt defteri üzerinden uygular), zamanlanmış işler, saklama/imha işi, vaka otomasyonu, kanarya | `daemon` StatefulSet; Helm'de iki kopya, Postgres danışma kilidiyle tek lider |
+| SOC daemon | Python (`services/daemon`) | Alarm çekme (federation) ve webhook alımı, triage, yanıtlayıcı (onaylı eylemleri politika ve yürütücü kayıt defteri üzerinden uygular), zamanlanmış işler, saklama/imha işi, imzalı denetim kontrol noktası işi, vaka otomasyonu, kanarya | `daemon` StatefulSet; Helm'de iki kopya, Postgres danışma kilidiyle tek lider |
 | LLM worker | Python ARQ (`services/worker`) | Kuyruktaki model çağrıları | `llm-worker` Deployment |
 | Ajan katmanı | TypeScript (`services/agent`) | İş akışı çalışma zamanları (compose, investigate, root cause, hunt); ajan defteri | `agent-worker`, `agent-serve` |
 | LLM ağ geçidi | Bifrost | Model sağlayıcılarına tek çıkış; air-gap'te yalnız Ollama | `k8s/llm-stack.yaml` |
@@ -39,8 +43,8 @@ ayarları [yönetici kılavuzunda](yonetici-kilavuzu.md), kapsam
 
 Alarm akışı (bu sürüm): kaynak (federation poller, daemon webhook'u, dosya alımı) →
 (webhook'ta) kalıcı alım kuyruğu → `FindingProcessor` → (bayrak açıksa alarm şeridi
-seçimi) → tek çağrılık AI triage (Bifrost üzerinden model; cevap karar şemasına uyan
-tek JSON nesnesi) → bulgu/vaka → yanıtlayıcı eylem önerir → müdahale politikası →
+seçimi) → tek çağrılık AI triage (Bifrost üzerinden model, açıksa küçük model
+şeridinde yerel model; cevap karar şemasına uyan tek JSON nesnesi) → bulgu/vaka → yanıtlayıcı eylem önerir → müdahale politikası →
 otonomi katmanı → `approval_actions` → insan onayı (ya da yalnızca Autonomous
 katmanında kişisiz serbest bırakma) → politika + otonomi katmanının yeniden kararı +
 yürütücü → doğrulama → süre dolunca geri alma → vaka zaman çizelgesi.
@@ -62,10 +66,10 @@ Ayrıntı: [docs/operations/ingest-durability.md](../operations/ingest-durabilit
 |---|---|---|---|
 | G1 | Tarayıcı ↔ API | kimliği doğrulanmış kullanıcı | TLS ingress'te sonlanır; HS256 JWT (çerez, `Secure`, `SameSite=strict`); CSRF çift gönderim çerezi; rol izinleri her yazma rotasında sunucu tarafında; hız sınırları; Redis tabanlı oturum iptali (kapalı başarısız) |
 | G2 | Alarm kaynakları → daemon/API | saldırganın etkileyebildiği veri | Daemon webhook'u (NetworkPolicy açıkken) `networkPolicies.daemon.webhookAllowFrom` CIDR'lerine sınırlı; alarm içeriği **güvenilmez** sayılır (bkz. §3); kanarya ve QA ile ölçüm |
-| G3 | API ↔ ajan katmanı | iç servis | `/internal` uçları yalnızca `AGENT_INTERNAL_TOKEN` paylaşılan sırrıyla (sabit zamanlı karşılaştırma); NetworkPolicy ile hangi pod'ların bağlanabileceği sınırlı; onay gerektiren araçlar onaylanmış bir onay noktası olmadan reddedilir. Onaydan sonra araç müdahale politikasından geçmez (açık risk R2) |
-| G4 | Uygulama ↔ model | yerel ya da müşterinin seçtiği sağlayıcı | Tek çıkış Bifrost; air-gap'te bulut anahtarları boş ve egress kapalı; modelin çıktısı doğrudan hiçbir API çağrısına dönüşmez (araç etki sınıfları, onay kuyruğu); istisna: sohbetten onay (açık risk R30) |
+| G3 | API ↔ ajan katmanı | iç servis | `/internal` uçları yalnızca `AGENT_INTERNAL_TOKEN` paylaşılan sırrıyla (sabit zamanlı karşılaştırma); NetworkPolicy ile hangi pod'ların bağlanabileceği sınırlı; onay gerektiren araçlar, argümanları onaylanan çağrınınkiyle aynı olan onaylanmış bir onay noktası olmadan reddedilir; karar araçları her durumda reddedilir. Onaydan sonra araç müdahale politikasından geçmez (açık risk R2) |
+| G4 | Uygulama ↔ model | yerel ya da müşterinin seçtiği sağlayıcı | Tek çıkış Bifrost; air-gap'te bulut anahtarları boş ve egress kapalı; modelin çıktısı doğrudan hiçbir API çağrısına dönüşmez (araç etki sınıfları, onay kuyruğu); onay ve red kararı yalnızca kişinin kendi oturumlu HTTP isteğiyle verilir, hiçbir model yüzeyinde karar aracı yoktur |
 | G5 | Uygulama → dış entegrasyonlar | SIEM, EDR, IdP, güvenlik duvarı | Kimlik bilgileri şifreli sır deposunda; TLS doğrulaması açık (kapatma CI ratchet'iyle yasak); kullanıcı girdisi URL'ler için SSRF koruması; egress NetworkPolicy |
-| G6 | Uygulama ↔ veri depoları | Postgres, Redis | Uygulama sahip olmayan `vigil_app` rolüyle bağlanır; `agent_events` üzerinde bu rolün UPDATE/DELETE/TRUNCATE yetkisi yoktur |
+| G6 | Uygulama ↔ veri depoları | Postgres, Redis | Uygulama sahip olmayan `vigil_app` rolüyle bağlanır; `agent_events` üzerinde bu rolün UPDATE/DELETE/TRUNCATE yetkisi yoktur; `audit_chain`'i yalnızca okuyabilir, `audit_checkpoints`'e yalnızca ekleyebilir |
 | G7 | Operatör ↔ küme/sunucu | yönetici | Sırlar Secret/ExternalSecrets'te; hizmet hesabı parolası argv/env değil stdin'den; pod'lar root olmayan kullanıcıyla, ayrıcalık yükseltmesi kapalı |
 | G8 | Tedarik zinciri → kurulum | sürüm mühendisi | İmzalı paket, bant dışı açık anahtar, hazırlık kopyasında doğrulama (TOCTOU kapalı), arşiv üyesi denetimi |
 
@@ -117,13 +121,20 @@ Bu sürümde injection'a karşı **etkin** olan savunmalar:
 - **Araç etki sınıfları** (`core/llm/tool_effects.py`): yazan/yıkıcı hiçbir araç,
   bir insanın yanıtladığı onay noktası olmadan çalışamaz. Sohbet bu araçları
   sunmaz. Tabloda olmayan araç en kısıtlayıcı sınıfa düşer.
-- **İstisna, açık risk (R30, Yüksek).** Sohbet `approve_action` aracını sunar
-  (`core/llm/chat_layers.py`). Araç, onayı sohbet eden kişinin kimliğiyle verir;
-  kişide `ai_decisions.approve` izni varsa çalışır. Sohbete giren bir alarm metnine
-  gömülü talimat (prompt injection) modeli bu aracı çağırmaya yönlendirebilir. Bu
-  durumda bekleyen bir eylem, kişi onaylamak istemeden onun adına onaylanır. Dört
-  göz onayı isteyen eylemde bu yolla yalnızca bir onay verilebilir.
-  Düzeltme planlı (Planlı — `wp/w1.7b-chat-approval`, bu sürümde yok).
+- **Model onay veremez (W1.7b).** `decision` sınıfı yalnızca insana aittir
+  (`HUMAN_ONLY`). `approve_action` / `reject_action` araçları kaldırıldı. Sohbet,
+  iş akışları, ajanların önerdiği araçlar, AutoSecOps'un `/mcp` sunucusu,
+  `/internal/tools/invoke` ve MCP yürütücüsü karar araçlarını sunmaz ya da
+  reddeder. Adı `approve`, `reject`, `decline` ya da `authorize` ile başlayan
+  tanınmayan bir araç da karar sayılır. Onay ve red yalnızca kişinin kendi
+  oturumlu HTTP isteğiyle verilir (`POST /api/v1/approvals/{action_id}/approve`,
+  `.../reject`). CI'da `tests/unit/_ratchets/test_no_model_approvals.py` her model
+  yüzeyinde karar aracı sayısının 0 olduğunu sınar.
+- **Onay argümana bağlı (W1.7b).** Bir araç çağrısında duran onay noktası, onay
+  satırına aracın adını, argümanlarının kanonik JSON özetini (`args_sha256`) ve
+  kişiye gösterilen kısa özetini yazar. `/internal/tools/invoke` onaylı çağrıyı
+  yalnızca gelen argümanların özeti satırdakiyle eşleşirse çalıştırır: A makinesi
+  için onaylanan izolasyon B makinesi için tekrar oynatılamaz.
 - **İnsan onayı olmadan eylem yok** (§4); tek istisna, bir kişinin kanıtla açtığı
   ve QA sınırına bağlı Autonomous katmanıdır.
 - **Kanaryalar ve QA örneklemesi**: kaçırılan kötücül alarmların oranı ölçülür
@@ -209,33 +220,84 @@ gerektiren bir MCP aracı (`mde_isolate`, `aad_disable_user`, `pan_block_ip`,
 `cb_quarantine`, Cloudflare `cf_*` araçları) bir kişi onay noktasını onayladıktan
 sonra `/internal/tools/invoke` üzerinden satıcı API'sini doğrudan çağırır. Bu yolda
 müdahale politikası, korunan varlık listesi, saatlik sınır, yürütücü kuralları,
-süre dolumu ve dört göz onayı uygulanmaz. Onay, araç adına bağlıdır ama araç argümanlarına
-bağlı değildir. Ayrıntı ve telafi edici önlem: [tehdit modeli R2](tehdit-modeli.md#açık-riskler).
+süre dolumu ve dört göz onayı uygulanmaz. Onay araç adına ve argümanlarına bağlıdır;
+yani kişinin gördüğü çağrı çalışır, ama politika denetimi yoktur. Ayrıntı ve telafi
+edici önlem: [tehdit modeli R2](tehdit-modeli.md#açık-riskler).
 
 ## 5. Denetim kayıtları ve zincir
 
 | Kayıt | Bütünlük |
 |---|---|
-| `agent_events` (ajan defteri) | Koşu başına hash zinciri: `event_hash = sha256(prev_hash ‖ payload)`, `BEFORE INSERT` tetikleyicisi atar (yazan kod değil). Uygulama rolü `vigil_app` bu tabloda UPDATE/DELETE/TRUNCATE yapamaz. Doğrulama: `npm run ledger:verify` (ajan katmanı) ya da koşu başına `GET /api/workflows/runs/{run_id}/verify` |
-| `regulatory_clock_events` | Vaka başına hash zinciri; UPDATE tetikleyiciyle reddedilir; zincirin son satırı tetikleyicinin tuttuğu `regulatory_clock_heads` çapasıyla karşılaştırılır (son olayların silinmesi ve sıra dışı ekleme görünür); her olay `case_audit_logs`'a da yazılır; zincir kontrolü API yanıtında |
-| `config_audit_log` | Ayar değişikliği, değiştiren kullanıcı ve gerekçe; saklama/imha çalıştırmaları ve yasal saklama kararları (`config_type='retention'`); geri yükleme; zincirsiz |
-| `case_audit_logs` | Vaka alanı değişiklikleri; zincirsiz |
-| `approval_actions` | Eylem, karar kuralı, onaylayan, uygulama sonucu, otonomi kaydı (`parameters.autonomy`); zincirsiz |
-| `approval_decisions` | Her onay kararı (onay, ilk onay, ikinci onay, red), karar verenin hesabı ve o anki rolü; UPDATE/DELETE/TRUNCATE her rol için tetikleyiciyle reddedilir; zincirsiz |
+| `agent_events` (ajan defteri) | Koşu başına hash zinciri: `event_hash = sha256(prev_hash ‖ payload)`, `BEFORE INSERT` tetikleyicisi atar (yazan kod değil). Uygulama rolü `vigil_app` bu tabloda UPDATE/DELETE/TRUNCATE yapamaz. Zincir başı imzalı kontrol noktasına girer (aşağıda). Doğrulama: `npm run ledger:verify` (ajan katmanı), koşu başına `GET /api/workflows/runs/{run_id}/verify` ya da `python -m core.audit.verify --agent-events` |
+| `approval_actions` | Eylem, karar kuralı, onaylayan, uygulama sonucu, otonomi kaydı (`parameters.autonomy`), araç çağrısının argüman özeti; her INSERT, gerçek değişiklik içeren UPDATE, DELETE ve TRUNCATE `audit_chain`'e zincirlenir |
+| `case_audit_logs` | Vaka alanı değişiklikleri; `audit_chain`'e zincirlenir (aynı tetikleyiciler) |
+| `audit_chain` | Yukarıdaki iki tablonun tüm veritabanı için tek, yalnızca eklenen SHA-256 zinciri: `event_hash = sha256(prev_hash ‖ satır)`, sıra numarası, kaynak tablo ve anahtar, olay (`insert`, `update`, `delete`, `truncate`), satırın tamamı. Zincir satırları işlem commit edilirken tek bir danışma kilidiyle yazılır. `vigil_app` yalnızca okur; UPDATE/DELETE/TRUNCATE her rol için tetikleyiciyle reddedilir |
+| `audit_checkpoints` | `agent_events` ve `audit_chain` başlarının Ed25519 imzalı kontrol noktaları; her biri öncekinin gövde özetine bağlı. `vigil_app` yalnızca okur ve ekler; değişiklik tetikleyiciyle reddedilir |
+| `regulatory_clock_events` | Vaka başına hash zinciri; UPDATE ve `TRUNCATE` tetikleyiciyle reddedilir; zincirin son satırı tetikleyicinin tuttuğu `regulatory_clock_heads` çapasıyla karşılaştırılır (son olayların silinmesi ve sıra dışı ekleme görünür); her olay `case_audit_logs`'a da yazılır; zincir kontrolü API yanıtında |
+| `config_audit_log` | Ayar değişikliği, değiştiren kullanıcı ve gerekçe; saklama/imha çalıştırmaları ve yasal saklama kararları (`config_type='retention'`); geri yükleme; **zincirsiz** |
+| `approval_decisions` | Her onay kararı (onay, ilk onay, ikinci onay, red), karar verenin hesabı ve o anki rolü; UPDATE/DELETE/TRUNCATE her rol için tetikleyiciyle reddedilir; **zincirsiz** |
+
+**İmzalı kontrol noktaları.** Daemon'un `audit_checkpoint` işi
+`AUDIT_CHECKPOINT_INTERVAL_SECONDS` (varsayılan 3600; `0` kapalı, en az 60 sn)
+aralıkla iki zincirin başını, satır sayılarını ve önceki kontrol noktasının
+özetini imzalar. İmza anahtarı `AUDIT_CHECKPOINT_SIGNING_KEY` sırrıdır (Ed25519);
+anahtar yoksa iş uyarı loglar ve **hiçbir şey yazmaz**. Anahtar
+`python -m core.audit.checkpoint keygen` ile üretilir; komut doğrulamada
+kullanılacak açık anahtarı (`AUDIT_CHECKPOINT_PUBLIC_KEY`) da yazar.
+`AUDIT_CHECKPOINT_FILE` verilirse her kontrol noktası ayrıca bir dosyaya JSON satırı
+olarak eklenir; bu kopya veritabanı dışında, başka bir makinede tutulmalıdır.
+`AUDIT_TSA_URL` verilirse her kontrol noktası için bir RFC 3161 zaman damgası
+alınır ve saklanır (varsayılan ve air-gap profilinde kapalı; token kriptografik
+olarak doğrulanmaz, yalnızca varlığı raporlanır).
+
+**Doğrulama.** `python -m core.audit.verify` zinciri yürür; hash'leri, sıra
+boşluklarını, kontrol noktalarının imzasını, birbirine bağlantısını ve kaydettiği
+başları, kaynak tabloların zincirle tutarlılığını (zincir dışı ekleme, değişiklik,
+silme, kaydırılmış geçmiş, eksik kolon, takılı olmayan tetikleyici) denetler. İlk
+kırılmayı nedeniyle raporlar; temizse 0, kırılmada 1, kullanım ya da bağlantı
+hatasında 2 ile çıkar. `--require-signature` ile güvenilir açık anahtar yoksa ya da
+hiç imzalı kontrol noktası yoksa da 1 ile çıkar; zamanlanmış doğrulamalarda bu
+bayrağı ve `--public-key` ile veritabanı dışından verilen açık anahtarı kullanın.
+Bayraksız doğrulama, güvenilir anahtar bulamazsa kontrol noktalarını kendi
+satırlarındaki anahtarla denetler ve bunu UNTRUSTED olarak yazar.
 
 Sınırlar (bu sürüm):
 
-- Ajan defterinin başı imzalı bir kontrol noktasına bağlı değildir. Bir koşunun
-  **son** olaylarının silinmesi ve veritabanı sahibi rolüyle tüm zincirin tutarlı
-  biçimde yeniden yazılması zincir doğrulamasıyla tespit edilemez.
+- Kontrol noktası zinciri yalnızca kaydettiği başa kadar korur. Son kontrol
+  noktasından sonra yazılan zincir satırları ve ajan defteri olayları, tablo sahibi
+  ya da süper kullanıcı tarafından tespit edilmeden silinebilir ya da yeniden
+  yazılabilir. Aralığı kısa tutun.
+- Koruma, imza anahtarının verilmesine, işin açık olmasına ve doğrulamanın
+  veritabanı dışında tutulan açık anahtarla (ve dosya kopyasıyla) yapılmasına
+  bağlıdır. Kontrol noktalarının kendisi silinirse bu yalnızca dosya kopyası ya da
+  TSA token'ı ile görülür.
+- Tablo sahibi ya da süper kullanıcı tetikleyicileri kapatabilir. Hedef önleme
+  değil tespittir: tetikleyici atlanarak yapılan değişiklik doğrulayıcıda görünür.
+- Denetlenen tablolarda kolon silmek ya da yeniden adlandırmak doğrulayıcıda
+  kırılma olarak görünür. Bilinçli bir şema değişikliğinden sonra
+  `python -m core.audit.checkpoint rebaseline --table <tablo> --reason "<neden>"`
+  imzalı bir yeniden temel alma kaydı yazar.
 - Düzenleyici an zincirinin çapası aynı veritabanındadır. Tablo sahibi ya da süper
-  kullanıcı iki tabloyu birlikte yeniden yazabilir. `TRUNCATE` bu sürümde
-  tetikleyiciyle reddedilmez (R27).
-- Onay, vaka ve ayar denetim kayıtları zincirde değildir. `approval_decisions`
-  yalnızca eklenir, ama zincirli değildir.
-- Genişleme ve Ed25519 imzalı kontrol noktası
-  (Planlı — `wp/w1.10-audit-chain`, bu sürümde yok).
+  kullanıcı iki tabloyu birlikte yeniden yazabilir (R27).
+- `config_audit_log` (imha tutanağı dahil) ve `approval_decisions` zincirde
+  değildir.
 - Denetim olaylarının SIEM'e akışı (Planlı — `wp/w3.6-audit-export`, bu sürümde yok).
+
+**Kanıt paketi (W3.7).** Vaka sayfasındaki **Evidence pack** düğmesi
+(`GET /api/cases/{case_id}/evidence-pack`, `cases.read`) vakanın imzalı ZIP
+arşivini indirir: vaka, bulgular, kanıt, vaka denetim kaydı, eylemler (onaylar,
+yürütme sonucu, önceki/sonraki durum, doğrulama, geri alma), vakanın ajan koşularının
+defter olayları, AI karar kökeni, düzenleyici an olayları ve (varsa) `audit_chain`
+satırları. `manifest.json` her dosyanın SHA-256 özetini, `manifest.sig` manifestin
+Ed25519 imzasını taşır. Anahtar `EVIDENCE_PACK_SIGNING_KEY` sırrıdır
+(`scripts/autosecops evidence-keygen`); yoksa paket her seferinde üretilen geçici
+bir anahtarla imzalanır ve manifest bunu `key_source: "ephemeral"` olarak söyler,
+bu durumda imza yalnızca paketin kendi içinde tutarlı olduğunu kanıtlar.
+`scripts/autosecops verify-bundle <paket> --public-key <anahtar>` ağ ve
+veritabanı olmadan imzayı, her dosyanın özetini, eksik ya da fazla dosyayı ve
+defter, düzenleyici an ve denetim zincirlerinin yeniden hesabını denetler;
+kurcalanmış paketi 1 ile reddeder. Paket redaksiyon yapmaz: `cases.read` sahibine
+vakanın ham kayıtlarını verir.
 
 ## 6. Egress (dış bağlantı) denetimi
 
@@ -267,6 +329,8 @@ yönlendirme izlenmez ve ortam vekili kullanılmaz. Bilinen açık: 100.64.0.0/1
 | Sır | Nerede |
 |---|---|
 | Entegrasyon ve sağlayıcı kimlik bilgileri | Şifreli sır deposu `secrets.enc` (Fernet); anahtar aynı durum dizininde `master.key` (dizin 0700, dosya 0600). Veritabanına ve yapılandırma JSON'una yazılmaz; API yanıtlarında maskelenir |
+| `AUDIT_CHECKPOINT_SIGNING_KEY` | Sır deposu ya da ortam / Secret (Ed25519 tohumu; hex, base64 ya da PEM). Yalnızca daemon'un kontrol noktası işi ve `python -m core.audit.checkpoint` kullanır. Doğrulayıcıya yalnızca açık anahtar (`AUDIT_CHECKPOINT_PUBLIC_KEY`) verilmelidir |
+| `EVIDENCE_PACK_SIGNING_KEY` | Sır deposu ya da ortam / Secret (Ed25519); yalnızca kanıt paketini imzalayan API kullanır |
 | `JWT_SECRET_KEY` | Sır deposu (`secrets.enc`), ortam / Kubernetes Secret ya da `.env`; okuma önceliği aşağıda. Anahtar verilmemişse `start.sh` durum dizininde bir `jwt_secret` dosyası üretir ve onu ortama verir. `DEV_MODE=false` iken zorunlu, yoksa backend açılmaz |
 | `AGENT_INTERNAL_TOKEN` | Ortam / Secret; API ile ajan katmanı arasındaki tek kimlik doğrulama |
 | Postgres / Redis parolaları | Secret (`existingSecret` desteklenir) |
@@ -306,7 +370,10 @@ anahtarı tanımlandığı yerde döndürün
 | MFA | TOTP (RFC 6238) | `pyotp` |
 | Giden webhook imzası | HMAC-SHA256, zaman damgalı (`t=…,v1=…`) | standart kütüphane |
 | Ajan iç belirteci | sabit zamanlı karşılaştırma (`hmac.compare_digest`) | standart kütüphane |
-| Defter ve düzenleyici an zinciri | SHA-256 | PostgreSQL `sha256()` |
+| Defter, denetim zinciri (`audit_chain`) ve düzenleyici an zinciri | SHA-256 | PostgreSQL `sha256()` |
+| Denetim kontrol noktası imzası | Ed25519; kontrol noktaları SHA-256 gövde özetiyle birbirine bağlı | `cryptography` |
+| Kontrol noktası zaman damgası (isteğe bağlı, varsayılan kapalı) | RFC 3161 TSA isteği, SHA-256 özet | standart kütüphane + `httpx` |
+| Kanıt paketi imzası | Ed25519 manifest imzası; dosya başına SHA-256 | `cryptography` (doğrulayıcı onsuz da saf Python Ed25519 ile çalışır) |
 | Air-gap paket imzası | Ed25519 (OpenSSL) ya da cosign / minisign; SHA-256 özetler | OpenSSL ve araçlar |
 | Yedekler (Compose/host) | restic deposu şifrelemesi (AES-256 + Poly1305-AES) | restic |
 | Yedekler (Helm CronJob) | şifreleme yok; özet SHA-256; PVC / nesne deposu şifrelemesi kurumun | `pg_dump` |
@@ -347,6 +414,9 @@ OpenSSL 3 FIPS sağlayıcısı ve FIPS uyumlu karşılıklar
   k3s üzerine kurulur ve yerel modelle duman testi yapılır.
 - İç kırmızı takım incelemesinin bulguları
   ([docs/security/w4.3-redteam-findings.md](../security/w4.3-redteam-findings.md))
-  tehdit modelinde R26 ve R28 olarak kayıtlıdır; düzeltmeleri birleşmedi.
+  tehdit modelinde R26 ve R28 olarak kayıtlıdır; düzeltmeleri W0.11 ile birleşti.
+- Yük ve kaos test araçları (`tests/perf/`,
+  [docs/operations/load-chaos-runbook.md](../operations/load-chaos-runbook.md))
+  isteğe bağlıdır; CI'da koşmaz ve bu sürüm için kapasite ölçümü yoktur.
 - SBOM, imzalı imajlar ve sürüm notları (Planlı — `wp/w4.7-release`, bu sürümde yok).
 - Dış pentest (Planlı — dal yok, W4.4, bu sürümde yok).
