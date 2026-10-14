@@ -24,6 +24,18 @@
       "note": "RFC 3161 timestamp of each audit checkpoint (W1.10). Operator-configured: posted only when AUDIT_TSA_URL is set; empty by default and in the air-gap profile (use an internal TSA via the allowlist if one is required)."
     },
     {
+      "site": "core/auth/oidc.py",
+      "category": "operator-action",
+      "kinds": {
+        "httpx": 2,
+        "host:login.microsoftonline.com": 1
+      },
+      "gates": [
+        "operator-action:SSO provider configured and enabled by an Admin"
+      ],
+      "note": "W1.9 OIDC sign-in: discovery/JWKS fetch and the authorization-code token exchange go to the issuer an Admin configured (the microsoftonline host appears only in an issuer-format check). Nothing runs until an SSO provider is added and enabled; the air-gap profile configures none. An internal IdP keeps this traffic on the customer network."
+    },
+    {
       "site": "core/cases/notification_dispatcher.py",
       "category": "gated",
       "kinds": {
