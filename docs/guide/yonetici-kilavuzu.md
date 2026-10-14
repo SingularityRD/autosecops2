@@ -738,6 +738,8 @@ ileri yönlüdür; geri dönüş yedeğin geri yüklenmesidir. Adım adım prose
 Helm, kurulum dışı), doğrulama ve geri alma:
 [docs/upgrade-0.7-to-2.0.md](../upgrade-0.7-to-2.0.md). 2.0 içindeki sonraki
 sürümler için bkz. [kurulum kılavuzu §9](kurulum-internetsiz.md#9-güncelleme-ve-geri-alma).
+Her sürümle birlikte SBOM, imzalı imajlar ve sürüm notları verilmesi
+(Planlı — `wp/w4.7-release`, bu sürümde yok).
 
 ## Yedekleme ve geri yükleme
 
