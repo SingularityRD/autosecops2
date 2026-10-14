@@ -886,9 +886,10 @@ def _settle_restored(
     if from_env:
         lines.append(
             "the new JWT_SECRET_KEY is in "
-            f"{EncryptedFileBackend(data_dir=vigil_path()).secrets_path}; clear or "
-            "replace JWT_SECRET_KEY in the environment Compose reads before `up`, "
-            "because an environment value outranks secrets.enc"
+            f"{EncryptedFileBackend(data_dir=vigil_path()).secrets_path}; restart "
+            "the services so they read the rotated key from secrets.enc; also "
+            "replace the old value in the environment so a lost secrets.enc does "
+            "not bring it back"
         )
     return lines
 
