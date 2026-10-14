@@ -68,7 +68,7 @@ kullanılmaz).
 Önce neyin pakete gireceğini görün — hiçbir şey çekilmez:
 
 ```bash
-infra/airgap/build-bundle.sh --dry-run --version 0.7.1
+infra/airgap/build-bundle.sh --dry-run --version 2.0.0
 ```
 
 Çıktı: imaj referansı, paket içindeki arşiv adı ve kaynağı (`helm:backend`,
@@ -87,7 +87,7 @@ Paketi üretin:
 
 ```bash
 AIRGAP_PYTHON=/path/to/venv/bin/python \
-infra/airgap/build-bundle.sh --version 0.7.1 \
+infra/airgap/build-bundle.sh --version 2.0.0 \
   --key ~/keys/autosecops-airgap.key \
   --ollama-model llama3.1:8b \
   --out dist/airgap
@@ -104,8 +104,8 @@ Sık kullanılan seçenekler:
 | `--rules-dir DIR` | Kural klonlarının yeri (varsayılan `~/security-detections`) |
 | `--no-tar` | Yalnızca dizin bırak |
 
-Sonuç: `dist/airgap/autosecops-airgap-0.7.1/` ve `dist/airgap/autosecops-airgap-0.7.1.tar`.
-İçerik: `images/`, `images.tsv`, `chart/vigil-0.7.1.tgz`, `values-airgap.yaml`,
+Sonuç: `dist/airgap/autosecops-airgap-2.0.0/` ve `dist/airgap/autosecops-airgap-2.0.0.tar`.
+İçerik: `images/`, `images.tsv`, `chart/vigil-2.0.0.tgz`, `values-airgap.yaml`,
 `airgap.env`, `k8s/llm-stack.yaml`, `models/`, `rules/`, `docs/`, `install.sh`,
 `manifest.json`, `SHA256SUMS`, `SHA256SUMS.sig` (veya `.minisig`).
 
@@ -126,14 +126,14 @@ açın — var olan bir dizine açmak, içindeki dosyaların üzerine yazılmas�
 paket dışı dosyaların karışmasına yol açabilir:
 
 ```bash
-tar -tvf autosecops-airgap-0.7.1.tar | less          # yalnızca autosecops-airgap-0.7.1/ altı,
+tar -tvf autosecops-airgap-2.0.0.tar | less          # yalnızca autosecops-airgap-2.0.0/ altı,
                                                      # normal dosya (-) ve dizin (d) olmalı
 install -d -m 0700 /opt/autosecops-kurulum           # yeni, boş, size ait dizin
-tar -xf autosecops-airgap-0.7.1.tar -C /opt/autosecops-kurulum --no-same-owner
-cd /opt/autosecops-kurulum/autosecops-airgap-0.7.1
+tar -xf autosecops-airgap-2.0.0.tar -C /opt/autosecops-kurulum --no-same-owner
+cd /opt/autosecops-kurulum/autosecops-airgap-2.0.0
 ```
 
-Listede `autosecops-airgap-0.7.1/` dışına çıkan, mutlak ya da `..` içeren bir
+Listede `autosecops-airgap-2.0.0/` dışına çıkan, mutlak ya da `..` içeren bir
 yol veya bağ (`l`, `h`) görürseniz paketi kullanmayın.
 
 **Önce yükleyicinin kendisini doğrulayın** — `install.sh` paketin içinden gelir;
@@ -194,7 +194,7 @@ Adımlar, doğrulamadan sonra sırasıyla:
 
 1. Her imaj `docker load` → `docker tag <REG>/<yol>` → `docker push`.
    Eşleme: kayıt defteri adı atılır, tek bileşenli adlar `library/` alır
-   (`ghcr.io/vigil-soc/vigil-backend:0.7.1` → `REG/vigil-soc/vigil-backend:0.7.1`,
+   (`ghcr.io/vigil-soc/vigil-backend:2.0.0` → `REG/vigil-soc/vigil-backend:2.0.0`,
    `postgres:16-alpine` → `REG/library/postgres:16-alpine`).
    - `--loader ctr`: kayıt defteri yoksa, **her düğümde** çalıştırın
      (`ctr -n k8s.io images import` + `tag`).
