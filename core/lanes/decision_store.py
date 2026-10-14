@@ -110,7 +110,9 @@ def settling_decisions(
         return query_settling(session, ids, tenant)
 
 
-def query_settling(conn: Any, ids: Sequence[str], tenant: str) -> Dict[str, LaneDecision]:
+def query_settling(
+    conn: Any, ids: Sequence[str], tenant: str
+) -> Dict[str, LaneDecision]:
     """``settling_decisions`` on an open connection or session."""
     from sqlalchemy import text
 

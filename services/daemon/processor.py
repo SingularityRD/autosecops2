@@ -1187,7 +1187,9 @@ class FindingProcessor:
                 await self._spawn_enrich(finding, BACKFILL_SOURCE)  # blocks on the cap
 
     def _lane_tenant(self) -> str:
-        lanes = self.alert_lanes.lanes if isinstance(self.alert_lanes, LaneHook) else None
+        lanes = (
+            self.alert_lanes.lanes if isinstance(self.alert_lanes, LaneHook) else None
+        )
         return str(getattr(lanes, "tenant", None) or DEFAULT_TENANT)
 
     async def _drop_settled(
@@ -1220,7 +1222,9 @@ class FindingProcessor:
             )
             return None
         report_recovered(
-            logger, _SETTLED_LOOKUP_OUTAGE, "Enrichment backfill: lane decisions readable"
+            logger,
+            _SETTLED_LOOKUP_OUTAGE,
+            "Enrichment backfill: lane decisions readable",
         )
         if not settled:
             return batch
