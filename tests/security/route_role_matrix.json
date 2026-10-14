@@ -33,11 +33,11 @@
    "role-admin": "allow"
   },
   "DELETE /api/auth/sso/admin/providers/{provider_id}": {
-   "gate": "login + perm:settings.write + perm:users.write",
+   "gate": "login + perm:settings.write + perm:users.write + role:admin",
    "role-viewer": "deny",
    "role-analyst": "deny",
    "role-senior-analyst": "deny",
-   "role-manager": "allow",
+   "role-manager": "deny",
    "role-admin": "allow"
   },
   "DELETE /api/bifrost/{path}": {
@@ -3313,19 +3313,19 @@
    "role-admin": "allow"
   },
   "PUT /api/auth/sso/admin/login-policy": {
-   "gate": "login + perm:settings.write + perm:users.write",
+   "gate": "login + perm:settings.write + perm:users.write + role:admin",
    "role-viewer": "deny",
    "role-analyst": "deny",
    "role-senior-analyst": "deny",
-   "role-manager": "allow",
+   "role-manager": "deny",
    "role-admin": "allow"
   },
   "PUT /api/auth/sso/admin/providers/{provider_id}": {
-   "gate": "login + perm:settings.write + perm:users.write",
+   "gate": "login + perm:settings.write + perm:users.write + role:admin",
    "role-viewer": "deny",
    "role-analyst": "deny",
    "role-senior-analyst": "deny",
-   "role-manager": "allow",
+   "role-manager": "deny",
    "role-admin": "allow"
   },
   "PUT /api/autonomy/tiers/{category}/{action_type}": {

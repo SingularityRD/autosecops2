@@ -24,9 +24,9 @@ they hold.
 from __future__ import annotations
 
 import asyncio
-import os
 import json
 import logging
+import os
 from typing import Dict, List, Optional, Protocol
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -39,6 +39,7 @@ from core.auth.auth_cookies import (
     issue_session_cookies,
 )
 from core.auth.auth_service import AuthService
+from core.auth.current_user import get_current_user
 from core.auth.login_policy import LOGIN_POLICY_KEY, LoginPolicy, get_login_policy
 from core.auth.oidc import (
     ADMIN_ROLE_ID,
@@ -537,6 +538,21 @@ def _require_every_privilege(
                 )
 
 
+def require_sso_administrator(
+    session: UnitOfWorkSession, current_user: User = Depends(get_current_user)
+) -> User:
+    """Route dependency: 403 unless the caller is an administrator (see
+    :func:`_require_administrator`). A dependency, so it runs before the
+    request body is read, for every role alike."""
+    _require_administrator(session, current_user)
+    return current_user
+
+
+#: Read by tests/security/route_matrix.py: for the built-in roles this gate
+#: admits only role-admin (no other built-in role holds every permission).
+require_sso_administrator.admin_role_only = True
+
+
 #: Fields that decide where the client secret is sent (the token endpoint is
 #: discovered from the issuer) or which client it authenticates.
 _SECRET_BOUND_FIELDS = ("issuer", "client_id", "redirect_uri", "kind")
@@ -696,9 +712,9 @@ def upsert_provider(
     session: UnitOfWorkSession,
     current_user: User = _ADMIN_GATES[0],
     _users_write: User = _ADMIN_GATES[1],
+    _administrator: User = Depends(require_sso_administrator),
 ):
     """Add or replace one provider. The client secret is stored write-only."""
-    _require_administrator(session, current_user)
     fields = body.model_dump(exclude={"client_secret", "clear_client_secret"})
     try:
         provider = ProviderConfig(id=provider_id, **fields)
@@ -760,8 +776,8 @@ def delete_provider(
     session: UnitOfWorkSession,
     current_user: User = _ADMIN_GATES[0],
     _users_write: User = _ADMIN_GATES[1],
+    _administrator: User = Depends(require_sso_administrator),
 ):
-    _require_administrator(session, current_user)
     providers = load_providers(session)
     remaining = [p for p in providers if p.id != provider_id]
     if len(remaining) == len(providers):
@@ -795,9 +811,9 @@ def update_login_policy(
     session: UnitOfWorkSession,
     current_user: User = _ADMIN_GATES[0],
     _users_write: User = _ADMIN_GATES[1],
+    _administrator: User = Depends(require_sso_administrator),
 ):
     """Turn local sign-in on or off, and name the break-glass accounts."""
-    _require_administrator(session, current_user)
     ids = list(dict.fromkeys(body.break_glass_user_ids))
     users = session.query(User).filter(User.user_id.in_(ids)).all() if ids else []
     found = {u.user_id: u for u in users}
