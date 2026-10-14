@@ -128,8 +128,9 @@
     },
     {
       "id": "W1.3",
-      "topic": "Alan kökeni (yedi adaptör)",
-      "topic_en": "field provenance (seven adapters)"
+      "topic": "Alan kökeni (yedi Federation adaptörü; W1.2 ile aynı dalda)",
+      "topic_en": "field provenance (seven adapters, shipped with W1.2)",
+      "branch": "wp/w1.2-triage-provenance"
     },
     {
       "id": "W1.4",
@@ -489,6 +490,12 @@
         "W0.15"
       ],
       "text": "**Redis kesintisinde çift triage yok:** Redis kesintisi sırasında kararı verilmiş bir bulgu, kesici kapandıktan sonra backfill tarafından yeniden şeritlenmez ve yeniden triyaj edilmez (W0.15)."
+    },
+    {
+      "when": [
+        "W4.6"
+      ],
+      "text": "**Ürün belgeleri:** `docs/guide/` altında Türkçe belge seti: sürüm kapsamı, internetsiz kurulum ve yönetici kılavuzları, güvenlik teknik belgesi, STRIDE tehdit modeli ve mevzuat eşlemesi (BDDK, KVKK, DORA, NIS2, SPK, ISO/IEC 27001; hukuki görüş değildir) (W4.6)."
     },
     {
       "when": [],
