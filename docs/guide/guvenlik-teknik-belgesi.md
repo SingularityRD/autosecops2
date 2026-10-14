@@ -77,7 +77,7 @@ edilmez, kayıtlı karar bulguya yazılır. Kararlar okunamazsa o turda hiçbir 
 kuyruğa alınmaz (kapalı başarısız) ve sayaçta görünür. İstisna:
 `alert_lane_decisions` tablosu hiç yoksa (56 numaralı init SQL uygulanmamış kurulum)
 backfill eski davranışa döner ve her bulguyu yeniden şeritler; bunu bir ERROR logu
-ve daemon metriğiyle (`backfill_lane_decisions_missing` sayacı) bildirir. Bu
+ve `soc_daemon_backfill_lane_decisions_missing_total` sayacıyla bildirir. Bu
 durumda Redis kesintisinden sonra çift triage yeniden mümkündür; init SQL'i
 uygulayın. Modele ihtiyaç duyan
 bulgular kesici kapanınca triage edilir; bu verdict'ten önce olduğu için çift

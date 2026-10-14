@@ -179,6 +179,11 @@ PY_MODULE = re.compile(r"python3?\s+-m\s+([A-Za-z_][\w.]*)")
 NPM_RUN = re.compile(r"npm run ([\w:.-]+)")
 FLAG = re.compile(r"(?<![\w-])(--[a-z][a-z0-9-]*)")
 SNAKE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$")
+# An exported metric name (Prometheus/OTel), optionally a family ``prefix_*``.
+METRIC = re.compile(r"^(?:soc_daemon|autosecops)_[a-z0-9_]*(?:\*|[a-z0-9])$")
+# The daemon builds its counter names: f"soc_daemon_{name}_total"
+# (services/daemon/processor.py::_count_daemon), called with the bare name.
+DAEMON_COUNTER = re.compile(r"^soc_daemon_([a-z0-9_]+)_total$")
 DOTTED = re.compile(r"^[a-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$")
 PATHLIKE = re.compile(r"^(?:\./)?([A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]*)*)$")
 WORD = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*[A-Za-z0-9]$")
@@ -322,6 +327,21 @@ def _code_tokens(line: str, fenced: bool) -> list[str]:
     return [line.strip()] if fenced else INLINE_CODE.findall(line)
 
 
+def metric_exists(name: str, text: str) -> bool:
+    """Whether the code exports ``name`` (or, for ``prefix_*``, a metric of
+    that family): as a literal, or as the daemon's built counter name."""
+    if name.endswith("*"):
+        return name[:-1] in text
+    if re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", text):
+        return True
+    m = DAEMON_COUNTER.match(name)
+    return bool(
+        m
+        and 'f"soc_daemon_{name}_total"' in text
+        and re.search(rf"_count_daemon\(\s*[\"']{re.escape(m.group(1))}[\"']", text)
+    )
+
+
 def _check_token(tok: str, where: str, problems: list[str]) -> None:
     ids, _ = _corpus()
     tok = tok.strip()
@@ -337,6 +357,10 @@ def _check_token(tok: str, where: str, problems: list[str]) -> None:
         if _norm_api(api) not in _api_paths():
             problems.append(f"{where}: API {api} not in the OpenAPI schema")
     if API.search(tok):
+        return
+    if METRIC.match(tok):
+        if not metric_exists(tok, _corpus()[1]):
+            problems.append(f"{where}: metric {tok} not exported by the code")
         return
     if SNAKE.match(tok):
         if tok not in ids:
@@ -707,6 +731,25 @@ def test_sso_default_role_check_detects_always_viewer(tmp_path):
     doc = tmp_path / "x.md"
     doc.write_text("Rol eşlemeden gelir; eşleşme\nyoksa Viewer olur.\n", encoding="utf-8")
     assert len(sso_default_role_problems([doc])) == 1
+
+
+def test_metric_names_are_the_exported_ones():
+    """W0.15: the counter is soc_daemon_backfill_lane_decisions_missing_total;
+    the bare _count_daemon argument is not what an operator scrapes."""
+    text = (GUIDE / "guvenlik-teknik-belgesi.md").read_text(encoding="utf-8")
+    assert "`soc_daemon_backfill_lane_decisions_missing_total`" in text
+    assert "`backfill_lane_decisions_missing`" not in text
+
+
+def test_metric_check_detects_invented_and_bare_names():
+    _, text = _corpus()
+    assert metric_exists("soc_daemon_backfill_lane_decisions_missing_total", text)
+    assert metric_exists("autosecops_audit_export_*", text)
+    assert not metric_exists("soc_daemon_uydurma_sayac_total", text)
+    assert not metric_exists("autosecops_uydurma_*", text)
+    problems: list[str] = []
+    _check_token("soc_daemon_uydurma_sayac_total", "x.md:1", problems)
+    assert problems and "metric" in problems[0]
 
 
 def test_planned_markers_do_not_name_merged_branches():
