@@ -466,3 +466,16 @@ def test_checkpoints_are_outside_the_budget():
     out = Redactor(event_chars=100, event_nodes=5).event(raw)
     assert out.details["body"] == body
     assert out.details["signature"] == ev.details["signature"]
+
+
+# -- merge with W0.13 auth-api: setup_mfa keeps its two-argument call ---------
+
+
+def test_setup_mfa_still_gets_the_request_injected():
+    from fastapi.dependencies.utils import get_dependant
+
+    from services.api.routers import auth
+
+    dep = get_dependant(path="/mfa/setup", call=auth.setup_mfa)
+    assert dep.request_param_name == "request"
+    assert not dep.query_params and not dep.body_params

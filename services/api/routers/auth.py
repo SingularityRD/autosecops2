@@ -742,9 +742,11 @@ async def change_password(
 
 @router.post("/mfa/setup", response_model=MFASetupResponse)
 def setup_mfa(
-    request: Request,
     current_user: Annotated[User, Depends(get_current_active_user)],
     session: UnitOfWorkSession,
+    # Last and defaulted: FastAPI injects it by type; direct callers (unit
+    # tests) may leave it out, and record_auth_event ignores a missing one.
+    request: Request = None,  # type: ignore[assignment]
 ):
     """
     Setup MFA for current user.
