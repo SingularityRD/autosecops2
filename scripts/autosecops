@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# AutoSecOps operator CLI (subset).
+#   autosecops verify-bundle PACK [--public-key KEY] [--json]   verify an evidence pack offline
+#   autosecops evidence-keygen                                  new evidence-pack signing key
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PY="${PYTHON:-python3}"
+cmd="${1:-}"
+case "$cmd" in
+  verify-bundle)
+    shift
+    # The verifier is standalone (stdlib only): run the file, not the package.
+    exec "$PY" -I "$HERE/core/compliance/verify_bundle.py" "$@"
+    ;;
+  evidence-keygen)
+    shift
+    cd "$HERE"
+    exec "$PY" -m core.compliance.evidence_bundle keygen "$@"
+    ;;
+  *)
+    echo "usage: autosecops {verify-bundle PACK [--public-key KEY] [--json] | evidence-keygen}" >&2
+    exit 2
+    ;;
+esac

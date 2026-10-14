@@ -96,6 +96,10 @@ daemon:
   persistence:
     # Daemon writes investigation artifacts under ORCHESTRATOR_WORKDIR (data/investigations).
     # Enabled by default so singleton restarts don't lose in-flight state.
+    # The ingest spool (W0.12) lives on this per-pod volume too, in
+    # <mountPath>/.ingest-spool: findings the webhook acknowledged survive a
+    # pod restart or reschedule. Disabled: the spool falls back to the state
+    # directory (emptyDir by default: survives container restarts only).
     enabled: true
     size: 10Gi
     storageClassName: ""
@@ -452,8 +456,11 @@ dbInit:
     - 48_autonomy_lessons_suppression_retention.sql
     - 49_approval_action_lifecycle.sql
     - 50_regulatory_clocks.sql
+    - 51_audit_chain.sql
+    - 55_lessons_promotion.sql
     - 56_alert_lane_decisions.sql
     - 58_broadcast_unique_and_clock_heads.sql
+    - 61_approval_decisions.sql
   resources:
     requests:
       cpu: 50m
@@ -806,6 +813,10 @@ config:
   DAEMON_AUTO_ENRICH: "true"
   DAEMON_ENRICH_MAX_INFLIGHT: "50"
   DAEMON_HANDOFF_QUEUE_MAXSIZE: "1000"
+  # W0.12: findings the webhook acknowledged but has not stored yet; full =>
+  # 503 + Retry-After. The directory is per pod (daemon-statefulset.yaml).
+  DAEMON_INGEST_SPOOL_MAX_FINDINGS: "10000"
+  DAEMON_INGEST_SPOOL_MAX_MB: "128"
   DAEMON_AUTO_RESPONSE: "true"
   DAEMON_CONFIDENCE_THRESHOLD: "0.90"
   DAEMON_REVIEW_THRESHOLD: "0.85"

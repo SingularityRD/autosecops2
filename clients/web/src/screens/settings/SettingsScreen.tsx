@@ -9,6 +9,7 @@ import SystemSection from './SystemSection'
 import FederationSection from './FederationSection'
 import UsersSection from './UsersSection'
 import SsoSection from './SsoSection'
+import SegregationSection from './SegregationSection'
 import AutoInvestigateSection from './AutoInvestigateSection'
 import DeveloperSection from './DeveloperSection'
 import AiConfigSection from './AiConfigSection'
@@ -32,7 +33,7 @@ type NavKey =
   | 'data'
   | 'system'
 
-type SystemTabKey = 'services' | 'system' | 'general' | 'dev' | 'users' | 'sso'
+type SystemTabKey = 'services' | 'system' | 'general' | 'dev' | 'users' | 'sso' | 'segregation'
 
 interface NavDef {
   key: NavKey
@@ -58,6 +59,7 @@ const SYSTEM_TAB_DEFS: SystemTabDef[] = [
   { key: 'dev', label: 'Developer', devOnly: true, Component: DeveloperSection },
   { key: 'users', label: 'Users', Component: UsersSection },
   { key: 'sso', label: 'Single sign-on', Component: SsoSection },
+  { key: 'segregation', label: 'Segregation of duties', Component: SegregationSection },
 ]
 const SYSTEM_TABS = SYSTEM_TAB_DEFS.filter((tab) => !tab.devOnly || IS_DEV_MODE)
 

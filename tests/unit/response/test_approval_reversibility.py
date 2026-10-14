@@ -11,8 +11,12 @@ from core.response.approval_service import (
     Reversibility,
 )
 from core.response.autonomous_response_service import AutonomousResponseService
+from tests.unit.response._autonomy import autonomous_everywhere  # noqa: F401
 
-pytestmark = pytest.mark.external_service
+pytestmark = [
+    pytest.mark.external_service,
+    pytest.mark.usefixtures("autonomous_everywhere"),
+]
 
 
 def _create(
