@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from core.compliance.audit_export import (
     AgentEventsSource,
     ApprovalTransitionSource,
+    AuditCheckpointSource,
     CaseAuditSource,
     ConfigAuditSource,
 )
@@ -348,3 +349,59 @@ def test_horizon_probe_names_an_idle_in_transaction_holder(engine, clean):
     finally:
         tx.rollback()
         idle.close()
+
+
+def test_w110_checkpoints_are_exported_once_the_table_exists(clean):
+    """Round 6: W1.10's signed heads (51_audit_chain.sql's audit_checkpoints
+    columns) are exported in (xid, id) order; before W1.10's schema exists
+    the source reads nothing instead of failing."""
+    source = AuditCheckpointSource(_scope(clean), settle_s=0)
+    cursor = source.initial_cursor("beginning")
+    assert source.fetch(cursor, 10) == []
+    with clean.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE audit_checkpoints (id bigserial PRIMARY KEY, "
+                "created_at timestamptz NOT NULL DEFAULT now(), key_id text "
+                "NOT NULL, public_key text NOT NULL, body text NOT NULL, "
+                "body_hash text NOT NULL, prev_body_hash text NOT NULL, "
+                "signature text NOT NULL, tsa_token text)"
+            )
+        )
+    try:
+        bodies = [
+            '{"audit_chain":{"head":{"hash":"%s","seq":%d}},"v":1}' % ("ab" * 32, n)
+            for n in (3, 9)
+        ]
+        with clean.begin() as conn:
+            for n, body in enumerate(bodies, 1):
+                conn.execute(
+                    text(
+                        "INSERT INTO audit_checkpoints (key_id, public_key, body, "
+                        "body_hash, prev_body_hash, signature) VALUES "
+                        "('k1', :pub, :body, :bh, :prev, :sig)"
+                    ),
+                    {
+                        "pub": "cd" * 32,
+                        "body": body,
+                        "bh": f"{n:064x}",
+                        "prev": f"{n - 1:064x}" if n > 1 else "",
+                        "sig": "FAKEsig0" * 11,
+                    },
+                )
+        seen: list = []
+        deadline = time.monotonic() + 180
+        while len(seen) < 2 and time.monotonic() < deadline:
+            rows = source.fetch(cursor, 1)
+            for event, after in rows:
+                seen.append(event)
+                cursor = after
+            if not rows:
+                time.sleep(0.2)
+        assert [e.id for e in seen] == ["audit_checkpoints:1", "audit_checkpoints:2"]
+        assert [e.details["body"] for e in seen] == bodies
+        assert seen[1].details["audit_chain_head"] == {"hash": "ab" * 32, "seq": 9}
+        assert seen[1].hash == f"{2:064x}"
+    finally:
+        with clean.begin() as conn:
+            conn.execute(text("DROP TABLE audit_checkpoints"))
