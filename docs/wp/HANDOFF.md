@@ -3,12 +3,11 @@
 Bu dosya, kota biterse veya oturum kapanırsa başka bir Claude oturumunun hiçbir bilgi kaybetmeden devam etmesi için yazıldı.
 Her şeyin tek doğru kaynağı GitHub'daki `SingularityRD/autosecops2` reposudur. Makine geçicidir; yerel dosyalara güvenme.
 
-## Durumun özeti
-- `integration` dalı: doğrulamadan geçmiş tüm işler (bkz. `docs/wp/STATUS.md` §1).
-- `wp/*` dalları: her iş paketi kendi dalında, hepsi remote'ta. Doğrulamada kalan 13 dal ve bulguları: `docs/wp/FIXES.md`.
-- `main`: henüz integration'ı almadı (integration'da tam test koşusu yapılmadan main'e alınmayacak).
-- Plan: `docs/wp/NORTHSTAR_PLAN.md` (Claude Docs'taki "AutoSecOps 2.0 Northstar uygulama planı"nın kopyası). Hedef: düzenlenmiş sektör GA 30 Ekim 2026.
-- Görev tanımları (brief'ler): `docs/wp/briefs/<id>_impl.txt`, doğrulayıcı brief'leri `<id>_verify.txt`, genel doğrulayıcı: `VERIFY_ROUND2.md`, kurallar: `docs/wp/VERIFIER.md`, şablon: `docs/wp/TEMPLATE.md`.
+## Durumun özeti (14 Ekim 2026)
+- `main` == `integration` == `dd671b86`: doğrulanmış ~37/45 iş paketi (liste: `docs/wp/STATUS.md` §1).
+- Bekleyen dallar, durumları ve sıradaki adımlar: `docs/wp/STATUS.md` §2 (W0.15, W0.16, W3.10, W3.6, W4.6, W4.7). Hepsi remote'ta pushlu.
+- Plan: `docs/wp/NORTHSTAR_PLAN.md`. Hedef: düzenlenmiş sektör GA 30 Ekim 2026.
+- Brief'ler: `docs/wp/briefs/ROUND3.md` (uygulayıcı/düzeltici kuralları), `VERIFY_ROUND2.md` (doğrulayıcı), `REVIEW.md` (commit-geçmişi incelemesi), `gates_env.sh`; kurallar `docs/wp/VERIFIER.md`, şablon `docs/wp/TEMPLATE.md`. `docs/wp/FIXES.md` eskidir (12 Ekim); güncel bulgular STATUS.md §2'de.
 
 ## 1. Ortamı kur (yeni makinede)
 ```bash
@@ -30,12 +29,13 @@ git worktree add /root/wt/integ integration
 - `pkill -f` kullanma. Sır (secret) commitleme/pushlama. Log dosyalarına benzersiz adlar ver (ajanlar ortak dizini paylaşıyor).
 - Commit trailer'ları: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` ve çalışan oturumun `Claude-Session:` satırı.
 - Her iş: uygulayıcı ajan → yalnızca spec + diff gören AYRI doğrulayıcı → PASS ise integration'a merge → push.
-- Her merge'den sonra `schema.d.ts` çakışırsa `cd clients/web && npm run generate:api`.
+- Her merge'den sonra: `python -m tests.security.route_matrix --write`, `cd clients/web && npm run generate:api`, gerekirse `python scripts/generate_schema_snapshot.py`; `tests/airgap` yeni dış çağrı bulursa `tests/airgap/egress_inventory.json`'da sınıflandır.
+- `git stash` KULLANMA (worktree'ler stash listesini paylaşır).
 - Aynı anda en fazla 20 ajan; 2 CPU'lu makinede 15–20 iyi, test zaman aşımları normal.
 - Ajan çalışırken kullanıcı mesaj gönderirse parti kesilebilir; kesilen işler worktree'de commitsiz kalır — yeni ajana "worktree'deki yarım işi incele ve devam et" de.
 
 ## 3. Yeni oturuma yapıştırılacak başlangıç komutu
-> SingularityRD/autosecops2 reposunu ekle ve `integration` dalındaki `docs/wp/HANDOFF.md` dosyasını oku, §1'deki kurulumu yap. Sonra `docs/wp/FIXES.md`'deki 13 kalan iş paketini subagent'larla düzelt (her biri kendi `wp/*` dalında, önce `git merge integration`), W2.4'ü öncelikli al. Her düzeltmeden sonra `docs/wp/briefs/VERIFY_ROUND2.md` ile ayrı bir doğrulayıcı koştur; PASS olanları integration'a merge et ve pushla. Sonra `docs/wp/STATUS.md` §3'teki başlanmamış paketlere (W2.3, W3.1, W3.2, W3.7, Dalga 4) plan dokümanına göre brief yazıp aynı döngüyle devam et. Her turun sonunda `docs/wp/STATUS.md`'yi güncelle, commitle, pushla. Her şeye izin var; 15–20 subagent paralel kullan.
+> SingularityRD/autosecops2 reposunu ekle, `integration` dalındaki `docs/wp/HANDOFF.md`'yi oku ve §1 kurulumunu yap (`cp docs/wp/briefs/* /root/wt/_briefs/`). Sonra `docs/wp/STATUS.md` §2 ve §5'teki sırayla devam et: W0.16, W3.10 ve W3.6 (tur 7 dalda, önce gates teyidi) için `docs/wp/briefs/VERIFY_ROUND2.md` ile bağımsız doğrulayıcı; W0.15 (yanıt değerlendirmesi kaybı + tablo yoksa backfill durması) için düzeltici — her düzeltici önce `git merge integration`, `docs/wp/briefs/ROUND3.md` kurallarına uyar. PASS olanları integration'a birleştir, üretilen dosyaları yenile (route matrix, schema.d.ts, şema snapshot, egress envanteri), tam test + gates, `integration` ve `main`'e pushla. En son W4.6 (merged_wps.txt + taban commit) ve W4.7 (`render-notes --write`) güncellenip birleşsin. Her tur sonunda `docs/wp/STATUS.md`'yi güncelle, commitle, pushla. Subagent'larla paralel çalış (2 CPU'da 6–8 makul). `git stash` ve `pkill -f` yasak; sır pushlama; force-push yok; v2.0.0 tag'i ve ruleset yok; uzak dal silmek kullanıcı onayı ister.
 
 ## 4. İlerlemeyi kayıpsız tutmak için (her oturum uygulamalı)
 - Her ajan işini commitleyip dalını HEMEN pushlasın (yerel commit makineyle birlikte kaybolabilir).
