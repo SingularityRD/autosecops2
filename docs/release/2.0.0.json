@@ -1,5 +1,5 @@
 {
-  "_comment": "Input of `release_tool.py render-notes`: what git cannot know. Merged/not merged, branches and init SQL numbers come from git log --merges / git ls-tree of the ref. Items with `when` need all listed WPs merged, items with `unless` disappear once any listed WP is merged. Regenerate, do not edit, docs/release/2.0.0.md and the CHANGELOG block.",
+  "_comment": "Input of `release_tool.py render-notes`: what git cannot know. Merged/not merged, branches and init SQL numbers come from git log --merges / git ls-tree of the ref. Items with `when` need all listed WPs merged, items with `unless` disappear once any listed WP is merged. A WP's `expected_branches` that are not merged yet are appended to its topic from history (no hand-written 'not merged' text). Regenerate, do not edit, docs/release/2.0.0.md and the CHANGELOG block.",
   "version": "2.0.0",
   "notes": "docs/release/2.0.0.md",
   "template": "2.0.0.md.in",

@@ -181,9 +181,10 @@ def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
     except OSError as exc:
         raise ReleaseError(f"cannot run git: {exc}") from exc
     if check and proc.returncode != 0:
-        why = proc.stderr.strip().splitlines()
+        lines = proc.stderr.strip().splitlines()
+        why = next((x for x in lines if x.startswith(("fatal:", "error:"))), None)
         raise ReleaseError(
-            f"git {' '.join(args[:2])} failed in {repo}: {why[-1] if why else proc.returncode}"
+            f"git {args[0]} failed in {repo}: {why or (lines[0] if lines else proc.returncode)}"
         )
     return proc
 
@@ -373,7 +374,12 @@ def check_notes(
                 )
     late = late_branches(rows, merged, _load_notes_data(data).get("self", []) if data else ())
     if data is not None and not (allow_late and late):
-        for path, want in render_notes(_load_notes_data(data), repo, ref).items():
+        try:
+            rendered = render_notes(_load_notes_data(data), repo, ref)
+        except ReleaseError as exc:  # reported with the row errors above
+            errors.append(str(exc))
+            rendered = {}
+        for path, want in rendered.items():
             have = path.read_text(encoding="utf-8") if path.is_file() else ""
             if have != want:
                 root = repo.resolve()

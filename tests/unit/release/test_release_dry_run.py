@@ -150,31 +150,44 @@ needs_repo_history = pytest.mark.skipif(
 )
 
 
+# Round 8: these run on every main/integration checkout, where any WP may merge
+# after the notes were last rendered. They tolerate such late merges
+# (allow_late) but still fail when the notes call an unmerged WP "Dahil" or are
+# stale with nothing merged late. Byte-for-byte freshness against every merged
+# WP is the tag pipeline's job (release.yml: check-notes --strict --data).
+
+
 @needs_repo_history
 def test_release_notes_included_items_are_merged() -> None:
-    rows = rt.check_notes(REPO / "docs/release/2.0.0.md", REPO)
+    data = REPO / "docs/release/2.0.0.json"
+    rows = rt.check_notes(REPO / "docs/release/2.0.0.md", REPO, data=data, allow_late=True)
     included = {r["wp"] for r in rows if r["included"]}
     assert {"W0.1", "W2.2", "W3.3", "W3.8"} <= included
-    # Whatever is merged when the test runs, not a snapshot of the drafting day:
-    # "Dahil" exactly for the merged wp/<id>-* branches (W4.7 itself excepted).
-    merged = set(rt.merged_wps(rt.merged_branches(REPO))) - {"W4.7"}
-    assert {r["wp"] for r in rows if r["wp"] in merged} == merged
+    # Every "Dahil" row is merged; every row of a merged WP that is not "Dahil"
+    # can only be one merged after rendering (a late branch).
+    merged_branches = rt.merged_branches(REPO)
+    merged = set(rt.merged_wps(merged_branches)) - {"W4.7"}
+    late = rt.late_branches(rows, merged_branches, ["W4.7"])
+    late_wps = {rt.wp_id_of_branch(b) for b in late}
+    assert {r["wp"] for r in rows if r["wp"] in merged} | late_wps >= merged
     # WPs whose work landed under another branch name (W0.2: brand/...,
     # W4.2: wp/w4.1-load-chaos) name it in the data file.
-    data = json.loads((REPO / "docs/release/2.0.0.json").read_text())
-    explicit = {w["id"] for w in data["wps"] if w.get("branch")}
+    doc = json.loads(data.read_text())
+    explicit = {w["id"] for w in doc["wps"] if w.get("branch")}
     assert {"W0.2", "W4.2"} <= explicit
-    assert included - explicit == merged
+    assert included - explicit <= merged
+    assert merged - late_wps <= included
     for r in rows:
-        if not r["included"]:
-            assert r["wp"] not in merged, r["wp"]
+        if r["included"]:
+            assert r["wp"] in merged or r["wp"] in explicit, r["wp"]
 
 
 @needs_repo_history
 def test_release_notes_are_rendered_from_history() -> None:
-    """docs/release/2.0.0.md and the CHANGELOG block are fresh for HEAD."""
+    """docs/release/2.0.0.md and the CHANGELOG block are fresh for HEAD, apart
+    from WPs merged after they were rendered (re-rendered before the tag)."""
     data = REPO / "docs/release/2.0.0.json"
-    rows = rt.check_notes(REPO / "docs/release/2.0.0.md", REPO, strict=True, data=data)
+    rows = rt.check_notes(REPO / "docs/release/2.0.0.md", REPO, data=data, allow_late=True)
     assert len(rows) == len(json.loads(data.read_text())["wps"])
 
 
@@ -934,3 +947,148 @@ def test_dry_run_on_a_shallow_clone(tmp_path: Path) -> None:
     assert proc.returncode != 0
     assert "--strict-notes needs the full merge history (shallow clone)" in proc.stderr
     assert "git fetch --unshallow" in proc.stderr
+
+
+# --- Round 8: late merges, branches expected from history, no .git -------------
+
+
+def test_allow_late_tolerates_a_wp_merged_after_rendering(
+    tmp_path: Path, history: Path, capsys
+) -> None:
+    data = _render_fixture(tmp_path, history)
+    assert rt.main(
+        ["--repo", str(history), "render-notes", "--data", str(data), "--write"]
+    ) == 0
+    notes = history / "docs/release/n.md"
+    _merge(history, "wp/w3.6-audit-export")  # merges after the notes were rendered
+    _merge(history, "wp/w5.1-not-in-data")  # not even in the data file yet
+    # The tag pipeline still refuses: stale notes and a merged WP without a row.
+    with pytest.raises(rt.ReleaseError) as exc:
+        rt.check_notes(notes, history, strict=True, data=data)
+    assert "W5.1: wp/w5.1-not-in-data is merged" in str(exc.value)
+    assert "W3.6: marked 'Dahil değil' but wp/w3.6-audit-export is merged" in str(exc.value)
+    assert "missing from the data file: W5.1" in str(exc.value)
+    # Without --allow-late, --data alone also refuses (stale / not in the data).
+    with pytest.raises(rt.ReleaseError, match="missing from the data file: W5.1"):
+        rt.check_notes(notes, history, data=data)
+    # main/integration unit tests: tolerated, and the late branches are named.
+    rows = rt.check_notes(notes, history, data=data, allow_late=True)
+    assert rt.late_branches(rows, rt.merged_branches(history), ["W4.7"]) == [
+        "wp/w3.6-audit-export",
+        "wp/w5.1-not-in-data",
+    ]
+    capsys.readouterr()
+    assert rt.main(
+        ["--repo", str(history), "check-notes", "--notes", str(notes),
+         "--data", str(data), "--allow-late"]
+    ) == 0
+    out = capsys.readouterr().out
+    assert "merged after rendering" in out and "wp/w3.6-audit-export" in out
+    with pytest.raises(rt.ReleaseError, match="exclude each other"):
+        rt.check_notes(notes, history, strict=True, data=data, allow_late=True)
+
+
+def test_allow_late_still_rejects_an_unmerged_wp_marked_included(
+    tmp_path: Path, history: Path
+) -> None:
+    data = _render_fixture(tmp_path, history)
+    assert rt.main(
+        ["--repo", str(history), "render-notes", "--data", str(data), "--write"]
+    ) == 0
+    notes = history / "docs/release/n.md"
+    text = notes.read_text()
+    bad = text.replace("| W3.6 | Export | Dahil değil | — |", "| W3.6 | Export | Dahil | `wp/w3.6-audit-export` |")
+    assert bad != text
+    notes.write_text(bad)
+    with pytest.raises(rt.ReleaseError, match="W3.6: marked Dahil but branch wp/w3.6-audit-export"):
+        rt.check_notes(notes, history, data=data, allow_late=True)
+    # ... also while another WP merged late (freshness skipped, Dahil still checked).
+    _merge(history, "wp/w0.10-merged-followups")
+    with pytest.raises(rt.ReleaseError, match="W3.6: marked Dahil"):
+        rt.check_notes(notes, history, data=data, allow_late=True)
+
+
+def test_allow_late_with_nothing_late_still_checks_freshness(
+    tmp_path: Path, history: Path
+) -> None:
+    data = _render_fixture(tmp_path, history)
+    assert rt.main(
+        ["--repo", str(history), "render-notes", "--data", str(data), "--write"]
+    ) == 0
+    notes = history / "docs/release/n.md"
+    rt.check_notes(notes, history, data=data, allow_late=True)
+    notes.write_text(notes.read_text().replace("H-eval", "H-edited"))
+    with pytest.raises(rt.ReleaseError, match="n.md is stale"):
+        rt.check_notes(notes, history, data=data, allow_late=True)
+
+
+def test_expected_branches_not_yet_merged_come_from_history(
+    tmp_path: Path, history: Path
+) -> None:
+    data = _render_fixture(tmp_path, history)
+    doc = json.loads(data.read_text())
+    w010 = next(w for w in doc["wps"] if w["id"] == "W0.10")
+    w010["expected_branches"] = ["wp/w0.10-review-a", "wp/w0.10-review-b"]
+    data.write_text(json.dumps(doc))
+    _merge(history, "wp/w0.10-review-a")
+
+    def render() -> tuple[str, str]:
+        out = rt.render_notes(rt._load_notes_data(data), history)
+        return out[(history / "docs/release/n.md").resolve()], out[
+            (history / "CHANGELOG.md").resolve()
+        ]
+
+    notes, cl = render()
+    assert "| W0.10 | Takip (`wp/w0.10-review-b` birleşmedi) | Dahil | `wp/w0.10-review-a` |" in notes
+    assert "W0.10 follow-ups (`wp/w0.10-review-b` not merged)" in cl
+    _merge(history, "wp/w0.10-review-b")
+    notes, cl = render()
+    assert "| W0.10 | Takip | Dahil | `wp/w0.10-review-a`, `wp/w0.10-review-b` |" in notes
+    assert "birleşmedi" not in notes and "not merged" not in cl
+    # An expected branch of another WP is a data error.
+    w010["expected_branches"] = ["wp/w1.1-eval-harness"]
+    data.write_text(json.dumps(doc))
+    with pytest.raises(rt.ReleaseError, match="expected_branches of another WP"):
+        rt._load_notes_data(data)
+
+
+def test_real_w013_topic_has_no_hard_coded_merge_state() -> None:
+    doc = json.loads((REPO / "docs/release/2.0.0.json").read_text())
+    w013 = next(w for w in doc["wps"] if w["id"] == "W0.13")
+    for text in (w013["topic"], w013["topic_en"]):
+        assert "birleşmedi" not in text and "not merged" not in text
+    assert "wp/w0.13-review-auth-api" in w013["expected_branches"]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["check-notes", "--notes", "docs/release/2.0.0.md"],
+        ["check-notes", "--notes", "docs/release/2.0.0.md", "--strict",
+         "--data", "docs/release/2.0.0.json"],
+        ["render-notes", "--data", "docs/release/2.0.0.json"],
+        ["check-on-main", "--commit", "HEAD"],
+    ],
+)
+def test_outside_git_is_a_clean_error(tmp_path: Path, args: list[str]) -> None:
+    """A source export (no .git) gets a one-line error, not a traceback."""
+    export = tmp_path / "export"
+    for rel in ("docs/release", "scripts/release"):
+        shutil.copytree(REPO / rel, export / rel)
+    shutil.copy(REPO / "CHANGELOG.md", export / "CHANGELOG.md")
+    proc = subprocess.run(
+        [sys.executable, str(export / "scripts/release/release_tool.py"), *args],
+        cwd=export,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "GIT_CEILING_DIRECTORIES": str(tmp_path)},
+    )
+    assert proc.returncode == 1, proc.stderr
+    assert "Traceback" not in proc.stderr
+    assert "is not a git checkout (no .git)" in proc.stderr
+
+
+def test_a_failing_git_command_is_a_clean_error(history: Path) -> None:
+    with pytest.raises(rt.ReleaseError, match="git log failed in .*: fatal: .*no-such-ref"):
+        rt.merged_branches(history, "no-such-ref")
+    assert rt.main(["--repo", str(history), "render-notes", "--data", "/nonexistent.json"]) == 1
