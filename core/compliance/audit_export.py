@@ -591,7 +591,39 @@ def mask_personal_data(text_: str) -> str:
     out = _TCKN.sub(
         lambda m: REDACTED_PII if _tckn_valid(m.group(0)) else m.group(0), out
     )
-    return _PHONE.sub(_phone_redaction, out)
+    out = _PHONE.sub(_phone_redaction, out)
+    return _redact_pii_pairs(out)
+
+
+def _redact_pii_pairs(text_: str) -> str:
+    """``iban=TR…`` / ``"gender": "f"`` / ``accountNumber: 123`` in free text:
+    the value of a pair whose key names personal data (:func:`pii_key`; not
+    actor keys)."""
+    if "=" not in text_ and ":" not in text_ and "%3" not in text_.upper():
+        return text_
+    out: list[str] = []
+    pos = 0
+    for m in _KEY_SEP.finditer(text_):
+        if m.start() < pos:
+            continue
+        ident = m.group(2).lstrip("-")
+        if not ident or ident.lower() in _ACTOR_KEYS or not pii_key(ident):
+            continue
+        vm = _VALUE.match(text_, m.end())
+        if vm is None:
+            continue
+        value = vm.group(0)
+        if value.startswith("[REDACTED") or value.lstrip("\\\"'").startswith(
+            "[REDACTED"
+        ):
+            continue
+        end = _value_end(text_, vm, _VALUE_TAIL)
+        out.append(text_[pos : vm.start()])
+        red = _redacted_value(value) if end == vm.end() else REDACTED
+        out.append(red.replace(REDACTED, REDACTED_PII))
+        pos = end
+    out.append(text_[pos:])
+    return "".join(out)
 
 
 # -- identifiers that are neither personal data nor credentials ----------------
@@ -673,6 +705,18 @@ _PII_SEGMENTS = frozenset(
         "cvc",
         "cvv2",
         "address",
+        # national / tax / health-service numbers
+        "vkn",
+        "nin",
+        "aadhaar",
+        "cpf",
+        # GDPR art. 9 special categories
+        "gender",
+        "religion",
+        "ethnicity",
+        "biometric",
+        "biometrics",
+        "genetic",
     }
 )
 _PII_PHRASES = tuple(
@@ -702,9 +746,41 @@ _PII_PHRASES = tuple(
         "zip_code",
         "tc_kimlik",
         "kimlik_no",
+        "account_number",
+        "bank_account",
+        "routing_number",
+        "sort_code",
+        "vergi_no",
+        "vergi_kimlik",
+        "nhs_number",
+        "national_insurance",
+        "sexual_orientation",
+        "sex_life",
+        "political_opinion",
+        "political_opinions",
+        "political_affiliation",
+        "political_party",
+        "political_view",
+        "political_views",
+        "religious_belief",
+        "religious_beliefs",
+        "philosophical_beliefs",
+        "ethnic_origin",
+        "racial_origin",
+        "trade_union",
+        "health_data",
+        "health_info",
+        "health_condition",
+        "health_record",
+        "health_records",
+        "medical_condition",
+        "medical_record",
+        "medical_records",
     )
 )
-_PII_LEAVES = frozenset({"pan", "zip", "postcode"})
+# Whole keys only: ``health_check`` / ``political_risk_score`` are not
+# personal data, a bare ``health`` / ``political`` / ``sex`` key may be.
+_PII_LEAVES = frozenset({"pan", "zip", "postcode", "health", "political", "sex"})
 
 
 def pii_key(name: str) -> bool:
@@ -794,6 +870,10 @@ _SECRET_WORDS = frozenset(
         "keytab",
         "psk",
         "samlresponse",
+        "kek",  # key-encryption key
+        "dek",  # data-encryption key
+        "xsrf",
+        "csrf",
     }
 )
 _WEAK_WORDS = frozenset(
@@ -851,7 +931,13 @@ _SECRET_PHRASES = tuple(
         "conn_str",
         "mfa_secret",
         "recovery_codes",
+        "recovery_code",
         "backup_codes",
+        "backup_code",
+        "security_answer",
+        "security_answers",
+        "secret_answer",
+        "challenge_answer",
         "seed_phrase",
         "ssh_key",
         "storage_key",
@@ -945,6 +1031,86 @@ _NON_SECRET_LEAVES = frozenset(
         "version",
     }
 )
+# ``<prefix>_key`` / ``<prefix>Key`` is a credential (``primaryKey``,
+# ``storage_account_key``, ``wrapping_key``, ``foo_keys``) unless the prefix
+# makes it a lookup or row key, never a secret. ``primary`` is deliberately
+# absent: Azure's ``primaryKey`` / ``secondaryKey`` are account keys.
+# ``<anything>_key_id`` is an identifier (``_non_secret_leaf``) unless a
+# credential phrase precedes it (``access_key_id``).
+_NON_SECRET_KEY_PREFIXES = frozenset(
+    {
+        "public",
+        "pub",
+        "config",
+        "configuration",
+        "setting",
+        "settings",
+        "cache",
+        "idempotency",
+        "dedup",
+        "dedupe",
+        "deduplication",
+        "partition",
+        "sort",
+        "row",
+        "range",
+        "hash",
+        "shard",
+        "routing",
+        "foreign",
+        "lookup",
+        "map",
+        "dict",
+        "field",
+        "column",
+        "translation",
+        "i18n",
+        "message",
+        "object",
+        "issue",
+        "jira",
+        "project",
+        "state",
+        "metric",
+        "label",
+        "tag",
+        "group",
+        "aggregation",
+        "natural",
+        "composite",
+        "unique",
+        "index",
+        "sequence",
+        "correlation",
+        "trace",
+        "event",
+        "lock",
+        "rule",
+        "registry",
+        "hot",
+        "shortcut",
+        "keyboard",
+        "musical",
+    }
+)
+# ``<prefix>_seed`` is key material (``wallet_seed``, ``totp_seed``) unless it
+# seeds a PRNG for reproducibility.
+_NON_SECRET_SEED_PREFIXES = frozenset({"random", "rng", "shuffle", "sampling", "test"})
+
+
+def _suffix_strength(segments: list[str]) -> int:
+    """STRONG for ``<prefix>_key(s)`` and ``<prefix>_seed`` outside the
+    allow-lists above; ``seed`` alone is WEAK."""
+    leaf = segments[-1]
+    if leaf in ("key", "keys") and len(segments) > 1:
+        return 0 if segments[-2] in _NON_SECRET_KEY_PREFIXES else STRONG
+    if leaf in ("seed", "seeds"):
+        if len(segments) == 1:
+            return WEAK
+        return 0 if segments[-2] in _NON_SECRET_SEED_PREFIXES else STRONG
+    return 0
+
+
 # ``<word>_id`` that is a credential after all.
 _ID_LEAVES = frozenset({"id", "ids"})
 _SECRET_ID_PREFIXES = frozenset({"secret"})  # Vault AppRole ``secret_id``
@@ -1037,9 +1203,10 @@ def identifier_strength(name: str) -> int:
 
     Word-boundary and camelCase aware: ``dbPass``, ``DB_PASSWORD``,
     ``PGPASSWORD``, ``--password``, ``clientKey``, ``DD_APP_KEY``,
-    ``bot_token`` are STRONG; ``token``, ``key``, ``auth``, ``pin``,
-    ``signature``, ``session_id`` are WEAK; ``max_tokens``, ``bypass``,
-    ``token_count``, ``config_key`` are 0.
+    ``bot_token``, ``primaryKey``, ``foo_key``, ``kek``, ``wallet_seed`` are
+    STRONG; ``token``, ``key``, ``auth``, ``pin``, ``signature``,
+    ``session_id`` are WEAK; ``max_tokens``, ``bypass``, ``token_count``,
+    ``config_key``, ``partition_key``, ``public_key``, ``key_id`` are 0.
     """
     bare = name.strip("\"'-\\ :")
     if not bare or len(bare) > 256:
@@ -1062,6 +1229,9 @@ def identifier_strength(name: str) -> int:
         return STRONG
     if len(segments) > 1 and leaf in {"pass", "pw", "pwd", "token"}:
         return STRONG  # ``ssh_pass``, ``bot_token``, ``NPM_TOKEN``
+    suffix = _suffix_strength(segments)
+    if suffix:
+        return suffix
     if leaf in {"pw", "pwd"}:
         return STRONG
     if leaf != "pass" and leaf not in _NOT_GLUED and leaf.endswith(_GLUED_SUFFIXES):
@@ -1342,6 +1512,10 @@ _PPK_PRIVATE = re.compile(r"(?i)(Private-Lines:[ \t]*(\d{1,4})[ \t]*\r?\n)")
 # ``scheme://user:password@host`` (and ``redis://:pw@``, ``mongodb+srv://``):
 # the whole userinfo goes.
 _URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]{1,30}://)[^\s/?#@\"'<>]*@")
+# ``jdbc:oracle:thin:scott/tiger@host``: user/password with no ``//``.
+_ORACLE_USERPASS = re.compile(
+    r"(?i)(\bjdbc:oracle:(?:thin|oci8?|kprb):)([^/@\s:\"'<>]{1,128})/[^@\s\"'<>]{1,256}@"
+)
 # ``?code=`` (Azure Functions keys, OAuth codes) in a URL query.
 _URL_CODE = re.compile(r"(?i)([?&](?:code|sig)=)([^&\s#\"'<>]+)")
 # Webhook URLs whose path is the credential.
@@ -2039,6 +2213,9 @@ def _redact_raw(value: str, depth: int = 0) -> str:
     out = _AUTH_HEADER.sub(_auth_header_redaction, out)
     out = _WEBHOOK_URLS.sub(lambda m: m.group(1) + REDACTED, out)
     out = _URL_USERINFO.sub(lambda m: m.group(1) + REDACTED + "@", out)
+    out = _ORACLE_USERPASS.sub(
+        lambda m: m.group(1) + m.group(2) + "/" + REDACTED + "@", out
+    )
     out = _URL_CODE.sub(
         lambda m: (
             m.group(1) + REDACTED if _secretish(m.group(2), key=None) else m.group(0)

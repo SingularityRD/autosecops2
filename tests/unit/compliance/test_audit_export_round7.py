@@ -274,3 +274,127 @@ async def test_syslog_cef_udp_delivers_every_part():
     primary, rebuilt = _reassemble(rx.messages, "cef")
     ext = primary["ext"]
     assert _verifies(ext["flexString1"], ext["cs6"], rebuilt)
+
+
+# -- (b) key-based masking gaps -------------------------------------------------
+
+FAKE = "fake-placeholder-Value-123"
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "foo_key",
+        "fooKey",
+        "foo-key",
+        "FOO_KEY",
+        "primaryKey",
+        "secondary_key",
+        "storage_account_key",
+        "wrapping_key",
+        "api_keys",
+        "kek",
+        "dek",
+        "wrapped-dek",
+        "tenantKek",
+        "wallet_seed",
+        "totpSeed",
+        "backup_code",
+        "recovery-code",
+        "recoveryCode",
+        "xsrf",
+        "XSRF-TOKEN",
+        "security_answer",
+        "securityAnswer",
+    ],
+)
+def test_credential_like_keys_are_masked(key):
+    out = Redactor().value("", {key: FAKE, "note": "kept"})
+    assert out[key] == REDACTED and out["note"] == "kept"
+    text = Redactor().text(f"changed {key}={FAKE} ok")
+    assert FAKE not in text, text
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "config_key",
+        "partition_key",
+        "sortKey",
+        "idempotency-key",
+        "public_key",
+        "publicKey",
+        "issue_key",
+        "cache_key",
+        "key_id",
+        "primary_key_id",
+        "random_seed",
+    ],
+)
+def test_id_like_keys_on_the_allow_list_pass(key):
+    out = Redactor().value("", {key: "SEC-4821"})
+    assert out[key] == "SEC-4821"
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "account_number",
+        "accountNumber",
+        "bank-account",
+        "routing_number",
+        "iban",
+        "vkn",
+        "vergi_no",
+        "vergiNo",
+        "tckn",
+        "nin",
+        "aadhaar",
+        "cpf",
+        "nhs_number",
+        "nhsNumber",
+        "gender",
+        "health",
+        "health_data",
+        "religion",
+        "ethnicity",
+        "sexual_orientation",
+        "sexualOrientation",
+        "political",
+        "political-party",
+        "biometric",
+        "biometric_template",
+    ],
+)
+def test_personal_and_special_category_keys_are_masked(key):
+    out = Redactor().value("", {key: "plain value 7"})
+    assert out[key] == REDACTED
+    text = Redactor().text(f'saved {key}=plainvalue7 and "{key}": "other"')
+    assert "plainvalue7" not in text and '"other"' not in text, text
+    assert "[REDACTED-PII]" in text
+
+
+@pytest.mark.parametrize(
+    "key", ["health_check", "health_status", "gender_count", "biometric_enabled"]
+)
+def test_about_personal_data_is_not_personal_data(key):
+    assert Redactor().value("", {key: "ok"})[key] == "ok"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "jdbc:postgresql://db:5432/app?user=svc&password=" + FAKE,
+        "jdbc:sqlserver://db:1433;databaseName=x;user=sa;password=" + FAKE,
+        "jdbc:oracle:thin:scott/" + FAKE + "@db:1521/orcl",
+        "jdbc:mysql://svc:" + FAKE + "@db:3306/app",
+        "postgres://svc:" + FAKE + "@db/app",
+        "redis://:" + FAKE + "@cache:6379/0",
+        "amqp://svc:" + FAKE + "@mq:5672/",
+    ],
+)
+def test_url_values_lose_embedded_credentials(url):
+    for key in ("jdbc_url", "jdbcUrl", "callback-url", "endpoint"):
+        out = Redactor().value("", {key: url})[key]
+        assert FAKE not in out, out
+        assert out.startswith(url.split(":", 1)[0])  # the rest of the URL stays
