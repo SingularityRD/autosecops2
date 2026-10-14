@@ -107,3 +107,100 @@ def test_init_sql_accepts_a_decision_and_refuses_a_bad_lane():
             sp.rollback()
         finally:
             tx.rollback()
+
+
+def test_settling_decisions_skips_the_query_for_no_ids(monkeypatch):
+    def boom():
+        raise AssertionError("no query for an empty batch")
+
+    monkeypatch.setattr(decision_store, "_session_scope", boom)
+    assert decision_store.settling_decisions([None, ""]) == {}
+
+
+@pytest.mark.external_service
+@pytest.mark.database
+def test_query_settling_reads_rules_and_enqueued_verdicts_only():
+    """W0.15: what the backfill treats as already settled."""
+    from pathlib import Path
+
+    from sqlalchemy import text
+
+    from core.storage.connection import get_db_manager
+
+    sql = (
+        Path(__file__).resolve().parents[3] / "infra" / "database" / "init" / "56_alert_lane_decisions.sql"
+    ).read_text(encoding="utf-8")
+    rows = [
+        _decision(finding_id="w15-r", tenant_id="default", lane=LANE_RULES, reason="suppression_rule",
+                  rule={"kind": "suppression", "id": "r-1", "name": "x"}, decided_at="2026-10-14T10:00:00+00:00"),
+        _decision(finding_id="w15-r", tenant_id="default", lane=LANE_RULES, reason="suppression_rule",
+                  rule={"kind": "suppression", "id": "r-2", "name": "y"}, decided_at="2026-10-14T10:05:00+00:00"),
+        # Round 2: the latest decision is the finding's routing. Re-routed to
+        # the model after a rules decision: a triage is owed, not settled.
+        _decision(finding_id="w15-rs", tenant_id="default", lane=LANE_RULES, reason="suppression_rule",
+                  decided_at="2026-10-14T10:00:00+00:00"),
+        _decision(finding_id="w15-rs", tenant_id="default", decided_at="2026-10-14T10:05:00+00:00"),
+        # ... and the other way round: settled by the later rules decision.
+        _decision(finding_id="w15-sr", tenant_id="default", decided_at="2026-10-14T10:00:00+00:00"),
+        _decision(finding_id="w15-sr", tenant_id="default", lane=LANE_RULES, reason="suppression_rule",
+                  decided_at="2026-10-14T10:05:00+00:00"),
+        _decision(finding_id="w15-v", tenant_id="default", lane=LANE_VERDICT, reason="high_risk",
+                  verdict_run_id="run-1"),
+        _decision(finding_id="w15-d", tenant_id="default", lane=LANE_VERDICT, reason="high_risk",
+                  deferred_verdict=True),
+        _decision(finding_id="w15-s", tenant_id="default"),
+        _decision(finding_id="w15-o", tenant_id="other", lane=LANE_RULES, reason="suppression_rule"),
+    ]
+    with get_db_manager().engine.connect() as conn:
+        tx = conn.begin()
+        try:
+            conn.execute(text(sql))
+            for d in rows:
+                conn.execute(text(decision_store._INSERT), decision_store.decision_row(d))
+            got = decision_store.query_settling(
+                conn,
+                ["w15-r", "w15-v", "w15-d", "w15-s", "w15-o", "w15-rs", "w15-sr", "w15-none"],
+                "default",
+            )
+            assert set(got) == {"w15-r", "w15-v", "w15-sr"}
+            assert got["w15-r"].rule == {"kind": "suppression", "id": "r-2"}
+            from datetime import datetime, timezone
+
+            latest = datetime.fromisoformat(got["w15-r"].decided_at)
+            assert latest == datetime(2026, 10, 14, 10, 5, tzinfo=timezone.utc)
+            assert got["w15-sr"].lane == LANE_RULES
+            assert got["w15-v"].verdict_run_id == "run-1"
+        finally:
+            tx.rollback()
+
+
+class _UndefinedTable(Exception):
+    pgcode = "42P01"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        _UndefinedTable('relation "alert_lane_decisions" does not exist'),
+        RuntimeError('relation "alert_lane_decisions" does not exist'),
+    ],
+)
+def test_settling_decisions_names_a_missing_table(monkeypatch, error):
+    """W0.15 round 2: 56_*.sql not applied is told apart from an outage."""
+    from sqlalchemy.exc import ProgrammingError
+
+    def scope():
+        raise ProgrammingError("SELECT ... FROM alert_lane_decisions", {}, error)
+
+    monkeypatch.setattr(decision_store, "_session_scope", scope)
+    with pytest.raises(decision_store.DecisionTableMissing):
+        decision_store.settling_decisions(["f-1"])
+
+
+def test_settling_decisions_passes_an_outage_through(monkeypatch):
+    def scope():
+        raise ConnectionError("could not connect to server")
+
+    monkeypatch.setattr(decision_store, "_session_scope", scope)
+    with pytest.raises(ConnectionError):
+        decision_store.settling_decisions(["f-1"])

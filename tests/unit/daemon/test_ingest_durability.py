@@ -119,6 +119,7 @@ def _processor(monkeypatch, db: _Db, spool: IngestSpool) -> FindingProcessor:
     )
     processor._data_service = db
     processor._init_services = lambda: None  # type: ignore[method-assign]
+    processor._settling_decisions = lambda ids, tenant: {}  # no decision recorded
     processor.attach_spool(spool)
     enriched: List[str] = []
 
@@ -374,6 +375,67 @@ async def test_a_stored_but_untriaged_finding_is_triaged_once(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
+async def test_a_replayed_finding_a_recorded_decision_settled_is_not_routed(
+    monkeypatch, tmp_path
+):
+    """W0.15 round 2: the spool replay applies the backfill's settled check."""
+    from core.lanes.alert_lanes import LANE_RULES, LaneDecision
+
+    db = _Db()
+    db.store("s", triaged=False)  # decided (rules), killed before the write
+    db.store("u", triaged=False)  # no decision recorded: triaged as before
+    spool = _open(tmp_path)
+    processor = _processor(monkeypatch, db, spool)
+    asked = []
+
+    def lookup(ids, tenant):
+        asked.append(list(ids))
+        return {
+            i: LaneDecision(
+                finding_id=i, tenant_id=tenant, lane=LANE_RULES, reason="r", risk=0.1
+            )
+            for i in ids
+            if i == "s"
+        }
+
+    processor._settling_decisions = lookup
+    spool.append([{"finding_id": "s"}, {"finding_id": "u"}], "webhook")
+    await _drain_once(processor, spool)
+    assert processor.enriched == ["u"]
+    assert sorted(asked) == [["s"], ["u"]]
+    assert processor.stats["spool_replay_settled"] == 1
+    assert processor.stats["spool_existing_enriched"] == 1
+    assert len(spool) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_replay_leaves_an_unknown_decision_to_the_backfill(
+    monkeypatch, tmp_path
+):
+    db = _Db()
+    db.store("q", triaged=False)
+    spool = _open(tmp_path)
+    processor = _processor(monkeypatch, db, spool)
+
+    def down(ids, tenant):
+        raise ConnectionError("database unavailable")
+
+    processor._settling_decisions = down
+    spool.append([{"finding_id": "q"}], "webhook")
+    await _drain_once(processor, spool)
+    # Backfill off (this helper): routed as before rather than never.
+    assert processor.enriched == ["q"]
+
+    db.store("p", triaged=False)
+    processor.config.enrich_backfill_enabled = True
+    processor.config.auto_triage_enabled = True
+    spool.append([{"finding_id": "p"}], "webhook")
+    await _drain_once(processor, spool)
+    assert processor.enriched == ["q"]  # the backfill looks again
+    assert processor.stats["spool_replay_settled"] == 1
+
+
+@pytest.mark.asyncio
 async def test_a_stored_finding_being_triaged_here_is_not_triaged_again(
     monkeypatch, tmp_path
 ):
@@ -576,6 +638,7 @@ async def test_backfill_skips_findings_in_flight(monkeypatch):
         )
     )
     processor._data_service = _Sweep([{"finding_id": "busy"}, {"finding_id": "idle"}])
+    processor._settling_decisions = lambda ids, tenant: {}
     spawned: List[str] = []
     shutdown = asyncio.Event()
 
