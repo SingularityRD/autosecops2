@@ -451,17 +451,25 @@ Kapsanan biçimler (`PAIR_FORMS`):
 
 | Biçim | Örnek |
 |---|---|
-| `inline` | `k=v`, `k: v`, `k => v`, `k -> v`, `k%3Dv` |
+| `inline` | `k=v`, `k: v`, `k => v`, `k -> v`, `k%3Dv`, `user.k=v`; köşeli parantezli anahtar (Rails/PHP): `user[k]=v`, `data[User][k]=v`, `k[0]=v`, `k[]=v` |
 | `quoted` | `k="v"`, `'k': 'v'`, `"k": "v"` (JSON benzeri), `\"k\": \"v\"` |
 | `braced` | `k={…}` |
-| `query` | `?k=v&k2=v2` (değer `&`, `#` ya da boşlukta biter) |
-| `xml` | `<k>v</k>`, `<ns:K a="1">v</ns:K>`, `<k><![CDATA[v]]></k>`, `<k><Value>v</Value></k>` |
+| `query` | `?k=v&k2=v2` (değer `&`, `#` ya da boşlukta biter); `?user[k]=v`, yüzde kodlu `&user%5Bk%5D=v` |
+| `xml` | `<k>v</k>`, `<ns:K a="1">v</ns:K>`, `<k><![CDATA[v]]></k>`, `<k><Value>v</Value></k>`; alt öğeli `<k>` altında **her** alt öğenin metni, eşleşen `</k>`'ye kadar (yoksa satır sonuna): `<password><hash>h</hash><value>v</value></password>`, FHIR `<diagnosis><code>B20</code><text>HIV</text></diagnosis>` |
 | `xml_attr` | `<k value="v"/>`, `<add key="k" value="v"/>`, `<field name="k">v</field>` |
 | `yaml_block` | `k: \|` / `k: >-` ve altındaki girintili satırlar |
 | `yaml_scalar` | `k:` ve sonraki daha girintili satır(lar) |
 | `yaml_item` | `k:` ve altındaki her `- öğe` |
 | `named` | `- name: K` / `value: v` (Kubernetes env, başlık listeleri) |
 | `heredoc` | `k = <<EOF` … `EOF` |
+
+Köşeli parantezli anahtar en içteki adlı parçasıyla sınıflandırılır
+(`user[password]` → `password`; dizin ve `[]` ad sayılmaz: `password[0]` →
+`password`); o bir sınıfa girmezse anahtarın tamamıyla (`password[x]`).
+Yalnız değer maskelenir; ayırıcılar ve diğer parametreler (`&commit=Log+in`)
+bayt bayt korunur. ZAYIF anahtar altındaki tırnaklı ya da YAML değeri
+(`token: "S S2"`, `token:\n  S\n  S2`) bütün olarak yargılanır: sözcüklerinden
+biri gizliyse değerin tamamı maskelenir.
 
 Bunlara ek olarak yalnız gizli geçişinin okuduğu biçimler vardır: ayırıcısız
 `password değer` / `--password değer` (düzyazıda bir çift kadar sık bir
