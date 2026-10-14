@@ -20,7 +20,11 @@ from core.deps import (
 from core.documents.condense import condense
 from core.documents.extract import MAX_DOCUMENT_CHARS, DocumentRefused, extract_upload
 from core.memory.source_tier import InvestigationKind, resolve_source_tier
-from core.response.approval_service import ApprovalService, SecondApproverConflict
+from core.response.approval_service import (
+    ApprovalService,
+    SecondApproverConflict,
+    second_approver_detail,
+)
 from core.routing import Auth, RouterMeta
 from core.storage.models import User
 from core.workflows import catalog, hunt_preflight
@@ -161,7 +165,9 @@ class WorkflowEnabledRequest(BaseModel):
     enabled: bool
 
 
-@router.put("/workflows/{workflow_id}/enabled")
+@router.put(
+    "/workflows/{workflow_id}/enabled", dependencies=[permission_gate("settings.write")]
+)
 async def set_enabled(
     workflow_id: str,
     body: WorkflowEnabledRequest,
@@ -217,7 +223,9 @@ async def list_custom_workflows(
     return {"workflows": rows, "count": len(rows)}
 
 
-@router.post("/workflows/custom", status_code=201)
+@router.post(
+    "/workflows/custom", status_code=201, dependencies=[permission_gate("ai_chat.use")]
+)
 async def create_custom_workflow(
     payload: CustomWorkflowCreate,
     service: CustomWorkflowService = Depends(provide_custom_workflows),
@@ -245,7 +253,9 @@ async def get_custom_workflow(
     return wf
 
 
-@router.put("/workflows/custom/{workflow_id}")
+@router.put(
+    "/workflows/custom/{workflow_id}", dependencies=[permission_gate("ai_chat.use")]
+)
 async def update_custom_workflow(
     workflow_id: str,
     payload: CustomWorkflowUpdate,
@@ -267,7 +277,9 @@ async def update_custom_workflow(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.delete("/workflows/custom/{workflow_id}")
+@router.delete(
+    "/workflows/custom/{workflow_id}", dependencies=[permission_gate("ai_chat.use")]
+)
 async def delete_custom_workflow(
     workflow_id: str,
     service: CustomWorkflowService = Depends(provide_custom_workflows),
@@ -287,7 +299,7 @@ async def delete_custom_workflow(
 # -----------------------------------------------------------------------------
 
 
-@router.post("/workflows/generate")
+@router.post("/workflows/generate", dependencies=[permission_gate("ai_chat.use")])
 async def generate_workflow(
     payload: WorkflowGenerateRequest,
     generator: WorkflowAIGenerator = Depends(provide_workflow_ai),
@@ -556,12 +568,10 @@ async def resume_workflow_run(
         updated = approval_service.approve_action(
             pending[0].action_id, approved_by=approved_by
         )
-    except SecondApproverConflict:
-        # Two-person rule (W2.4): the first approver cannot also be the second.
-        raise HTTPException(
-            status_code=409,
-            detail="A different person must give the second approval",
-        )
+    except SecondApproverConflict as e:
+        # Two-person rule (W2.4): the first approver cannot also be the second;
+        # for distinct-role types (W3.2) not someone of the first's role either.
+        raise HTTPException(status_code=409, detail=second_approver_detail(e))
     if updated is not None and updated.status == ActionStatus.PENDING.value:
         # First of two approvals recorded; the run stays paused until the second.
         return {
@@ -627,7 +637,9 @@ async def cancel_workflow_run(
     }
 
 
-@router.post("/workflows/runs/{run_id}/narrate")
+@router.post(
+    "/workflows/runs/{run_id}/narrate", dependencies=[permission_gate("ai_chat.use")]
+)
 async def narrate_workflow_run(
     run_id: str,
     run_service: WorkflowRunService = Depends(provide_workflow_runs),
@@ -723,7 +735,9 @@ async def _restate_summary(run_id: str, run_service: WorkflowRunService) -> None
         logger.warning("could not restate the stored summary of %s: %s", run_id, exc)
 
 
-@router.delete("/workflows/runs/{run_id}")
+@router.delete(
+    "/workflows/runs/{run_id}", dependencies=[permission_gate("settings.write")]
+)
 async def delete_workflow_run(
     run_id: str,
     run_service: WorkflowRunService = Depends(provide_workflow_runs),

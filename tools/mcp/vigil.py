@@ -46,8 +46,6 @@ FROZEN_TOOLS = frozenset(
         "get_case_iocs",
         "list_approval_actions",
         "get_approval_action",
-        "approve_action",
-        "reject_action",
     }
 )
 
@@ -1384,19 +1382,11 @@ def get_approval_action(action_id: str) -> str:
     return _call(tool_registry.get_approval_action, action_id=action_id)
 
 
-@mcp.tool()
-def approve_action(action_id: str) -> str:
-    """Approve a pending action. The actor is the caller, not an argument."""
-    return _call(tool_registry.approve_action, action_id=action_id)
-
-
-@mcp.tool()
-def reject_action(
-    action_id: str,
-    reason: str,
-) -> str:
-    """Reject a pending action. The actor is the caller, not an argument."""
-    return _call(tool_registry.reject_action, action_id=action_id, reason=reason)
+# No approve_action / reject_action here (W1.7b). Whoever calls this server is
+# a model -- a chat's, an IDE assistant's, an agent's -- whatever person's
+# credential it carries, and what it reads (alert text, case notes, another
+# tool's output) can tell it what to do. A decision on the approval queue is a
+# person's own request on the approvals screen, never a tool call.
 
 
 if __name__ == "__main__":

@@ -146,6 +146,9 @@ class Settings(BaseSettings):
     # os.pathsep-separated roots beyond the home directory that local detection
     # rule sources may live under.
     vigil_detection_local_roots: str = ""
+    # Comma-separated CIDRs a git detection-rule source may resolve to although
+    # private (an internal git server). Empty: public addresses only.
+    vigil_detection_git_allowed_cidrs: str = ""
     vigil_context_path: str = ""
     vigil_frontend_url: str = ""
     # Empty means the repo-root INTENT.md, as core.platform.autostart_config does.
@@ -177,6 +180,20 @@ class Settings(BaseSettings):
     # default: a missing nullable column should not take a running SOC
     # offline. See #562.
     db_strict_schema: bool = False
+
+    # Tamper-evident audit (core/audit). Signed checkpoints of the agent_events
+    # and audit_chain heads, every this many seconds from the daemon; 0 turns
+    # the job off. The signing key is the AUDIT_CHECKPOINT_SIGNING_KEY secret.
+    audit_checkpoint_interval_seconds: int = 3600
+    # Also append each checkpoint as a JSON line here (off when empty). A copy
+    # outside the database is what catches the newest checkpoint being deleted.
+    audit_checkpoint_file: str = ""
+    # The verifier's trusted public key (hex, base64 or PEM). Empty: derived
+    # from the signing key when this process holds it, else read from the
+    # checkpoints themselves and reported as untrusted.
+    audit_checkpoint_public_key: str = ""
+    # RFC 3161 timestamp authority for each checkpoint; empty means none.
+    audit_tsa_url: str = ""
 
     # Redis / queue. None means "no Redis configured" — the rate limiter falls back
     # to in-memory on None, so a default here would silently change its behavior.
@@ -251,6 +268,14 @@ class Settings(BaseSettings):
     ollama_url: str = "http://localhost:11434"
     default_model: str = "claude-sonnet-4-6"
     ollama_extra_tool_models: str = ""
+    # Local model lane (W2.3): Ollama via Bifrost with schema-constrained output.
+    # Empty model: the one the eval ranking wrote to the selection file; no file,
+    # no lane. The lane refuses a non-local gateway unless explicitly allowed.
+    local_lane_model: str = ""
+    local_lane_selection_file: str = "eval/suites/local_lane/selection.json"
+    local_lane_timeout_s: float = 60.0
+    local_lane_max_tokens: int = 512
+    local_lane_allow_nonlocal_gateway: bool = False
     model_catalog_refresh_interval_s: int = 300
     prompt_injection_block: bool = False
     mcp_auto_connect_on_startup: Optional[bool] = None
@@ -295,6 +320,13 @@ class Settings(BaseSettings):
     daemon_triage_timeout: int = 60
     daemon_enrich_max_inflight: int = 50
     daemon_handoff_queue_maxsize: int = 1000
+    # W0.12 ingest spool: the webhook answers 200 only once a finding is
+    # fsync'd here; replayed after a restart. Empty dir: <VIGIL_DIR>/spool/webhook.
+    # Disabled: the webhook answers 200 only after the row is stored, else 503.
+    daemon_ingest_spool_enabled: bool = True
+    daemon_ingest_spool_dir: str = ""
+    daemon_ingest_spool_max_findings: int = 10000
+    daemon_ingest_spool_max_mb: int = 128
     daemon_enrich_backfill: bool = True
     daemon_enrich_backfill_interval: int = 300
     daemon_enrich_backfill_batch: int = 50

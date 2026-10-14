@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 import jwt
 import pyotp
 from cryptography.fernet import Fernet
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from core.auth import passwords
@@ -614,9 +615,16 @@ class AuthService:
             import uuid
 
             # Check if username or email already exists
+            # Usernames are unique as written in the schema; a new one must
+            # also differ from every existing one case-insensitively, so
+            # "Carol" and "carol" are never two accounts (W3.2: approvals
+            # and the SoD report name people by username).
             existing = (
                 session.query(User)
-                .filter((User.username == username) | (User.email == email))
+                .filter(
+                    (func.lower(User.username) == func.lower(username))
+                    | (User.email == email)
+                )
                 .first()
             )
 

@@ -11,7 +11,8 @@
 #   *.py (backend)        py:flake8/black/isort (changed files in services/ core/),
 #                         py:import-linter, py:pytest (test dirs related to the change
 #                         + tests/unit/_ratchets; --full: tests/unit tests/security)
-#   infra/, env.example   py:pytest tests/unit/_ratchets
+#   infra/, env.example   py:pytest tests/unit/_ratchets, plus tests/unit/<area> for
+#                         infra/<area>/** (and tests/unit/platform for infra/helm/**)
 #   services/medic*/**    <svc>:ruff (check + format), <svc>:pytest (uv, as medic.yml;
 #                         venv in <git-dir>/wp-venvs/<svc>, never services/<svc>/.venv)
 #   *.sh / bash scripts   sh:syntax (bash -n), sh:shellcheck (if installed)
@@ -242,6 +243,15 @@ done < <(printf '%s\n' "${changed[@]}" | grep -E '\.py$' | grep -Ev "$medic_re")
 if [ ${#pyf[@]} -gt 0 ] || [ "$deleted_py" = 1 ] || any '^(infra/|env\.example$|docker-compose|start\.sh$|shutdown_all\.sh$|scripts/.*\.py$)'; then
   add tests/unit/_ratchets
 fi
+# Non-Python infra (shell, templates, values): the tests that read them live in
+# tests/unit/<area> (infra/staging -> tests/unit/staging, infra/airgap ->
+# tests/unit/airgap) and, for the chart, tests/unit/platform.
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  area="${f#infra/}"; area="${area%%/*}"
+  add "tests/unit/$area"
+  [ "$area" = helm ] && add tests/unit/platform
+done < <(printf '%s\n' "${changed[@]}" | grep -E '^infra/[^/]+/' | grep -Ev '\.py$')
 if [ ${#targets[@]} -gt 0 ]; then
   mapfile -t targets < <(printf '%s\n' "${targets[@]}" | sort -u)
   # A directory target makes its files redundant.

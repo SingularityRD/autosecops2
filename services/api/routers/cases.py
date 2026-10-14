@@ -208,7 +208,11 @@ async def add_resolution_step(case_id: str, step: ResolutionStepAdd):
     return data_service.get_case(case_id)
 
 
-@router.post("/{case_id}/generate-report", response_model=CaseReportResponse)
+@router.post(
+    "/{case_id}/generate-report",
+    response_model=CaseReportResponse,
+    dependencies=[permission_gate("ai_chat.use")],
+)
 async def generate_case_report(case_id: str):
     """
     Generate a PDF report for a case.

@@ -6,10 +6,11 @@ import { GatewayExhausted } from "./limiter.js";
 import { ZERO_TOKENS, type Refusal, type SpendPayload, type TokenCounts } from "../contracts/budget.js";
 import type { CheckpointPayload, DispatchPayload, NewEvent, ResolutionPayload, TerminalPayload } from "../contracts/events.js";
 import { hasRecall, isRecalled, recalledNotesOf, recalledNotes, type RecallPayload } from "../contracts/memory.js";
-import { isGated, ToolBoundsViolation, type RegisteredTool, type ToolResult } from "../contracts/tool.js";
+import { isGated, isHumanOnly, ToolBoundsViolation, type RegisteredTool, type ToolResult } from "../contracts/tool.js";
 import {
   approvalId,
   TOOL_APPROVAL,
+  TOOL_CALL,
   type Attempt,
   type Harness,
   type Outcome,
@@ -80,7 +81,9 @@ class Run<T, Kinds extends Record<string, unknown>> {
     private readonly harness: Harness<Kinds>,
   ) {
     this.scan = scannerFor(cfg.verbs);
-    this.tools = harness.registry.granted(cfg.role);
+    // A tool that decides an approval is never the model's, whatever a config
+    // granted (W1.7b): not declared, so a call to it is refused as ungranted.
+    this.tools = harness.registry.granted(cfg.role).filter((tool) => !isHumanOnly(tool));
     this.folder = new Folder(harness.state, cfg.run_id);
   }
 
@@ -455,12 +458,16 @@ class Run<T, Kinds extends Record<string, unknown>> {
     await this.write({ run_id: this.cfg.run_id, run_kind: this.cfg.run_kind, kind: "spend", payload });
   }
 
+  // The context names the one call parked, arguments parsed as dispatch would
+  // send them: the backend binds the approval to their digest and shows them to
+  // the person (W1.7b), so an approval of this call opens no other.
   private async park(checkpoint_id: string, tool: string, args: string): Promise<Outcome<T>> {
     const payload: CheckpointPayload = {
       checkpoint_id,
       checkpoint_class: TOOL_APPROVAL,
       question: `${this.cfg.role} wants to call ${tool} with ${args}. Approve?`,
       raised_at: new Date().toISOString(),
+      context: { [TOOL_CALL]: { tool, args: parseArgs(args) ?? args } },
     };
     await this.write({ run_id: this.cfg.run_id, run_kind: this.cfg.run_kind, kind: "checkpoint", payload });
     const outcome = this.done("waiting_approval", null, `parked on approval for ${tool}`);
@@ -593,7 +600,9 @@ function refused(detail: string): ToolResult {
   return { ok: false, failure: { kind: "refused", detail } };
 }
 
-function parseArgs(raw: string): Record<string, unknown> | null {
+// Exported so a workflow that mirrors a parked call (compose) sends the backend
+// the arguments exactly as dispatch would: the approval is bound to their digest.
+export function parseArgs(raw: string): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(raw === "" ? "{}" : raw);
     return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : null;

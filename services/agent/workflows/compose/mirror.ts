@@ -19,6 +19,10 @@ export interface PhaseUpdate {
   error?: string;
   checkpoint_id?: string;
   question?: string;
+  // The gated tool call the step parked on, when it parked on one. The backend
+  // binds the approval to these arguments and shows them (W1.7b).
+  tool?: string;
+  args?: unknown;
 }
 
 // How a run ended, as the console records it. summary is the deliverable, cost is

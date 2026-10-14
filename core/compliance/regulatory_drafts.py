@@ -1,6 +1,8 @@
 """Regulatory report drafts (DORA, NIS2) built from a case's evidence pack.
 
-The pack is what the case already holds: the case row, its linked findings,
+The pack is built by ``core.compliance.evidence`` (W3.7), the same citable
+index the signed evidence pack carries as ``citable_index.json``. It is what
+the case already holds: the case row, its linked findings,
 its ``case_evidence`` rows, its ``case_audit_logs`` rows and its regulatory
 clock events. Each item has a stable id (``case:<id>``, ``finding:<id>``,
 ``evidence:<id>``, ``audit:<id>``, ``clock:<seq>``). Every line of a draft
@@ -16,15 +18,23 @@ citation rule and the template is used instead whenever it fails it.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 import uuid
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
+from datetime import datetime
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 from core.compliance.clocks import ClockStatus
+
+# The pack builder is W3.7's (core/compliance/evidence.py); these names stay
+# importable from here for the drafts' callers.
+from core.compliance.evidence import (  # noqa: F401
+    LINE_CHARS,
+    EvidenceItem,
+    EvidencePack,
+    _at,
+    _clip,
+    build_evidence_pack,
+)
 from core.compliance.regulatory_service import ClockEvent
 
 KINDS: Dict[str, tuple] = {
@@ -77,7 +87,6 @@ TO_COMPLETE = {
     ],
 }
 
-LINE_CHARS = 300
 MAX_FINDINGS = 25
 MAX_EVIDENCE = 25
 MAX_AUDIT = 20
@@ -104,156 +113,6 @@ def text_references(value: str) -> List[str]:
 
 class DraftCitationError(ValueError):
     """A draft cites an id the evidence pack does not hold, or a line cites nothing."""
-
-
-@dataclass(frozen=True)
-class EvidenceItem:
-    id: str
-    kind: str
-    title: str
-    at: Optional[str] = None
-    detail: Optional[str] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
-            "kind": self.kind,
-            "title": self.title,
-            "at": self.at,
-            "detail": self.detail,
-        }
-
-
-@dataclass(frozen=True)
-class EvidencePack:
-    case_id: str
-    items: tuple
-
-    @property
-    def ids(self) -> frozenset:
-        return frozenset(i.id for i in self.items)
-
-    def of_kind(self, kind: str) -> List[EvidenceItem]:
-        return [i for i in self.items if i.kind == kind]
-
-    @property
-    def digest(self) -> str:
-        body = json.dumps(
-            [i.to_dict() for i in self.items], sort_keys=True, separators=(",", ":")
-        )
-        return hashlib.sha256(body.encode("utf-8")).hexdigest()
-
-
-def _clip(value: Any, limit: int = LINE_CHARS) -> str:
-    text_value = " ".join(str(value or "").split())
-    return text_value if len(text_value) <= limit else text_value[: limit - 1] + "…"
-
-
-def _at(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc).isoformat()
-    return str(value)
-
-
-def _get(obj: Any, name: str) -> Any:
-    if isinstance(obj, Mapping):
-        return obj.get(name)
-    return getattr(obj, name, None)
-
-
-def build_evidence_pack(
-    case: Any,
-    findings: Iterable[Any] = (),
-    evidence: Iterable[Any] = (),
-    audits: Iterable[Any] = (),
-    clock_events: Iterable[ClockEvent] = (),
-) -> EvidencePack:
-    """Everything a draft may cite, from rows the case already holds.
-
-    Accepts ORM objects or dicts (``CaseSchema.dump`` output), so it reuses the
-    existing case readers: ``Case.findings``, ``CaseEvidenceService.get_case_evidence``
-    and ``case_records_service.list_case_audit``.
-    """
-    case_id = str(_get(case, "case_id"))
-    items: List[EvidenceItem] = [
-        EvidenceItem(
-            id=f"case:{case_id}",
-            kind="case",
-            title=_clip(_get(case, "title")),
-            at=_at(_get(case, "created_at")),
-            detail=_clip(
-                f"priority {_get(case, 'priority') or '—'}, status {_get(case, 'status') or '—'}. "
-                f"{_get(case, 'description') or ''}"
-            ),
-        )
-    ]
-    for f in findings:
-        fid = _get(f, "finding_id")
-        if not fid:
-            continue
-        items.append(
-            EvidenceItem(
-                id=f"finding:{fid}",
-                kind="finding",
-                title=_clip(_get(f, "title") or _get(f, "description") or fid),
-                at=_at(_get(f, "timestamp") or _get(f, "created_at")),
-                detail=_clip(
-                    f"severity {_get(f, 'severity') or '—'}, source {_get(f, 'data_source') or '—'}"
-                ),
-            )
-        )
-    for e in evidence:
-        eid = _get(e, "evidence_id")
-        if eid is None:
-            continue
-        sha = _get(e, "file_hash_sha256")
-        items.append(
-            EvidenceItem(
-                id=f"evidence:{eid}",
-                kind="evidence",
-                title=_clip(_get(e, "name") or f"evidence {eid}"),
-                at=_at(_get(e, "collected_at")),
-                detail=_clip(
-                    f"{_get(e, 'evidence_type') or 'evidence'} collected by "
-                    f"{_get(e, 'collected_by') or '—'}"
-                    + (f", sha256 {sha}" if sha else "")
-                ),
-            )
-        )
-    for a in audits:
-        aid = _get(a, "audit_id")
-        if aid is None:
-            continue
-        items.append(
-            EvidenceItem(
-                id=f"audit:{aid}",
-                kind="audit",
-                title=_clip(
-                    _get(a, "change_summary")
-                    or f"{_get(a, 'action')} {_get(a, 'field_name') or ''}".strip()
-                ),
-                at=_at(_get(a, "timestamp")),
-                detail=_clip(f"by {_get(a, 'changed_by') or '—'}"),
-            )
-        )
-    for ev in clock_events:
-        items.append(
-            EvidenceItem(
-                id=f"clock:{ev.seq}",
-                kind="clock",
-                title=f"{ev.regime.upper()} {ev.instant} = {_at(ev.value) or 'cleared'}",
-                at=_at(ev.recorded_at),
-                detail=_clip(
-                    f"recorded by {ev.actor}"
-                    + (f"; reason: {ev.reason}" if ev.reason else "")
-                ),
-            )
-        )
-    return EvidencePack(case_id=case_id, items=tuple(items))
 
 
 def _line(text_value: str, cites: Sequence[str]) -> Dict[str, Any]:

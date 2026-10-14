@@ -11,6 +11,7 @@ from typing import Dict, Optional, Tuple
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, field_validator
 
+from core.auth.permissions import permission_gate
 from core.llm.cost.budget import BudgetExceeded
 from core.llm.providers.registry import get_registry
 from core.llm.router.router import LLMRouter, get_provider_spec
@@ -204,8 +205,15 @@ async def get_skill_file(name: str, path: str):
     return SkillFileContent(path=path, content=content)
 
 
-@router.post("", response_model=SkillResponse)
-@router.post("/", response_model=SkillResponse, include_in_schema=False)
+@router.post(
+    "", response_model=SkillResponse, dependencies=[permission_gate("ai_chat.use")]
+)
+@router.post(
+    "/",
+    response_model=SkillResponse,
+    include_in_schema=False,
+    dependencies=[permission_gate("ai_chat.use")],
+)
 async def save_skill(req: SkillWriteRequest):
     """Write ``<vigil_skills_path>/<name>/SKILL.md``, bumping its version.
 
@@ -225,7 +233,11 @@ async def save_skill(req: SkillWriteRequest):
     return _response(skill)
 
 
-@router.post("/upload", response_model=SkillResponse)
+@router.post(
+    "/upload",
+    response_model=SkillResponse,
+    dependencies=[permission_gate("ai_chat.use")],
+)
 async def upload_skill(file: UploadFile = File(...)):
     """Install a ``SKILL.md`` or a skill ``.zip`` under the operator root.
 
@@ -239,7 +251,7 @@ async def upload_skill(file: UploadFile = File(...)):
     return _response(skill)
 
 
-@router.delete("/{name}")
+@router.delete("/{name}", dependencies=[permission_gate("ai_chat.use")])
 async def remove_skill(name: str):
     """Delete an operator skill directory. A bundled skill is refused."""
     try:
@@ -249,7 +261,11 @@ async def remove_skill(name: str):
     return {"deleted": name}
 
 
-@router.post("/{name}/test", response_model=SkillTestResponse)
+@router.post(
+    "/{name}/test",
+    response_model=SkillTestResponse,
+    dependencies=[permission_gate("ai_chat.use")],
+)
 async def test_skill(name: str):
     """Run the saved skill's ``evals/cases.json`` through the chat model.
 

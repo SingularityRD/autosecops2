@@ -65,3 +65,13 @@ Birleştirme sonrası: `schema.d.ts` yeniden üretildi; `test_route_permissions.
 - `integration` → `main` birleştirildi (fast-forward). Birleşik ağaçta: tam gates `RESULT: PASS` (web, agent, py, medic, shell); `tests/unit tests/security tests/airgap` 4999 geçti; veritabanı testleri 557 geçti, 1 zamanlama flake'i (`test_medic_last_seen`, dokunulmamış dosya, tek başına geçiyor).
 - Plan sayımı (45 iş paketi): **14 bitti ve main'de** (W0.1, W0.2, W0.3, W0.4, W0.5, W0.7, W1.1, W1.6, W1.7, W1.8, W2.6, W2.8, W3.4, W3.8; artı ek W0.4b, W0.9) · **12 kodu yazıldı, doğrulamada kaldı** (W1.2, W1.5, W1.9, W1.10, W2.1, W2.2, W2.4, W2.5, W2.7, W3.3, W3.5, W3.6 — bkz. FIXES.md) · **19 başlanmadı** (W0.6, W0.8 [insan işi], W1.3, W1.4, W2.3, W2.9 [isteğe bağlı], W3.1, W3.2, W3.7, W3.9, W3.10, W3.11, W4.1–W4.7).
 - Ortam notu: makine yeniden başlarsa Postgres ve Redis kapalı gelir: `pg_ctlcluster 16 main start; redis-server --daemonize yes`.
+
+## Güncelleme — 13 Ekim 2026, akşam (main 617b34af)
+
+**main'de (doğrulandı):** W0.1–W0.7, W0.9, W0.10, W0.12 (kalıcı alım kuyruğu), W0.13 triyaj incelemesi, W1.1, W1.2/W1.3, W1.5, W1.6, W1.7, W1.8, W1.10, W2.1, W2.2, W2.3, W2.4, W2.5, W2.6, W2.7, W2.8, W3.1, W3.2, W3.3, W3.4, W3.5, W3.7, W3.8, W3.9, W3.11, W4.1/W4.2, W4.3.
+
+**Dalda, düzeltildi, doğrulama bekliyor:** wp/w0.11-security-hotfix (detection-rules RCE/SSRF + Viewer yazma rotaları, c0277049 — ÖNCELİKLİ), wp/w0.13-review-data-infra-ci (49b37752), wp/w0.13-review-response-integrations (b36ea73f), wp/w0.12b-spool-hardening (f69dc689), wp/w1.7b-chat-approval (7ec1ca72), wp/w4.5-upgrade-path (375115ed), wp/w4.6-docs (c4e41647; 617b34af'e göre güncellenmeli).
+
+**Dalda, son doğrulamada bulgu kaldı:** wp/w1.9-oidc (ortam değişkeni sırrı silme, son admin yarışı, /me e-posta çakışması), wp/w3.6-audit-export (redaksiyon kaçakları + uzun girdide regex yavaşlığı), wp/w3.10-fips (ratchet kapsamı), wp/w4.7-release (sığ CI checkout'ta not testleri, notlar güncel değil), wp/w0.13-review-auth-api (W1.9'a bağlı).
+
+**Başlanmadı / insan işi:** W0.8, W4.4 (dış pentest), W2.9 (isteğe bağlı), W1.4 (enjeksiyon seti yazımı güvenlik sınıflandırıcısına takıldı; insan kararı gerekli).

@@ -1,0 +1,12 @@
+{
+  "format": "autosecops.local_lane.candidates/v1",
+  "provider": "ollama",
+  "doc": "Candidate Ollama models for the local model lane. `python -m evalkit.local_lane rank` runs each through Bifrost with the JSON-schema triage answer and picks the default; pull them first (`ollama pull <model>`). Order does not matter: the eval decides.",
+  "candidates": [
+    {"model": "qwen2.5:7b", "note": "strong structured output for its size"},
+    {"model": "llama3.1:8b", "note": "general instruct baseline"},
+    {"model": "gemma2:9b", "note": "larger context of reasoning, slower"},
+    {"model": "mistral-nemo:12b", "note": "upper end of what a CPU node serves"},
+    {"model": "phi3.5:3.8b", "note": "smallest; latency floor"}
+  ]
+}

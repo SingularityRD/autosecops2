@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
+from core.auth.permissions import permission_gate
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
 from core.storage.models import Case, CaseSLA, SLAPolicy
 from core.storage.schemas import CaseSchema, SLAPolicySchema
@@ -104,7 +105,7 @@ def get_sla_policy(policy_id: str, session: UnitOfWorkSession):
     return SLAPolicySchema.dump(policy)
 
 
-@router.post("/")
+@router.post("/", dependencies=[permission_gate("cases.write")])
 def create_sla_policy(data: SLAPolicyCreate, session: UnitOfWorkSession):
     """
     Create a new SLA policy.
@@ -180,7 +181,7 @@ def create_sla_policy(data: SLAPolicyCreate, session: UnitOfWorkSession):
     return SLAPolicySchema.dump(policy)
 
 
-@router.put("/{policy_id}")
+@router.put("/{policy_id}", dependencies=[permission_gate("cases.write")])
 def update_sla_policy(
     policy_id: str,
     data: SLAPolicyUpdate,
@@ -283,7 +284,7 @@ def _still_referenced(policy_id: str, count: int | None = None) -> str:
     return _STILL_REFERENCED.format(cases=cases).replace("{policy_id}", policy_id)
 
 
-@router.delete("/{policy_id}")
+@router.delete("/{policy_id}", dependencies=[permission_gate("cases.write")])
 def delete_sla_policy(
     policy_id: str,
     session: UnitOfWorkSession,
@@ -328,7 +329,7 @@ def delete_sla_policy(
     return {"success": True, "message": f"SLA policy {policy_id} deleted successfully"}
 
 
-@router.post("/{policy_id}/set-default")
+@router.post("/{policy_id}/set-default", dependencies=[permission_gate("cases.write")])
 def set_default_policy(policy_id: str, session: UnitOfWorkSession):
     """
     Set a policy as the default for its priority level.

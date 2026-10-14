@@ -19,16 +19,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from core.auth.permissions import require_permission
-from core.cases import case_records_service
-from core.cases.case_evidence_service import CaseEvidenceService
 from core.compliance.clocks import evaluate
-from core.compliance.regulatory_drafts import (
-    KINDS,
-    DraftCitationError,
-    EvidencePack,
-    build_evidence_pack,
-    generate_draft,
-)
+from core.compliance.evidence import EvidencePack, read_citable
+from core.compliance.regulatory_drafts import KINDS, DraftCitationError, generate_draft
 from core.compliance.regulatory_service import (
     ClockStore,
     InstantRefused,
@@ -37,7 +30,7 @@ from core.compliance.regulatory_service import (
     fold_instants,
 )
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
-from core.storage.models import Case, User
+from core.storage.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +74,9 @@ class ChainResponse(BaseModel):
     broken_at: Optional[int] = None
     why: Optional[str] = None
     rows: Optional[int] = None
+    # True when the last row was also checked against the stored chain head, so
+    # a deleted tail would show; False when the store keeps no head (W0.11).
+    anchored: Optional[bool] = None
 
 
 class RegulatoryStatusResponse(BaseModel):
@@ -183,17 +179,11 @@ def _service(session) -> RegulatoryService:
 
 
 def _evidence_pack(session, case_id: str, events) -> EvidencePack:
-    """The case's pack, read with the existing case readers."""
-    case = session.query(Case).filter(Case.case_id == case_id).first()
-    if case is None:
+    """The case's citable index, built by the evidence pack's reader (W3.7)."""
+    pack = read_citable(session, case_id, events)
+    if pack is None:
         raise HTTPException(status_code=404, detail="Case not found")
-    return build_evidence_pack(
-        case,
-        findings=list(case.findings or []),
-        evidence=CaseEvidenceService().get_case_evidence(case_id, session=session),
-        audits=case_records_service.list_case_audit(session, case_id),
-        clock_events=events,
-    )
+    return pack
 
 
 def _require_case(service: RegulatoryService, case_id: str) -> None:

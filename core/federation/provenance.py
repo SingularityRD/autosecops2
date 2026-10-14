@@ -777,6 +777,10 @@ _AWS_RESOURCE_ID = re.compile(r"raw_data\.Resources\.[0-9]+\.Id")
 
 
 def _is_ip(item: str) -> bool:
+    # ip_address() accepts an IPv6 scope id ("fe80::1%eth0"), whose zone part
+    # is free text: not an address a sensor writes.
+    if "%" in item:
+        return False
     try:
         ipaddress.ip_address(item)
     except ValueError:

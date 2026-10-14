@@ -71,6 +71,12 @@ spec:
             {{- include "vigil.env" . | nindent 12 }}
             {{- include "vigil.stateEnv" . | nindent 12 }}
             {{- include "vigil.caBundleEnv" . | nindent 12 }}
+            {{- if .Values.daemon.persistence.enabled }}
+            # W0.12 ingest spool on the pod's own volume; only the leader
+            # opens (and replays) it.
+            - name: DAEMON_INGEST_SPOOL_DIR
+              value: {{ printf "%s/.ingest-spool" .Values.daemon.persistence.mountPath | quote }}
+            {{- end }}
             - name: DAEMON_LEADER_ELECTION_ENABLED
               value: {{ $ha | toString | quote }}
             {{- if $ha }}
