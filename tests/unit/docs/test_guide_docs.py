@@ -11,11 +11,20 @@ Two checks, both over every ``docs/guide/*.md``:
   ``python -m core.backup`` must exist in the tree at this commit, and so must
   every environment variable written in plain prose (``JWT_SECRET_KEY`` without
   backticks). The marker ``Planlı —`` documents an unmerged work package (and
-  its line must name the branch, ``wp/...``, or say ``dal yok``). Only the
-  *segment* the marker governs is skipped: the parenthesis it sits in, else its
-  table cell, else its sentence. The rest of the line is checked, so a
-  present-tense claim cannot hide behind a marker on the same line, and a prose
-  line carrying the marker stays short (``PLANNED_LINE_MAX``).
+  marker phrase must name the branch, ``wp/...``, or say ``dal yok``). Only
+  what the marker governs is skipped: its *segment* (the parenthesis it sits
+  in, else its table cell, else its sentence) from the segment's start up to
+  the end of the marker phrase (``Planlı — `wp/...`, bu sürümde yok``). Text
+  after the phrase -- later in the same sentence, cell or parenthesis -- and
+  the rest of the line are checked, so a present-tense claim cannot hide
+  behind a marker, and a prose line carrying the marker stays short
+  (``PLANNED_LINE_MAX``).
+* Planned means unmerged: a marker phrase may not name a work-package branch
+  that is already merged. The merged branches are listed in the checked-in
+  ``merged_wps.txt`` (deterministic, no git needed); when ``wp/*`` refs and
+  history are available the list is checked against git in both directions,
+  and every page must state one base commit (``main`` @ ``<sha>``) that
+  contains every listed branch.
 
 The ``detects_*`` tests feed a deliberately wrong document through the same
 checks so a checker that silently passes everything fails here.
@@ -38,6 +47,18 @@ pytestmark = pytest.mark.unit
 REPO = Path(__file__).resolve().parents[3]
 GUIDE = REPO / "docs" / "guide"
 PLANNED = re.compile(r"Planlı\s+—")
+# The marker phrase: the marker, then the branch(es) it names and the usual
+# "bu sürümde yok" tail. What follows the phrase is ordinary, checked text.
+PLANNED_PHRASE = re.compile(
+    r"Planlı\s+—(?:[\s,]*(?:`wp/[^`\s]+`|wp/[\w.\-]+|dal yok|W\d+(?:\.\d+)*[a-z]?"
+    r"|\(acil düzeltme\)|bu sürümde yok))*"
+)
+BRANCH = re.compile(r"wp/[A-Za-z0-9][\w.\-]*[A-Za-z0-9]")
+MERGED_FILE = Path(__file__).resolve().parent / "merged_wps.txt"
+# The branch that carries this documentation set: merged into itself by
+# definition, never into the base the pages describe.
+SELF_BRANCH = "wp/w4.6-docs"
+BASE = re.compile(r"`main` @ `([0-9a-f]{7,40})`|main @ ([0-9a-f]{7,40})")
 PLANNED_LINE_MAX = 200
 # Where a sentence a marker governs ends.
 SENTENCE_BREAK = re.compile(r"[.;:!?]\s")
@@ -427,14 +448,115 @@ def _planned_span(line: str, at: int) -> tuple[int, int]:
 
 
 def unplanned(line: str) -> str:
-    """The line with every segment a ``Planlı —`` marker governs blanked."""
+    """The line with what each ``Planlı —`` marker governs blanked: its segment
+    from the start up to the end of the marker phrase. Text after the phrase in
+    the same sentence, cell or parenthesis is kept (and so checked)."""
     while True:
         m = PLANNED.search(line)
         if not m:
             return line
         start, end = _planned_span(line, m.start())
-        end = max(end, m.end())
+        phrase = PLANNED_PHRASE.match(line, m.start())
+        stop = max(phrase.end() if phrase else m.end(), m.end())
+        end = min(max(end, m.end()), stop)
         line = line[:start] + " " * (end - start) + line[end:]
+
+
+def planned_branches(line: str) -> list[list[str]]:
+    """For each marker on the line, the branches its phrase names."""
+    return [BRANCH.findall(m.group(0)) for m in PLANNED_PHRASE.finditer(line)]
+
+
+def planned_merged_problems(docs: list[Path], merged: frozenset[str]) -> list[str]:
+    """Markers that call a merged branch planned."""
+    problems: list[str] = []
+    for doc in docs:
+        for no, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
+            for names in planned_branches(line):
+                for name in names:
+                    if name in merged:
+                        problems.append(f"{doc.name}:{no}: {name} is merged, not planned")
+    return problems
+
+
+def merged_list() -> frozenset[str]:
+    names = set()
+    for raw in MERGED_FILE.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if line:
+            names.add(line)
+    return frozenset(names)
+
+
+def _git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *args], cwd=REPO, capture_output=True, text=True, check=False
+    )
+
+
+@lru_cache(maxsize=None)
+def _merge_subjects(rev: str) -> str:
+    out = _git("log", "--merges", "--format=%s", rev)
+    return out.stdout if out.returncode == 0 else ""
+
+
+def _named_in(subjects: str, branch: str) -> bool:
+    return re.search(re.escape(branch) + r"(?![\w.\-])", subjects) is not None
+
+
+def _is_ancestor(ref: str, rev: str) -> bool:
+    return _git("merge-base", "--is-ancestor", ref, rev).returncode == 0
+
+
+def _wp_refs() -> dict[str, list[str]]:
+    """Branch name (``wp/...``) -> the local/remote refs that carry it."""
+    out = _git("for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes")
+    refs: dict[str, list[str]] = {}
+    for ref in out.stdout.splitlines():
+        at = ref.find("/wp/")
+        if at < 0 or ref.endswith("/HEAD"):
+            continue
+        refs.setdefault(ref[at + 1 :], []).append(ref)
+    return refs
+
+
+def _history_available() -> bool:
+    shallow = _git("rev-parse", "--is-shallow-repository")
+    return shallow.returncode == 0 and shallow.stdout.strip() == "false"
+
+
+def merged_list_problems(
+    listed: frozenset[str], refs: dict[str, list[str]], rev: str = "HEAD"
+) -> list[str]:
+    """The checked-in list against git. A branch counts as merged when one of
+    its refs is an ancestor of ``rev`` and a merge commit in ``rev``'s history
+    names it (a fresh branch cut from integration is an ancestor too, but no
+    merge names it). A listed branch is accepted when a merge names it, even if
+    its tip moved on after the merge."""
+    subjects = _merge_subjects(rev)
+    problems: list[str] = []
+    for name, carriers in sorted(refs.items()):
+        if name == SELF_BRANCH:
+            continue
+        merged = _named_in(subjects, name) and any(
+            _is_ancestor(ref, rev) for ref in carriers
+        )
+        if merged and name not in listed:
+            problems.append(f"{name} is merged into {rev} but not in merged_wps.txt")
+    for name in sorted(listed):
+        if name in refs and not _named_in(subjects, name):
+            if not any(_is_ancestor(ref, rev) for ref in refs[name]):
+                problems.append(f"{name} is in merged_wps.txt but not merged into {rev}")
+    return problems
+
+
+def doc_bases(docs: list[Path]) -> dict[str, set[str]]:
+    """Base commit each page says it describes -> pages."""
+    found: dict[str, set[str]] = {}
+    for doc in docs:
+        for m in BASE.finditer(doc.read_text(encoding="utf-8")):
+            found.setdefault(m.group(1) or m.group(2), set()).add(doc.name)
+    return found
 
 
 def _check_prose_env(line: str, where: str, problems: list[str]) -> None:
@@ -512,9 +634,45 @@ def test_planned_lines_name_their_branch():
     bad = []
     for doc in _guide_docs():
         for no, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
-            if PLANNED.search(line) and "wp/" not in line and "dal yok" not in line:
-                bad.append(f"{doc.name}:{no}")
+            for m in PLANNED_PHRASE.finditer(line):
+                if not BRANCH.search(m.group(0)) and "dal yok" not in m.group(0):
+                    bad.append(f"{doc.name}:{no}")
     assert not bad, bad
+
+
+def test_planned_markers_do_not_name_merged_branches():
+    assert planned_merged_problems(_guide_docs(), merged_list()) == []
+
+
+def test_merged_list_matches_git():
+    """merged_wps.txt is what git says, when git can say it (a full clone with
+    the wp/* refs); CI's shallow checkout has neither and skips."""
+    refs = _wp_refs()
+    if not refs or not _history_available():
+        pytest.skip("no wp/* refs or no full history: merged_wps.txt is trusted")
+    assert merged_list_problems(merged_list(), refs) == []
+
+
+def test_pages_describe_one_base_that_contains_every_merged_branch():
+    bases = doc_bases(_guide_docs())
+    assert len(bases) == 1, bases
+    pages = next(iter(bases.values()))
+    assert {"README.md", "kapsam.md"} <= pages, pages
+    if not _history_available():
+        pytest.skip("no full history: the base commit cannot be inspected")
+    base = next(iter(bases))
+    if _git("cat-file", "-e", f"{base}^{{commit}}").returncode != 0:
+        pytest.skip(f"base {base} is not in this clone")
+    assert _is_ancestor(base, "HEAD"), f"base {base} is not in HEAD"
+    subjects = _merge_subjects(base)
+    refs = _wp_refs()
+    missing = [
+        name
+        for name in sorted(merged_list())
+        if not _named_in(subjects, name)
+        and not any(_is_ancestor(ref, base) for ref in refs.get(name, []))
+    ]
+    assert not missing, f"merged after the documented base {base}: {missing}"
 
 
 def test_planned_prose_lines_are_short():
@@ -549,16 +707,19 @@ pytest tests/uydurma/test_yok.py
 
 `UydurmaSinifAdi` ve `uydurma-servis-adi`.
 
-Planlı — `wp/w9.9-ornek` `PLANLI_AYAR_YOK` burada atlanır.
-Planlı — `wp/w9.9-ornek` `PLANLI_IKI_NOKTA`: `UYDURMA_IKI_NOKTA_SONRASI` açıktır.
-Planlı — `wp/w9.9-ornek` yok! `UYDURMA_UNLEM_SONRASI` vardır.
-Planlı — `wp/w9.9-ornek` yok? `UYDURMA_SORU_SONRASI` vardır.
-(Planlı — `wp/w9.9-ornek` `PLANLI_KAPANMAMIS` yok; `UYDURMA_KAPANMAMIS_PARANTEZ` vardır
+`PLANLI_AYAR_YOK` burada atlanır, Planlı — `wp/w9.9-ornek`, bu sürümde yok.
+`PLANLI_IKI_NOKTA` Planlı — `wp/w9.9-ornek`: `UYDURMA_IKI_NOKTA_SONRASI` açıktır.
+`PLANLI_UNLEM` Planlı — `wp/w9.9-ornek` yok! `UYDURMA_UNLEM_SONRASI` vardır.
+`PLANLI_SORU` Planlı — `wp/w9.9-ornek` yok? `UYDURMA_SORU_SONRASI` vardır.
+(`PLANLI_KAPANMAMIS` Planlı — `wp/w9.9-ornek` yok; `UYDURMA_KAPANMAMIS_PARANTEZ` vardır
 
-`UYDURMA_PARANTEZ_DISI=1` bugün vardır (Planlı — `wp/w9.9-ornek`, `PLANLI_PARANTEZ`).
-Planlı — `wp/w9.9-ornek`, `PLANLI_CUMLE` yok; ama `UYDURMA_CUMLE_SONRASI` var.
+`UYDURMA_PARANTEZ_DISI=1` bugün vardır (`PLANLI_PARANTEZ` Planlı — `wp/w9.9-ornek`).
+`PLANLI_CUMLE` Planlı — `wp/w9.9-ornek`, bu sürümde yok; ama `UYDURMA_CUMLE_SONRASI` var.
+`PLANLI_ONCE` gelecek Planlı — `wp/w9.9-ornek`, bu sürümde yok ve `UYDURMA_AYNI_CUMLE` var.
+(`PLANLI_P2` Planlı — dal yok, W9.9, bu sürümde yok, ama `UYDURMA_PARANTEZ_SONU` var)
 
-| `UYDURMA_TABLO_HUCRESI` | Planlı — `wp/w9.9-ornek` `PLANLI_HUCRE` |
+| `UYDURMA_TABLO_HUCRESI` | `PLANLI_HUCRE` Planlı — `wp/w9.9-ornek` |
+| `PLANLI_HUCRE2` Planlı — `wp/w9.9-ornek`, bu sürümde yok; `UYDURMA_HUCRE_SONRASI` var |
 
 Düz metinde UYDURMA_DUZ_METIN_AYARI açık gelir; JWT_SECRET_KEY gerçektir.
 """
@@ -598,6 +759,9 @@ def test_reconciliation_detects_invented_settings_and_commands(tmp_path):
         "UYDURMA_UNLEM_SONRASI",
         "UYDURMA_SORU_SONRASI",
         "UYDURMA_KAPANMAMIS_PARANTEZ",
+        "UYDURMA_AYNI_CUMLE",
+        "UYDURMA_PARANTEZ_SONU",
+        "UYDURMA_HUCRE_SONRASI",
     ):
         assert needle in problems, (needle, problems)
     for skipped in (
@@ -607,6 +771,11 @@ def test_reconciliation_detects_invented_settings_and_commands(tmp_path):
         "PLANLI_HUCRE",
         "PLANLI_IKI_NOKTA",
         "PLANLI_KAPANMAMIS",
+        "PLANLI_UNLEM",
+        "PLANLI_SORU",
+        "PLANLI_ONCE",
+        "PLANLI_P2",
+        "PLANLI_HUCRE2",
     ):
         assert skipped not in problems, (skipped, problems)
     assert "JWT_SECRET_KEY" not in problems
@@ -624,3 +793,38 @@ def test_reconciliation_detects_nothing_wrong_in_real_names(tmp_path):
         encoding="utf-8",
     )
     assert reconciliation_problems([doc]) == []
+
+
+def test_planned_check_detects_a_merged_branch_called_planned(tmp_path):
+    doc = tmp_path / "stale.md"
+    doc.write_text(
+        "Zincir (Planlı — `wp/w9.1-birlesti`, bu sürümde yok).\n"
+        "| Özellik | Planlı — `wp/w9.2-acik`, `wp/w9.1-birlesti` |\n"
+        "Henüz yok (Planlı — `wp/w9.2-acik`, bu sürümde yok); "
+        "`wp/w9.1-birlesti` birleşti.\n",
+        encoding="utf-8",
+    )
+    problems = planned_merged_problems([doc], frozenset({"wp/w9.1-birlesti"}))
+    assert [p.split(":")[1] for p in problems] == ["1", "2"], problems
+
+
+def test_merged_list_check_detects_drift():
+    """Against this clone's own history: a merged branch left off the list, and
+    a listed branch git has never merged, are both reported."""
+    refs = _wp_refs()
+    if not refs or not _history_available():
+        pytest.skip("no wp/* refs or no full history")
+    listed = merged_list()
+    if not listed:
+        pytest.skip("empty list")
+    dropped = sorted(listed & set(refs))[0]
+    problems = merged_list_problems(listed - {dropped}, refs)
+    assert any(dropped in p and "not in merged_wps.txt" in p for p in problems)
+    unmerged = [
+        ref for carriers in refs.values() for ref in carriers if not _is_ancestor(ref, "HEAD")
+    ]
+    if not unmerged:
+        pytest.skip("every wp/* ref is merged: nothing to list wrongly")
+    fake = {"wp/w9.9-hic-birlesmedi": [unmerged[0]]}
+    problems = merged_list_problems(listed | {"wp/w9.9-hic-birlesmedi"}, {**refs, **fake})
+    assert any("w9.9-hic-birlesmedi" in p for p in problems), problems
