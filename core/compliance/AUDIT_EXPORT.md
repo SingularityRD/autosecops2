@@ -385,7 +385,8 @@ yeniden kullanılır.
   dize (iç içe sözlük/liste öğeleri dahil, metindeki `service_health=…`
   çiftleri de) maskelenir. Ödünleşim: `health_check_url` gibi altyapı
   anahtarlarındaki URL'ler de maskelenir.
-- **Metindeki çiftlerin değeri bütündür (Round 9).** Kişisel veri anahtarlı
+- **Metindeki çiftlerin değeri bütündür (Round 9; sınır kuralı Round 10'da
+  değişti, bkz. "Serbest metin: kapsam ve güvence").** Kişisel veri anahtarlı
   ve GÜÇLÜ gizli anahtarlı tırnaksız bir değer ilk sözcükte değil açık bir
   sınırda biter: satır sonu, `;`, `|`, `"`, `<`, kapanan parantez, ardından
   harf gelmeyen `'` (`Crohn's` sürer), başka bir `anahtar=`/`anahtar:`
@@ -423,6 +424,97 @@ yeniden kullanılır.
   uzun anahtarın değeri maskelenir.
 - Dizeler 2048 karakterde, iç içe yapı 6 seviyede, listeler/sözlükler 100
   öğede kesilir. Maskelenen değer sayısı `redactions` metriğindedir.
+
+### Serbest metin: kapsam ve güvence (Round 10)
+
+**Güvenilir yol yapısal alanlardır.** Bir değeri kesin olarak maskelemek
+istiyorsanız onu `details` içinde kendi anahtarıyla gönderin
+(`{"diagnosis": "…"}`, `{"password": "…"}`): anahtar adı karar verir, değerin
+neye benzediğine bakılmaz. Serbest metindeki (`message`, `details` içindeki
+dizeler, `user_agent`) kişisel veri ve kimlik bilgisi maskelemesi **en iyi
+çaba ile yapılan derinlemesine savunmadır**: yazılabilecek her düzyazı
+biçimini tanıyamaz ve tanımadığı biçimdeki değeri olduğu gibi aktarır
+(örn. ayırıcısız `patient diagnosis HIV positive`, adı geçmeyen
+`Alice Smith`).
+
+**Tek bulucu, tek sınıflandırıcı.** Serbest metinde bir anahtarın altına
+yazılmış değerleri `locate_pairs` bulur; anahtarın ne olduğuna
+`classify_key` karar verir (kimlik bilgisi gücü: GÜÇLÜ / ZAYIF / yok; kişisel
+veri türü: `special`, `health`, `pii`, `address`, `lookalike` / yok). Gizli
+geçişi (`redact_text`) ve kişisel veri geçişi (`mask_personal_data`) aynı
+çiftleri aynı sınıflandırıcıyla dolaşır; yalnız sınıfın kendi yüzüne
+bakarlar. Bir biçim bulucuya eklendiğinde iki geçiş için de geçerlidir;
+`tests/unit/compliance/test_audit_export_round10.py` her biçimi her anahtar
+sınıfıyla (`redact_pii` açık ve kapalı) çalıştırır.
+
+Kapsanan biçimler (`PAIR_FORMS`):
+
+| Biçim | Örnek |
+|---|---|
+| `inline` | `k=v`, `k: v`, `k => v`, `k -> v`, `k%3Dv` |
+| `quoted` | `k="v"`, `'k': 'v'`, `"k": "v"` (JSON benzeri), `\"k\": \"v\"` |
+| `braced` | `k={…}` |
+| `query` | `?k=v&k2=v2` (değer `&`, `#` ya da boşlukta biter) |
+| `xml` | `<k>v</k>`, `<ns:K a="1">v</ns:K>`, `<k><![CDATA[v]]></k>`, `<k><Value>v</Value></k>` |
+| `xml_attr` | `<k value="v"/>`, `<add key="k" value="v"/>`, `<field name="k">v</field>` |
+| `yaml_block` | `k: \|` / `k: >-` ve altındaki girintili satırlar |
+| `yaml_scalar` | `k:` ve sonraki daha girintili satır(lar) |
+| `yaml_item` | `k:` ve altındaki her `- öğe` |
+| `named` | `- name: K` / `value: v` (Kubernetes env, başlık listeleri) |
+| `heredoc` | `k = <<EOF` … `EOF` |
+
+Bunlara ek olarak yalnız gizli geçişinin okuduğu biçimler vardır: ayırıcısız
+`password değer` / `--password değer` (düzyazıda bir çift kadar sık bir
+cümle olduğundan kişisel veri için okunmaz), CLI argümanları, SQL/PowerShell
+deyimleri, URL kullanıcı bilgisi, `Authorization:` başlıkları, biçiminden
+tanınan jetonlar. E-posta, kart, IBAN, SSN, T.C. kimlik ve `+` önekli
+telefon anahtardan bağımsız değer kalıplarıyla maskelenir.
+
+**Değerin sonu.** Biçimi sınırı söyleyen değer orada biter: tırnaklı değer
+(kapanan tırnaktan sonra sözcük gelmiyorsa), XML öğesi/özniteliği, URL sorgu
+parametresi (`&`'de), YAML bloğu, `{…}`. Kimlik bilgisi ya da kişisel veri
+anahtarlı diğer her değer **satır sonuna kadar** maskelenir ve yeni bir kayıt
+başlatmayan sonraki satırlarda sürer (`diagnosis: HIV\npositive` →
+`diagnosis: [REDACTED-PII]`); yalnız anahtardan önce açılmış bir tırnağı ya
+da parantezi kapatan karakterde, bir etikette (`</…>`) ya da sonraki
+`anahtar=`/`anahtar:` belirtecinden hemen önce durur. Değere ait olmayan
+ayırıcılar korunur: `diagnosis=HIV&x=1` → `diagnosis=[REDACTED-PII]&x=1`,
+`(diagnosis: HIV positive) next` → `(diagnosis: [REDACTED-PII]) next`;
+parantezler dengede kalır. ZAYIF gizli anahtarlar (`token`, `pin`) yalnız
+gizli olarak yargıladıkları sözcüğü keser (`pin=[REDACTED] accepted`).
+Ödünleşim: sınır yoksa satırın ve devam satırlarının geri kalanı gider.
+
+**Muaf değerler (yapısal yol ile aynı kural, `pii_value_exempt`).**
+`health` tek özel sözcüğü olan anahtarlar altında sistem durumu sözcükleri
+(`health: degraded`, `server health: ok`), `lookalike` anahtarlar
+(`health_check`, `service_health`, `*_count`, `*_enabled`) altında durum
+sözcükleri, sayılar ve boolean'lar (`health_check: passed`) aktarılır.
+Serbest metinde GÜÇLÜ gizli anahtarın değeri bilinen bir durum sözcüğüyse
+(`changed`, `reset`, `updated`, `set`, `expired`, `rotated`, `true`,
+`false`, `null` …; `SECRET_STATUS_VALUES`) maskelenmez:
+`password: changed`, `mfa: enabled; password: reset`. `password: changed to
+X` maskelenir (değerin tamamı bir durum sözcüğü değil). Yapısal yolda
+kimlik bilgisi anahtarları her değeri maskelemeye devam eder.
+
+**Ağ adresleri (karar).** IP adresleri SOC denetim izinin çekirdek
+verisidir: ağ niteleyicili `*_address` anahtarları (`ip_address`,
+`source_address`, `remote_address`, `client_address`, `bind_address`,
+`listen_address`, `mac_address`, …) kişisel veri sayılmaz, yapısal
+`src_ip` gibi olduğu gibi aktarılır. Yalın `address` ve `home_address` gibi
+yalnız `address` yüzünden kişisel olan anahtarlar kişisel veri kalır; ama
+değerleri bir IP (port/önek uzunluğu ile), MAC adresi ya da URL ise
+(`network_address_value`) aktarılır: `address: 10.0.0.1` açık,
+`address: 1 Main St` maskeli. `email_address` kişisel veridir.
+
+**Türkçe özel nitelikli anahtarlar.** `tanı`, `teşhis`, `ırk`/`irk`, `din`,
+`inanç`, `sabıka`, `engellilik`, `cinsel`, `biyometrik`, `genetik`,
+`sendika` (katlanmış biçimde; `tanı`, `ırk`, `din`, `inanç` tam parça olarak:
+`tanım`, `dinamik`, `irkilme`, `inançlı` değil). Türkçe gizli olmayan son
+ekler: `parola_uzunluğu`, `şifre_politikası`, `parola_sayısı`,
+`şifre_süresi`, `parola_durumu`.
+
+**JSON içeren dizeler** kişisel veri geçişinde de yapı olarak bir kez
+yürütülür: `{"tan\u0131": "…"}` anahtarı kodu çözülmüş hâliyle yargılanır.
 
 ## Yapılandırma
 
@@ -637,6 +729,10 @@ göremiyorsa (`pg_read_all_stats` yok) yalnız ilerlemeyen `xmin`'e bakılır.
   (`rawEvent`/`cs4` için ör. 4000 karakter) gövdeyi o alıcı keser; bunu
   ancak alıcı tarafındaki sınır yükseltilerek ya da syslog'un parçalı
   biçimi kullanılarak önleyebilirsiniz.
+- Serbest metin maskelemesi en iyi çabadır (bkz. "Serbest metin: kapsam ve
+  güvence"): `PAIR_FORMS` dışındaki bir düzyazı biçimindeki değer (ayırıcısız
+  `diagnosis HIV`, adı geçmeyen bir ad) aktarılır. Kesin maskeleme için
+  değeri yapısal bir alanda gönderin.
 - Serbest metindeki kişisel veri kalıpları (kart, IBAN, SSN, T.C. kimlik,
   `+` önekli telefon) doğrulama (Luhn, mod 97, sağlama hanesi) ile sınırlıdır;
   `+` öneki olmayan yerel telefon numaraları ve ad/soyad gibi serbest metin
