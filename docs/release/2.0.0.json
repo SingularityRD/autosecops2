@@ -117,6 +117,16 @@
       "topic_en": "pre-existing integration test fixes"
     },
     {
+      "id": "W0.18",
+      "topic": "GA takipleri (W0.15, W3.10, W0.16): reddedilen faz koşuyu sonlandırır, LiteParse kapanışı, geri yükleme iletisi",
+      "topic_en": "GA follow-ups (W0.15, W3.10, W0.16)"
+    },
+    {
+      "id": "W0.20",
+      "topic": "Belge birleşme listesi denetimi belgelenen taban commit'e göre (yalnızca test)",
+      "topic_en": "docs merged-list check against the documented base (tests only)"
+    },
+    {
       "id": "W1.1",
       "topic": "Eval düzeneği (evalkit)",
       "topic_en": "eval harness"
@@ -498,6 +508,12 @@
       "text": "**Ürün belgeleri:** `docs/guide/` altında Türkçe belge seti: sürüm kapsamı, internetsiz kurulum ve yönetici kılavuzları, güvenlik teknik belgesi, STRIDE tehdit modeli ve mevzuat eşlemesi (BDDK, KVKK, DORA, NIS2, SPK, ISO/IEC 27001; hukuki görüş değildir) (W4.6)."
     },
     {
+      "when": [
+        "W0.18"
+      ],
+      "text": "**GA takipleri:** argümanları 64 KB'ı aştığı için reddedilen onay artık koşuyu asılı bırakmaz: faz `approval_state=refused` ile, koşu `failed` olarak biter; LiteParse havuzları süreç çıkışında kapatılır (kapanışta çıkış 134 çökmesi giderildi); \"karar tablosu yok\" tespiti yalnızca SQLSTATE 42P01'e bakar (başka veritabanı hataları backfill'i açık bırakmaz); geri yükleme sonrası JWT anahtarı iletisi düzeltildi (W0.18)."
+    },
+    {
       "when": [],
       "text": "**Tedarik zinciri:** imzalı imajlar, CycloneDX SBOM'ları, SLSA provenance ve çevrimdışı doğrulama (W4.7, bkz. `docs/release/dogrulama.md`)."
     }
@@ -598,6 +614,12 @@
         "W0.15"
       ],
       "text": "**Redis kesintisi (W0.15):** kesici açıkken kural şeridinde kararı verilen bulgular kesici kapanınca yeniden triyaj edilmez. `56_*.sql` (alarm şeritleri) uygulanmamış bir veritabanında backfill eski davranışa döner ve `soc_daemon_backfill_lane_decisions_missing_total` metriğiyle ERROR loglar: yükseltmede init SQL'in tamamını uygulayın."
+    },
+    {
+      "when": [
+        "W0.18"
+      ],
+      "text": "**Reddedilen büyük onaylar (W0.18):** 64 KB'ı aşan argümanlı bir araç çağrısı reddedildiğinde koşu artık `paused` kalmaz, `failed` olur (faz satırı `status=failed`, `approval_state=refused`, `error` nedeni taşır); bu koşuları bekleyen otomasyon `failed` durumunu da ele almalıdır. Geri yüklemeden sonra anahtar yalnızca ortamdaysa ileti artık servisleri yeniden başlatmayı ve ortamdaki eski `JWT_SECRET_KEY` değerini değiştirmeyi söyler."
     }
   ],
   "known_issues": [
