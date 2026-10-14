@@ -15,11 +15,11 @@ from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.orm import joinedload, lazyload, noload, selectinload
 
 from core.exceptions import default_on_error
-from core.findings.external_id import normalize_external_id
 from core.storage.arrays import text_array
 from core.storage.canary_exclusion import not_canary_finding
 from core.storage.case_repository import CaseRepository
 from core.storage.connection import get_db_manager
+from core.storage.external_id import normalize_external_id
 from core.storage.ip_exclusion_repository import exclusion_view_filter
 from core.storage.models import (
     AIDecisionLog,

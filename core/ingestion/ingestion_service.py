@@ -22,11 +22,11 @@ from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
-from core.findings.external_id import normalize_external_id
 from core.findings.source_evidence import (
     normalize_finding_source_evidence,
     source_evidence_from_loglm_row,
 )
+from core.storage.external_id import normalize_external_id
 from core.time import utcnow
 
 if TYPE_CHECKING:
