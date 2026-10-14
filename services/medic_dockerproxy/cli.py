@@ -25,7 +25,7 @@ FORBIDDEN_ENV = (
     "VIGIL_MEDIC_API_KEY",
     "POSTGRES_PASSWORD",
 )
-WILDCARDS = ("", "*", "0.0.0.0", "::", "[::]")
+WILDCARDS = ("", "*", "0.0.0.0", "::", "[::]")  # nosec B104 - hosts we refuse
 USAGE = "usage: python -m services.medic_dockerproxy {run|check}"
 
 

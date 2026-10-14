@@ -149,7 +149,8 @@ def api_bind(env: Mapping[str, str]) -> tuple[str, int]:
             raise ConfigError(f"{API_PORT_VAR} is not a port number (value not shown)")
         port = int(value)
     if _explicit_shape(env) in _CONTAINER_SHAPES:
-        return "0.0.0.0", port
+        # Compose's network / Helm's NetworkPolicy fence the container.
+        return "0.0.0.0", port  # nosec B104 - container shapes only
     return "127.0.0.1", port
 
 

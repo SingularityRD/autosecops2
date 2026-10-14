@@ -200,8 +200,12 @@ class PanConnection:
 def _safe_fromstring(text: str) -> ET.Element:
     if "<!DOCTYPE" in text or "<!ENTITY" in text:
         raise PanApiError("refusing an XML response with a DTD or entity declaration")
+    # B314: the check above is what defusedxml adds for this threat. Entity
+    # expansion (billion laughs) and external entities both need a DTD, XML
+    # keywords are case-sensitive (expat rejects "<!doctype"), and stdlib expat
+    # never fetches external resources.
     try:
-        return ET.fromstring(text)
+        return ET.fromstring(text)  # nosec B314 - DTD/ENTITY refused above
     except ET.ParseError:
         raise PanApiError("unparseable XML response") from None
 

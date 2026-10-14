@@ -25,7 +25,7 @@ import pytest
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-only-secret-not-for-prod")
 
-from core.storage.models import User  # noqa: E402
+from core.storage.models import Role, User  # noqa: E402
 from services.api import main as backend_main  # noqa: E402
 from services.api.middleware import auth as auth_module  # noqa: E402
 from tests.security import route_matrix as rm  # noqa: E402
@@ -177,6 +177,41 @@ def _isolate_handler_side_effects(key, app, monkeypatch, tmp_path) -> None:
         monkeypatch.setitem(app.dependency_overrides, dep, lambda v=value: v)
 
 
+class _SeededRoles:
+    """A session that answers only ``query(Role).all()``, from the seed SQL.
+
+    The admin-only gate (``require_sso_administrator``) compares the caller's
+    grants with every role's, which it reads from the roles table. This job has
+    no database, so the table is what the seed files would put there: the same
+    grants the matrix itself is computed from.
+    """
+
+    def __init__(self, grants):
+        self._grants = grants
+
+    def query(self, model):
+        assert model is Role, f"only the roles table is seeded, not {model!r}"
+        return self
+
+    def all(self):
+        return [Role(role_id=r, permissions=dict(g)) for r, g in self._grants.items()]
+
+
+def _seed_admin_gate(gate, grants, role_grants, app, monkeypatch) -> None:
+    if not gate.admin_role_only:
+        return
+    from core.routing import request_unit_of_work
+
+    monkeypatch.setattr(
+        "core.auth.auth_service.AuthService.get_user_permissions",
+        lambda user_id, session=None, _g=role_grants: dict(_g),
+    )
+    # setitem: removed again at teardown.
+    monkeypatch.setitem(
+        app.dependency_overrides, request_unit_of_work, lambda: _SeededRoles(grants)
+    )
+
+
 @pytest.mark.parametrize("key,gate,row", _GATED_ROWS, ids=[r[0] for r in _GATED_ROWS])
 def test_dependency_gated_route_enforces_the_matrix(
     key, gate, row, monkeypatch, tmp_path
@@ -195,6 +230,7 @@ def test_dependency_gated_route_enforces_the_matrix(
         monkeypatch.setattr(
             "core.auth.auth_service.AuthService.check_permission", _check
         )
+        _seed_admin_gate(gate, grants, role_grants, app, monkeypatch)
         user = _user_for(role_id)
         app.dependency_overrides[auth_module.get_current_active_user] = lambda u=user: u
         app.dependency_overrides[auth_module.get_current_user] = lambda u=user: u

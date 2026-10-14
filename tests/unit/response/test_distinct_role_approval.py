@@ -74,11 +74,18 @@ def people(throwaway_database):
                     role_id=role_id,
                 )
             )
-    return {
+    yield {
         "alice": _name("alice"),
         "bob": _name("bob"),
         "mallory": _name("mallory"),
     }
+    # The throwaway database lives for the whole session: users left on these
+    # roles would block any later test that resets the roles table. By role, as
+    # AuthService.create_user picks its own user ids.
+    roles = ["r-senior-" + TAG, "r-mgr-" + TAG]
+    with get_db_manager().session_scope() as s:
+        s.query(User).filter(User.role_id.in_(roles)).delete(synchronize_session=False)
+        s.query(Role).filter(Role.role_id.in_(roles)).delete(synchronize_session=False)
 
 
 def _svc(**raw) -> ApprovalService:

@@ -86,6 +86,12 @@ def test_an_old_table_gains_the_columns_and_constraints(apply):
     with get_db_manager().engine.connect() as conn:
         tx = conn.begin()
         try:
+            # The audit chain (51), when another test has installed it in this
+            # session's database, captures approval_actions rows with deferred
+            # constraint triggers; Postgres refuses ALTER TABLE while one is
+            # pending. Firing them at once keeps the insert-then-migrate below
+            # in one transaction, as it must be to roll back.
+            conn.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
             for name in COLUMNS:
                 conn.execute(text(f"ALTER TABLE approval_actions DROP COLUMN {name}"))
             _insert(conn, "action-old")

@@ -413,6 +413,9 @@ async def sso_callback(
 # Administration
 # ---------------------------------------------------------------------------
 
+# FastAPI resolves dependencies in signature order, so the admin routes list
+# these gates before ``session``: a refused caller is answered 403 before a
+# unit of work is opened.
 _ADMIN_GATES = [permission_gate("settings.write"), permission_gate("users.write")]
 
 
@@ -698,9 +701,10 @@ def _require_fresh_secret_on_create(
 @router.get("/admin/config", response_model=SsoAdminConfig)
 def get_sso_config(
     request: Request,
-    session: UnitOfWorkSession,
     current_user: User = _ADMIN_GATES[0],
     _users_write: User = _ADMIN_GATES[1],
+    *,
+    session: UnitOfWorkSession,
 ):
     """Providers (never their secrets) and the local sign-in policy."""
     return _admin_config(session, request)
@@ -711,10 +715,11 @@ def upsert_provider(
     provider_id: str,
     body: ProviderUpsert,
     request: Request,
-    session: UnitOfWorkSession,
     current_user: User = _ADMIN_GATES[0],
     _users_write: User = _ADMIN_GATES[1],
     _administrator: User = Depends(require_sso_administrator),
+    *,
+    session: UnitOfWorkSession,
 ):
     """Add or replace one provider. The client secret is stored write-only."""
     fields = body.model_dump(exclude={"client_secret", "clear_client_secret"})
@@ -775,10 +780,11 @@ def upsert_provider(
 def delete_provider(
     provider_id: str,
     request: Request,
-    session: UnitOfWorkSession,
     current_user: User = _ADMIN_GATES[0],
     _users_write: User = _ADMIN_GATES[1],
     _administrator: User = Depends(require_sso_administrator),
+    *,
+    session: UnitOfWorkSession,
 ):
     providers = load_providers(session)
     remaining = [p for p in providers if p.id != provider_id]
@@ -810,10 +816,11 @@ def delete_provider(
 def update_login_policy(
     body: LoginPolicy,
     request: Request,
-    session: UnitOfWorkSession,
     current_user: User = _ADMIN_GATES[0],
     _users_write: User = _ADMIN_GATES[1],
     _administrator: User = Depends(require_sso_administrator),
+    *,
+    session: UnitOfWorkSession,
 ):
     """Turn local sign-in on or off, and name the break-glass accounts."""
     ids = list(dict.fromkeys(body.break_glass_user_ids))
