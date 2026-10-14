@@ -45,7 +45,13 @@ def _get_serializer() -> URLSafeTimedSerializer:
     # Import lazily so tests can stub JWT_SECRET_KEY via env before auth_service loads.
     from core.auth.auth_service import JWT_SECRET_KEY
 
-    return URLSafeTimedSerializer(JWT_SECRET_KEY, salt=RESET_TOKEN_PURPOSE)
+    # SHA-256 + HMAC key derivation instead of itsdangerous' default
+    # (SHA-1 "django-concat"): FIPS-approved, see docs/fips.md (W3.10).
+    return URLSafeTimedSerializer(
+        JWT_SECRET_KEY,
+        salt=RESET_TOKEN_PURPOSE,
+        signer_kwargs={"digest_method": hashlib.sha256, "key_derivation": "hmac"},
+    )
 
 
 def _token_hash(token: str) -> str:

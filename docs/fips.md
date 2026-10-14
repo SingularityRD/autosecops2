@@ -169,3 +169,29 @@ parola sıfırlaması gerekir.
   çalıştırmak için `node --enable-fips` ve aynı `OPENSSL_CONF` kullanılır.
 - Medic servisinin imzalı paket güven kökü Ed25519 kullanır (ayrı imaj, ayrı
   sözleşme) ve envanterde taban listededir.
+
+## Bilinen boşluklar
+
+FIPS dışı ilkel envanteri (`tests/unit/_ratchets/test_fips_primitive_inventory.py`)
+taban listesinde gerekçesiyle tutulan ve FIPS modunda kullanılmaması gereken
+özellikler:
+
+- Denetim kaydı kontrol noktaları (`core/audit/checkpoint.py`, `core/audit/verify.py`)
+  ve kanıt paketi manifest imzası (`core/compliance/evidence_bundle.py`,
+  `core/compliance/verify_bundle.py`) yalnızca Ed25519 kullanır. FIPS modunda
+  ECDSA P-256'ya geçiş için bu modüllerin `core/crypto/signing.py` arayüzüne
+  bağlanması gerekir (ayrı iş paketi). O zamana kadar bu imzalar FIPS onaylı
+  sayılmaz.
+- Veritabanı proxy'sinin `ssh_tunnel` türü (`core/storage/db_proxy.py`,
+  `sshtunnel`/paramiko) algoritma seçimini FIPS'e göre kısıtlamaz; FIPS modunda
+  desteklenmez. TLS ile korunan doğrudan bağlantı veya HTTP proxy kullanın.
+
+Parola sıfırlama belirteçleri (`core/auth/password_reset.py`) itsdangerous'un
+varsayılanı olan SHA-1 anahtar türetmesi yerine SHA-256 + HMAC anahtar
+türetmesiyle imzalanır. Bu sürüme yükseltirken dağıtımdan önce verilmiş ve
+henüz kullanılmamış sıfırlama bağlantıları geçersiz olur (kullanıcı yeni
+bağlantı ister).
+
+Çalışma anında belirlenen bir özet adı (`hashlib.new(name)`) önce
+`core.crypto.fips.approved_digest(name)` ile denetlenmelidir; envanter testi
+aksi halde bu çağrıyı işaretler.

@@ -108,3 +108,40 @@ def fips_mode_enabled() -> bool:
     from core.config import get_settings
 
     return get_settings().fips_mode
+
+
+# FIPS 180-4 / FIPS 202 digests the OpenSSL 3 FIPS provider offers for any use.
+APPROVED_DIGESTS = frozenset(
+    {
+        "sha224",
+        "sha256",
+        "sha384",
+        "sha512",
+        "sha512_224",
+        "sha512_256",
+        "sha3_224",
+        "sha3_256",
+        "sha3_384",
+        "sha3_512",
+        "shake_128",
+        "shake_256",
+    }
+)
+
+
+def approved_digest(name: str) -> str:
+    """Return ``name`` normalised (``"SHA-256"`` -> ``"sha256"``) if it is an
+    approved digest, else raise ``ValueError``.
+
+    Route a digest name that is only known at runtime through this before
+    ``hashlib.new(name)`` / ``pbkdf2_hmac(name, ...)``; the FIPS inventory
+    ratchet (tests/unit/_ratchets/test_fips_primitive_inventory.py) flags a
+    non-literal digest name that does not come from here.
+    """
+    normalised = str(name).strip().lower()
+    if normalised.startswith("sha-"):  # SHA-256, SHA-512/256
+        normalised = "sha" + normalised[4:]
+    normalised = normalised.replace("-", "_").replace("/", "_")  # SHA3-256
+    if normalised not in APPROVED_DIGESTS:
+        raise ValueError(f"digest {name!r} is not FIPS-approved")
+    return normalised

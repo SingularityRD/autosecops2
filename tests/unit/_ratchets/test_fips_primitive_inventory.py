@@ -5,7 +5,8 @@ algorithm the OpenSSL 3 FIPS provider does not offer. Every such use is listed
 in BASELINE with its reason. A new one fails this test; removing one also fails
 it until BASELINE shrinks to match, so the list only ever gets shorter.
 
-What counts (shipped Python and the TypeScript agent, tests excluded):
+What counts (every Python and TS/JS source file in the repo except tests,
+third-party and generated trees; see the scope comment below REPO_ROOT):
   - md5 / sha1 / md4 through hashlib without ``usedforsecurity=False``. With the
     flag the call is a non-security identifier and is allowed under FIPS too;
     without it, a FIPS OpenSSL raises at runtime. No baseline: always zero.
@@ -26,9 +27,22 @@ Round 5: string expressions are constant-folded (concatenation, f-strings,
 A non-literal ``getattr`` on a crypto module, or a dynamic import whose pieces
 look crypto-ish, is flagged conservatively. Imports of a foreign
 library or an Ed/X curve module count once per statement; hashes and ciphers
-count per use. TypeScript/JavaScript (.ts/.js/.mjs/.cjs...) is scanned with regexes (``createHash``,
+count per use. TypeScript/JavaScript is scanned with regexes (``createHash``,
 ``crypto.hash``, ``subtle.digest``, WebCrypto ``hash:`` params, pbkdf2 digest
 args, ``createCipheriv`` and imports of JS crypto libraries).
+
+Round 6: more non-OpenSSL libraries (ecdsa, rsa, pyDes, pyaes, python-jose,
+paramiko/sshtunnel, crypt, ...) are denied on ``import x`` and ``from x import
+y``; any other import whose top-level name looks crypto-capable must be on the
+_VETTED_CRYPTO_LIBS allow-list (with its reason) or it is reported as
+"unvetted crypto lib (<name>)". A digest name that is not a constant
+(``hashlib.new(name)``, ``pbkdf2_hmac``, ``file_digest``, hmac ``digestmod``)
+is "dynamic digest name" unless it is provably approved: every binding of the
+name is a constant approved digest, ``a if c else b`` over such, or the call
+goes through ``core.crypto.fips.approved_digest``. itsdangerous serializers
+and signers must choose their digest (the library defaults to SHA-1). TS/JS
+also covers crypto-js (``CryptoJS.MD5/SHA1/RIPEMD160/DES/TripleDES/RC4``) and
+``createHash(<variable>)``.
 
 Approved and therefore not listed: SHA-2/SHA-3, HMAC-SHA*, PBKDF2-HMAC-SHA256,
 AES (Fernet = AES-128-CBC + HMAC-SHA256), ECDSA P-256, RSA >= 2048, HS256 JWT.
@@ -47,8 +61,36 @@ import pytest
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-PY_DIRS = ("core", "services", "tools", "scripts", "evalkit", "eval")
-TS_DIRS = ("services/agent",)
+
+# --- scope (Round 6) ----------------------------------------------------------
+# Every *.py and TS/JS file under REPO_ROOT is scanned: there is no list of
+# directories to keep up to date, so a new top-level package, a new client
+# under clients/ or a script under infra/ is covered the day it lands
+# (test_new_top_level_code_is_scanned). The only things left out:
+#   1. directories pruned wherever they appear (_PRUNE): third-party code
+#      (node_modules, venv, site-packages), build output (dist, build), caches
+#      and generated reports (__pycache__, coverage, htmlcov). None of it is
+#      our source; dependencies are covered by the import rules below.
+#   2. dot-directories (.git, .github, .cursor, ...): VCS, CI and editor state.
+#   3. test code (_is_test_path: any tests/test/__tests__ directory, test_*.py,
+#      *_test.py, *.test.* / *.spec.*): not shipped; fixtures use weak
+#      primitives on purpose.
+#   4. TypeScript declaration files (*.d.ts): types only, no executable code.
+_PRUNE = frozenset(
+    {
+        "node_modules",
+        "venv",
+        ".venv",
+        "site-packages",
+        "dist",
+        "build",
+        "__pycache__",
+        "coverage",
+        "htmlcov",
+    }
+)
+_PY_EXTS = (".py",)
+_TS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
 
 # path -> {primitive: count}. Shrink it; never grow it without a FIPS story.
 BASELINE: dict[str, dict[str, int]] = {
@@ -60,6 +102,19 @@ BASELINE: dict[str, dict[str, int]] = {
     # Medic's own signed-pack trust root (separate image and contract, F2).
     "services/medic/contracts/trust_check.py": {"ed25519": 1},
     "services/medic/contracts/tools/gen_f2_fixtures.py": {"ed25519": 1},
+    # Round 6 (arrived with the integration merge, W1.10 / W3.7): audit
+    # checkpoints and evidence-pack manifests are signed with Ed25519 only.
+    # Known FIPS gap, docs/fips.md "Bilinen boşluklar": move them onto
+    # core/crypto/signing.py (ECDSA P-256 under FIPS_MODE) in a follow-up
+    # owned by those WPs; until then do not rely on them in FIPS_MODE.
+    "core/audit/checkpoint.py": {"ed25519": 1},
+    "core/audit/verify.py": {"ed25519": 1},
+    "core/compliance/evidence_bundle.py": {"ed25519": 1},
+    "core/compliance/verify_bundle.py": {"ed25519": 1},
+    # Optional SSH-tunnel DB proxy (lazy `from sshtunnel import ...`):
+    # paramiko negotiates Ed25519/ChaCha20 and is not FIPS-restricted.
+    # Unsupported in FIPS_MODE (docs/fips.md); use a TLS proxy instead.
+    "core/storage/db_proxy.py": {"paramiko": 1},
 }
 
 _WEAK_HASHES = {"md5", "sha1", "md4", "md5-sha1", "ripemd160", "sha", "md5_sha1"}
@@ -118,7 +173,57 @@ _FOREIGN_LIBS = {
     "scrypt": "scrypt",
     "pyscrypt": "scrypt",
     "blake3": "blake3",
+    # Round 6: pure-Python / non-OpenSSL implementations, and wrappers whose
+    # algorithm choice is not under FIPS_MODE's control.
+    "ecdsa": "ecdsa (pure python)",
+    "fastecdsa": "ecdsa (non-openssl)",
+    "coincurve": "secp256k1",
+    "tinyec": "ecc (pure python)",
+    "pyelliptic": "ecc (non-validated)",
+    "rsa": "rsa (pure python)",
+    "pyDes": "des",
+    "des": "des",
+    "pyaes": "aes (pure python)",
+    "twofish": "twofish",
+    "tlslite": "tlslite",
+    "M2Crypto": "m2crypto",
+    "jose": "python-jose",
+    "pgpy": "pgp",
+    "gnupg": "pgp",
+    "sha3": "keccak (pysha3)",
+    "pyblake2": "blake2",
+    "Cryptodome": "pycryptodome",
+    "simplecrypt": "simplecrypt",
+    "ed25519": "ed25519",
+    "pure25519": "ed25519",
+    "curve25519": "x25519",
+    "paramiko": "paramiko",
+    "sshtunnel": "paramiko",
+    "crypt": "crypt(3)",
+    "_crypt": "crypt(3)",
 }
+# Round 6 allow-list: an import whose top-level name looks crypto-capable
+# (_CRYPTO_CAPABLE) must be in _FOREIGN_LIBS (counted) or here (vetted, with
+# the reason it is FIPS-safe); anything else is "unvetted crypto lib (<name>)".
+_VETTED_CRYPTO_LIBS = {
+    "hashlib": "OpenSSL-backed; individual algorithms are checked per use",
+    "_hashlib": "CPython's OpenSSL binding; openssl_* names are checked per use",
+    "hmac": "OpenSSL-backed; digestmod is checked per use",
+    "secrets": "os.urandom; no algorithm choice",
+    "ssl": "system OpenSSL; the FIPS provider governs TLS ciphers",
+    "cryptography": "OpenSSL-backed; hazmat algorithms are checked per use",
+    "jwt": "PyJWT on cryptography; decode pins algorithms=[HS256]",
+    "pyotp": "TOTP = HMAC-SHA1, approved (SP 800-131A); see Non-goals",
+    "itsdangerous": "HMAC signer; core/auth/password_reset.py pins SHA-256 + "
+    "HMAC key derivation (test_password_reset_serializer_is_sha256_hmac)",
+    "keyring": "delegates to the OS keychain; no in-process crypto",
+}
+_CRYPTO_CAPABLE = re.compile(
+    r"crypt|cipher|hash|nacl|sodium|ecdsa|ecc|25519|448|curve|secp|rsa|des|aes|"
+    r"blake|sha\d|^sha|md5|argon|jose|jw[tske]|pgp|gpg|ssh|paramiko|otp|ssl|tls|"
+    r"keyring|dangerous|fernet|tink|pkcs|x509|asn1|kdf|hmac|secret",
+    re.I,
+)
 # CPython's private builtin hash modules bypass the OpenSSL FIPS provider.
 _PRIVATE_HASH_MODULES = {
     "_md5": "md5 (security use)",
@@ -134,6 +239,22 @@ _CRYPTOISH = re.compile(
     r"chacha|scrypt|passlib|primitives|asymmetric",
     re.I,
 )
+# Approved digests (mirrors core/crypto/fips.py APPROVED_DIGESTS; asserted
+# equal in test_approved_digest_sets_agree) and the helper that enforces them
+# at runtime for names only known then.
+_APPROVED_DIGESTS = frozenset(
+    {"sha224", "sha256", "sha384", "sha512", "sha512_224", "sha512_256"}
+    | {f"sha3_{n}" for n in (224, 256, 384, 512)}
+    | {"shake_128", "shake_256"}
+)
+_APPROVED_HELPER = "core.crypto.fips.approved_digest"
+_ITSDANGEROUS_SERIALIZERS = {
+    "Serializer",
+    "URLSafeSerializer",
+    "TimedSerializer",
+    "URLSafeTimedSerializer",
+}
+_ITSDANGEROUS_SIGNERS = {"Signer", "TimestampSigner"}
 _DIGEST_CALLS = {"hashlib.new", "hashlib.pbkdf2_hmac", "hashlib.file_digest"}
 _HMAC_CALLS = {"hmac.new", "hmac.digest", "hmac.HMAC"}
 _IMPORT_CALLS = {"importlib.import_module", "__import__"}
@@ -176,8 +297,11 @@ def _arg(call: ast.Call, index: int, keyword: str) -> ast.expr | None:
 
 
 def _digest_name(text: str) -> str:
-    name = text.lower()
-    return _HASH_ALIASES.get(name, name)
+    name = text.strip().lower()
+    name = _HASH_ALIASES.get(name, name)
+    if name.startswith("sha-"):  # SHA-256, SHA-512/256
+        name = "sha" + name[4:]
+    return name.replace("-", "_").replace("/", "_")  # SHA3-256 -> sha3_256
 
 
 def _canon(name: str) -> str:
@@ -243,10 +367,15 @@ class _Scanner(ast.NodeVisitor):
     constant-folds string expressions, then classifies every import, call and
     attribute reference by what it resolves to."""
 
-    def __init__(self, parent: _Scanner | None = None) -> None:
+    def __init__(
+        self, parent: _Scanner | None = None, local_roots: frozenset = frozenset()
+    ) -> None:
         self.found: Counter = Counter()
+        # First-party top-level names (core, services, ...): never third party.
+        self.local_roots = parent.local_roots if parent else local_roots
         self.aliases: dict[str, str] = dict(parent.aliases) if parent else {}
         self.consts: dict[str, object] = dict(parent.consts) if parent else {}
+        self.const_sets: dict[str, set] = dict(parent.const_sets) if parent else {}
         self.star_modules: list[str] = list(parent.star_modules) if parent else []
         # (bound name, curve) pairs whose import statement already counted.
         self.asym_counted: set[tuple[str, str]] = (
@@ -259,39 +388,54 @@ class _Scanner(ast.NodeVisitor):
     def scan(self, tree: ast.AST) -> Counter:
         # Imports, constants and module aliases first, so a name is resolved
         # wherever it is used (incl. lazily imported inside a function).
-        for node in ast.walk(tree):
+        nodes = list(ast.walk(tree))
+        for node in nodes:
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 self.visit(node)
-        self._collect_consts(tree)
+        assigns = [
+            node
+            for node in nodes
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ]
+        self._collect_consts(nodes, assigns)
         for _ in range(3):  # chains: a = hashlib; b = a
-            self._collect_module_aliases(tree)
+            self._collect_module_aliases(assigns)
         self.visit(_without_imports(tree))
         return +self.found
 
-    def _collect_consts(self, tree: ast.AST) -> None:
+    def _collect_consts(self, nodes: list, assigns: list) -> None:
         seen: dict[str, list] = {}
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Assign)
-                and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-            ):
-                seen.setdefault(node.targets[0].id, []).append(node.value)
+        for node in assigns:
+            seen.setdefault(node.targets[0].id, []).append(node.value)
+        # Round 6: names bound only by plain ``name = <constant str>``
+        # assignments (any number) and never any other way: parameter, loop /
+        # with / walrus / augmented / unpacking target, except-as.
+        simple = {id(node.targets[0]) for node in assigns}
+        rebound = set()
+        for n in nodes:
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                if id(n) not in simple:
+                    rebound.add(n.id)
+            elif isinstance(n, ast.arg):
+                rebound.add(n.arg)
+            elif isinstance(n, ast.ExceptHandler) and n.name:
+                rebound.add(n.name)
         for _ in range(2):  # a = "md"; b = a + "5"
             for name, values in seen.items():
                 folded = {self.fold(v) for v in values}
-                if len(values) == 1 and None not in folded:
+                if len(values) == 1 and None not in folded and name not in rebound:
                     self.consts[name] = folded.pop()
+        for name, values in seen.items():
+            folded = [self.fold(v) for v in values]
+            if name not in rebound and all(isinstance(v, str) for v in folded):
+                self.const_sets[name] = set(folded)
 
-    def _collect_module_aliases(self, tree: ast.AST) -> None:
-        for node in ast.walk(tree):
-            if not (
-                isinstance(node, ast.Assign)
-                and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-                and isinstance(
-                    node.value, (ast.Name, ast.Attribute, ast.Subscript, ast.Call)
-                )
+    def _collect_module_aliases(self, assigns: list) -> None:
+        for node in assigns:
+            if not isinstance(
+                node.value, (ast.Name, ast.Attribute, ast.Subscript, ast.Call)
             ):
                 continue
             target = node.targets[0].id
@@ -436,6 +580,13 @@ class _Scanner(ast.NodeVisitor):
         root = module.split(".")[0]
         if root in _FOREIGN_LIBS:
             self.found[_FOREIGN_LIBS[root]] += 1
+        elif (
+            root not in _VETTED_CRYPTO_LIBS
+            and root not in _PRIVATE_HASH_MODULES
+            and root not in self.local_roots
+            and _CRYPTO_CAPABLE.search(root)
+        ):
+            self.found[f"unvetted crypto lib ({root})"] += 1
         if root in _PRIVATE_HASH_MODULES:
             self.found[_PRIVATE_HASH_MODULES[root]] += 1
         leaf = module.split(".")[-1]
@@ -464,6 +615,8 @@ class _Scanner(ast.NodeVisitor):
         ):
             self._imported(module)
             counted = True
+        else:
+            self._imported(module)  # Round 6: allow-list check for `from x import y`
         for alias in node.names:
             if alias.name == "*":
                 self.star_modules.append(module)
@@ -497,6 +650,43 @@ class _Scanner(ast.NodeVisitor):
         if name:
             return _digest_name(_canon(name).rpartition(".")[2])
         return None
+
+    def _digest_provable(self, node: ast.expr | None, approved: frozenset) -> bool:
+        """True if ``node`` provably names a digest in ``approved``: a constant,
+        ``a if c else b`` over provable branches, a module name every
+        assignment of which is provable, or the result of
+        ``core.crypto.fips.approved_digest(...)`` (raises otherwise)."""
+        if node is None:
+            return False
+        text = self._fold_str(node)
+        if text is not None:
+            return _digest_name(text) in approved
+        if isinstance(node, ast.IfExp):
+            return self._digest_provable(node.body, approved) and self._digest_provable(
+                node.orelse, approved
+            )
+        if isinstance(node, ast.Name) and node.id in self.const_sets:
+            return all(_digest_name(v) in approved for v in self.const_sets[node.id])
+        if isinstance(node, ast.Call):
+            return _canon(self.resolve(node.func) or "") == _APPROVED_HELPER
+        if isinstance(node, ast.Attribute):
+            # file_digest(f, hashlib.sha256): a hashlib constructor
+            name = _canon(self.resolve(node) or "")
+            owner, _, attr = name.rpartition(".")
+            return owner == "hashlib" and _digest_name(attr) in approved
+        return False
+
+    def _digest_known(self, node: ast.expr) -> bool:
+        """An hmac ``digestmod`` / ``file_digest`` digest the scanner can judge:
+        a provable string, a hashlib/cryptography name (classified where it is
+        referenced), or a lambda/call around one."""
+        if self._digest_provable(node, _APPROVED_DIGESTS | {"sha1"}):
+            return True
+        if isinstance(node, ast.Lambda):
+            return self._digest_known(node.body)
+        target = node.func if isinstance(node, ast.Call) else node
+        name = _canon(self.resolve(target) or "")
+        return name.split(".")[0] in ("hashlib", "cryptography") and "." in name
 
     def visit_Call(self, node: ast.Call) -> None:
         if id(node) not in self.handled:
@@ -563,7 +753,15 @@ class _Scanner(ast.NodeVisitor):
             else:
                 arg = _arg(node, 0, "name" if name == "hashlib.new" else "hash_name")
             digest = self._string_digest(arg)
-            if digest in _NON_FIPS_HASHES:
+            known = (
+                self._digest_known(arg)
+                if name == "hashlib.file_digest"
+                else self._digest_provable(arg, _APPROVED_DIGESTS)
+            )
+            if digest is None and not known:
+                # Round 6: a digest name the scanner cannot prove approved.
+                self.found["dynamic digest name"] += 1
+            elif digest in _NON_FIPS_HASHES:
                 self.found[_NON_FIPS_HASHES[digest]] += 1
             elif digest in _WEAK_HASHES and (
                 name != "hashlib.new" or not _security_flag_off(node)
@@ -577,6 +775,22 @@ class _Scanner(ast.NodeVisitor):
             digest = self._digest_of(arg)
             if digest in _HMAC_FORBIDDEN:
                 self.found["hmac-md5"] += 1
+            elif arg is not None and not self._digest_known(arg):
+                self.found["dynamic digest name"] += 1
+            return
+        if name.startswith("itsdangerous.") and name.rpartition(".")[2] in (
+            _ITSDANGEROUS_SERIALIZERS | _ITSDANGEROUS_SIGNERS
+        ):
+            # Round 6: itsdangerous defaults to SHA-1 ("django-concat" key
+            # derivation + HMAC-SHA1); a FIPS caller must pick the digest.
+            attr = name.rpartition(".")[2]
+            keyword = (
+                "signer_kwargs"
+                if attr in _ITSDANGEROUS_SERIALIZERS
+                else "digest_method"
+            )
+            if not any(kw.arg in (keyword, None) for kw in node.keywords):
+                self.found["sha1 (itsdangerous default)"] += 1
             return
         if name.endswith("asymmetric.rsa.generate_private_key"):
             size = self.fold(_arg(node, 1, "key_size"))
@@ -617,8 +831,8 @@ class _Scanner(ast.NodeVisitor):
             self._ref(node, name)
 
 
-def scan_python(source: str) -> Counter:
-    return _Scanner().scan(ast.parse(source))
+def scan_python(source: str, local_roots: frozenset = frozenset()) -> Counter:
+    return _Scanner(local_roots=local_roots).scan(ast.parse(source))
 
 
 def _without_imports(tree: ast.Module) -> ast.Module:
@@ -639,7 +853,8 @@ _TS_PATTERNS = {
         rf"|pbkdf2(?:Sync)?\([^;]*?,\s*{_Q}md5{_Q}\s*[,)]"
         rf"|(?:create(?:Sign|Verify)|\bsign|\bverify)\(\s*{_Q}(?:rsa-)?md5"
         rf"(?:WithRSAEncryption)?{_Q}"
-        rf"|hash\s*:\s*(?:\{{\s*name\s*:\s*)?{_Q}md5{_Q}",
+        rf"|hash\s*:\s*(?:\{{\s*name\s*:\s*)?{_Q}md5{_Q}"
+        r"|\bCryptoJS\s*\.\s*(?:Hmac)?MD5\b",  # Round 6: crypto-js
         re.I,
     ),
     "sha1 (security use)": re.compile(
@@ -648,23 +863,37 @@ _TS_PATTERNS = {
         rf"|pbkdf2(?:Sync)?\([^;]*?,\s*{_Q}sha-?1{_Q}\s*[,)]"
         rf"|hash\s*:\s*(?:\{{\s*name\s*:\s*)?{_Q}sha-?1{_Q}"
         rf"|(?:create(?:Sign|Verify)|\bsign|\bverify)\(\s*{_Q}(?:rsa-)?sha-?1"
-        rf"(?:WithRSAEncryption)?{_Q}",
+        rf"(?:WithRSAEncryption)?{_Q}"
+        r"|\bCryptoJS\s*\.\s*SHA1\b",  # Round 6 (HmacSHA1 is approved)
         re.I,
     ),
     "weak hash": re.compile(
-        rf"(?:createHash|createHmac|\bhash)\(\s*{_Q}(?:md4|ripemd160|blake2[bs]\d*){_Q}",
+        rf"(?:createHash|createHmac|\bhash)\(\s*{_Q}(?:md4|ripemd160|blake2[bs]\d*){_Q}"
+        r"|\bCryptoJS\s*\.\s*(?:Hmac)?RIPEMD160\b",
         re.I,
     ),
     "scrypt": re.compile(r"\bscrypt(?:Sync)?\s*\("),
     "ed25519": re.compile(rf"{_Q}(?:ed25519|ed448|x25519|x448){_Q}", re.I),
     "legacy cipher": re.compile(
-        rf"createCipheriv\(\s*{_Q}(?:des|bf|rc4|rc2|cast|idea|seed|chacha20|camellia|sm4)",
+        rf"create(?:Cipheriv|Decipheriv)\(\s*{_Q}(?:des|bf|rc4|rc2|cast|idea|seed|"
+        r"chacha20|camellia|sm4)"
+        r"|\bCryptoJS\s*\.\s*(?:DES|TripleDES|RC4|RC4Drop|Rabbit|RabbitLegacy|"
+        r"Blowfish)\b",
         re.I,
+    ),
+    # Round 6: a digest picked at runtime (createHash(algo)) cannot be judged.
+    "dynamic digest name": re.compile(
+        r"(?:create(?:Hash|Hmac)|subtle\s*\.\s*digest)\(\s*(?![\'\"`{])"
+        r"[A-Za-z_$][\w$.]*\s*[,)]"
     ),
     "foreign crypto lib": re.compile(
         r"(?:from\s+|require\(\s*|import\(\s*|import\s+)['\"](?:bcrypt|bcryptjs|"
         r"tweetnacl|libsodium[\w-]*|crypto-js|node-forge|js-sha1|js-md5|sha1|md5|"
         r"blakejs|argon2|scrypt-js|"
+        # Round 6: more userland JS crypto that bypasses the platform provider.
+        r"jsrsasign|elliptic|hash\.js|create-hash|sha\.js|md5\.js|ripemd160|"
+        r"spark-md5|object-hash|browserify-cipher|crypto-browserify|pbkdf2|"
+        r"bcrypt-ts|node-rsa|jsencrypt|openpgp|"
         r"@noble/(?:hashes|curves|ed25519|ciphers|secp256k1))(?:/[^'\"]*)?['\"]",
         re.I,
     ),
@@ -688,41 +917,63 @@ def scan_typescript(source: str) -> Counter:
     )
 
 
-_TS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs")
-_PRUNE = {"node_modules", "dist", "build", "coverage", ".venv", ".git"}
+def _scanned_files():
+    """(relative path, absolute path) of every file in scope (see the scope
+    comment at the top). Symlinked directories are not followed."""
+    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
+        dirnames[:] = sorted(
+            d for d in dirnames if d not in _PRUNE and not d.startswith(".")
+        )
+        for name in sorted(filenames):
+            if not name.endswith(_PY_EXTS + _TS_EXTS) or name.endswith(".d.ts"):
+                continue
+            path = Path(dirpath) / name
+            rel = path.relative_to(REPO_ROOT).as_posix()
+            if not _is_test_path(rel):
+                yield rel, path
 
 
-def _walk(root: Path, suffixes: tuple[str, ...]):
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _PRUNE]
-        for name in filenames:
-            if name.endswith(suffixes):
-                yield Path(dirpath) / name
+def _entries(directory: Path, cache: dict) -> frozenset:
+    if directory not in cache:
+        cache[directory] = frozenset(
+            entry.name[:-3] if entry.name.endswith(".py") else entry.name
+            for entry in directory.iterdir()
+        )
+    return cache[directory]
+
+
+def _local_roots(path: Path, cache: dict) -> frozenset:
+    """First-party import roots for ``path``: top-level entries of the repo and
+    sibling modules (``import trust_check`` next to trust_check.py)."""
+    return _entries(REPO_ROOT, cache) | _entries(path.parent, cache)
 
 
 def _inventory() -> dict[str, Counter]:
     inventory: dict[str, Counter] = {}
-    for d in PY_DIRS:
-        for path in (REPO_ROOT / d).rglob("*.py"):
-            rel = path.relative_to(REPO_ROOT).as_posix()
-            if _is_test_path(rel):
-                continue
-            found = scan_python(path.read_text(encoding="utf-8"))
-            if found:
-                inventory[rel] = found
-    for d in TS_DIRS:
-        for path in _walk(REPO_ROOT / d, _TS_EXTS):
-            rel = path.relative_to(REPO_ROOT).as_posix()
-            if _is_test_path(rel) or rel.endswith(".d.ts"):
-                continue
-            found = scan_typescript(path.read_text(encoding="utf-8"))
-            if found:
-                inventory[rel] = found
+    cache: dict = {}
+    for rel, path in _scanned_files():
+        source = path.read_text(encoding="utf-8", errors="replace")
+        if rel.endswith(_PY_EXTS):
+            found = scan_python(source, _local_roots(path, cache))
+        else:
+            found = scan_typescript(source)
+        if found:
+            inventory[rel] = found
     return inventory
 
 
+_INVENTORY_CACHE: dict = {}
+
+
+def _cached_inventory() -> dict[str, Counter]:
+    """The full-repo scan takes seconds; the two ratchet tests share it."""
+    if REPO_ROOT not in _INVENTORY_CACHE:
+        _INVENTORY_CACHE[REPO_ROOT] = _inventory()
+    return _INVENTORY_CACHE[REPO_ROOT]
+
+
 def test_no_new_non_fips_primitives():
-    inventory = _inventory()
+    inventory = _cached_inventory()
     grown = [
         f"{path}: {name} x{count} (baseline {BASELINE.get(path, {}).get(name, 0)})"
         for path, found in sorted(inventory.items())
@@ -738,7 +989,7 @@ def test_no_new_non_fips_primitives():
 
 
 def test_baseline_has_no_stale_entries():
-    inventory = _inventory()
+    inventory = _cached_inventory()
     stale = [
         f"{path}: {name} baseline {count}, found {inventory.get(path, Counter())[name]}"
         for path, names in sorted(BASELINE.items())
@@ -862,7 +1113,6 @@ def test_scanner_catches_synthetic_violations(source, expected):
         "from hashlib import sha1\nsha1(b'x', usedforsecurity=False)",
         "import hmac\nhmac.new(k, m, 'sha1')",  # HMAC-SHA1 is approved (TOTP)
         "import hmac\nhmac.digest(k, m, 'sha256')",
-        "import hashlib\nhashlib.new(name)",  # dynamic; not resolvable
         "from cryptography.hazmat.primitives.ciphers import algorithms\n"
         "algorithms.AES(k)",
         "import importlib\nimportlib.import_module('json')",
@@ -913,12 +1163,16 @@ def test_typescript_scanner_passes(source):
 
 def test_the_scan_reaches_real_code():
     """Guard against a vacuous pass after a directory move."""
-    scanned = [p for d in PY_DIRS for p in (REPO_ROOT / d).rglob("*.py")]
-    assert len(scanned) > 300
-    assert (REPO_ROOT / "core/auth/auth_service.py") in scanned
-    assert any(
-        (REPO_ROOT / d).exists() and any((REPO_ROOT / d).rglob("*.ts")) for d in TS_DIRS
-    )
+    scanned = {rel for rel, _ in _scanned_files()}
+    assert len([r for r in scanned if r.endswith(".py")]) > 300
+    for rel in (
+        "core/auth/auth_service.py",
+        "services/agent/arch/registry.ts",
+        "infra/airgap/airgap_images.py",
+    ):
+        assert rel in scanned, rel
+    assert any(r.startswith("clients/web/src/") for r in scanned)
+    assert any(r.startswith("clients/desktop/src/") for r in scanned)
 
 
 # --- Round 5: evasions the round-3 scanner missed ---------------------------
@@ -1156,9 +1410,252 @@ def test_javascript_files_are_scanned(tmp_path, monkeypatch):
     (agent / "lib/d.test.js").write_text("crypto.createHash('md5')")
     (agent / "node_modules/x/e.js").write_text("crypto.createHash('md5')")
     monkeypatch.setitem(globals(), "REPO_ROOT", tmp_path)
-    monkeypatch.setitem(globals(), "PY_DIRS", ())
     assert sorted(_inventory()) == [
         "services/agent/lib/a.mjs",
         "services/agent/lib/b.cjs",
         "services/agent/lib/c.js",
     ]
+
+
+# --- Round 6 ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        # 1. non-OpenSSL / pure-Python crypto libraries, both import forms
+        ("import ecdsa", "ecdsa (pure python)"),
+        ("from ecdsa import SigningKey, NIST256p", "ecdsa (pure python)"),
+        ("from ecdsa.keys import SigningKey", "ecdsa (pure python)"),
+        ("import rsa", "rsa (pure python)"),
+        ("from rsa import newkeys", "rsa (pure python)"),
+        ("import pyDes", "des"),
+        ("from pyDes import triple_des", "des"),
+        ("from pyaes import AESModeOfOperationCTR", "aes (pure python)"),
+        ("from jose import jwt", "python-jose"),
+        ("import paramiko", "paramiko"),
+        ("def f():\n    from sshtunnel import SSHTunnelForwarder", "paramiko"),
+        ("import crypt", "crypt(3)"),
+        ("from Cryptodome.Cipher import AES", "pycryptodome"),
+        ("import sha3", "keccak (pysha3)"),
+        ("from coincurve import PrivateKey", "secp256k1"),
+        ("import importlib\nimportlib.import_module('ecdsa')", "ecdsa (pure python)"),
+        ("__import__('rsa')", "rsa (pure python)"),
+        # allow-list: a crypto-looking library nobody vetted
+        ("import cryptopp", "unvetted crypto lib (cryptopp)"),
+        ("from hashids import Hashids", "unvetted crypto lib (hashids)"),
+        ("from pgpkit.sign import sign", "unvetted crypto lib (pgpkit)"),
+        ("import _sha256", "unvetted crypto lib (_sha256)"),
+        # itsdangerous defaults to SHA-1
+        (
+            "from itsdangerous import URLSafeTimedSerializer\n"
+            "URLSafeTimedSerializer(k, salt='x')",
+            "sha1 (itsdangerous default)",
+        ),
+        ("import itsdangerous\nitsdangerous.Signer(k)", "sha1 (itsdangerous default)"),
+        # 2. digest names the scanner cannot prove approved
+        ("import hashlib\nhashlib.new(name)", "dynamic digest name"),
+        (
+            "import hashlib\nhashlib.new(algo, usedforsecurity=False)",
+            "dynamic digest name",
+        ),
+        ("import hashlib\nhashlib.new(cfg['digest'])", "dynamic digest name"),
+        ("import hashlib\nhashlib.new(name=self.algo)", "dynamic digest name"),
+        (
+            "import hashlib\ndef f(n='sha256'):\n    return hashlib.new(n)",
+            "dynamic digest name",
+        ),
+        (
+            "import hashlib\nN = 'sha256'\nN += suffix\nhashlib.new(N)",
+            "dynamic digest name",
+        ),
+        (
+            "import hashlib\nN = 'sha256'\nN = 'md5'\nhashlib.new(N)",
+            "dynamic digest name",
+        ),
+        (
+            "import hashlib\nfor n in ('sha256', 'md5'):\n    hashlib.new(n)",
+            "dynamic digest name",
+        ),
+        (
+            "import hashlib\nhashlib.new('sha256' if a else algo)",
+            "dynamic digest name",
+        ),
+        ("import hashlib\nhashlib.pbkdf2_hmac(alg, p, s, 1)", "dynamic digest name"),
+        ("import hashlib\nhashlib.file_digest(f, algo)", "dynamic digest name"),
+        ("import _hashlib\n_hashlib.new(name)", "dynamic digest name"),
+        ("import hmac\nhmac.new(k, m, digestmod=self.digest)", "dynamic digest name"),
+        ("import hmac\nhmac.digest(k, m, algo)", "dynamic digest name"),
+        (
+            "import hashlib\nfrom somewhere import approved_digest\n"
+            "hashlib.new(approved_digest(n))",
+            "dynamic digest name",
+        ),
+    ],
+)
+def test_scanner_catches_round6(source, expected):
+    assert scan_python(source)[expected] >= 1, scan_python(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # vetted libraries (see _VETTED_CRYPTO_LIBS for why)
+        "import ssl, secrets, hmac, hashlib",
+        "import jwt\njwt.decode(t, k, algorithms=['HS256'])",
+        "import pyotp",
+        "import keyring",
+        "from cryptography.fernet import Fernet",
+        "from itsdangerous import URLSafeTimedSerializer\n"
+        "URLSafeTimedSerializer(k, signer_kwargs={'digest_method': h})",
+        "from itsdangerous import TimestampSigner\nTimestampSigner(k, digest_method=h)",
+        "from itsdangerous import BadSignature",
+        # not crypto at all
+        "import signal, dataclasses, unicodedata, shutil, json",
+        "from core.crypto import signing",
+        # provable digest names
+        "import hashlib\nA = 'sha256'\nhashlib.new(A)",
+        "import hashlib\nA = 'sha256'\nif big:\n    A = 'sha384'\nhashlib.new(A)",
+        "import hashlib\nhashlib.new('sha512' if big else 'sha256')",
+        "import hashlib\nhashlib.new('SHA3-256')",
+        "import hashlib\nhashlib.new('SHA-512/256')",
+        "import hashlib\nfrom core.crypto.fips import approved_digest\n"
+        "hashlib.new(approved_digest(name))",
+        "import hashlib\nimport core.crypto.fips as F\n"
+        "hashlib.pbkdf2_hmac(F.approved_digest(n), p, s, 600000)",
+        "import hashlib\nhashlib.file_digest(f, hashlib.sha256)",
+        "import hashlib\nhashlib.file_digest(f, lambda: hashlib.sha256())",
+        "import hmac, hashlib\nhmac.new(k, m, hashlib.sha256)",
+        "import hmac, hashlib\nhmac.new(k, m, lambda d=b'': hashlib.sha512(d))",
+        "import hmac\nhmac.new(k, m, 'sha1')",
+        "import hmac\nfrom hashlib import sha256\nhmac.new(k, m, sha256)",
+        "import hmac\nhmac.new(k)",  # digestmod omitted: TypeError at runtime
+    ],
+)
+def test_scanner_round6_approved_uses(source):
+    assert not scan_python(source), scan_python(source)
+
+
+def test_local_modules_are_not_third_party_crypto():
+    source = "import hashing_utils\nfrom hashing_utils import fingerprint"
+    assert scan_python(source)["unvetted crypto lib (hashing_utils)"] == 2
+    assert not scan_python(source, frozenset({"hashing_utils"}))
+
+
+def test_approved_digest_sets_agree():
+    from core.crypto.fips import APPROVED_DIGESTS
+
+    assert APPROVED_DIGESTS == _APPROVED_DIGESTS
+
+
+def test_password_reset_serializer_is_sha256_hmac():
+    """The itsdangerous allow-list entry relies on this (see _VETTED_CRYPTO_LIBS)."""
+    import hashlib
+
+    from core.auth import password_reset
+
+    signer = password_reset._get_serializer().make_signer()
+    assert signer.digest_method is hashlib.sha256
+    assert signer.key_derivation == "hmac"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("CryptoJS.MD5(message).toString()", "md5 (security use)"),
+        ("CryptoJS.HmacMD5(message, key)", "md5 (security use)"),
+        ("const d = CryptoJS.SHA1(message);", "sha1 (security use)"),
+        ("CryptoJS.RIPEMD160(message)", "weak hash"),
+        ("CryptoJS.TripleDES.encrypt(m, k)", "legacy cipher"),
+        ("CryptoJS.RC4.encrypt(m, k)", "legacy cipher"),
+        ("CryptoJS.Rabbit.decrypt(c, k)", "legacy cipher"),
+        ("crypto.createDecipheriv('des-ede3-cbc', k, iv)", "legacy cipher"),
+        ("import md5 from 'crypto-js/md5';", "foreign crypto lib"),
+        ("import CryptoJS from 'crypto-js';", "foreign crypto lib"),
+        ("import { KJUR } from 'jsrsasign';", "foreign crypto lib"),
+        ("import SparkMD5 from 'spark-md5';", "foreign crypto lib"),
+        ("const EC = require('elliptic').ec;", "foreign crypto lib"),
+        ("const hash = require('object-hash');", "foreign crypto lib"),
+        ("crypto.createHash(algorithm).update(x)", "dynamic digest name"),
+        ("crypto.createHmac(cfg.alg, key)", "dynamic digest name"),
+        ("await crypto.subtle.digest(alg, data)", "dynamic digest name"),
+        ("crypto.createHash('md5')", "md5 (security use)"),
+        ("await window.crypto.subtle.digest('SHA-1', buf)", "sha1 (security use)"),
+    ],
+)
+def test_typescript_scanner_catches_round6(source, expected):
+    assert scan_typescript(source)[expected] >= 1, scan_typescript(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "CryptoJS.SHA256(message)",
+        "CryptoJS.HmacSHA1(message, key)",  # HMAC-SHA1 is approved
+        "CryptoJS.AES.encrypt(m, k)",
+        "crypto.createHash('sha256')",
+        "await crypto.subtle.digest({ name: 'SHA-256' }, data)",
+        "const hash = e.file_hash_sha256 || e.file_hash_md5",  # field names
+        "const md5Label = 'MD5';",
+    ],
+)
+def test_typescript_scanner_round6_passes(source):
+    assert not scan_typescript(source), scan_typescript(source)
+
+
+def test_new_top_level_code_is_scanned(tmp_path, monkeypatch):
+    """No directory list to forget: a package or client added anywhere is in
+    scope; only the documented prunes, dot-dirs, tests and .d.ts are not."""
+    files = {
+        # in scope
+        "newpkg/__init__.py": "import ecdsa",
+        "newpkg/sub/mod.py": "import hashlib\nhashlib.md5(b'')",
+        "standalone_script.py": "import rsa",
+        "infra/tools/x.py": "import pyDes",
+        "clients/mobile/src/a.ts": "crypto.createHash('md5')",
+        "clients/web/src/b.tsx": "CryptoJS.SHA1(m)",
+        "docs/examples/c.js": "require('crypto-js')",
+        # out of scope
+        "newpkg/tests/test_a.py": "import ecdsa",
+        "newpkg/test_b.py": "import ecdsa",
+        "node_modules/x/e.js": "createHash('md5')",
+        "clients/web/dist/f.js": "createHash('md5')",
+        "build/g.py": "import ecdsa",
+        "htmlcov/h.js": "createHash('md5')",
+        ".github/scripts/i.py": "import ecdsa",
+        ".venv/lib/j.py": "import ecdsa",
+        "clients/web/src/k.d.ts": "createHash('md5')",
+        "clients/web/src/l.test.ts": "createHash('md5')",
+    }
+    for rel, text in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text)
+    monkeypatch.setitem(globals(), "REPO_ROOT", tmp_path)
+    assert sorted(_inventory()) == [
+        "clients/mobile/src/a.ts",
+        "clients/web/src/b.tsx",
+        "docs/examples/c.js",
+        "infra/tools/x.py",
+        "newpkg/__init__.py",
+        "newpkg/sub/mod.py",
+        "standalone_script.py",
+    ]
+
+
+def test_every_top_level_source_dir_is_reached():
+    """Each real top-level directory holding non-test source is reached by
+    the walk unless it is a documented prune (guards a reintroduced dir list)."""
+    scanned_tops = {rel.split("/")[0] for rel, _ in _scanned_files()}
+    for top in sorted(REPO_ROOT.iterdir()):
+        if not top.is_dir() or top.name.startswith(".") or top.name in _PRUNE:
+            continue
+        has_source = any(
+            not _is_test_path(p.relative_to(REPO_ROOT).as_posix())
+            and not p.name.endswith(".d.ts")
+            and not any(part in _PRUNE for part in p.relative_to(REPO_ROOT).parts)
+            for ext in ("*.py", "*.ts", "*.tsx", "*.js")
+            for p in top.rglob(ext)
+            if "node_modules" not in p.parts
+        )
+        if has_source:
+            assert top.name in scanned_tops, top.name
