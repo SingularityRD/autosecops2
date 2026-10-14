@@ -762,7 +762,17 @@ def test_merged_list_matches_git():
     refs = _wp_refs()
     if not refs or not _history_available():
         pytest.skip("no wp/* refs or no full history: merged_wps.txt is trusted")
-    assert merged_list_problems(merged_list(), refs) == []
+    assert merged_list_problems(merged_list(), refs, _documented_base()) == []
+
+
+def _documented_base() -> str:
+    """The commit the pages describe. A branch merged after it is not yet
+    documented, so it is checked against that base rather than HEAD; the
+    one-base test below fails when the pages disagree on it."""
+    bases = sorted(doc_bases(_guide_docs()))
+    if len(bases) != 1 or _git("cat-file", "-e", f"{bases[0]}^{{commit}}").returncode:
+        return "HEAD"
+    return bases[0]
 
 
 def test_pages_describe_one_base_that_contains_every_merged_branch():
