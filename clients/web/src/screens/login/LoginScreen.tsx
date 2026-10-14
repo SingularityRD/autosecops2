@@ -1,15 +1,36 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import '../../../../../docs/design/console/tokens/tokens.css'
 import '../../styles.css'
 import '../../shell/shell.css'
 import { useAuth } from '../../contexts/AuthContext'
-import { bootstrapApi } from '../../services/api'
+import { bootstrapApi, ssoApi, type SsoProviders } from '../../services/api'
 import { Icon } from '../../shared/icons'
 import { VigilLogo } from '../../shared/VigilLogo'
 import { useColorScheme } from '../../contexts/ColorSchemeContext'
 
 const UNREACHABLE_MSG = "Can't reach the AutoSecOps API. Is the backend running?"
+
+// The callback redirects here with ?sso_error=<code>; the detail stays in the
+// server log and audit record, the person gets what they can act on.
+const SSO_ERRORS: Record<string, string> = {
+  state: 'That sign-in attempt expired or was already used. Try again.',
+  nonce: "AutoSecOps couldn't verify the identity provider's response. Try again.",
+  signature: "AutoSecOps couldn't verify the identity provider's response. Try again.",
+  claims: "AutoSecOps couldn't verify the identity provider's response. Try again.",
+  expired: 'The identity provider’s response had expired. Try again.',
+  token: 'The identity provider did not complete the sign-in. Try again.',
+  idp_error: 'The identity provider did not complete the sign-in.',
+  account: 'No AutoSecOps account is linked to that identity. Ask an administrator for access.',
+  machine_account: 'Service accounts cannot use single sign-on.',
+  inactive: 'This AutoSecOps account is disabled.',
+}
+const SSO_UNAVAILABLE = 'Single sign-on is unavailable right now. Try again later.'
+
+function ssoErrorMessage(code: string | null): string {
+  if (!code) return ''
+  return SSO_ERRORS[code] ?? SSO_UNAVAILABLE
+}
 
 // No response, or a 5xx without a server `detail` (e.g. Vite's proxy answering
 // ECONNREFUSED with a 500), means the API never saw the request.
@@ -23,6 +44,7 @@ function requestErrorMessage(err: any, fallback: string): string {
 
 export default function LoginScreen() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { login } = useAuth()
   const { scheme, setScheme } = useColorScheme()
 
@@ -33,7 +55,10 @@ export default function LoginScreen() {
   const [remember, setRemember] = useState(true)
   const [showMfa, setShowMfa] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState(() =>
+    ssoErrorMessage(new URLSearchParams(location.search).get('sso_error')),
+  )
+  const [sso, setSso] = useState<SsoProviders | null>(null)
   const mfaInputRef = useRef<HTMLInputElement>(null)
 
   // null until the bootstrap check resolves; true means the instance has no
@@ -52,6 +77,11 @@ export default function LoginScreen() {
       .status()
       .then((res) => setNeedsBootstrap(res.data.required))
       .catch(() => setNeedsBootstrap(false))
+    // No providers (or no answer) just means no single sign-on buttons.
+    ssoApi
+      .providers()
+      .then((res) => setSso(res.data))
+      .catch(() => setSso(null))
   }, [])
 
   const handleBootstrap = async (e: React.FormEvent) => {
@@ -352,6 +382,24 @@ export default function LoginScreen() {
                 )}
               </button>
             </form>
+            )}
+
+            {!needsBootstrap && !showMfa && sso && sso.providers.length > 0 && (
+              <div className="sso">
+                <div className="sso-divider">or</div>
+                {sso.providers.map((p) => (
+                  <a key={p.id} className="btn-sso" href={ssoApi.loginUrl(p.id)}>
+                    <Icon name="shield" size={16} />
+                    Sign in with {p.display_name}
+                  </a>
+                ))}
+                {!sso.local_login_enabled && (
+                  <p className="sso-note">
+                    Password sign-in is limited to break-glass accounts. Everyone else
+                    signs in to AutoSecOps with single sign-on.
+                  </p>
+                )}
+              </div>
             )}
           </div>
         </section>

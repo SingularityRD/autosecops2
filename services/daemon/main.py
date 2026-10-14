@@ -342,29 +342,51 @@ class SOCDaemon:
         try:
             return await self._leadership.wait_for_leadership(self._shutdown_event)
         finally:
+            # Leading (or stopping): the spool is opened and counted by the
+            # leader's own gauges from here, not by the standby gauge.
+            self._stop_watching_spool()
             if standby is not None:
                 # Frees the port for the real webhook in DataPoller.
                 await standby.stop()
 
     def _report_waiting_spool(self) -> None:
         """A standby does not replay (only the leader does); say so when this
-        pod's own spool holds findings a previous run acknowledged."""
+        pod's own spool holds findings a previous run acknowledged, and keep
+        ``soc_daemon_ingest_spool_standby_pending`` up to date while standby
+        (W0.12b) so a waiting spool can be alerted on."""
         cfg = getattr(self.config, "spool", None)
         if cfg is None or not cfg.enabled:
             return
         try:
-            from core.ingestion.spool import waiting_segments
+            from core.ingestion.spool import (
+                waiting_findings,
+                waiting_segments,
+                watch_standby,
+            )
 
-            waiting = waiting_segments(cfg.resolved_directory())
+            directory = cfg.resolved_directory()
+            watch_standby(directory)
+            waiting = waiting_segments(directory)
+            findings = waiting_findings(directory) if waiting else 0
         except Exception:  # noqa: BLE001 - informational only
             return
         if waiting:
             logger.warning(
-                "Standby: %d ingest spool segment(s) on this pod wait until it "
-                "leads (docs/operations/ingest-durability.md: hand over by "
-                "restarting the current leader pod)",
+                "Standby: %d ingest spool segment(s) (%d finding(s)) on this pod "
+                "wait until it leads (docs/operations/ingest-durability.md: hand "
+                "over by restarting the current leader pod)",
                 waiting,
+                findings,
             )
+
+    @staticmethod
+    def _stop_watching_spool() -> None:
+        try:
+            from core.ingestion.spool import watch_standby
+
+            watch_standby(None)
+        except Exception:  # noqa: BLE001 - informational only
+            pass
 
     async def _start_components(self, start) -> None:
         leadership = self._leadership

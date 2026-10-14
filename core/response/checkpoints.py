@@ -6,13 +6,34 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# How much of a tool call's arguments the approval prompt shows a person. The
-# digest covers all of them; the summary is only what fits on the screen.
-ARGS_SUMMARY_CHARS = 600
+# Top-level argument names that say *what* a gated call acts on. The approval
+# names them on a line of their own so a person reads the target before the
+# rest of the arguments, wherever sorted keys put it (W0.14).
+TARGET_KEYS = (
+    "machine_id",
+    "device_id",
+    "host",
+    "hostname",
+    "ip",
+    "ip_address",
+    "user",
+    "username",
+    "user_id",
+    "upn",
+    "account",
+    "email",
+    "domain",
+    "url",
+    "sha256",
+    "file_hash",
+    "hash",
+    "indicator",
+    "target",
+)
 
 
 def canonical_args(args: Any) -> str:
@@ -34,19 +55,36 @@ def args_digest(args: Any) -> str:
     return hashlib.sha256(canonical_args(args).encode("utf-8")).hexdigest()
 
 
-def args_summary(args: Any) -> str:
-    text = canonical_args(args)
-    if len(text) <= ARGS_SUMMARY_CHARS:
-        return text
-    return f"{text[:ARGS_SUMMARY_CHARS]}... ({len(text)} characters in all)"
+def target_fields(args: Any) -> List[List[str]]:
+    """The ``[name, value]`` pairs of ``args`` that name what the call acts on."""
+    if not isinstance(args, dict):
+        return []
+    found: List[List[str]] = []
+    for key in TARGET_KEYS:
+        if key not in args or args[key] is None:
+            continue
+        value = args[key]
+        text = value if isinstance(value, str) else canonical_args(value)
+        found.append([key, text])
+    return found
+
+
+def target_line(args: Any) -> str:
+    return ", ".join(f"{k}={v}" for k, v in target_fields(args))
 
 
 def tool_call_parameters(tool: str, args: Any) -> Dict[str, Any]:
-    """What an approval row carries about the one call it approves."""
+    """What an approval row carries about the one call it approves.
+
+    ``args_canonical`` is the whole canonical text the digest covers, never a
+    cut of it: an approval shows a person exactly the call it binds, so no
+    padding argument can push the real target out of what they read (W0.14).
+    """
     return {
         "tool": tool,
         "args_sha256": args_digest(args),
-        "args_summary": args_summary(args),
+        "args_canonical": canonical_args(args),
+        "args_targets": target_fields(args),
     }
 
 
@@ -67,8 +105,14 @@ def split_tool_call(
 
 
 def tool_call_prompt(tool: str, args: Any) -> str:
-    """The lines a person reads under the question: exactly what would run."""
-    return f"Tool: {tool}\nArguments: {args_summary(args)}"
+    """The lines a person reads under the question: exactly what would run,
+    the whole of it, with the target named first."""
+    lines = [f"Tool: {tool}"]
+    targets = target_line(args)
+    if targets:
+        lines.append(f"Target: {targets}")
+    lines.append(f"Arguments: {canonical_args(args)}")
+    return "\n".join(lines)
 
 
 def pending_for(run_id: str, checkpoint_id: str, approvals=None):
@@ -114,7 +158,13 @@ def raise_for_checkpoint(
 
     parameters = dict(parameters or {})
     # Only this function writes these, from tool_call.
-    for key in ("tool", "args_sha256", "args_summary"):
+    for key in (
+        "tool",
+        "args_sha256",
+        "args_canonical",
+        "args_targets",
+        "args_summary",
+    ):
         parameters.pop(key, None)
     if tool_call and tool_call.get("tool"):
         tool = str(tool_call["tool"])

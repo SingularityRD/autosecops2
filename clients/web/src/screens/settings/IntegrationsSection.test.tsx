@@ -29,6 +29,11 @@ vi.mock('../../services/api', () => ({
   },
   orchestratorApi: {},
   storageApi: {},
+  // The real streamFetch adds X-CSRF-Token; mark the call so the tests can
+  // see the builder's POSTs go through it (CSRF is enforced by default).
+  streamFetch: vi.fn((path: string, init: RequestInit = {}) =>
+    fetch(`/api${path}`, { ...init, credentials: 'include', headers: { ...(init.headers as object), 'X-CSRF-Token': 'via-streamFetch' } }),
+  ),
 }))
 
 function renderSection(path = '/settings?section=integrations') {
@@ -218,7 +223,7 @@ describe('Integrations: Custom tab', () => {
   }
   let listed: number
   let generateReply: () => unknown
-  let calls: { url: string; body: Record<string, unknown> | null }[]
+  let calls: { url: string; body: Record<string, unknown> | null; csrf?: string; method?: string }[]
 
   const called = (suffix: string) => calls.filter((c) => c.url.endsWith(suffix))
 
@@ -231,8 +236,13 @@ describe('Integrations: Custom tab', () => {
     vi.mocked(mcpApi.getStatuses).mockResolvedValue({ data: { statuses: [] } } as never)
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string, init?: { body?: string }) => {
-        calls.push({ url, body: init?.body ? JSON.parse(init.body) : null })
+      vi.fn(async (url: string, init?: { body?: string; method?: string; headers?: Record<string, string> }) => {
+        calls.push({
+          url,
+          body: init?.body ? JSON.parse(init.body) : null,
+          csrf: init?.headers?.['X-CSRF-Token'],
+          method: init?.method,
+        })
         const ok = (body: unknown) => ({ ok: true, json: async () => body })
         if (url.endsWith('/list')) {
           if (listed < 0) return { ok: false, json: async () => ({}) }
@@ -359,6 +369,16 @@ describe('Integrations: Custom tab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(called('/save')).toHaveLength(2))
     expect(called('/save')[1].body).toMatchObject({ integration_id: 'custom-acme', server_code: 'print("v2")' })
+  })
+
+  it('sends every builder POST with the CSRF header (enforced by default)', async () => {
+    await open()
+    await generate()
+    fireEvent.click(screen.getByRole('button', { name: 'Validate' }))
+    await screen.findByText('The code passes the static check.')
+    const posts = calls.filter((c) => c.method === 'POST')
+    expect(posts.map((c) => c.url.split('/').pop())).toEqual(expect.arrayContaining(['generate', 'save', 'validate']))
+    for (const c of posts) expect(c.csrf).toBe('via-streamFetch')
   })
 })
 

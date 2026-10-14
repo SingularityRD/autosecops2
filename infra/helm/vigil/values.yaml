@@ -772,7 +772,13 @@ config:
 
   # CSRF
   VIGIL_CSRF_ENABLED: "true"
-  VIGIL_CSRF_REPORT_ONLY: "true"
+  # Enforced (W0.13 R5): a mismatched or missing X-CSRF-Token on a POST, PUT,
+  # PATCH or DELETE is refused with 403, not just logged. The web console
+  # always sends it. A script calling a non-exempt path with a Bearer token
+  # must send a csrf_token cookie and an equal X-CSRF-Token header (any
+  # random value), or its prefix must be added below. Set "true" to go back
+  # to log-only while you check the API logs for "CSRF violation".
+  VIGIL_CSRF_REPORT_ONLY: "false"
   # Added to the always-exempt set (webhooks, ingestion, the /mcp surface,
   # the agent layer's /internal endpoints) rather than replacing it.
   # App-root relative; the API prefixes each entry with VIGIL_CONTEXT_PATH.

@@ -37,14 +37,50 @@ gönderen ──POST──▶ webhook ──append+fsync──▶ spool (disk) �
   başarısızsa bulgu **bırakılmaz**: spool'a geri döner ve besleyici, ardışık her
   hatada ikiye katlanan bir beklemeyle (0,5 sn → en çok 10 sn) duraklar.
   Veritabanı dönünce birikim sırayla yazılır.
-- Segmentin tüm bulguları yazılınca dosya silinir. Daemon durur ya da
-  öldürülürse kalan segmentler bir sonraki açılışta yüklenir ve yeniden
-  oynatılır (`"replaying them"` uyarısı).
-- **Zehirli bulgu:** veritabanı `SELECT 1`'e yanıt verirken bir bulgunun
-  yazımı 5 kez reddedilirse bulgu `dead/` altına (aynı biçimde, `fsync`'li)
-  ayrılır ve kuyruk tıkanmaz. Silinmez: dosya spool dizinine geri taşınırsa
-  sonraki açılışta yeniden oynatılır. Okunamayan segmentler `corrupt/` altına
-  taşınır.
+- Segmentin tüm bulguları yazılınca dosya silinir. Segmentin bir kısmı
+  yazıldıysa yazılanlar tek tek `<segment>.done` dosyasına (satır başına bir
+  gövde satırı sırası ve onun crc32 denetimi; yırtık işaret yok sayılır) işaretlenir (W0.12b). Daemon durur ya da öldürülürse
+  kalan segmentler bir sonraki açılışta yüklenir ve yalnızca işaretlenmemiş
+  bulgular yeniden oynatılır (`"replaying them"` uyarısı). İşaret `fsync`
+  edilmez: süreç öldürülmesinde korunur; elektrik kesintisinde kaybolursa bulgu
+  yeniden oynatılır ve depo onu "zaten yazılmış" olarak bildirir.
+- **Yeniden oynatmada ikinci triage yok (W0.12b):** depo, satırı yeni mi
+  yazdığını yoksa zaten var mı bulduğunu ayırt eder; arama hatası "yok" sayılmaz,
+  başarısız yazım olarak yeniden denenir. Zaten yazılmış bir bulgu yalnızca
+  saklanan satırda henüz triage yoksa (`ai_enrichment` boş ya da yalnızca
+  `ai_triage_error`) ve bu süreçte üzerinde çalışılmıyorsa triage edilir.
+- **Kesinti ile zehirli bulgu ayrımı (W0.12b):** veritabanının yazımı bütünüyle
+  reddetmesi kesintidir, bulgu spool'da bekler, karantinaya **hiç** gitmez:
+  bağlantı hataları (SQLSTATE `08…`), salt-okunur işlem (`25006`, yük devri
+  sonrası bekleme sunucusu), disk dolu / kaynak yetersiz (`53…`), yetki yok
+  (`42501`), operatör müdahalesi / kurtarma (`57…`), G/Ç (`58…`), kilitlenme ve
+  serileştirme (`40…`), kilit alınamadı (`55P03`).
+  SQLSTATE taşımayan hatalarda ileti metnine bakılır ("read-only transaction",
+  "No space left on device", "permission denied", ...).
+- **Benzersiz anahtar çakışması (`23505`, W0.12b round 6):** önce yerinde
+  yeniden denenir (eşzamanlı ekleme ise ikinci deneme satırı "zaten var" bulur);
+  çözülmezse veritabanı yanıt vermiş demektir ve zehirli bulgu gibi sayılır.
+  Boş (`""` ya da yalnız boşluk) `external_id` `NULL` olarak yazılır, bu yüzden
+  `uniq_findings_source_extid`'e hiç çarpmaz.
+- **Zehirli bulgu:** yalnızca bulgunun kendisinden kaynaklanan hata (`22…` veri
+  hatası, `23…` bütünlük kısıtı, çözülmeyen `23505`, `54…` sınır aşımı, bulgu
+  içeriğinden doğan `ValueError`/`TypeError`) ya da sınıflandırılamayan bir hata veritabanı
+  `SELECT 1`'e yanıt verirken 5 kez yinelenirse bulgu `dead/` altına (aynı
+  biçimde, `fsync`'li, `0600`) ayrılır ve kuyruk tıkanmaz. Silinmez: dosya
+  spool dizinine geri taşınırsa sonraki açılışta yeniden oynatılır.
+- **Bozuk satır (W0.12b):** başlığı okunamayan (biçimi bilinmeyen) segment
+  bütünüyle `corrupt/` altına taşınır. Başlığı sağlam bir segmentte okunamayan
+  satırlar yalnızca kendileri `corrupt/<segment>-lines-<ns>.jsonl` dosyasına
+  (özgün başlık + satırlar olduğu gibi) kopyalanır ve işaretlenir; segmentin
+  diğer bulguları oynatılır. Satırlar düzeltilip dosya spool dizinine geri
+  taşınırsa oynatılır. Okunamayan (ör. `EACCES`, `EIO`) bir segment yalnızca
+  kendisini etkiler: `corrupt/`'a taşınır, taşınamazsa yerinde bırakılıp
+  loglanır; `.done` işaretleri okunamayan segment yerinde bırakılır ve
+  oynatılmaz (`unreadable_segments` sayacı). Spool'un kalanı çalışır.
+- **İzinler:** spool dizini, `dead/` ve `corrupt/` `0700`; tüm dosyalar `0600`.
+  Açılışta mevcut dizin ve dosyalar bu kipe getirilir (sahibi başkasıysa
+  uyarı yazılır). Sembolik bağlar izlenmez: hedeflerinin kipi değişmez;
+  sembolik bağ olan `dead/`/`corrupt/` içine yazılmaz.
 - Bir dizini aynı anda tek süreç kullanır (`.lock` üzerinde `flock`).
 
 Spool kapalıysa (`DAEMON_INGEST_SPOOL_ENABLED=false`) ya da açılamazsa (dizin
@@ -88,9 +124,23 @@ daemon bellek sınırını (`daemon.resources.limits.memory`) da gözetin.
   spool'unda kalan bulgular o pod yeniden **lider olduğunda** oynatılır.
   Yeniden başlayan pod takipçi olarak dönerse, açılışta şu uyarıyı yazar:
   `Standby: N ingest spool segment(s) on this pod wait until it leads`.
-  Bu bulgular kaybolmamıştır, ama bekler. Hemen aktarmak için mevcut lider
-  podu yeniden başlatın (`kubectl delete pod <lider>`); bekleyen pod kilidi
-  alır ve oynatır. Rolleri `/health` (`"role"`) gösterir.
+  Bu bulgular kaybolmamıştır, ama bekler. Takipçi beklerken bekleyen bulgu
+  sayısını `soc_daemon_ingest_spool_standby_pending` göstergesinde yayımlar
+  (30 sn'de bir dizinden salt-okunur sayılır; pod lider olunca 0). Hemen
+  aktarmak için mevcut lider podu yeniden başlatın (`kubectl delete pod
+  <lider>`); bekleyen pod kilidi alır ve oynatır. Rolleri `/health`
+  (`"role"`) gösterir. Uyarı önerisi:
+  `soc_daemon_ingest_spool_standby_pending > 0` 10 dakikadan uzun sürerse
+  devri elle yapın.
+- Lider olan pod başka podların spool'unu **oynatmaz**: Helm'de her pod kendi
+  ReadWriteOnce PVC'sini görür, başka bir podun dizinine erişemez. Bütün
+  podlar aynı paylaşılan (ReadWriteMany) dizini `DAEMON_INGEST_SPOOL_DIR` ile
+  gösterirse tek bir spool vardır: dizini `flock` ile o anki lider tutar ve
+  yeni lider devraldığında (eski süreç çıkınca kilit bırakılır) kalanı
+  oynatır. Bu kip desteklenen varsayılan değildir: ağ dosya sistemlerinde
+  `flock` davranışı ve `fsync` garantisi sağlayıcıya bağlıdır; yeni lider
+  kilidi eski süreç çıkmadan almaya çalışırsa spool'suz kipe ("satır yazılınca
+  200") düşer.
 - Bir PVC silinirse (ör. StatefulSet ölçeği küçültülüp PVC'ler temizlenirse)
   içindeki yazılmamış bulgular gider. Ölçek küçültmeden önce o podun spool'unun
   boş olduğunu doğrulayın (`soc_daemon_ingest_spool_pending` = 0 ya da dizinde
@@ -107,12 +157,16 @@ OTEL/Prometheus (`/metrics`, `VIGIL_OTEL_ENABLED=true`):
 | `soc_daemon_ingest_spool_appended_total` | Spool'a alınan bulgu |
 | `soc_daemon_ingest_spool_rejected_total{reason=full\|error}` | 503 ile reddedilen istek |
 | `soc_daemon_ingest_spool_store_retries_total` | Yazılamayıp spool'a geri dönen deneme |
-| `soc_daemon_ingest_spool_replay_skipped_total` | Yeniden oynatmada zaten yazılmış bulunan |
+| `soc_daemon_ingest_spool_replay_skipped_total` | Zaten yazılmış (ve triage edilmiş ya da triage'ı sürmekte) bulunup yeniden triage edilmeyen |
 | `soc_daemon_ingest_spool_quarantined_total` | `dead/` altına ayrılan bulgu |
+| `soc_daemon_ingest_spool_standby_pending` | Takipçi podun kendi spool'unda, o pod lider olana dek bekleyen bulgu (W0.12b) |
 
-`/status` (sağlık portu) `metrics.ingest_spool` altında aynı sayıları ve
-`processor.store_retried`, `processor.spool_quarantined`,
-`processor.backfill_skipped_inflight` alanlarını gösterir.
+`/status` (sağlık portu) `metrics.ingest_spool` altında aynı sayıları
+(W0.12b: `corrupt_lines` dahil) ve `processor.store_retried`,
+`processor.spool_quarantined`, `processor.spool_store_outages` (kesinti
+sayılan başarısız yazım), `processor.spool_existing_enriched` (zaten yazılmış
+ama triage'sız bulunup triage edilen), `processor.backfill_skipped_inflight`
+alanlarını gösterir.
 
 Uyarı önerileri: `soc_daemon_ingest_spool_pending` 5 dakikadan uzun süre
 artıyorsa (veritabanı yazılamıyor), `rejected_total{reason="full"}` artıyorsa

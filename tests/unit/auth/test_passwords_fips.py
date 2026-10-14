@@ -199,6 +199,40 @@ def test_default_mode_login_leaves_bcrypt_alone(default_mode):
     assert user.password_hash == legacy
 
 
+@pytest.mark.parametrize("mode", ["default_mode", "fips_mode"])
+@pytest.mark.parametrize("attempt", ["", "!sso-only", "anything", "$2b$"])
+def test_sso_only_account_cannot_password_login_and_logs_nothing(
+    mode, attempt, request, monkeypatch, caplog
+):
+    """W1.9 SSO-only users carry "!sso-only": no password matches it, no error
+    or warning is logged, no rehash is attempted (round 7 merge)."""
+    from core.auth.oidc_accounts import SSO_ONLY_PASSWORD_HASH
+
+    request.getfixturevalue(mode)
+    user = _login_user(SSO_ONLY_PASSWORD_HASH)
+    monkeypatch.setattr(
+        AuthService, "_record_failed_attempt", staticmethod(lambda *a: None)
+    )
+    rehash = MagicMock(side_effect=AssertionError("must not rehash"))
+    monkeypatch.setattr(passwords, "hash_secret", rehash)
+
+    assert passwords.identify(SSO_ONLY_PASSWORD_HASH) is None
+    assert not passwords.needs_rehash(SSO_ONLY_PASSWORD_HASH)
+    with caplog.at_level("DEBUG"):
+        assert AuthService.verify_password(attempt, SSO_ONLY_PASSWORD_HASH) is False
+        assert AuthService.authenticate_user("ada", attempt, _session(user)) is None
+    assert user.password_hash == SSO_ONLY_PASSWORD_HASH
+    rehash.assert_not_called()
+    # The ordinary failed-login warning is fine; no error, no traceback and no
+    # "hash compare failed" warning from the password module.
+    noisy = [
+        r
+        for r in caplog.records
+        if r.levelno >= 40 or r.exc_info or r.name == passwords.logger.name
+    ]
+    assert noisy == [], [r.getMessage() for r in noisy]
+
+
 # --- history and recovery codes ------------------------------------------------
 
 

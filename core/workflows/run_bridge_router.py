@@ -17,6 +17,7 @@ from core.response.approval_service import ApprovalService
 from core.response.checkpoints import (
     raise_for_checkpoint,
     split_tool_call,
+    target_line,
     withdraw_for_run,
 )
 from core.routing import Auth, RouterMeta
@@ -669,11 +670,20 @@ def list_decisions(
 def _raise_approval(
     run_id: str, update: PhaseUpdate, approvals: ApprovalService
 ) -> None:
+    question = update.question or f"Phase {update.order}: {update.name}"
+    title = update.question or f"Approve {update.name}"
+    if update.tool:
+        # The agent layer's question here is only "parked on approval for
+        # <tool>": the title names what the call acts on, so a person sees the
+        # target before opening anything (W0.14). The question stays the first
+        # line of the description.
+        targets = target_line(update.args)
+        title = f"Approve {update.tool}" + (f" on {targets}" if targets else "")
     raise_for_checkpoint(
         run_id=run_id,
         checkpoint_id=str(update.checkpoint_id),
-        title=update.question or f"Approve {update.name}",
-        description=update.question or f"Phase {update.order}: {update.name}",
+        title=title,
+        description=question,
         reason="The playbook marks this phase approval_required",
         parameters={"phase_id": update.phase_id, "agent_id": update.agent},
         phase_id=update.phase_id,

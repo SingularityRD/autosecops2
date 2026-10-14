@@ -112,7 +112,13 @@ class AuthService:
     @staticmethod
     @default_on_error(False)
     def verify_password(password: str, password_hash: str) -> bool:
-        """Verify a password against a bcrypt or PBKDF2-HMAC-SHA256 hash."""
+        """Verify a password against a bcrypt or PBKDF2-HMAC-SHA256 hash.
+
+        A hash in neither format, such as the "!sso-only" placeholder of an
+        account single sign-on created, matches nothing: ``passwords.identify``
+        returns None and ``verify_secret`` returns False without logging, and
+        the login path never rehashes it (needs_rehash is False).
+        """
         return passwords.verify_secret(password, password_hash)
 
     @staticmethod
