@@ -315,3 +315,196 @@ def test_create_refuses_a_colliding_or_lookalike_email(session, monkeypatch):
     with pytest.raises(HTTPException):
         users.create_user(request, session.get(User, "u-admin"), session)
     created.assert_not_called()
+
+
+# --- Round 8 ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "email",
+    [
+        "U-ADMIN@corp.example",  # case
+        "u-admin@CORP.EXAMPLE",
+        "ｕ-admin@corp.example",  # fullwidth: not an acceptable address
+        "u-аdmin@corp.example",  # Cyrillic a among Latin letters
+    ],
+)
+def test_changing_your_own_email_uses_the_same_collision_check(session, email):
+    """PUT /api/auth/me compared exact strings only: a Manager could take
+    "U-ADMIN@corp.example" (or a look-alike) next to the Admin's address."""
+    from services.api.routers import auth as auth_router
+
+    me = session.get(User, "u-mgr")
+    with pytest.raises(HTTPException) as exc:
+        auth_router._apply_profile_update(session, me, None, email)
+    assert exc.value.status_code == 400
+    session.rollback()
+    assert session.get(User, "u-mgr").email == "u-mgr@corp.example"
+
+
+def test_changing_your_own_email_to_a_free_or_the_same_address(session, monkeypatch):
+    from services.api.routers import auth as auth_router
+
+    monkeypatch.setattr(auth_router.UserSchema, "dump", lambda u: {"email": u.email})
+    me = session.get(User, "u-mgr")
+    changed, _ = auth_router._apply_profile_update(
+        session, me, None, "u-mgr@corp.example"
+    )
+    assert changed is False
+    changed, payload = auth_router._apply_profile_update(
+        session, me, None, "maria@corp.example"
+    )
+    assert changed is True and payload == {"email": "maria@corp.example"}
+
+
+# Two concurrent requests, each removing a different one of the two Admins,
+# must not both succeed (verifier round 8). Needs real PostgreSQL row
+# visibility and locking; SQLite cannot show the race. Marked
+# external_service: its own scratch database, created and dropped here.
+
+_PG_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "postgres"}
+
+
+def _pg_url(database: str) -> str:
+    import os
+
+    user = os.getenv("POSTGRES_USER", "deeptempo")
+    password = os.getenv("POSTGRES_PASSWORD", "deeptempo_secure_password_change_me")
+    host = os.getenv("POSTGRES_HOST", "localhost")
+    port = os.getenv("POSTGRES_PORT", "5432")
+    return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{database}"
+
+
+@pytest.fixture
+def pg_maker(monkeypatch):
+    import os
+    import uuid
+
+    from sqlalchemy import text
+
+    host = os.getenv("POSTGRES_HOST", "localhost")
+    if host not in _PG_LOCAL_HOSTS:
+        pytest.skip(f"refusing to create a scratch database on {host!r}")
+    admin = create_engine(
+        _pg_url("postgres"),
+        isolation_level="AUTOCOMMIT",
+        connect_args={"connect_timeout": 5},
+    )
+    name = f"vigil_test_last_admin_{uuid.uuid4().hex[:8]}"
+    # Not a skip when the server is down: external_service tests exist to
+    # run against one (see tests/unit/conftest.py).
+    with admin.connect() as conn:
+        conn.execute(text(f'CREATE DATABASE "{name}"'))
+    engine = create_engine(_pg_url(name), pool_size=4)
+    try:
+        Base.metadata.create_all(
+            engine, tables=[Role.__table__, User.__table__, SystemConfig.__table__]
+        )
+        maker = sessionmaker(bind=engine)
+        with maker() as s:
+            for role_id, perms in PERMS.items():
+                s.add(
+                    Role(
+                        role_id=role_id, name=role_id, description="", permissions=perms
+                    )
+                )
+            for user_id in ("u-admin", "u-admin2"):
+                s.add(
+                    User(
+                        user_id=user_id,
+                        username=user_id,
+                        email=f"{user_id}@corp.example",
+                        password_hash="x",
+                        full_name=user_id,
+                        role_id="role-admin",
+                        is_active=True,
+                    )
+                )
+            s.commit()
+
+        def perms_of(user_id, _session=None):
+            with maker() as s:
+                return dict(PERMS[s.get(User, user_id).role_id])
+
+        monkeypatch.setattr(
+            users.AuthService, "get_user_permissions", staticmethod(perms_of)
+        )
+        monkeypatch.setattr(
+            users.AuthService,
+            "check_permission",
+            staticmethod(lambda uid, perm: perms_of(uid).get(perm, False)),
+        )
+        monkeypatch.setattr(users.UserSchema, "dump", lambda u: {"role": u.role_id})
+        yield maker
+    finally:
+        engine.dispose()
+        with admin.connect() as conn:
+            conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        admin.dispose()
+
+
+@pytest.mark.external_service
+@pytest.mark.parametrize("change", ["demote", "deactivate", "delete"])
+def test_two_admins_removed_at_once_leave_one(pg_maker, change):
+    """Admin A removes Admin B while B removes A, in two transactions that
+    overlap. Without serialisation each sees the other still active, both
+    commit, and no Admin is left. The first to check holds the lock until
+    it commits; the second then sees one Admin left and gets 409."""
+    import threading
+
+    first_checked = threading.Event()
+    outcome: dict[str, object] = {}
+
+    def remove(actor_id, target_id, hold):
+        s = pg_maker()
+        try:
+            actor = s.get(User, actor_id)
+            if change == "delete":
+                users.delete_user(target_id, actor, s)
+            else:
+                request = (
+                    users.UpdateUserRequest(role_id="role-viewer")
+                    if change == "demote"
+                    else users.UpdateUserRequest(is_active=False)
+                )
+                users._apply_user_update(s, actor, target_id, request)
+            if hold:
+                # Checked and written, not yet committed: the other request
+                # runs its check now.
+                first_checked.set()
+                time_to_overlap.wait(timeout=3)
+            s.commit()
+            outcome[actor_id] = "ok"
+        except HTTPException as exc:
+            s.rollback()
+            outcome[actor_id] = exc.status_code
+        except Exception as exc:  # noqa: BLE001
+            s.rollback()
+            outcome[actor_id] = repr(exc)
+        finally:
+            first_checked.set()
+            s.close()
+
+    time_to_overlap = threading.Event()
+    one = threading.Thread(target=remove, args=("u-admin", "u-admin2", True))
+    one.start()
+    assert first_checked.wait(timeout=30)
+
+    two = threading.Thread(target=remove, args=("u-admin2", "u-admin", False))
+    two.start()
+    # Give the second request time to reach its check (it blocks on the lock
+    # once fixed; before the fix it ran straight through and committed).
+    two.join(timeout=1.5)
+    time_to_overlap.set()
+    one.join(timeout=30)
+    two.join(timeout=30)
+    assert not one.is_alive() and not two.is_alive()
+
+    assert outcome == {"u-admin": "ok", "u-admin2": 409}, outcome
+    with pg_maker() as s:
+        admins = (
+            s.query(User)
+            .filter(User.role_id == "role-admin", User.is_active.is_(True))
+            .all()
+        )
+        assert [u.user_id for u in admins] == ["u-admin"]

@@ -51,6 +51,7 @@ from core.storage.schemas import UserSchema
 from core.time import utcnow
 from services.api.middleware.auth import get_current_active_user
 from services.api.middleware.rate_limit import limiter
+from services.api.routers.users import refuse_address_collision
 
 logger = logging.getLogger(__name__)
 
@@ -535,17 +536,12 @@ def _apply_profile_update(
     if full_name:
         user.full_name = full_name
 
-    if email:
-        existing = (
-            session.query(User)
-            .filter(User.email == email, User.user_id != user.user_id)
-            .first()
-        )
-        if existing:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already in use",
-            )
+    if email and email != user.email:
+        # Same rule as creating or editing a user: the address must be
+        # acceptable and must not compare equal (case, Unicode, IDNA, a
+        # trailing dot) to another account's email or address-shaped
+        # username, or SSO linking and sign-in by email become ambiguous.
+        refuse_address_collision(session, email, exclude_user_id=user.user_id)
         user.email = email
         user.is_verified = False
         email_changed = True

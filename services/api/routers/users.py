@@ -10,6 +10,7 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, EmailStr
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from core.auth.auth_service import AuthService
@@ -129,6 +130,22 @@ def _refuse_unless_may_manage(
         )
 
 
+#: pg_advisory_xact_lock key serialising changes that remove an active Admin.
+_ADMIN_CHANGE_LOCK = "users:last-active-admin"
+
+
+def lock_admin_changes(session: Session) -> None:
+    """Hold, until the transaction ends, the lock every change that could
+    remove the last active Admin takes before counting the others. A no-op
+    off PostgreSQL (SQLite unit tests run single-threaded)."""
+    bind = session.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": _ADMIN_CHANGE_LOCK},
+        )
+
+
 def _refuse_losing_admin_access(
     session: Session, target: User, new_role_id: str, new_active: bool
 ) -> None:
@@ -138,6 +155,12 @@ def _refuse_losing_admin_access(
     was_admin = target.is_active is not False and target.role_id == ADMIN_ROLE_ID
     stays_admin = new_active and new_role_id == ADMIN_ROLE_ID
     if was_admin and not stays_admin:
+        # Two requests each removing a different Admin would otherwise both
+        # see the other one still active and both commit: no Admin left.
+        # Serialise every "lose an Admin" change for the rest of the
+        # transaction; the count below then sees any such change already
+        # committed (READ COMMITTED: each statement takes a new snapshot).
+        lock_admin_changes(session)
         others = (
             session.query(User.user_id)
             .filter(
@@ -165,7 +188,7 @@ def _refuse_losing_admin_access(
         )
 
 
-def _refuse_address_collision(
+def refuse_address_collision(
     session: Session, address: str, exclude_user_id: Optional[str] = None
 ) -> None:
     """Refuse an address that is not acceptable or compares equal (case,
@@ -349,7 +372,7 @@ def create_user(
             detail="Cannot assign a role with more privileges than your own",
         )
 
-    _refuse_address_collision(session, request.email)
+    refuse_address_collision(session, request.email)
     username_key = normalize_email(request.username)
     if "@" in request.username and (
         username_key is None or email_owner(session, username_key) is not None
@@ -412,7 +435,7 @@ def _apply_user_update(
             )
         # Change the address, then request a reset: account takeover.
         _refuse_unless_may_manage(current_user, user, session, "change the email of")
-        _refuse_address_collision(session, request.email, exclude_user_id=user_id)
+        refuse_address_collision(session, request.email, exclude_user_id=user_id)
         old_email = user.email
         user.email = request.email
         user.is_verified = False

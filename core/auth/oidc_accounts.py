@@ -255,8 +255,11 @@ def _clean_address(value: Any) -> Optional[tuple[str, str]]:
 
     Refused rather than repaired: control, format and separator characters
     (zero-width space, bidi marks, a trailing newline, ...), whitespace,
-    compatibility characters (fullwidth letters, ligatures, the Kelvin sign:
-    anything NFKC would change), and a local part mixing confusable scripts.
+    compatibility characters (fullwidth letters, ligatures, superscripts:
+    anything NFKC would change beyond NFC), and a local part mixing
+    confusable scripts. Canonical singletons such as the Kelvin sign
+    (U+212A) are not refused: NFC already maps them to their base letter
+    ("K"), so they compare equal to it.
     """
     if not isinstance(value, str) or not value or len(value) > 254:
         return None
@@ -280,8 +283,11 @@ def _clean_address(value: Any) -> Optional[tuple[str, str]]:
         ).decode("ascii")
     except (idna.IDNAError, UnicodeError, ValueError):
         return None
+    # "example.com." is the fully-qualified spelling of "example.com": one key.
     ascii_domain = ascii_domain.lower()
-    if "." not in ascii_domain.strip("."):
+    if ascii_domain.endswith("."):
+        ascii_domain = ascii_domain[:-1]
+    if not ascii_domain or ascii_domain.startswith(".") or "." not in ascii_domain:
         return None
     return local, ascii_domain
 

@@ -24,6 +24,7 @@ they hold.
 from __future__ import annotations
 
 import asyncio
+import os
 import json
 import logging
 from typing import Dict, List, Optional, Protocol
@@ -77,7 +78,12 @@ from core.config import get_settings
 from core.rate_limit import rate_limit_dependency
 from core.redis_client import get_async_redis
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
-from core.secrets_manager import delete_secret, get_secret, set_secret
+from core.secrets_manager import (
+    delete_secret,
+    get_secret,
+    get_secrets_manager,
+    set_secret,
+)
 from core.storage.models import ConfigAuditLog, Role, SystemConfig, User
 from core.time import utcnow
 
@@ -485,7 +491,29 @@ def _require_role_privileges(session, current_user: User, role_ids: set[str]) ->
                 )
 
 
-def _require_every_privilege(session, current_user: User, what: str) -> None:
+def _require_administrator(session, current_user: User) -> None:
+    """Refuse every change to sign-in configuration unless the caller is an
+    administrator (the Admin role, or a role holding every permission).
+
+    ``settings.write`` + ``users.write`` (which Manager holds) is not
+    enough. Even with the per-field guards below, someone who edits the
+    providers or the login policy decides how *every* account signs in: a
+    Manager could switch local sign-in off for the Admins (only one Admin
+    break-glass account is required), re-map or demote JIT-provisioned
+    Admins by editing an Admin-configured provider's mappings, delete the
+    provider Admins sign in with, or mint any number of accounts at their own
+    level from an IdP they control. None of that is a strict escalation to
+    Admin, but it is control over higher-privileged accounts, so these
+    routes are administrator-only (W1.9 round 8).
+    """
+    _require_every_privilege(
+        session, current_user, "single sign-on settings", verb="change"
+    )
+
+
+def _require_every_privilege(
+    session, current_user: User, what: str, verb: str = "turn on"
+) -> None:
     """Refuse unless the caller holds every permission any role grants.
 
     For settings that can put a provider's users into *any* account
@@ -504,7 +532,7 @@ def _require_every_privilege(session, current_user: User, what: str) -> None:
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=(
                         f"Only an administrator holding every permission can "
-                        f"turn on {what}: you do not hold {perm}"
+                        f"{verb} {what}: you do not hold {perm}"
                     ),
                 )
 
@@ -542,13 +570,75 @@ def _require_secret_on_repoint(
         )
 
 
+#: OIDC client secrets the process environment held when this module was
+#: imported (at startup, before any request could store one). Taken once:
+#: SecretsManager.set also writes os.environ, so the live environment cannot
+#: tell a deployment's variable from one the application stored.
+_STARTUP_ENV_SECRET_KEYS = frozenset(
+    k for k, v in os.environ.items() if k.startswith("OIDC_CLIENT_SECRET_") and v
+)
+
+
+def _secret_from_environment(key: str) -> bool:
+    """Does the deployment's process environment supply ``key``?
+
+    Such a secret cannot be deleted from here: removing it from os.environ
+    only hides it from this process until the next restart, when it comes
+    back and would be sent to whatever the provider points at by then. True
+    if the variable was present at startup, or if os.environ holds a value
+    that no store the application writes to (encrypted file, state-dir .env,
+    keyring) holds, i.e. it did not come from set_secret.
+    """
+    if key in _STARTUP_ENV_SECRET_KEYS:
+        return True
+    value = os.environ.get(key)
+    if not value:
+        return False
+    manager = get_secrets_manager()
+    if manager.write_backend is manager.env_backend:
+        # Stored by the application into this process's environment only;
+        # deleting it is final. (A deployment variable is caught above.)
+        return False
+    stores = [manager.encrypted_backend, manager.dotenv_backend]
+    if manager.enable_keyring:
+        stores.append(manager.keyring_backend)
+    for store in stores:
+        try:
+            if store.is_available() and store.get(key) == value:
+                return False
+        except Exception:  # noqa: BLE001 - an unreadable store is not proof
+            continue
+    return True
+
+
+def _refuse_environment_secret(provider_id: str, action: str) -> None:
+    """409 if the provider's client secret comes from the environment."""
+    key = client_secret_key(provider_id)
+    if _secret_from_environment(key):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Cannot {action}: its client secret is set in the server's "
+                f"environment ({key}) and cannot be removed from here. Remove "
+                "the variable from the deployment and restart AutoSecOps first."
+            ),
+        )
+
+
 def _delete_client_secret(provider_id: str, must_vanish: bool = True) -> None:
     """Delete a provider's client secret from every store, or raise.
 
-    ``must_vanish``: also raise when a copy is still readable afterwards
-    (an environment variable from the deployment, a read-only .env).
+    Callers first refuse a secret the environment supplies
+    (:func:`_refuse_environment_secret`); deleting it would only hide it
+    until the next restart. ``must_vanish``: also raise when a copy is still
+    readable afterwards (a read-only .env).
     """
     key = client_secret_key(provider_id)
+    if _secret_from_environment(key):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"The client secret is set in the server's environment ({key})",
+        )
     if not delete_secret(key):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -608,6 +698,7 @@ def upsert_provider(
     _users_write: User = _ADMIN_GATES[1],
 ):
     """Add or replace one provider. The client secret is stored write-only."""
+    _require_administrator(session, current_user)
     fields = body.model_dump(exclude={"client_secret", "clear_client_secret"})
     try:
         provider = ProviderConfig(id=provider_id, **fields)
@@ -649,6 +740,7 @@ def upsert_provider(
 
     key = client_secret_key(provider_id)
     if body.clear_client_secret:
+        _refuse_environment_secret(provider_id, "clear the client secret")
         _delete_client_secret(provider_id)
     elif body.client_secret:
         if not set_secret(key, body.client_secret):
@@ -669,10 +761,12 @@ def delete_provider(
     current_user: User = _ADMIN_GATES[0],
     _users_write: User = _ADMIN_GATES[1],
 ):
+    _require_administrator(session, current_user)
     providers = load_providers(session)
     remaining = [p for p in providers if p.id != provider_id]
     if len(remaining) == len(providers):
         raise HTTPException(status_code=404, detail="Unknown sign-in provider")
+    _refuse_environment_secret(provider_id, "delete this provider")
     policy = get_login_policy(session)
     if not policy.local_login_enabled and not any(p.enabled for p in remaining):
         raise HTTPException(
@@ -685,10 +779,10 @@ def delete_provider(
     save_providers(
         session, remaining, changed_by=current_user.username, action="delete"
     )
-    # Raises (and so rolls the deletion back) if a store refused; a secret
-    # left in the process environment or a read-only .env cannot be removed
-    # here, and _require_fresh_secret_on_create keeps it from ever being
-    # sent by a provider re-created under the same id.
+    # Raises (and so rolls the deletion back) if a store refused. A secret
+    # from the process environment was refused above; one in a read-only
+    # .env cannot be removed here, and _require_fresh_secret_on_create keeps
+    # it from ever being sent by a provider re-created under the same id.
     _delete_client_secret(provider_id, must_vanish=False)
     session.flush()
     return _admin_config(session, request)
@@ -703,6 +797,7 @@ def update_login_policy(
     _users_write: User = _ADMIN_GATES[1],
 ):
     """Turn local sign-in on or off, and name the break-glass accounts."""
+    _require_administrator(session, current_user)
     ids = list(dict.fromkeys(body.break_glass_user_ids))
     users = session.query(User).filter(User.user_id.in_(ids)).all() if ids else []
     found = {u.user_id: u for u in users}

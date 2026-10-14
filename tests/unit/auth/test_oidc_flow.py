@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import os
 from contextlib import contextmanager
+from pathlib import Path
 from urllib.parse import parse_qs, unquote_plus, urlparse
 
 import pytest
@@ -318,8 +319,9 @@ def test_login_redirects_to_the_provider_with_pkce_state_and_nonce(world):
 
     assert response.status_code == 302
     location = urlparse(response.headers["location"])
-    assert f"{location.scheme}://{location.netloc}{location.path}" == (
-        world.idp.discovery()["authorization_endpoint"]
+    assert (
+        f"{location.scheme}://{location.netloc}{location.path}"
+        == (world.idp.discovery()["authorization_endpoint"])
     )
     query = {k: v[0] for k, v in parse_qs(location.query).items()}
     assert query["code_challenge_method"] == "S256"
@@ -654,7 +656,7 @@ def test_a_manager_cannot_take_over_the_admin_through_email_linking(world):
     body = _provider_body(link_by_verified_email=True)
     response = world.client.put("/api/auth/sso/admin/providers/kc", json=body)
     assert response.status_code == 403, response.text
-    assert "linking" in response.json()["detail"]
+    assert "administrator" in response.json()["detail"]
     # ...nor with "allow mapping to Admin" on (even with no Admin mapping).
     body = _provider_body(allow_admin_mapping=True)
     response = world.client.put("/api/auth/sso/admin/providers/kc", json=body)
@@ -818,23 +820,52 @@ def test_a_viewer_cannot_read_or_change_sso_settings(world):
     assert world.secrets == {}
 
 
-def test_a_manager_cannot_map_users_to_admin(world):
+def test_a_manager_cannot_change_sso_settings(world):
+    """Round 8: SSO configuration is administrator-only.
+
+    Manager holds settings.write + users.write. Even with the per-field
+    guards, editing providers or the login policy decides how every account
+    (Admins included) signs in, so every write needs Admin (or every
+    permission). Reading the configuration (no secrets) stays allowed.
+    """
+    world.add_user("u-admin", "root", "role-admin")
     world.add_user("u-mgr", "maria", "role-manager")
-    world.as_user("u-mgr")
-    body = _provider_body(
-        allow_admin_mapping=True,
-        role_mappings=[{"value": "soc-admins", "role_id": "role-admin"}],
-    )
-    response = world.client.put("/api/auth/sso/admin/providers/okta", json=body)
-    assert response.status_code == 403
-    assert "users.delete" in response.json()["detail"]
-    # Mapping to a role within the manager's own permissions is fine.
-    body["role_mappings"] = [{"value": "soc", "role_id": "role-viewer"}]
-    body["allow_admin_mapping"] = False
+    world.as_user("u-admin")
     assert (
-        world.client.put("/api/auth/sso/admin/providers/okta", json=body).status_code
+        world.client.put(
+            "/api/auth/sso/admin/providers/okta", json=_provider_body()
+        ).status_code
         == 200
     )
+
+    world.as_user("u-mgr")
+    assert world.client.get("/api/auth/sso/admin/config").status_code == 200
+    harmless = _provider_body(
+        role_mappings=[{"value": "soc", "role_id": "role-viewer"}]
+    )
+    for body in (
+        harmless,
+        _provider_body(
+            allow_admin_mapping=True,
+            role_mappings=[{"value": "soc-admins", "role_id": "role-admin"}],
+        ),
+    ):
+        response = world.client.put("/api/auth/sso/admin/providers/okta", json=body)
+        assert response.status_code == 403, response.text
+        assert "administrator" in response.json()["detail"]
+    response = world.client.put("/api/auth/sso/admin/providers/new", json=harmless)
+    assert response.status_code == 403
+    assert world.client.delete("/api/auth/sso/admin/providers/okta").status_code == 403
+    response = world.client.put(
+        "/api/auth/sso/admin/login-policy",
+        json={"local_login_enabled": False, "break_glass_user_ids": ["u-admin"]},
+    )
+    assert response.status_code == 403
+    assert world.secrets == {"OIDC_CLIENT_SECRET_OKTA": "top-secret"}
+    with world.db() as s:
+        [stored] = s.get(SystemConfig, "auth.oidc.providers").value["providers"]
+        assert stored["role_mappings"] == []
+        assert s.get(SystemConfig, "auth.login_policy") is None
 
 
 @pytest.mark.parametrize(
@@ -1011,10 +1042,12 @@ def _session_dep(world):
 def test_a_manager_cannot_repoint_a_provider_and_receive_its_secret(world):
     """Regression (verifier W1.9 MEDIUM-HIGH): secret exfiltration by re-point.
 
-    An Admin configures a provider with a client secret. A Manager (who may
-    edit providers) changes only its issuer to a server they control and
+    An Admin configures a provider with a client secret. Someone who may
+    edit providers changes only its issuer to a server they control and
     omits client_secret. The stored secret must not survive the re-point, or
     the next login would send it (HTTP Basic) to evil.test's token endpoint.
+    Since round 8 a Manager cannot edit providers at all (403); the re-point
+    rule still holds for anyone who can (here a second administrator).
     """
     world.add_user("u-admin", "root", "role-admin")
     world.add_user("u-mgr", "maria", "role-manager")
@@ -1025,6 +1058,13 @@ def test_a_manager_cannot_repoint_a_provider_and_receive_its_secret(world):
     assert created.status_code == 200, created.text
 
     world.as_user("u-mgr")
+    body = _provider_body(issuer="https://evil.test/realms/x")
+    del body["client_secret"]
+    response = world.client.put("/api/auth/sso/admin/providers/okta", json=body)
+    assert response.status_code == 403, response.text
+
+    world.add_user("u-admin2", "rooty", "role-admin")
+    world.as_user("u-admin2")
     for change in (
         {"issuer": "https://evil.test/realms/x"},
         {"client_id": "attacker-client"},
@@ -1122,6 +1162,38 @@ def test_email_keys_keep_sharp_s_and_compare_domains_as_idna():
     assert normalize_email("e\u0301lodie@corp.example") == normalize_email(
         "\u00e9lodie@corp.example"
     )
+
+
+def test_a_trailing_dot_domain_is_the_same_address():
+    """Round 8: "corp.example." is the fully-qualified "corp.example"."""
+    from core.auth.oidc_accounts import normalize_email
+
+    assert normalize_email("Root@Corp.Example.") == "root@corp.example"
+    assert normalize_email("root@corp.example.") == normalize_email("root@corp.example")
+    for bad in ("root@corp.example..", "root@.corp.example", "root@example.", "a@."):
+        assert normalize_email(bad) is None, bad
+
+
+def test_the_kelvin_sign_is_the_letter_k():
+    """NFC maps U+212A KELVIN SIGN to "K" (a canonical singleton), so it is
+    not refused as a compatibility character: it is the same key as "k"."""
+    from core.auth.oidc_accounts import normalize_email
+
+    assert normalize_email("\u212aate@corp.example") == "kate@corp.example"
+    # A real compatibility character (fullwidth "ｋ") is still refused.
+    assert normalize_email("\uff4bate@corp.example") is None
+
+
+def test_a_trailing_dot_email_is_not_a_new_account(world):
+    """Without linking, "alice@example.com." must not JIT a second account
+    that compares differently from alice@example.com."""
+    world.add_user("u-alice", "alice-local", "role-admin", email="alice@example.com")
+    world.set_provider(jit_provisioning=True)
+    world.idp.claims = {"email": "alice@example.com."}
+    response, _, _ = world.login()
+    assert world.sso_error(response) == "account"
+    with world.db() as s:
+        assert s.query(User).count() == 1
 
 
 def test_a_sharp_s_domain_does_not_link_to_the_ss_account(world):
@@ -1241,3 +1313,143 @@ def test_clearing_a_secret_that_lives_in_the_environment_is_refused(world, monke
     response = world.client.put("/api/auth/sso/admin/providers/okta", json=body)
     assert response.status_code == 409
     assert "environment" in response.json()["detail"]
+
+
+# --- Round 8: a secret from the real process environment ---------------------
+
+
+@pytest.fixture
+def real_secrets(world, monkeypatch, tmp_path):
+    """The real SecretsManager (encrypted store in a scratch state dir) in
+    place of the world's dict, so os.environ is the real environment backend."""
+    from core import secrets_manager
+
+    monkeypatch.setenv("VIGIL_DIR", str(tmp_path))
+    monkeypatch.setenv("SECRETS_BACKEND", "encrypted")
+    monkeypatch.setenv("VIGIL_DISABLE_DOTENV", "1")
+    # Recorded so teardown removes whatever set_secret leaves in os.environ.
+    monkeypatch.setenv("OIDC_CLIENT_SECRET_OKTA", "placeholder")
+    monkeypatch.delenv("OIDC_CLIENT_SECRET_OKTA")
+    monkeypatch.setattr(secrets_manager, "_secrets_manager", None)
+    for name in ("get_secret", "set_secret", "delete_secret"):
+        monkeypatch.setattr(oidc_router, name, getattr(secrets_manager, name))
+    manager = secrets_manager.get_secrets_manager()
+    assert manager.encrypted_backend.is_available()
+    assert manager.encrypted_backend.secrets_path.parent == tmp_path
+    yield manager
+    secrets_manager._secrets_manager = None
+
+
+def test_a_secret_from_the_environment_cannot_be_cleared_or_deleted(
+    world, real_secrets, monkeypatch
+):
+    """Regression (verifier W1.9 round 8): deleting a deployment's
+    OIDC_CLIENT_SECRET_<ID> only removed it from this process. The re-point
+    and re-create guards then saw no secret and let a provider be pointed
+    elsewhere; after the next restart the variable was back and was sent to
+    the new issuer. Such a secret is now never deleted: 409, untouched."""
+    world.add_user("u-admin", "root", "role-admin")
+    world.as_user("u-admin")
+    monkeypatch.setenv("OIDC_CLIENT_SECRET_OKTA", "from-the-deployment")
+    body = _provider_body()
+    del body["client_secret"]
+    # Created without a secret: the guard sees the leftover and refuses...
+    response = world.client.put("/api/auth/sso/admin/providers/okta", json=body)
+    assert response.status_code == 409, response.text
+    # ...so the operator who set the variable on purpose enters it (the
+    # encrypted store now wins over the environment).
+    body["client_secret"] = "entered"
+    response = world.client.put("/api/auth/sso/admin/providers/okta", json=body)
+    assert response.status_code == 200, response.text
+    assert real_secrets.get("OIDC_CLIENT_SECRET_OKTA") == "entered"
+    # The application itself stored "entered" into os.environ as well; put the
+    # deployment's value back the way a restart would.
+    monkeypatch.setenv("OIDC_CLIENT_SECRET_OKTA", "from-the-deployment")
+
+    clear = _provider_body(clear_client_secret=True)
+    del clear["client_secret"]
+    response = world.client.put("/api/auth/sso/admin/providers/okta", json=clear)
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert "OIDC_CLIENT_SECRET_OKTA" in detail and "environment" in detail
+
+    response = world.client.delete("/api/auth/sso/admin/providers/okta")
+    assert response.status_code == 409, response.text
+    assert "environment" in response.json()["detail"]
+
+    # Nothing was deleted anywhere, and the provider is still there.
+    assert os.environ["OIDC_CLIENT_SECRET_OKTA"] == "from-the-deployment"
+    assert real_secrets.encrypted_backend.get("OIDC_CLIENT_SECRET_OKTA") == "entered"
+    with world.db() as s:
+        assert [p.id for p in load_providers(s)] == ["okta"]
+
+    # Re-pointing still needs a new secret; it cannot "clear" its way past.
+    repoint = _provider_body(issuer="https://evil.test/realms/x")
+    del repoint["client_secret"]
+    assert (
+        world.client.put("/api/auth/sso/admin/providers/okta", json=repoint).status_code
+        == 400
+    )
+    repoint["clear_client_secret"] = True
+    assert (
+        world.client.put("/api/auth/sso/admin/providers/okta", json=repoint).status_code
+        == 409
+    )
+
+
+def test_a_secret_the_application_stored_can_still_be_deleted(world, real_secrets):
+    """set_secret also writes os.environ; that copy is not the deployment's."""
+    world.add_user("u-admin", "root", "role-admin")
+    world.as_user("u-admin")
+    response = world.client.put(
+        "/api/auth/sso/admin/providers/okta", json=_provider_body()
+    )
+    assert response.status_code == 200, response.text
+    assert os.environ["OIDC_CLIENT_SECRET_OKTA"] == "top-secret"
+
+    clear = _provider_body(clear_client_secret=True)
+    del clear["client_secret"]
+    response = world.client.put("/api/auth/sso/admin/providers/okta", json=clear)
+    assert response.status_code == 200, response.text
+    assert real_secrets.get("OIDC_CLIENT_SECRET_OKTA") is None
+    assert "OIDC_CLIENT_SECRET_OKTA" not in os.environ
+
+    world.client.put("/api/auth/sso/admin/providers/okta", json=_provider_body())
+    assert world.client.delete("/api/auth/sso/admin/providers/okta").status_code == 200
+    assert real_secrets.get("OIDC_CLIENT_SECRET_OKTA") is None
+
+
+def test_a_secret_present_at_startup_is_the_deployments(tmp_path):
+    """A variable in the environment the server was started with counts as
+    the deployment's even after the application overwrote os.environ."""
+    import subprocess
+    import sys
+
+    script = (
+        "import os\n"
+        "from core.auth import oidc_router as r\n"
+        "assert r._secret_from_environment('OIDC_CLIENT_SECRET_BOOT')\n"
+        "assert r.get_secrets_manager().set('OIDC_CLIENT_SECRET_BOOT', 'stored')\n"
+        "assert r._secret_from_environment('OIDC_CLIENT_SECRET_BOOT')\n"
+        "assert not r._secret_from_environment('OIDC_CLIENT_SECRET_OTHER')\n"
+        "print('ok')\n"
+    )
+    env = {
+        **os.environ,
+        "OIDC_CLIENT_SECRET_BOOT": "from-the-deployment",
+        "VIGIL_DIR": str(tmp_path),
+        "SECRETS_BACKEND": "encrypted",
+        "VIGIL_DISABLE_DOTENV": "1",
+        "PYTHONPATH": str(Path(__file__).resolve().parents[3]),
+    }
+    env.pop("OIDC_CLIENT_SECRET_OTHER", None)
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        cwd=str(Path(__file__).resolve().parents[3]),
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert result.stdout.strip().endswith("ok")
