@@ -122,9 +122,19 @@
       "topic_en": "GA follow-ups (W0.15, W3.10, W0.16)"
     },
     {
+      "id": "W0.19",
+      "topic": "CI yeşil: Bandit yanlış pozitifleri gerekçeli işaretlendi, SSO yönetim rotaları DB oturumu açmadan önce yetki denetler, Medic redaksiyon listesi W3.7 ile eşitlendi, test düzeltmeleri",
+      "topic_en": "CI green: Bandit false positives annotated, SSO admin routes check permissions before opening a DB session, Medic redaction list synced with W3.7, test fixes"
+    },
+    {
       "id": "W0.20",
       "topic": "Belge birleşme listesi denetimi belgelenen taban commit'e göre (yalnızca test)",
       "topic_en": "docs merged-list check against the documented base (tests only)"
+    },
+    {
+      "id": "W0.22",
+      "topic": "Backend ve daemon imajları etiketten önce CI'da taranır (Trivy, fixable CRITICAL kapısı); ci-cd.yml'deki kapalı ghcr itme işleri kaldırıldı",
+      "topic_en": "backend and daemon images scanned in CI before any tag, disabled ghcr push jobs removed"
     },
     {
       "id": "W1.1",
@@ -511,7 +521,19 @@
       "when": [
         "W0.18"
       ],
-      "text": "**GA takipleri:** argümanları 64 KB'ı aştığı için reddedilen onay artık koşuyu asılı bırakmaz: faz `approval_state=refused` ile, koşu `failed` olarak biter; LiteParse havuzları süreç çıkışında kapatılır (kapanışta çıkış 134 çökmesi giderildi); \"karar tablosu yok\" tespiti yalnızca SQLSTATE 42P01'e bakar (başka veritabanı hataları backfill'i açık bırakmaz); geri yükleme sonrası JWT anahtarı iletisi düzeltildi (W0.18)."
+      "text": "**GA takipleri:** argümanları 64 KB'ı aştığı için reddedilen onay artık koşuyu asılı bırakmaz: faz yolunda (`/phases`) faz `approval_state=refused` ile, koşu `failed` olarak biter; `/checkpoints` yolu (hunt koşuları) 413 döner ama koşu durumunu değiştirmez; LiteParse havuzları süreç çıkışında kapatılır (kapanışta çıkış 134 çökmesi giderildi); \"karar tablosu yok\" tespiti, sürücü SQLSTATE verdiğinde (Postgres) yalnızca 42P01'e bakar (başka veritabanı hataları backfill'i açık bırakmaz), SQLSTATE yoksa (SQLite) tablo adı ve \"no such table\" / \"does not exist\" metin eşleşmesine düşer; geri yükleme sonrası JWT anahtarı iletisi düzeltildi (W0.18)."
+    },
+    {
+      "when": [
+        "W0.19"
+      ],
+      "text": "**Medic redaksiyonu:** Medic, W3.7'nin eklediği iki imza anahtarının (`AUDIT_CHECKPOINT_SIGNING_KEY`, `EVIDENCE_PACK_SIGNING_KEY`) değerlerini de redakte eder; SSO yönetim rotaları yetkiyi veritabanı oturumu açmadan önce denetler, reddedilen istek oturum açmaz (yanıt kodları aynı; W0.19)."
+    },
+    {
+      "when": [
+        "W0.22"
+      ],
+      "text": "**Etiketten önce imaj taraması:** backend ve daemon imajları her PR'da ve `main`'de yerelde derlenip Trivy ile taranır (HIGH/CRITICAL rapor, düzeltmesi olan CRITICAL'da CI düşer) ve imajın içinde duman testinden geçer; `ci-cd.yml` hiçbir registry'ye imaj itmez (W0.22)."
     },
     {
       "when": [],
@@ -619,7 +641,7 @@
       "when": [
         "W0.18"
       ],
-      "text": "**Reddedilen büyük onaylar (W0.18):** 64 KB'ı aşan argümanlı bir araç çağrısı reddedildiğinde koşu artık `paused` kalmaz, `failed` olur (faz satırı `status=failed`, `approval_state=refused`, `error` nedeni taşır); bu koşuları bekleyen otomasyon `failed` durumunu da ele almalıdır. Geri yüklemeden sonra anahtar yalnızca ortamdaysa ileti artık servisleri yeniden başlatmayı ve ortamdaki eski `JWT_SECRET_KEY` değerini değiştirmeyi söyler."
+      "text": "**Reddedilen büyük onaylar (W0.18):** faz yolunda (`/internal/runs/{id}/phases`) 64 KB'ı aşan argümanlı bir araç çağrısı reddedildiğinde koşu artık `paused` kalmaz, `failed` olur (faz satırı `status=failed`, `approval_state=refused`, `error` nedeni taşır); bu koşuları bekleyen otomasyon `failed` durumunu da ele almalıdır. `/checkpoints` yolu (hunt koşuları) 413 döner ama koşu durumunu değiştirmez; hunt'ın park durumu `/status` ile gelir. Geri yüklemeden sonra anahtar yalnızca ortamdaysa ileti artık servisleri yeniden başlatmayı ve ortamdaki eski `JWT_SECRET_KEY` değerini değiştirmeyi söyler."
     }
   ],
   "known_issues": [
