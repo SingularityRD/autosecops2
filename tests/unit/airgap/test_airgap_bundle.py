@@ -823,9 +823,9 @@ def test_build_dry_run_enumerates_without_docker(stubs):
     assert proc.returncode == 0, proc.stderr
     refs = {line.split("\t")[0] for line in proc.stdout.splitlines()}
     for expected in (
-        "ghcr.io/vigil-soc/vigil-backend:0.7.1",
-        "ghcr.io/vigil-soc/vigil-daemon:0.7.1",
-        "ghcr.io/vigil-soc/vigil-agent:0.7.1",
+        "ghcr.io/singularityrd/autosecops-backend:0.7.1",
+        "ghcr.io/singularityrd/autosecops-daemon:0.7.1",
+        "ghcr.io/singularityrd/autosecops-agent:0.7.1",
         "postgres:16-alpine",
         "redis:7-alpine",
         "maximhq/bifrost:v2.2.1",
@@ -856,7 +856,7 @@ def test_dry_run_json_and_ollama_override(stubs):
     refs = {e["ref"] for e in json.loads(proc.stdout)}
     assert (
         "ollama/ollama:0.9.0" in refs
-        and "ghcr.io/vigil-soc/vigil-backend:1.2.3" in refs
+        and "ghcr.io/singularityrd/autosecops-backend:1.2.3" in refs
     )
 
 
@@ -866,7 +866,7 @@ def test_dry_run_json_and_ollama_override(stubs):
 @pytest.mark.parametrize(
     "ref,expected",
     [
-        ("ghcr.io/vigil-soc/vigil-backend:1", "R/vigil-soc/vigil-backend:1"),
+        ("ghcr.io/singularityrd/autosecops-backend:1", "R/singularityrd/autosecops-backend:1"),
         ("postgres:16-alpine", "R/library/postgres:16-alpine"),
         ("maximhq/bifrost:v2.2.1", "R/maximhq/bifrost:v2.2.1"),
         ("localhost/x:1", "R/library/x:1"),
@@ -1020,8 +1020,8 @@ def test_networkpolicy_default_branch_unchanged():
 def test_image_namespace_reaches_the_bundled_overlay(tmp_path):
     """--image-namespace moves where the app images are pushed (images.tsv);
     the bundled values-airgap.yaml must name the same namespace, or every app
-    pod pulls <registry>/vigil-soc/vigil-<c> that the registry does not hold."""
-    ns = "singularityrd/autosecops"
+    pod pulls an app image path that the registry does not hold."""
+    ns = "example/other"
     key, _pub = _keypair(tmp_path, "release")
     images_dir = tmp_path / "image-archives"
     images_dir.mkdir()
@@ -1056,3 +1056,123 @@ def test_bad_image_namespace_is_refused(tmp_path):
     )
     assert proc.returncode == 1
     assert "bad --image-namespace" in proc.stderr
+
+
+# --- image names agree with what the release publishes ------------------------------
+
+RELEASE_WORKFLOW = REPO / ".github" / "workflows" / "release.yml"
+
+
+def _release_images(version: str) -> set[str]:
+    """<IMAGE_PREFIX>-<component>:<version> for every image release.yml builds."""
+    wf = yaml.safe_load(RELEASE_WORKFLOW.read_text())
+    prefix = wf["env"]["IMAGE_PREFIX"]
+    comps = [i["component"] for i in wf["jobs"]["build-images"]["strategy"]["matrix"]["include"]]
+    assert prefix and comps
+    return {f"{prefix}-{c}:{version}" for c in comps}
+
+
+def _app_refs(refs) -> set[str]:
+    """App images: those named after a release component (not third-party)."""
+    return {r for r in refs if r.startswith("ghcr.io/")}
+
+
+def test_airgap_bundle_pulls_the_release_images():
+    refs = {e["ref"] for e in airgap_images.Enumerator(REPO, VERSION).run()}
+    assert _app_refs(refs) == _release_images(VERSION)
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="needs helm")
+@pytest.mark.parametrize("airgap", [False, True], ids=["default", "values-airgap"])
+def test_helm_chart_renders_the_release_images(tmp_path, airgap):
+    chart = tmp_path / "vigil"
+    shutil.copytree(REPO / "infra" / "helm" / "vigil", chart,
+                    ignore=shutil.ignore_patterns("medic-tests", "charts"))
+    meta = yaml.safe_load((chart / "Chart.yaml").read_text())
+    meta.pop("dependencies", None)
+    (chart / "Chart.yaml").write_text(yaml.safe_dump(meta))
+    (chart / "Chart.lock").unlink(missing_ok=True)
+    version = str(meta["appVersion"])
+    args = ["helm", "template", "t", str(chart), "--set", "secrets.jwtSecretKey=x"]
+    if airgap:
+        args += ["-f", str(AIRGAP / "values-airgap.yaml")]
+    else:
+        args += ["--set", "postgresql.bitnami.enabled=false",
+                 "--set", "redis.bitnami.enabled=false",
+                 "--set", "otelCollector.enabled=false"]
+    done = subprocess.run(args, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    images = set(re.findall(r'image:\s*"?([^"\s]+)', done.stdout))
+    expected = _release_images(version)
+    if airgap:
+        expected = {airgap_images.localize(r, PLACEHOLDER) for r in expected}
+        app = {i for i in images if "-backend:" in i or "-daemon:" in i or "-agent:" in i}
+    else:
+        app = _app_refs(images)
+    assert app == expected
+
+
+# --- build failures and the model pull ----------------------------------------------
+
+
+def _archives(tmp: Path, **kw) -> Path:
+    d = tmp / "image-archives"
+    d.mkdir()
+    for entry in airgap_images.Enumerator(REPO, VERSION, **kw).run():
+        (d / Path(entry["file"]).name).write_bytes(b"fake " + os.urandom(16))
+    return d
+
+
+def test_failed_build_leaves_no_partial_bundle(tmp_path, stubs):
+    key, _pub = _keypair(tmp_path, "release")
+    images_dir = _archives(tmp_path)
+    victim = sorted(images_dir.iterdir())[-1]
+    victim.unlink()  # the build dies on this image, after creating the bundle
+    out = tmp_path / "dist"
+    args = [str(BUILD), "--version", VERSION, "--out", str(out), "--images-from",
+            str(images_dir), "--skip-ollama-model", "--rules-dir",
+            str(tmp_path / "no-rules"), "--key", str(key)]
+    (stubs[0] / "helm").unlink()  # the chart is packaged with tar
+    env = _env(*stubs, path=_path_without("helm"))
+    proc = subprocess.run(args, env=env, capture_output=True, text=True)
+    assert proc.returncode == 1
+    assert f"has no {victim.name}" in proc.stderr
+    assert list(out.iterdir()) == []
+    # ... so the next run is not stopped by "already exists".
+    victim.write_bytes(b"fake")
+    proc = subprocess.run(args, env=env, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert (out / f"autosecops-airgap-{VERSION}.tar").is_file()
+
+
+def test_model_pull_gets_the_proxy_and_the_overridden_ollama_image(tmp_path):
+    key, _pub = _keypair(tmp_path, "release")
+    image = "example/ollama-cpu:1.0"
+    images_dir = _archives(tmp_path, ollama_image=image)
+    bin_dir, calls = _stubs(tmp_path)
+    # docker run (the pull) fails: the build goes on without a model.
+    (bin_dir / "docker").write_text(STUB.replace("exit 0", "exit 1"))
+    ca = tmp_path / "proxy-ca.pem"
+    ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    env = _env(bin_dir, calls, _path_without("helm"))
+    env.update(HTTPS_PROXY="http://127.0.0.1:3128", NO_PROXY="localhost",
+               AIRGAP_CA_BUNDLE=str(ca))
+    for v in ("http_proxy", "HTTP_PROXY", "https_proxy", "no_proxy"):
+        env.pop(v, None)
+    (bin_dir / "helm").unlink()
+    out = tmp_path / "dist"
+    proc = subprocess.run(
+        [str(BUILD), "--version", VERSION, "--out", str(out), "--images-from",
+         str(images_dir), "--ollama-image", image, "--ollama-model", "m:1",
+         "--rules-dir", str(tmp_path / "no-rules"), "--key", str(key), "--no-tar"],
+        env=env, capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "could not pull Ollama model m:1" in proc.stderr
+    runs = [c for c in _calls(calls) if c.startswith("docker run")]
+    assert len(runs) == 1
+    run = runs[0]
+    assert " -e HTTPS_PROXY " in run and " -e NO_PROXY " in run
+    assert " --network host " in run
+    assert f" -v {ca}:/airgap-ca.crt:ro -e SSL_CERT_FILE=/airgap-ca.crt " in run
+    assert f" {image} " in run and run.endswith(" m:1")

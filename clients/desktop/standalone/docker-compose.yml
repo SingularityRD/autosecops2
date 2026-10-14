@@ -95,7 +95,7 @@ services:
       - vigil
 
   backend:
-    image: ghcr.io/vigil-soc/vigil-backend:${VIGIL_VERSION}
+    image: ghcr.io/singularityrd/autosecops-backend:${VIGIL_VERSION}
     environment:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
@@ -142,7 +142,7 @@ services:
   # serve answers AGENT_URL. Neither publishes a port — the private network plus
   # the bearer token is what keeps them off the host.
   agent-worker:
-    image: ghcr.io/vigil-soc/vigil-agent:${VIGIL_VERSION}
+    image: ghcr.io/singularityrd/autosecops-agent:${VIGIL_VERSION}
     command: ["node", "dist/worker.js"]
     environment: *agent-env
     healthcheck:
@@ -162,7 +162,7 @@ services:
       - vigil
 
   agent-serve:
-    image: ghcr.io/vigil-soc/vigil-agent:${VIGIL_VERSION}
+    image: ghcr.io/singularityrd/autosecops-agent:${VIGIL_VERSION}
     command: ["node", "dist/serve.js"]
     environment: *agent-env
     healthcheck:

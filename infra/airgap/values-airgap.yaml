@@ -27,7 +27,7 @@ global:
   imageRegistry: registry.airgap.local:5000
   # App images resolve to <registry>/<namespace>-<component>:<appVersion>, the
   # same path the bundle pushes them to.
-  imageNamespace: vigil-soc/vigil
+  imageNamespace: singularityrd/autosecops
   imagePullPolicy: IfNotPresent
 
 postgresql:

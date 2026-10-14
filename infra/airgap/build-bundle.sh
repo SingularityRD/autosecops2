@@ -43,7 +43,9 @@
 #                           Ed25519 private key for openssl)  [required unless dry-run]
 #   --no-tar                leave the bundle as a directory only
 #
-# Env: AIRGAP_PYTHON (python with PyYAML) [python3]; COSIGN_PASSWORD for cosign.
+# Env: AIRGAP_PYTHON (python with PyYAML) [python3]; COSIGN_PASSWORD for cosign;
+#      HTTPS_PROXY/HTTP_PROXY/NO_PROXY are passed to the Ollama model pull;
+#      AIRGAP_CA_BUNDLE (PEM) is trusted by that pull (TLS-inspecting proxy).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -146,7 +148,21 @@ out="$(cd "$out" && pwd)"
 bundle="$out/$name"
 [ ! -e "$bundle" ] || die "$bundle already exists; remove it or pick another --out"
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+# A failed build leaves no partial bundle behind: it would look like a bundle
+# and make the next run stop at "already exists". Only what this run created
+# is removed ($bundle did not exist above; the tar only once we write it).
+created=0 tar_started=0
+cleanup() {
+  local rc=$?
+  rm -rf "$work"
+  if [ "$rc" -ne 0 ]; then
+    [ "$created" = 0 ] || rm -rf "$bundle"
+    [ "$tar_started" = 0 ] || rm -f "$out/$name.tar"
+    [ "$created" = 0 ] || log "build failed; removed the partial $bundle"
+  fi
+}
+trap cleanup EXIT
+created=1
 mkdir -p "$bundle"/{images,chart,k8s,rules,docs,models}
 
 images_json="$work/images.json"
@@ -226,9 +242,27 @@ elif [ -n "$models_dir" ]; then
   tar_tree "$bundle/models/ollama-models.tar" "$models_dir" models
   model_file="models/ollama-models.tar"
 else
-  ollama_ref="$(awk -F'\t' '$1 ~ /ollama\/ollama:/ { print $1; exit }' "$bundle/images.tsv")"
+  # The Ollama image of the LLM stack: --ollama-image when given (any name),
+  # else the ollama/ollama reference in k8s/llm-stack.yaml.
+  ollama_ref="$ollama_image"
+  [ -n "$ollama_ref" ] \
+    || ollama_ref="$(awk -F'\t' '$1 ~ /ollama\/ollama:/ { print $1; exit }' "$bundle/images.tsv")"
   mkdir -p "$work/ollama"
-  if command -v docker >/dev/null && [ -n "$ollama_ref" ] && docker run --rm \
+  # The pull runs in a container: hand it the build machine's proxy settings
+  # (a loopback proxy is only reachable with the host network) and, with
+  # AIRGAP_CA_BUNDLE, the CA a TLS-inspecting proxy signs with.
+  pull_args=()
+  for v in HTTPS_PROXY https_proxy HTTP_PROXY http_proxy NO_PROXY no_proxy; do
+    [ -z "${!v:-}" ] || pull_args+=(-e "$v")
+  done
+  case "${HTTPS_PROXY:-${https_proxy:-}}" in
+    *://127.*|*://localhost[:/]*|*://localhost|*://\[::1\]*) pull_args+=(--network host) ;;
+  esac
+  if [ -n "${AIRGAP_CA_BUNDLE:-}" ]; then
+    [ -r "$AIRGAP_CA_BUNDLE" ] || die "cannot read AIRGAP_CA_BUNDLE $AIRGAP_CA_BUNDLE"
+    pull_args+=(-v "$AIRGAP_CA_BUNDLE:/airgap-ca.crt:ro" -e SSL_CERT_FILE=/airgap-ca.crt)
+  fi
+  if command -v docker >/dev/null && [ -n "$ollama_ref" ] && docker run --rm "${pull_args[@]}" \
       -v "$work/ollama:/root/.ollama" --entrypoint /bin/sh "$ollama_ref" \
       -c 'ollama serve >/dev/null 2>&1 & sleep 3; ollama pull "$0"' "$ollama_model" >&2; then
     tar_tree "$bundle/models/ollama-models.tar" "$work/ollama" models
@@ -336,6 +370,7 @@ esac
 log "signed SHA256SUMS ($sign_method)"
 
 if [ "$make_tar" = 1 ]; then
+  tar_started=1
   tar -C "$out" -cf "$out/$name.tar" "$name"
   log "bundle: $out/$name.tar"
 fi

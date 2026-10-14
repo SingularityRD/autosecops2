@@ -77,6 +77,37 @@ infra/airgap/build-bundle.sh --dry-run --version 2.0.0
 Compose dosyasından (varsayılan + `daemon` profili) ve `k8s/llm-stack.yaml`
 dosyasından sayılır.
 
+Uygulama imajları (`backend`, `daemon`, `agent`): derleme makinesinde derlenmez;
+`v<V>` etiketiyle `.github/workflows/release.yml`'nin yayımladığı **imzalı sürüm
+imajları** kullanılır: `ghcr.io/singularityrd/autosecops-{backend,daemon,agent}:<V>`
+(Helm grafiğinin ve `build-bundle.sh`'ın varsayılanı; `--image-namespace` gerekmez).
+Etiket itilmeden bu imajlar yoktur ve derleme `not found` ile durur. Sıra:
+
+1. GitHub Release'teki dosyaları (`SHA256SUMS`, `*.sigstore.json`,
+   `autosecops-<V>-images.json`/`.tsv`, `verify-release.sh`, …) indirip doğrulayın:
+   `sh verify-release.sh --dir release-<V> --version <V>` → `RESULT: VERIFIED`
+   (ayrıntı ve internetsiz güven kökü: [docs/release/dogrulama.md](../../docs/release/dogrulama.md)).
+2. Paketi aşağıdaki gibi üretin; `build-bundle.sh` imajları GHCR'dan çeker.
+3. Paketi göndermeden önce çekilen her uygulama imajının imzalı listedeki imaj
+   olduğunu denetleyin (etiketler değiştirilebilir, özetler değiştirilemez):
+
+   ```bash
+   for c in backend daemon agent; do
+     docker image inspect --format "$c {{.Id}}" ghcr.io/singularityrd/autosecops-$c:<V>
+     jq -r --arg c "$c" '.images[] | select(.component==$c) | .platforms[] | "\(.platform) \(.config_digest)"' \
+       release-<V>/autosecops-<V>-images.json
+   done   # her imajın Id'si makinenin mimarisindeki config_digest ile aynı olmalı
+   ```
+
+   Ayrıntı: [dogrulama.md §4.3](../../docs/release/dogrulama.md). Önceden doğrulanmış
+   `docker save` arşivleriniz varsa çekmek yerine `--images-from DIR` verin.
+
+Derleme makinesi bir vekil sunucu (proxy) arkasındaysa model indirmesi
+`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` değerlerini kapsayıcıya geçirir (döngü
+adresli bir vekil için `--network host` ile); TLS denetleyen bir vekilin CA'sı
+için `AIRGAP_CA_BUNDLE=/yol/ca.pem` verin. Derleme yarıda kalırsa yarım paket
+dizini silinir; aynı `--out` ile yeniden çalıştırabilirsiniz.
+
 Kural depoları: `DetectionRulesService`'in klonladığı depolar (SigmaHQ `sigma`,
 Splunk `security_content`, Elastic `detection-rules`, KQL
 `Hunting-Queries-Detection-Rules`) derleme makinesinde
@@ -194,7 +225,7 @@ Adımlar, doğrulamadan sonra sırasıyla:
 
 1. Her imaj `docker load` → `docker tag <REG>/<yol>` → `docker push`.
    Eşleme: kayıt defteri adı atılır, tek bileşenli adlar `library/` alır
-   (`ghcr.io/vigil-soc/vigil-backend:2.0.0` → `REG/vigil-soc/vigil-backend:2.0.0`,
+   (`ghcr.io/singularityrd/autosecops-backend:2.0.0` → `REG/singularityrd/autosecops-backend:2.0.0`,
    `postgres:16-alpine` → `REG/library/postgres:16-alpine`).
    - `--loader ctr`: kayıt defteri yoksa, **her düğümde** çalıştırın
      (`ctr -n k8s.io images import` + `tag`).

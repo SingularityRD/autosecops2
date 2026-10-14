@@ -10,7 +10,7 @@ import { supportCommand } from "./supportcmd";
 
 const BACKEND_URL = "http://127.0.0.1:6987";
 const HEALTH_URL = `${BACKEND_URL}/api/health`;
-const BACKEND_IMAGE = "ghcr.io/vigil-soc/vigil-backend";
+const BACKEND_IMAGE = "ghcr.io/singularityrd/autosecops-backend";
 const DOCKER_INSTALL_URL = "https://www.docker.com/products/docker-desktop/";
 const OLLAMA_INSTALL_URL = "https://ollama.com/download";
 
