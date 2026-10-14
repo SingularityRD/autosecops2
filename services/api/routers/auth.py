@@ -24,6 +24,7 @@ from core.auth.auth_service import (
     PASSWORD_HISTORY_LIMIT,
     AccountLockedError,
     AuthService,
+    _is_service_account,
     password_matches_any,
 )
 from core.auth.login_policy import local_login_allowed
@@ -146,6 +147,14 @@ class MFAVerifyRequest(BaseModel):
     """MFA verification request."""
 
     code: str
+
+
+class MFACodeRequest(BaseModel):
+    """A current TOTP or recovery code, proving the caller still holds the
+    second factor. Required to weaken MFA once it is on: a stolen session
+    alone must not be able to turn it off or mint fresh recovery codes."""
+
+    code: Optional[str] = None
 
 
 class PasswordResetRequest(BaseModel):
@@ -537,6 +546,13 @@ def _apply_profile_update(
         user.full_name = full_name
 
     if email and email != user.email:
+        if _is_service_account(user):
+            # Same rule as PUT /api/users/{id}: a reachable address is the
+            # first step to a password reset, and a service account has none.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="A service account's email can't be changed",
+            )
         # Same rule as creating or editing a user: the address must be
         # acceptable and must not compare equal (case, Unicode, IDNA, a
         # trailing dot) to another account's email or address-shaped
@@ -690,6 +706,15 @@ def setup_mfa(
         they are returned by POST /mfa/verify once the first TOTP code is
         confirmed.
     """
+    # Re-running setup on an enabled account would switch MFA off and wipe
+    # the recovery codes with nothing but a session. Disable it first, which
+    # asks for a current code.
+    if current_user.mfa_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="MFA is already enabled; disable it first",
+        )
+
     secret = AuthService.setup_mfa(current_user.user_id, session)
     if not secret:
         raise HTTPException(
@@ -745,14 +770,17 @@ def regenerate_recovery_codes(
     request: Request,
     current_user: Annotated[User, Depends(get_current_active_user)],
     session: UnitOfWorkSession,
+    body: Optional[MFACodeRequest] = None,
 ):
     """
     Generate a fresh set of one-time MFA recovery codes, invalidating any
-    previous codes. Requires MFA to already be set up.
+    previous codes. Requires MFA to already be set up, and once it is
+    enabled, a current TOTP or recovery code in ``code``.
 
     Returns:
         The new plaintext recovery codes, shown only once.
     """
+    _require_current_mfa_code(current_user, body, session)
     codes = AuthService.get_mfa_recovery_codes(current_user.user_id, session)
     if codes is None:
         raise HTTPException(
@@ -763,24 +791,57 @@ def regenerate_recovery_codes(
     return RecoveryCodesResponse(recovery_codes=codes)
 
 
+def _require_current_mfa_code(
+    user: User, body: Optional[MFACodeRequest], session: Session
+) -> None:
+    """Refuse unless MFA is off or ``body.code`` is a current second factor.
+
+    A recovery code is accepted (and consumed), so someone who lost their
+    authenticator can still turn MFA off.
+    """
+    if not user.mfa_enabled:
+        return
+    code = (body.code or "").strip() if body else ""
+    if not code:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A current MFA code is required",
+        )
+    if not AuthService.verify_mfa_code(user.user_id, code, session):
+        # 400, not 401: the session is fine, and a 401 sends the console
+        # through its refresh-and-retry path.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid MFA code",
+        )
+
+
 @router.delete("/mfa")
+@limiter.limit("5/minute")
 def disable_mfa(
+    request: Request,
     current_user: Annotated[User, Depends(get_current_active_user)],
     session: UnitOfWorkSession,
+    body: Optional[MFACodeRequest] = None,
 ):
     """
-    Disable MFA for current user.
+    Disable MFA for current user. Once MFA is enabled this needs a current
+    TOTP or recovery code in ``code``: a session alone can't remove it.
 
     Args:
+        request: FastAPI request (used by the rate limiter).
         current_user: Current authenticated user
         session: Database session
+        body: The current MFA code
 
     Returns:
         Success message
     """
+    _require_current_mfa_code(current_user, body, session)
     try:
         current_user.mfa_enabled = False
         current_user.mfa_secret = None
+        current_user.mfa_recovery_codes = []
 
         logger.info(f"MFA disabled for user: {current_user.username}")
         return {"message": "MFA disabled successfully"}
@@ -816,8 +877,15 @@ def password_reset_request(
     """
     user = session.query(User).filter(User.email == body.email).first()
     # An account single sign-on created has no password to reset; giving it one
-    # would let it outlive its removal at the identity provider.
-    if user and user.is_active and not is_sso_only(user):
+    # would let it outlive its removal at the identity provider. A service
+    # account's password belongs to its gateway alone; it is rotated with
+    # `python -m core.auth.service_account ensure`, never by email.
+    if (
+        user
+        and user.is_active
+        and not is_sso_only(user)
+        and not _is_service_account(user)
+    ):
         token = generate_reset_token(user.user_id, user.email)
         frontend_base = get_settings().vigil_frontend_url.rstrip("/")
         if frontend_base:
@@ -870,7 +938,7 @@ async def password_reset_confirm(
         )
 
     user = await asyncio.to_thread(_get_user, session, user_id)
-    if not user or not user.is_active:
+    if not user or not user.is_active or _is_service_account(user):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Account no longer eligible for reset",

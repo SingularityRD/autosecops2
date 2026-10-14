@@ -1,77 +1,54 @@
-# AutoSecOps 2.0 — İş paketi durumu (12 Ekim 2026)
+# AutoSecOps 2.0 — İş paketi durumu (14 Ekim 2026, 12:40 TSİ)
 
+> Yeni oturumda devam etmek için önce `docs/wp/HANDOFF.md` (kurulum + başlangıç komutu), sonra bu dosya.
+Hedef: düzenlenmiş sektör GA, 30 Ekim 2026 (31 Ekim tampon). Plan: `docs/wp/NORTHSTAR_PLAN.md`.
+Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) → yalnızca spec + diff gören bağımsız doğrulayıcı → PASS → `integration`'a merge → tam test + gates → `integration` ve `main` push.
 
-> Yeni oturumda devam etmek için önce `docs/wp/HANDOFF.md`, kalan düzeltmeler için `docs/wp/FIXES.md`.
-Hedef: düzenlenmiş sektör GA, 30 Ekim 2026 (31 Ekim tampon). Plan: Claude Docs "AutoSecOps 2.0 Northstar uygulama planı".
-Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) yapılır → yalnızca spec + diff gören bağımsız doğrulayıcı → PASS olanlar `integration` dalına birleştirilir.
-Tüm WP dalları `target` (SingularityRD/autosecops2) reposuna da gönderildi; hiçbir iş kaybolmadı.
+**`main` == `integration` == `dd671b86`** (remote `target` = SingularityRD/autosecops2). Bu commit'te gates `RESULT: PASS`; `tests/unit tests/security tests/airgap` + şema snapshot testi geçiyor (xdist altında `test_medic_permissions_db` ve `test_support_bundle` zaman aşımı flake'leri; tek başına geçiyorlar).
 
-## 1. Integration'a birleşenler (doğrulama PASS)
+## 1. main'de (doğrulandı, birleşti) — 45 paketten ~37
 
-| WP | Konu | Not |
-|---|---|---|
-| W0.1, W0.3, W0.4, W0.5, W0.7 | Upstream sync/hard fork, CI, ajan fabrikası, sözleşmeler + init SQL 46–49, eval korpusu | Dalga 0 tamam |
-| W0.4b | gates.sh düzeltmeleri | Düşük: `tracked_nm` silmeleri de sayıyor (`--diff-filter=d`) |
-| W0.9 | Ortama sızan testler, korpus temizliği, API metinlerinde AutoSecOps | `storage_status.py:255,316` hâlâ "Vigil" diyor (takip işi) |
-| W1.1 | Offline eval harness (evalkit) | |
-| W1.6 | QA örnekleme + Scorecard | Öneri: çağıranın `seed` vermesini test dışı yok say; Disagree metni risk-ağırlıklı örnekler için yanlış |
-| W1.7 | Araç etki sınıfları, yazma/yıkıcı araçlar onaysız çalışamaz | Düşük: onay argümana bağlı değil; isim sezgiseli `get_blockIp` gibi adları read_only sayıyor; chat'te `approve_action` açık |
-| W1.8 | Giden webhook'lar, bildirim dağıtıcı, SLA | Orta: `url_safety` 100.64.0.0/10 (CGNAT, Alibaba metadata 100.100.100.200) geçiriyor → `not ip.is_global` ile engelle; dokümanda de-dup imzalı gövde `id` ile yapılmalı |
-| W2.6 | Entra ID yürütücüsü | Orta: id-only rol stub'ı izin veriyor (reddetmeli). W2.4 kablolamasında id `azure-ad` olmalı ve client_secret secret store'dan çözülmeli |
-| W2.8 | Vaka aksiyon zaman çizelgesi + Revert butonu | Düşük: 502 nesne `detail` gösterilmiyor |
-| W3.8 | DORA/NIS2 bildirim saatleri, init SQL 50 | Orta: son olay(lar)ın silinmesi zincirde tespit edilmiyor (zincir başı çapası yok); sıra dışı anlar kabul ediliyor |
+W0.1–W0.7, W0.9, W0.10, W0.11 (güvenlik hotfix: detection-rules git/SSRF, Viewer yazma rotaları), W0.12 (kalıcı alım kuyruğu), W0.12b (spool sertleştirme), W0.13 commit-geçmişi incelemeleri (triyaj, data-infra-ci, response-integrations, auth-api — dördü de), W0.14 (tur-9 takipleri), W1.1, W1.2/W1.3, W1.5, W1.6, W1.7, W1.7b (modeller onay veremez; `/mcp` `approve_action`/`reject_action` kaldırıldı — CHANGELOG'da BREAKING notu var), W1.8, W1.9 (OIDC SSO), W1.10 (denetim zinciri + imzalı checkpoint), W2.1–W2.8, W3.1, W3.2, W3.3, W3.4, W3.5, W3.7, W3.8, W3.9, W3.11, W4.1/W4.2, W4.3, W4.5 (0.7.1 → 2.0 yükseltme yolu).
 
-Birleştirme sonrası: `schema.d.ts` yeniden üretildi; `test_route_permissions.py` 37/37 geçti.
+## 2. Dalda bekleyenler (hepsi remote'ta pushlu) — sıradaki iş
 
-## 2. Yapıldı ama doğrulamada KALDI (dallarda commitli, birleşmedi)
+| WP | Dal @ uç | Durum | Sıradaki adım |
+|---|---|---|---|
+| W0.15 Redis kesintisinde çift triyaj | wp/w0.15-redis-restart-retriage @ 131790e7 | Doğrulama **PASS**, birleşmedi | **Önce düzelt (önerilen):** (1) ORTA — karar kaydı ile `ai_enrichment` yazımı arasında daemon ölürse backfill kararı yazıp `_evaluate_for_response`'u hiç çalıştırmıyor (yanıt en-az-bir'den en-çok-bir'e düştü; processor.py ~1018/1037, `_persist_settled` ~1241) → backfill yerleşik kararda da yanıt değerlendirmesini çalıştırmalı (idempotent). (2) ORTA — `alert_lane_decisions` hiç okunamazsa (56_*.sql yok) tüm backfill kalıcı durur (~1216-1223) → tablo yoksa eski davranışa düş + uyarı/alarm. (3) DÜŞÜK — en eski karar kazanıyor (decision_store.py:94); spool replay yolu (processor.py ~842) `_drop_settled` kontrolü yapmıyor. Merge çakışması: processor.py `__init__` alanları — iki tarafı da tut. |
+| W0.16 Onay argüman sınırları | wp/w0.16-approval-args-bounds @ efc2312a | Düzeltildi, gates PASS, **doğrulama bekliyor** | `docs/wp/briefs/VERIFY_ROUND2.md` ile bağımsız doğrulayıcı. Açık risk: 64 KB üstü çağrı park edilmeyince run onaysız beklemede kalıyor (yalnızca faz satırında sebep). |
+| W3.10 FIPS modu | wp/w3.10-fips @ 1a93ae96 | Tur 7 düzeltildi (merge çakışması, ratchet açıkları, CHANGELOG), gates PASS, **doğrulama bekliyor** | Doğrulayıcı. İnsan kabulü gerekli: FIPS_MODE'da denetim checkpoint'i ve kanıt paketi hâlâ yalnızca Ed25519 (bilinen boşluk, `docs/fips.md`); sıfırlama bağlantıları yükseltmede geçersizleşiyor. |
+| W3.6 Denetim dışa aktarımı (SIEM) | wp/w3.6-audit-export @ 33026561 | Tur 7 düzeltmeleri dalda (integration dd671b86 merge'lü: CEF/syslog'da checkpoint'ler eksiksiz, `*_key`/KKV/özel kategori anahtarları maskeleniyor, olay başına iş bütçesi, CGNAT notu). Düzelticinin son raporu alınamadı — **gates sonucu teyit edilmeli**, doğrulama bekliyor | Önce worktree'de gates koş (`--base integration`); sonra `VERIFY_ROUND2.md` ile doğrulayıcı (tur-6 bulguları: CEF `max_details` kesmesi, anahtar-adı maskeleme boşlukları, 16 MB olay süresi). |
+| W4.6 Ürün dokümantasyonu | wp/w4.6-docs @ 7463d573 | Tur 7 düzeltildi (7a22e8b6'ya göre), doğrulanmadı | **En son birleşecek.** Birleşmeden önce `integration`'ı merge et, `tests/unit/docs/merged_wps.txt` ve belgelerdeki taban commit'i güncelle (W1.9, W0.12b, W0.13 auth-api, W0.14 ve sonra birleşenler), sonra doğrulayıcı. Kodda kalan: R29 geri yükleme mesajı (`core/backup/restore.py`). |
+| W4.7 Sürüm aracı / notlar | wp/w4.7-release @ a020228c | Doğrulama FAIL — yalnızca notlar bayat | **En son birleşecek.** `git merge integration` → `render-notes --write` → commit; aksi halde `test_release_notes_*` main'i kırar. Her yeni WP merge'ünden sonra notlar yeniden üretilmeli (veya bu iki test yalnızca tag pipeline'ında koşmalı — karar ver). Düşük: W1.9 vurgu/yükseltme notu yok; W0.13 metninde "auth-api birleşmedi" sabit; git dışı çalışmada traceback. Asla `v2.0.0` tag'i oluşturma, ruleset uygulama. |
 
-| WP | Dal | Engelleyen bulgular (düzeltilecek) |
-|---|---|---|
-| W1.2 Triage JSON + provenance | wp/w1.2-triage-provenance | Provenance haritaları host/kullanıcı/etiket alanlarını SENSOR sayıyor (AWS `Resources.*`, Splunk `src/dest`, Elastic `host.*`); U+2028/2029/0085 prompt'ta yeni satır açıyor; `parse_triage_reply` derin iç içe/çok uzun sayıda istisna fırlatıyor; NUL karakteri JSONB'yi bozuyor |
-| W1.5 Canary | wp/w1.5-canary | AC6 başarısız (tablo yokken `to_regclass` önbelleğe alınmıyor); canary'ler TEST-NET IP'lerle kolay tanınıyor; `/api/findings/{id}/intake` canary'de otonom soruşturma başlatabiliyor; W1.6 ile `core/quality/__init__.py` add/add çakışması; birleşince W1.6 örneklemesine canary filtresi eklenmeli |
-| W1.9 OIDC SSO | wp/w1.9-oidc | **Yüksek:** Manager `link_by_verified_email` açıp kendi IdP'siyle Admin hesabına MFA'sız girebiliyor; SSO-only Admin break-glass seçilebiliyor; son sağlayıcı kapatılabiliyor; `schema.d.ts` çakışması |
-| W1.10 Denetim zinciri (init SQL 51) | wp/w1.10-audit-chain | **Yüksek:** tetikleyici atlanarak yapılan değişiklik, aynı satıra sonraki normal yazımla gizleniyor (doğrulayıcı update/delete ön-görüntüsünü önceki zincir satırıyla karşılaştırmalı); anahtarsız doğrulama exit 0 veriyor |
-| W2.1 Verdict run | wp/w2.1-verdict-run | **Yüksek:** reddedilen CONCLUDE bütçe bitince benign hüküm olarak kaydediliyor (yalnızca kabul edilen CONCLUDE kullanılmalı); `context` alanı gönderilmiyor |
-| W2.2 Alert lanes (init SQL 56) | wp/w2.2-alert-lanes | **Yüksek:** bayrak kapalıyken bile payload'daki sahte `alert_lane` alanı triage'ı atlatıyor; tenant payload'dan geliyor; şiddeti olmayan uyarılar bastırılabiliyor |
-| W2.4 Yürütücü kaydı + politika | wp/w2.4-executors-policy | **Yüksek:** çok büyük TTL `OverflowError` → aynı aksiyon her döngüde tekrar çalışıyor ve kuyruk tıkanıyor; korunan varlıklar sadece birebir dizeyle eşleşiyor (FQDN, `CORP\dc01`, CIDR, `0.0.0.0/0` geçiyor); model `parameters` hedefi değiştirebiliyor; `EXECUTOR_SOURCES` id'leri yanlış (`microsoft-defender`, `azure-ad` olmalı); reverse sırasında validate yeniden çözümleme yapmamalı; `revoke_sessions` ActionType değil; Cloudflare MCP araçları politikasız |
-| W2.5 Defender yürütücüsü | wp/w2.5-defender-executor | **Yüksek:** kısa ad çözümlemesi `$top=50`'de kesiliyor (yanlış host izole edilebilir); izolasyon geçmişi sıralanmıyor; POST zaman aşımı durum okunmadan failed; config'teki `api_base` token sızdırabilir |
-| W2.7 Palo Alto yürütücüsü | wp/w2.7-paloalto-executor | **Yüksek:** `verify` `reverse_of`'u yok sayıyor → her geri alma failed; unblock'un geri alınması blok kontrollerini atlıyor (yönetim IP'si engellenebilir); noop blok geri alması yeni blok ekliyor; IPv6 scope id kabul ediliyor |
-| W3.3 Air-gap paketi | wp/w3.3-airgap | **Orta-Yüksek:** doğrulama ile kullanım arasında TOCTOU — paket önce özel `mktemp -d` dizinine kopyalanıp oradan doğrulanmalı/kurulmalı; FIFO/dizinler listelenmeden kabul; kural tar'larında symlink |
-| W3.4 Sıfır egress | wp/w3.4-egress-zero | Tek engel önemsiz: `airgap.yml:14` yorumundaki "secrets" kelimesi AC5 grep'ini bozuyor. Düşük: tarayıcı kural boşlukları, `scripts/` taranmıyor, aksiyonlar SHA'ya sabitlenmemiş |
-| W3.5 Saklama / KVKK | wp/w3.5-retention | **Yüksek:** yasal saklama (legal hold) altındaki veri 4 yoldan silinebiliyor (çalışma sırasında konan hold, sohbet LLM logları, cascade, açık vakalar); `ledger_archive_export` VARCHAR(20)'ye sığmıyor → arşiv uç noktası her seferinde çöküyor; `data_classes: []` "hepsi" anlamına geliyor |
-| W3.6 Denetim dışa aktarımı (SIEM) | wp/w3.6-audit-export | **Yüksek:** redaksiyon birçok sır biçimini kaçırıyor (`password=`, PEM, `ghp_`, `xoxb-`, bağlantı dizeleri…); açık transaction'daki satır imleç geçtiği için kalıcı kayboluyor; CR/LF syslog'a kaçışsız gidiyor |
+## 3. Başlanmadı / insan kararı
 
-## 3. Hiç başlanmayanlar (plana göre)
+- **W1.4** (prompt-injection değerlendirme seti): spec taslağı `wp/w1.4-injection-set` @ 7b50fa61 dalında (`docs/wp/w1.4.md`). Saldırı metni yazımı güvenlik sınıflandırıcısına takıldı → insan yazmalı veya mevcut v1 240 vakalık set kullanılmalı.
+- **W0.8**, **W4.4** (dış pentest): insan/dış iş. **W2.9**: isteğe bağlı.
+- **Uzak dal silme**: birleşmiş `wp/*` dallarını remote'tan silmek kullanıcı onayı bekliyor (izin sınıflandırıcısı engelledi). Yerel temizlik yapıldı.
+- **İnsan onayı**: main'e giren tüm Yüksek riskli WP'ler (özellikle W1.7b `/mcp` araç kaldırma, W0.13 auth-api ile Helm'de CSRF zorlaması `VIGIL_CSRF_REPORT_ONLY=false`, W0.12b spool disk biçimi, W4.5 DB yükseltme, W1.9 SSO/RBAC) için ürün sahibinin onayı alınmalı.
 
-- W1.3 / W1.4 (W1.2 içinde kısmen), W2.3, W3.1, W3.2, W3.7 (kanıt paketi — W3.8 şimdilik yerel paket kullanıyor) ve Dalga 4 (GA sertleştirme, pilot, dokümantasyon, sürüm) — ayrıntı için plan dokümanı.
-- W1.10 ↔ W3.6 bağlantısı (W3.6 zinciri doğrudan tablodan okuyor).
+## 4. Birleşmiş ama takip gerektiren (engelleyici değil)
 
-## 4. Ortam notları
+- W4.5: Helm yolunda `vigil_app` grant'leri testte kapsanmıyor (Orta); `?sslpassword=` argv'de; ürün sürümü hâlâ 0.7.1 (sürüm bump'ı W4.7 ile); postgres imajı digest'e sabitlenmemiş.
+- W1.9: çok worker'lı kurulumda eski ortam değeri 409'a yol açabilir (güvenli tarafta); Manager SSO formunu görüp kaydederken 403 alıyor (UI'da gizlenmeli); IdP grup değişikliği son SSO-Admin'i düşürebilir (belgelendi).
+- W0.12b: başlık bozuk + taşınamayan segment hâlâ spool'u kapatıyor (spool.py:333); `.done` eklemesi `O_NOFOLLOW`'suz; sayısal `external_id` lookup hatası → dead/.
+- W0.13 auth-api: `test_service_account_reset_confirm_is_refused` düzeltme olmadan da geçiyor (güçlendirilmeli); `scripts/reset-setup.sh` CSRF zorlamalı Helm'de kırılıyor.
+- W0.11/W0.14: `.git` dosyası ile başka repoya yönlenme → W0.16'da kapatıldı (doğrulanınca).
+- Katalog (Claude Design artifact'ı, özel): https://claude.ai/artifact/1WrkQHpuahMWgiZTnREMWY — iletişim yer tutucuları ([E-POSTA ADRESİ], [TELEFON], [WEB ADRESİ]) ve "2.0 GA" rozetleri (SSO, otonomi katmanları, imzalı zincir, kanıt paketi, yerel model artık main'de) güncellenmeli.
 
-- `/root/vigil/.env` `DAEMON_AUTO_TRIAGE=true` ayarlıyor; gates için `GATES_ENV_SH=/root/wt/_briefs/gates_env.sh` kullanın (W0.9 birleştiği için ilgili testler artık wrapper'sız da geçiyor).
-- 2 CPU'lu makinede 20 ajan aynı anda çalışınca vitest/pytest zaman aşımları ve OOM görüldü; doğrulayıcılar `GATES_TIMEOUT` artırarak yeniden koştu.
-- Init SQL numaraları: 46–49 (W0.5), 50 (W3.8), 51 (W1.10), 56 (W2.2); 52–55, 57–67 ayrılmış ama kullanılmadı.
-- Doğrulayıcı probe'ları ve logları: `/tmp/verify-<wp>/` (geçici makinede; oturum kapanınca silinir).
+## 5. Önerilen sıra
 
-## 5. Önerilen sıradaki adım
+1. W0.16, W3.10 ve W3.6 doğrulayıcıları (paralel) + W0.15 tur-2 düzeltici.
+2. PASS olanları birleştir: W0.16 → W3.10 → W0.15 → W3.6. Her merge sonrası: `python -m tests.security.route_matrix --write`, `cd clients/web && npm run generate:api`, gerekirse `python scripts/generate_schema_snapshot.py`, `tests/airgap` (yeni dış çağrıları `egress_inventory.json`'da sınıflandır), tam test + gates, push.
+3. En son W4.6 ve W4.7'yi `integration` ile güncelle (merged_wps.txt, taban commit, `render-notes --write`), doğrula, birleştir.
+4. Sürüm: sürüm bump'ı ve GA kontrol listesi (W4.7 spec'i), insan onayları, W1.4 kararı.
 
-1. FAIL alan 13 dal için düzeltme ajanları (bulgular yukarıda), ardından yeniden bağımsız doğrulama.
-2. W2.4'ü önce düzelt/birleştir (W2.5/W2.7 ve W2.8 Revert ona bağlı), sonra W2.5, W2.7.
-3. Birleştirme sırası çakışmaları: `core/compliance/__init__.py` (W3.5/W3.6), `core/quality/__init__.py` (W1.5), `schema.d.ts` her birleştirmeden sonra yeniden üretilmeli.
+## 6. Ortam notları
 
-## Güncelleme — 12 Ekim 2026, 12:45
-
-- W3.4 (sıfır egress) tek engel olan yorum satırı düzeltilerek integration'a birleşti. Birleşen W1.8 ve W2.6'nın yeni dış çağrıları `tests/airgap/egress_inventory.json`'da sınıflandırıldı.
-- `integration` → `main` birleştirildi (fast-forward). Birleşik ağaçta: tam gates `RESULT: PASS` (web, agent, py, medic, shell); `tests/unit tests/security tests/airgap` 4999 geçti; veritabanı testleri 557 geçti, 1 zamanlama flake'i (`test_medic_last_seen`, dokunulmamış dosya, tek başına geçiyor).
-- Plan sayımı (45 iş paketi): **14 bitti ve main'de** (W0.1, W0.2, W0.3, W0.4, W0.5, W0.7, W1.1, W1.6, W1.7, W1.8, W2.6, W2.8, W3.4, W3.8; artı ek W0.4b, W0.9) · **12 kodu yazıldı, doğrulamada kaldı** (W1.2, W1.5, W1.9, W1.10, W2.1, W2.2, W2.4, W2.5, W2.7, W3.3, W3.5, W3.6 — bkz. FIXES.md) · **19 başlanmadı** (W0.6, W0.8 [insan işi], W1.3, W1.4, W2.3, W2.9 [isteğe bağlı], W3.1, W3.2, W3.7, W3.9, W3.10, W3.11, W4.1–W4.7).
-- Ortam notu: makine yeniden başlarsa Postgres ve Redis kapalı gelir: `pg_ctlcluster 16 main start; redis-server --daemonize yes`.
-
-## Güncelleme — 13 Ekim 2026, akşam (main 617b34af)
-
-**main'de (doğrulandı):** W0.1–W0.7, W0.9, W0.10, W0.12 (kalıcı alım kuyruğu), W0.13 triyaj incelemesi, W1.1, W1.2/W1.3, W1.5, W1.6, W1.7, W1.8, W1.10, W2.1, W2.2, W2.3, W2.4, W2.5, W2.6, W2.7, W2.8, W3.1, W3.2, W3.3, W3.4, W3.5, W3.7, W3.8, W3.9, W3.11, W4.1/W4.2, W4.3.
-
-**Dalda, düzeltildi, doğrulama bekliyor:** wp/w0.11-security-hotfix (detection-rules RCE/SSRF + Viewer yazma rotaları, c0277049 — ÖNCELİKLİ), wp/w0.13-review-data-infra-ci (49b37752), wp/w0.13-review-response-integrations (b36ea73f), wp/w0.12b-spool-hardening (f69dc689), wp/w1.7b-chat-approval (7ec1ca72), wp/w4.5-upgrade-path (375115ed), wp/w4.6-docs (c4e41647; 617b34af'e göre güncellenmeli).
-
-**Dalda, son doğrulamada bulgu kaldı:** wp/w1.9-oidc (ortam değişkeni sırrı silme, son admin yarışı, /me e-posta çakışması), wp/w3.6-audit-export (redaksiyon kaçakları + uzun girdide regex yavaşlığı), wp/w3.10-fips (ratchet kapsamı), wp/w4.7-release (sığ CI checkout'ta not testleri, notlar güncel değil), wp/w0.13-review-auth-api (W1.9'a bağlı).
-
-**Başlanmadı / insan işi:** W0.8, W4.4 (dış pentest), W2.9 (isteğe bağlı), W1.4 (enjeksiyon seti yazımı güvenlik sınıflandırıcısına takıldı; insan kararı gerekli).
+- Makine yeniden başlarsa: `pg_ctlcluster 16 main start; redis-server --daemonize yes`.
+- `gates_env.sh` (`docs/wp/briefs/`) `.env`'deki `DAEMON_AUTO_TRIAGE`'ı kaldırır, `DEMO_MODE=false`, `MCP_AUTO_CONNECT_ON_STARTUP=false`.
+- Tam test: `source /root/wt/_briefs/gates_env.sh; PYTHONPATH=<wt> python -m pytest tests/unit tests/security tests/airgap tests/integration/test_schema_snapshot.py -q -p no:cacheprovider -n 4 --no-cov`.
+- Init SQL main'de: 46–51, 55, 56, 58, 61 (values.yaml sırası ve Helm kopyaları eşit tutulmalı).
+- **Asla `git stash` kullanma** (worktree'ler ortak stash listesi paylaşıyor; bir kez iki ajanın işi karıştı). `pkill -f` kullanma. Sır pushlama. Force-push yok.
+- Doğrulayıcı probe/logları `/tmp/verify-*` altında (geçici makine).

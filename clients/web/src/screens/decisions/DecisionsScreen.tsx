@@ -18,6 +18,7 @@ import {
   type ApprovalAction,
 } from './useDecisions'
 import { aiDecisionsApi, approvalsApi } from '../../services/api'
+import { ToolCallDetail, questionOf, toolCallOf } from './ToolCallDetail'
 import { EmptyState, Popup, Field, TextInput, Select, Rating, Slider, Dropdown, activateOnKey } from '../../shared/ui'
 
 // One list, so a new tab cannot be added to the union and forgotten here --
@@ -267,6 +268,18 @@ export function checkpointChip(a: ApprovalAction) {
   )
 }
 
+/** The question, then the whole tool call the approval binds, never a cut of it. */
+export function ApprovalBody({ a }: { a: ApprovalAction }) {
+  const call = toolCallOf(a.parameters)
+  const question = questionOf(a.description, call)
+  return (
+    <div style={{ maxWidth: 420 }}>
+      {question && <div className="muted" style={{ fontSize: 12, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{question}</div>}
+      {call && <ToolCallDetail call={call} />}
+    </div>
+  )
+}
+
 function ApprovalsTab({
   actions,
   phase,
@@ -315,7 +328,7 @@ function ApprovalsTab({
                 <tr key={a.action_id}>
                   <td>
                     <div style={{ fontWeight: 600 }}>{a.title || a.action_id}</div>
-                    {a.description && <div className="muted" style={{ maxWidth: 320, fontSize: 12 }}>{a.description}</div>}
+                    <ApprovalBody a={a} />
                   </td>
                   <td><span className="mono" style={{ fontSize: 11 }}>{a.workflow_run_id || a.target || '—'}</span></td>
                   <td>{checkpointChip(a)}</td>

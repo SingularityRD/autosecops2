@@ -24,6 +24,13 @@ from core.config import get_settings
 from core.ingestion.dedup import RedisDedupSet
 from core.ingestion.handoff import envelope
 from core.ingestion.spool import IngestSpool
+from core.ingestion.store_outcome import (
+    CREATED,
+    UNKNOWN,
+    StoreOutcome,
+    classify_store_error,
+    failed,
+)
 from services.daemon.config import PollingConfig, ProcessingConfig
 from services.daemon.poller import DataPoller
 from services.daemon.processor import _STORE_ATTEMPTS, FindingProcessor
@@ -44,6 +51,14 @@ class _Ingest:
         if isinstance(outcome, Exception):
             raise outcome
         return bool(outcome)
+
+    def store_finding(self, finding: Dict[str, Any]) -> StoreOutcome:
+        """The spooled (webhook) path's store, from the same scripted results."""
+        try:
+            ok = self.ingest_finding(finding)
+        except Exception as e:  # noqa: BLE001
+            return failed(classify_store_error(e), e)
+        return StoreOutcome(status=CREATED) if ok else failed(UNKNOWN, "refused")
 
 
 def _dead_redis(monkeypatch) -> None:
