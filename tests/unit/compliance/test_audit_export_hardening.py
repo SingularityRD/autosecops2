@@ -443,7 +443,11 @@ async def test_only_the_dead_destinations_pipeline_is_restarted(tmp_path, monkey
         await _until(lambda: svc.pipelines.get("good") is not None)
         good = svc.pipelines["good"]
         await _until(lambda: len(deaths) >= 3 and svc.restarts >= 3)
-        await _until(lambda: svc.pipelines["bad"].running)
+        # A restart briefly takes "bad" out of the map: wait for its successor.
+        await _until(
+            lambda: svc.pipelines.get("bad") is not None
+            and svc.pipelines["bad"].running
+        )
         assert svc.pipelines["good"] is good and good.running
         assert "good" not in stopped
         assert stopped.count("bad") == svc.restarts
