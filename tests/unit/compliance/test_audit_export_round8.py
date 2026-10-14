@@ -103,8 +103,10 @@ def test_special_category_values_are_masked_by_key(key, value):
 
 
 def test_special_category_text_pairs_are_masked():
+    # Round 9: the whole value goes, not its first word.
     for text in ("diagnosis: HIV positive", "health_status=HIV positive"):
-        assert "HIV" not in _message(text)
+        out = _message(text)
+        assert "HIV" not in out and "positive" not in out, out
 
 
 def test_special_categories_pass_with_redact_pii_off():
@@ -134,7 +136,14 @@ BENIGN = [
 @pytest.mark.parametrize("key", BENIGN)
 def test_benign_lookalike_keys_are_not_special(key):
     assert not special_category_key(key), key
-    assert _details({key: "some value"}) == {key: "some value"}
+    # Round 9 #L2: a status word or a number passes under a look-alike key;
+    # free text there does not (``{"service_health": "HIV positive"}``).
+    assert _details({key: "ok"}) == {key: "ok"}
+    assert _details({key: 12}) == {key: 12}
+    if key not in ("disabled", "is_disabled", "trace_id", "embrace", "faithful"):
+        assert _details({key: "some value"}) == {key: REDACTED}
+    else:
+        assert _details({key: "some value"}) == {key: "some value"}
 
 
 def test_bare_health_status_keeps_service_states_but_not_conditions():

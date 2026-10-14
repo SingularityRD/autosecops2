@@ -83,13 +83,33 @@ def _endpoint(dest) -> Optional[tuple]:
     return (parsed.scheme, (parsed.hostname or "").lower(), port)
 
 
+def _binding_change(old, new) -> Optional[str]:
+    """Why ``new`` would send ``old``'s stored token somewhere it was not
+    entered for, or None: another scheme/host/port, certificate checks
+    turned off, another CA bundle (whoever holds a certificate it signs can
+    take the token), or another header carrying it (one the receiver logs).
+    A path change, an explicit default port, turning ``tls_verify`` on and
+    the header's case are not."""
+    if old is None or _endpoint(old) != _endpoint(new):
+        return "now points elsewhere"
+    if old.tls_verify and not new.tls_verify:
+        return "turns tls_verify off"
+    if (old.ca_pem or None) != (new.ca_pem or None):
+        return "trusts another CA bundle"
+    if old.auth_header.lower() != new.auth_header.lower():
+        return "sends its token in another header"
+    return None
+
+
 def _refuse_moved_token(
     service: AuditExportService,
     cfg: AuditExportConfig,
     secrets: dict[str, "DestinationSecrets"],
 ) -> None:
-    """A stored token is bound to the endpoint it was entered for. A PUT that
-    points a destination holding a token at another scheme/host/port (or
+    """A stored token is bound to the endpoint it was entered for and to how
+    it is sent there (:func:`_binding_change`). A PUT that points a
+    destination holding a token at another scheme/host/port, turns its
+    ``tls_verify`` off, changes its ``ca_pem`` or its ``auth_header`` (or
     re-creates a destination whose old token is still stored) must re-enter
     the token or clear it; otherwise a ``settings.write`` holder could send
     the existing credential to a host of their choosing."""
@@ -102,7 +122,10 @@ def _refuse_moved_token(
         if target is None:
             continue
         old = previous.get(dest.name)
-        if old is not None and _endpoint(old) == target:
+        if old is not None and getattr(old, "type", None) != "http":
+            old = None
+        reason = _binding_change(old, dest)
+        if reason is None:
             continue
         supplied = secrets.get(dest.name)
         if supplied is not None and (supplied.token or supplied.clear_token):
@@ -111,7 +134,7 @@ def _refuse_moved_token(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
-                    f"destination {dest.name!r} now points elsewhere; re-enter "
+                    f"destination {dest.name!r} {reason}; re-enter "
                     "its token or set clear_token"
                 ),
             )

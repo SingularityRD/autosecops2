@@ -531,6 +531,78 @@ def fold_unicode(value: str) -> str:
     return _fold_short(value) if len(value) <= 256 else _fold(value)
 
 
+@functools.lru_cache(maxsize=4096)
+def _fold_char(ch: str) -> str:
+    return _fold(ch)
+
+
+def fold_with_map(value: str) -> tuple[str, list[int]]:
+    """:func:`fold_unicode` character by character, with, for each folded
+    character, the index of the original character it came from (so that a
+    span matched on the folded form can be placed on the original)."""
+    pieces: list[str] = []
+    starts: list[int] = []
+    for i, ch in enumerate(value):
+        f = ch if ch.isascii() else _fold_char(ch)
+        if f:
+            pieces.append(f)
+            starts.extend([i] * len(f))
+    return "".join(pieces), starts
+
+
+_MARK = re.compile(r"\[REDACTED(?:-[A-Z]+)?\]")
+
+
+def unfold_redactions(
+    original: str, folded: str, starts: list[int], alt: str
+) -> Optional[str]:
+    """Place the masks of ``alt`` (``folded`` with spans replaced by
+    ``[REDACTED…]`` marks) on ``original``: each masked span of the folded
+    text covers the original characters it came from (a ligature or a
+    fullwidth letter partly inside a span is masked whole), and every other
+    original character is kept as it was. None when ``alt`` is not
+    ``folded`` with marks put in (the scan rewrote more than spans)."""
+    parts = _MARK.split(alt)
+    marks = _MARK.findall(alt)
+    if not folded.startswith(parts[0]):
+        return None
+    fpos = len(parts[0])
+    spans: list[tuple[int, int, str]] = []
+    k = 0
+    while k < len(marks):
+        mark = marks[k]
+        # Marks with nothing between them form one span.
+        while k + 1 < len(marks) and parts[k + 1] == "":
+            k += 1
+            mark += marks[k]
+        piece = parts[k + 1]
+        if k == len(marks) - 1:
+            nxt = len(folded) - len(piece)
+            if nxt < fpos or not folded.endswith(piece):
+                return None
+        else:
+            nxt = folded.find(piece, fpos)
+            if nxt < 0:
+                return None
+        spans.append((fpos, nxt, mark))
+        fpos = nxt + len(piece)
+        k += 1
+    if fpos != len(folded):
+        return None
+    out: list[str] = []
+    last = 0
+    n = len(original)
+    for a, b, mark in spans:
+        oa = starts[a] if a < len(starts) else n
+        ob = starts[b - 1] + 1 if b > a else oa
+        if oa > last:
+            out.append(original[last:oa])
+        out.append(mark)
+        last = max(last, ob)
+    out.append(original[last:])
+    return "".join(out)
+
+
 REDACTED = "[REDACTED]"
 REDACTED_EMAIL = "[REDACTED-EMAIL]"
 REDACTED_PII = "[REDACTED-PII]"
@@ -771,17 +843,27 @@ def _redact_pii_pairs(text_: str) -> str:
         if m.start() < pos:
             continue
         ident = m.group(2).lstrip("-")
-        if not ident or ident.lower() in _ACTOR_KEYS or not pii_key(ident):
+        if not ident or ident.lower() in _ACTOR_KEYS:
             continue
+        lookalike = False
+        if not pii_key(ident):
+            if not special_lookalike_key(ident):
+                continue
+            lookalike = True
         vm = _VALUE.match(text_, m.end())
         if vm is None:
             continue
         value = vm.group(0)
+        if lookalike and benign_special_value(
+            text_[vm.start() : _phrase_end(text_, vm)].strip("\"'")
+        ):
+            continue  # ``service_health=degraded``
         if value.startswith("[REDACTED") or value.lstrip("\\\"'").startswith(
             "[REDACTED"
         ):
             continue
-        end = _value_end(text_, vm, _VALUE_TAIL)
+        # The whole value, not its first word: ``diagnosis: Type 2 diabetes``.
+        end = max(_value_end(text_, vm, _VALUE_TAIL), _phrase_end(text_, vm))
         out.append(text_[pos : vm.start()])
         red = _redacted_value(value) if end == vm.end() else REDACTED
         out.append(red.replace(REDACTED, REDACTED_PII))
@@ -1167,6 +1249,56 @@ SERVICE_HEALTH_VALUES = frozenset(
 )
 
 
+def special_lookalike_key(name: str) -> bool:
+    """A key that carries a special-category word but is let through by
+    :func:`special_category_key` (``service_health``, ``diagnosis_count``,
+    ``*_enabled``, ``*_consent``, ``health_check_url``, ``diagnostics``,
+    ``race_condition``). Its value is exported only when it is a number, a
+    boolean, null or a status word (:func:`benign_special_value`)."""
+    segments = key_segments(fold_unicode(name))
+    if not any(
+        seg in _SPECIAL_SEGMENTS or seg.startswith(_SPECIAL_STEMS) for seg in segments
+    ):
+        return False
+    return not special_category_key(name)
+
+
+# What a value under a :func:`special_lookalike_key` may be, besides a
+# number, a boolean or null.
+BENIGN_SPECIAL_VALUES = SERVICE_HEALTH_VALUES | frozenset(
+    {
+        "true",
+        "false",
+        "yes",
+        "no",
+        "on",
+        "off",
+        "none",
+        "null",
+        "n/a",
+        "enabled",
+        "disabled",
+        "critical",
+        "pending",
+        "success",
+        "failed",
+        "failure",
+        "timeout",
+        "skipped",
+        "partial",
+    }
+)
+_BENIGN_NUMBER = re.compile(r"[+-]?\d{1,15}(?:\.\d{1,6})?\s?(?:ms|s|m|h|%)?")
+
+
+def benign_special_value(value: str) -> bool:
+    """A status word or a number (``"ok"``, ``"degraded"``, ``"12"``,
+    ``"30s"``, ``"99.9%"``); anything else is masked under a
+    :func:`special_lookalike_key`."""
+    v = value.strip().lower()
+    return v == "" or v in BENIGN_SPECIAL_VALUES or bool(_BENIGN_NUMBER.fullmatch(v))
+
+
 def pii_key(name: str) -> bool:
     """Whether a key names personal data (``email``, ``userPhone``,
     ``first_name``, ``date_of_birth``, ``iban``, ``pan``, and every
@@ -1499,6 +1631,80 @@ def _suffix_strength(segments: list[str]) -> int:
     return 0
 
 
+# Turkish and Russian names for a credential, as whole key segments and in
+# their folded form (:func:`fold_unicode`: ``şifre`` -> ``sifre``, Cyrillic
+# look-alikes to Latin), so ``şifre``, ``ŞİFRE``, ``kullanici_sifresi``,
+# ``parola``, ``gizli_anahtar``, ``пароль`` and ``секрет`` are STRONG and
+# ``jeton``, ``токен``, ``ключ`` and a bare ``anahtar`` are WEAK (like
+# ``token`` / ``key``: masked when the value reads as a secret). Whole
+# segments only: ``şifreleme`` (encryption), ``şifreli`` (encrypted) and
+# ``parolasız`` are not credentials.
+_FOREIGN_STRONG_WORDS = (
+    "parola",
+    "parolası",
+    "parolasi",
+    "şifre",
+    "şifresi",
+    "sifre",
+    "sifresi",
+    "пароль",
+    "пароля",
+    "секрет",
+    "секреты",
+)
+_FOREIGN_STRONG_PHRASES = (
+    ("gizli", "anahtar"),
+    ("gizli", "anahtarı"),
+    ("gizli", "anahtari"),
+    ("api", "anahtarı"),
+    ("api", "anahtari"),
+    ("api", "anahtar"),
+    ("özel", "anahtar"),
+    ("ozel", "anahtar"),
+    ("секретный", "ключ"),
+    ("закрытый", "ключ"),
+    ("api", "ключ"),
+)
+_FOREIGN_WEAK_WORDS = ("jeton", "токен", "токена")
+_FOREIGN_WEAK_LEAVES = ("anahtar", "anahtarı", "anahtari", "ключ")
+
+
+def _folded_words(words) -> frozenset:
+    return frozenset(
+        form
+        for w in words
+        for form in (
+            w,
+            unicodedata.normalize("NFKC", w).translate(_CONFUSABLES).lower(),
+        )
+    )
+
+
+_FOREIGN_STRONG = _folded_words(_FOREIGN_STRONG_WORDS)
+_FOREIGN_WEAK = _folded_words(_FOREIGN_WEAK_WORDS)
+_FOREIGN_WEAK_LEAF = _folded_words(_FOREIGN_WEAK_LEAVES)
+_FOREIGN_PHRASES = tuple(
+    {
+        tuple(
+            unicodedata.normalize("NFKC", w).translate(_CONFUSABLES).lower() for w in p
+        )
+        for p in _FOREIGN_STRONG_PHRASES
+    }
+)
+
+
+def _foreign_strength(segments: list[str]) -> int:
+    if _FOREIGN_STRONG.intersection(segments) or _has_phrase(
+        segments, _FOREIGN_PHRASES
+    ):
+        return STRONG
+    if _FOREIGN_WEAK.intersection(segments):
+        return WEAK
+    if len(segments) == 1 and segments[0] in _FOREIGN_WEAK_LEAF:
+        return WEAK
+    return 0
+
+
 # ``<word>_id`` that is a credential after all.
 _ID_LEAVES = frozenset({"id", "ids"})
 _SECRET_ID_PREFIXES = frozenset({"secret"})  # Vault AppRole ``secret_id``
@@ -1624,6 +1830,9 @@ def identifier_strength(name: str) -> int:
         return STRONG
     if leaf != "pass" and leaf not in _NOT_GLUED and leaf.endswith(_GLUED_SUFFIXES):
         return STRONG
+    foreign = _foreign_strength(segments)
+    if foreign:
+        return foreign
     if _WEAK_WORDS.intersection(segments) or _has_phrase(segments, _WEAK_PHRASES):
         return WEAK
     if len(segments) == 1 and leaf in _WEAK_LEAVES:
@@ -1774,16 +1983,45 @@ def _secretish(value: str, numeric_ok: bool = False, key: Optional[str] = "") ->
 
 # -- free text ---------------------------------------------------------------
 
-_IDENT = r"-{0,2}[A-Za-z_][A-Za-z0-9_.\-]{0,255}"
+# Any script's letters (``şifre=``, ``пароль:``), not only ASCII ones.
+_IDENT = r"-{0,2}[^\W\d][\w.\-]{0,255}"
 # ``key=value``, ``"key": "value"``, ``key%3Dvalue`` (URL-encoded),
 # ``'key' => 'value'`` (PHP, Ruby, Perl), with an optional quote (plain or
 # JSON-escaped) closing the key.
 _KEY_SEP = re.compile(
-    r"(?<![A-Za-z0-9_.\-%])(\\?[\"']?)(" + _IDENT + r")"
+    r"(?<![\w.\-%])(\\?[\"']?)(" + _IDENT + r")"
     r"((?:\\?[\"'])?[ \t]*(?:=>|=|:|%3[Dd]|%3[Aa])[ \t]*)"
 )
 # ``PASSWORD<tab>value``, ``token value``, ``--password value``.
-_KEY_SPACE = re.compile(r"(?<![A-Za-z0-9_.\-%=:/\\])(" + _IDENT + r")([ \t]+)")
+_KEY_SPACE = re.compile(r"(?<![\w.\-%=:/\\])(" + _IDENT + r")([ \t]+)")
+# Where an unquoted multi-word value behind a personal-data or STRONG secret
+# key ends (``diagnosis: Type 2 diabetes``, ``password: correct horse battery
+# staple``): end of line, ``;``, ``|``, ``"``, ``<``, a closing bracket, a
+# ``'`` not followed by a letter (``Crohn's`` goes on), a ``,`` before another
+# ``key=`` / ``key:`` pair, or the next ``key=`` / ``key:`` token itself.
+_PAIR_KEY_TOKEN = (
+    r"\\?[\"']?[^\W\d][\w.\-]{0,255}(?:\\?[\"'])?[ \t]*(?:=>|=|:|%3[DdAa])"
+)
+_PAIR_BOUNDARY = re.compile(
+    r"[\r\n;|\"<)\]}\\]|'(?![^\W\d_])"
+    r"|,(?=[ \t]*" + _PAIR_KEY_TOKEN + r")"
+    r"|(?<=[\s&,(\[{])" + _PAIR_KEY_TOKEN
+)
+
+
+def _phrase_end(text_: str, vm: "re.Match[str]") -> int:
+    """End of the unquoted value that starts at ``vm`` read as a phrase, up
+    to :data:`_PAIR_BOUNDARY` (trailing blanks left out); never short of
+    ``vm`` itself. Quoted and braced values end where ``vm`` does."""
+    if text_[vm.start()] in "\"'{\\":
+        return vm.end()
+    b = _PAIR_BOUNDARY.search(text_, vm.start() + 1)
+    end = len(text_) if b is None else b.start()
+    while end > vm.start() and text_[end - 1] in " \t":
+        end -= 1
+    return max(end, vm.end())
+
+
 # Every quantifier is bounded: a value is matched at each ``key=`` in the
 # text, and an unbounded value ran to the end of the line each time, which
 # made ``key:key:key:…`` quadratic. An unquoted value that reaches the bound
@@ -2057,6 +2295,8 @@ def _redact_pairs(text_: str) -> str:
             continue
         end = _value_end(text_, vm, _VALUE_TAIL)
         if strength == STRONG:
+            # ``password: correct horse battery staple``: the whole phrase.
+            end = max(end, _phrase_end(text_, vm))
             while True:
                 tail = _SEMI_TAIL.match(text_, end)
                 if tail is None:
@@ -2942,16 +3182,18 @@ class Redactor:
             self.count += 1
             return REDACTED_BUDGET
         out = self._scan(scanned, pii)
-        folded = fold_unicode(scanned)
-        if folded != scanned:
-            # Match on the folded form too (fullwidth, zero-width, NBSP,
-            # homoglyphs); export it only when it hides more than the original.
-            if budget is not None and not budget.chars(len(folded)):
-                self.count += 1
-                return REDACTED_BUDGET
-            alt = self._scan(folded, pii)
-            if _redaction_marks(alt) > _redaction_marks(out):
-                out = alt
+        if not scanned.isascii():
+            folded, starts = fold_with_map(scanned)
+            if folded != scanned:
+                # Match on the folded form too (fullwidth, zero-width, NBSP,
+                # homoglyphs). The folded text is never exported: what it
+                # masks is mapped back onto the original text.
+                if budget is not None and not budget.chars(3 * len(folded)):
+                    self.count += 1
+                    return REDACTED_BUDGET
+                alt = self._scan(folded, pii)
+                if _redaction_marks(alt) > _redaction_marks(out):
+                    out = self._unfold(scanned, folded, starts, alt, pii)
         if out != scanned:
             self.count += 1
         if len(out) > self.max_string:
@@ -2959,6 +3201,24 @@ class Redactor:
         elif clipped:
             out += _TRUNCATED
         return out
+
+    def _unfold(
+        self, original: str, folded: str, starts: list[int], alt: str, pii: bool
+    ) -> str:
+        """``original`` with the spans the scan of its folded form masked
+        (``alt``) masked in place, every other character as it was; the
+        result is scanned again as it stands (what only the original form
+        shows). When the spans cannot be placed, or the folded form of the
+        result still shows a secret, the whole value is masked."""
+        candidate = unfold_redactions(original, folded, starts, alt)
+        if candidate is not None:
+            candidate = self._scan(candidate, pii)
+            refolded = fold_unicode(candidate)
+            if _redaction_marks(self._scan(refolded, pii)) <= _redaction_marks(
+                refolded
+            ):
+                return candidate
+        return REDACTED
 
     def _scan(self, value: str, pii: bool) -> str:
         out = redact_text(value, _depth=self._nest)
@@ -2995,11 +3255,15 @@ class Redactor:
         depth: int = 0,
         weak: Optional[bool] = None,
         weak_key: str = "",
+        restricted: bool = False,
     ) -> Any:
         """Redact ``value`` found under ``path``. ``weak`` is set below a WEAK
         key (``weak_key``): strings there go when they read as secrets
         (``True``: numbers too, under ``pin``/``otp``) and not as an object
-        id allowed under that key (:func:`allowed_identifier`)."""
+        id allowed under that key (:func:`allowed_identifier`).
+        ``restricted`` is set below a :func:`special_lookalike_key` (with
+        ``redact_pii``): strings there go unless they are a status word or a
+        number (:func:`benign_special_value`)."""
         if isinstance(value, bool) or value is None:
             return value
         budget = _BUDGET.get()
@@ -3021,6 +3285,13 @@ class Redactor:
         if strength == WEAK:
             weak_key = path.rsplit(".", 1)[-1]
             weak = bool(weak) or _numeric_identifier(weak_key)
+        if (
+            not restricted
+            and path
+            and self.redact_pii
+            and special_lookalike_key(path.rsplit(".", 1)[-1])
+        ):
+            restricted = True
         if depth >= self.max_depth:
             return "[truncated]"
         if isinstance(value, dict):
@@ -3058,7 +3329,12 @@ class Redactor:
                 # (dots and all), not on the cut or redacted one.
                 child = raw_key.replace(".", "_")
                 out[key] = self.value(
-                    f"{path}.{child}" if path else child, v, depth + 1, weak, weak_key
+                    f"{path}.{child}" if path else child,
+                    v,
+                    depth + 1,
+                    weak,
+                    weak_key,
+                    restricted,
                 )
             return out
         if isinstance(value, (list, tuple)):
@@ -3075,10 +3351,14 @@ class Redactor:
                 if isinstance(v, str) and v and _secret_argument(value, i):
                     items.append(self._redact())
                     continue
-                items.append(self.value(item_path, v, depth + 1, weak, weak_key))
+                items.append(
+                    self.value(item_path, v, depth + 1, weak, weak_key, restricted)
+                )
             if len(value) > self.max_items:
                 items.append("[truncated]")
             return items
+        if restricted and isinstance(value, str) and not benign_special_value(value):
+            return self._redact()  # ``{"service_health": "HIV positive"}``
         if weak is not None:
             if isinstance(value, (str, int)) and _secretish(str(value), weak, weak_key):
                 return self._redact()
