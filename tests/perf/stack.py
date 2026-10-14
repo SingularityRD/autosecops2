@@ -395,7 +395,11 @@ class LocalStack:
             env.update(
                 {
                     "DAEMON_LEADER_ELECTION_ENABLED": "true",
-                    "DAEMON_LEADER_LEASE_SECONDS": "6",
+                    # The W3.9 default. A shorter lease makes leaders on a
+                    # loaded 2-CPU box lose the lock to a delayed heartbeat
+                    # and flap; a SIGKILL takeover does not wait for it (the
+                    # dead session's lock is released at once).
+                    "DAEMON_LEADER_LEASE_SECONDS": "15",
                     "DAEMON_LEADER_RETRY_SECONDS": "1",
                 }
             )
@@ -470,13 +474,40 @@ class LocalStack:
         except Exception:  # noqa: BLE001
             return None
 
+    # W3.9: a leader that loses its lock exits 75 and expects to be started
+    # again (Kubernetes restartPolicy). The supervisor does that once the stack
+    # is up; during start-up wait_daemon_ready does it, a bounded number of
+    # times, and records the exit like the supervisor would.
+    DEMOTED_EXIT = 75
+    STARTUP_RESTARTS = 3
+
     def wait_daemon_ready(self, i: int = 0, timeout: float = STARTUP_TIMEOUT) -> None:
-        self._wait_http(
-            f"http://127.0.0.1:{self.daemon_ports[i]['webhook']}/health",
-            self.daemons[i],
-            f"daemon {i} webhook",
-            timeout=timeout,
-        )
+        restarts = 0
+        while True:
+            try:
+                self._wait_http(
+                    f"http://127.0.0.1:{self.daemon_ports[i]['webhook']}/health",
+                    self.daemons[i],
+                    f"daemon {i} webhook",
+                    timeout=timeout,
+                )
+                return
+            except StackError:
+                proc = self.daemons[i]
+                code = proc.p.returncode if proc is not None else None
+                if not (
+                    self.leader_election
+                    and code == self.DEMOTED_EXIT
+                    and restarts < self.STARTUP_RESTARTS
+                ):
+                    raise
+                restarts += 1
+                with self._lock:
+                    self.events.append(
+                        (time.time(), f"daemon{i} exited ({code}); restarted")
+                    )
+                    proc.stop()
+                    self.start_daemon(i)
 
     def stop(self) -> None:
         self._stopping.set()

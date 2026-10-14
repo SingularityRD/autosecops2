@@ -591,7 +591,8 @@ ATTACK_LAYER_TOOLS = [
     },
 ]
 
-# Approval Tools
+# Approval Tools. Read-only: deciding an approval is a person's HTTP request and
+# never a model's tool (W1.7b; core.llm.tool_effects.HUMAN_ONLY).
 APPROVAL_TOOLS = [
     {
         "name": "list_pending_approvals",
@@ -619,35 +620,6 @@ APPROVAL_TOOLS = [
                 }
             },
             "required": ["action_id"],
-        },
-    },
-    {
-        "name": "approve_action",
-        "description": "Approve a pending action for execution. The action will be executed automatically after approval.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "action_id": {
-                    "type": "string",
-                    "description": "The action ID to approve",
-                },
-            },
-            "required": ["action_id"],
-        },
-    },
-    {
-        "name": "reject_action",
-        "description": "Reject a pending action. The action will not be executed and will be marked as rejected.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "action_id": {
-                    "type": "string",
-                    "description": "The action ID to reject",
-                },
-                "reason": {"type": "string", "description": "Reason for rejection"},
-            },
-            "required": ["action_id", "reason"],
         },
     },
     {

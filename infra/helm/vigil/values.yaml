@@ -400,6 +400,12 @@ dbInit:
     repository: postgres
     tag: "16-alpine"
     pullPolicy: IfNotPresent
+  # A file that fails (on a first install: its tables are the backend's
+  # create_all tables, e.g. cases for 50_regulatory_clocks.sql) is not recorded.
+  # After setting the vigil_app password the Job waits up to this long for the
+  # backend's tables, retries those files, and leaves the rest to the next
+  # upgrade. Counts against `helm install --timeout` (hooks included).
+  appSchemaWaitSeconds: 180
   # Explicit ordering — files added under infra/database/init/ will NOT auto-run.
   # Update this list when new init SQL lands, in filename order (the order
   # compose applies them); tests/unit/_ratchets/test_helm_db_init_sql_files.py
@@ -456,6 +462,8 @@ dbInit:
     - 48_autonomy_lessons_suppression_retention.sql
     - 49_approval_action_lifecycle.sql
     - 50_regulatory_clocks.sql
+    - 51_audit_chain.sql
+    - 55_lessons_promotion.sql
     - 56_alert_lane_decisions.sql
     - 58_broadcast_unique_and_clock_heads.sql
     - 61_approval_decisions.sql

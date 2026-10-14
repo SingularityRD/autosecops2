@@ -8,6 +8,9 @@ a verdict. It passes when:
 
 * lost == 0       -- every finding the webhook/API accepted is in ``findings``;
 * duplicates == 0 -- one row per sent alert, no row the run did not send;
+* double processed <= the scenario's ``max_double`` (default 0) -- no finding
+  got a lane decision after it already had its verdict (the primary key makes
+  duplicate *rows* impossible; this catches duplicate *processing*);
 * unsettled == 0 and the last finding settled within ``recovery_bound``
   seconds of the heal;
 * the scenario's own checks (below) hold.
@@ -20,12 +23,27 @@ Scenarios:
                  triaged by the enrichment backfill after the heal.
 ``llm_timeout``  model provider hangs (calls time out); same checks.
 ``pg_restart``   PostgreSQL stopped for ``fault`` seconds, then started.
+                 KNOWN FAILURE until W0.12 (wp/w0.12-ingest-durability,
+                 durable webhook spool) is merged: the daemon acknowledges
+                 findings it then drops (lost > 0). The assertion stays; the
+                 result carries ``known_issue`` and the pytest case is a
+                 strict xfail while ``core/ingestion/spool.py`` is absent, a
+                 hard failure once it is present.
 ``redis_restart`` Redis stopped for ``fault`` seconds, then started (no
                  persistence: dedup keys and queued LLM jobs are gone).
 ``daemon_kill``  daemon SIGKILLed, started again after ``fault`` seconds.
 ``daemon_kill_standby`` with W3.9 leader election: two daemons, the leader is
-                 SIGKILLed, the standby must take over (no restart of the
-                 killed one until heal). Skipped when W3.9 is not merged.
+                 SIGKILLed and the standby must take over before the killed
+                 one is restarted: the holder of the leader advisory lock
+                 (``pg_locks`` key (1287, 3900), the session's
+                 ``application_name`` names the instance) must change within
+                 ``CHAOS_TAKEOVER_BOUND`` seconds (default 30); that time is
+                 reported (``takeover_seconds``). On the local target the
+                 moment a surviving daemon's /health says ``role=leader`` is
+                 also recorded (informational: the health endpoint stalls
+                 while the new leader starts its loops). Skipped when
+                 W3.9 is not in the checkout; ``--scenario all`` on the local
+                 target runs it on its own two-daemon stack when it is.
 ``slow_vendor``  model provider answers after ``CHAOS_SLOW_SECONDS`` (20);
                  ingest must not slow down (webhook accept p95 < 2 s).
 
@@ -41,6 +59,7 @@ Targets:
 CLI::
 
     python -m tests.perf.chaos --target local --scenario all --out /tmp/chaos
+    python -m tests.perf.chaos --target local --scenario all --no-standby ...
     python -m tests.perf.chaos --target staging --scenario llm_outage,pg_restart \\
         --rate 5 --fault 120 --out /var/lib/autosecops-staging/chaos
 """
@@ -57,9 +76,60 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from tests.perf import loadgen, measure
+
+REPO = Path(__file__).resolve().parents[2]
+
+# W3.9 leader lock: services/daemon/leadership.py LEADER_KEY, a two-int
+# advisory lock (pg_locks classid/objid, objsubid 2).
+LEADER_KEY = (1287, 3900)
+
+_LEADER_HOLDER_SQL = """
+SELECT a.application_name
+FROM pg_catalog.pg_locks l
+JOIN pg_catalog.pg_stat_activity a ON a.pid = l.pid
+WHERE l.locktype = 'advisory'
+  AND l.granted
+  AND l.database = (SELECT oid FROM pg_catalog.pg_database
+                    WHERE datname = current_database())
+  AND l.classid = :classid
+  AND l.objid = :objid
+  AND l.objsubid = 2
+"""
+
+
+def leader_holder(engine) -> Optional[str]:
+    """``application_name`` of the session holding the daemon leader lock.
+
+    It is ``vigil-daemon-lock:<instance>`` (core/coordination/leader.py), one
+    per process, so a change means another daemon took over. None when no
+    daemon holds it (between the leader's death and the takeover) or the
+    database cannot be read.
+    """
+    from sqlalchemy import text
+
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(_LEADER_HOLDER_SQL),
+                {"classid": LEADER_KEY[0], "objid": LEADER_KEY[1]},
+            ).first()
+    except Exception:  # noqa: BLE001 - database restarting / unreachable
+        return None
+    return row[0] if row else None
+
+
+def ingest_durability_merged() -> bool:
+    """W0.12 (durable webhook spool) is in this checkout."""
+    return (REPO / "core" / "ingestion" / "spool.py").exists()
+
+
+def leader_election_merged() -> bool:
+    """W3.9 (daemon hot standby) is in this checkout."""
+    return (REPO / "services" / "daemon" / "leadership.py").exists()
+
 
 # --------------------------------------------------------------------------
 # Targets
@@ -128,6 +198,15 @@ class LocalTarget:
             if self.stack.daemon_role(i) == "leader":
                 return i
         raise Unsupported("no daemon reports role=leader")
+
+    def takeover_confirmed(self) -> Optional[str]:
+        """Name of a surviving daemon reporting role=leader, else None."""
+        for i in range(len(self.stack.daemons)):
+            if i == self._killed_leader:
+                continue
+            if self.stack.daemon_role(i) == "leader":
+                return f"daemon{i}"
+        return None
 
     def do(self, action: str) -> None:
         s = self.stack
@@ -241,6 +320,20 @@ class Scenario:
     checks: List[Callable[["Observation"], Optional[str]]] = field(default_factory=list)
     # Actions that must be supported (inject + heal by default).
     required: Optional[Sequence[str]] = None
+    # Standby takeover must be observed between inject and heal (W3.9).
+    takeover: bool = False
+    # Findings decided again after their verdict that are tolerated.
+    max_double: int = 0
+    # A product defect this scenario is known to expose, and the check that
+    # says whether the fix is in the build under test.
+    known_issue: Optional[str] = None
+    known_fixed: Optional[Callable[[], bool]] = None
+
+    def known_open(self) -> bool:
+        """The known issue applies (its fix is not in this checkout)."""
+        if not self.known_issue:
+            return False
+        return not (self.known_fixed and self.known_fixed())
 
     def needs(self) -> List[str]:
         return list(self.required or [*self.inject, *self.heal])
@@ -314,10 +407,30 @@ def _bound(name: str, default: float) -> float:
     return float(os.environ.get(f"CHAOS_RECOVERY_{name.upper()}", default))
 
 
+def _max_double(name: str) -> int:
+    v = os.environ.get(f"CHAOS_MAX_DOUBLE_{name.upper()}")
+    if v is None:
+        v = os.environ.get("CHAOS_MAX_DOUBLE", "0")
+    return int(v)
+
+
+def takeover_bound() -> float:
+    # W3.9 worst case is lease + retry (15 + 2 s by default); a SIGKILL closes
+    # the lock session, so the local stack (lease 6, retry 1) takes ~1-2 s.
+    return float(os.environ.get("CHAOS_TAKEOVER_BOUND", "30"))
+
+
+INGEST_DURABILITY_ISSUE = (
+    "known W4.1 finding 1: acknowledged findings are dropped while PostgreSQL "
+    "is down; fixed by W0.12 (wp/w0.12-ingest-durability). Expected: lost == 0 "
+    "once W0.12 is merged"
+)
+
+
 def scenarios() -> Dict[str, Scenario]:
     # Model-outage recovery = breaker cooldown (120 s, processor.py) + one
     # backfill interval + the drain itself.
-    return {
+    out = {
         s.name: s
         for s in (
             Scenario(
@@ -342,6 +455,8 @@ def scenarios() -> Dict[str, Scenario]:
                 ["pg_start"],
                 _bound("pg_restart", 240),
                 "PostgreSQL down, then back",
+                known_issue=INGEST_DURABILITY_ISSUE,
+                known_fixed=ingest_durability_merged,
             ),
             Scenario(
                 "redis_restart",
@@ -363,6 +478,7 @@ def scenarios() -> Dict[str, Scenario]:
                 ["leader_restart"],
                 _bound("daemon_kill_standby", 180),
                 "leader SIGKILL, standby takes over (W3.9)",
+                takeover=True,
             ),
             Scenario(
                 "slow_vendor",
@@ -374,6 +490,9 @@ def scenarios() -> Dict[str, Scenario]:
             ),
         )
     }
+    for sc in out.values():
+        sc.max_double = _max_double(sc.name)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -397,23 +516,51 @@ class ScenarioResult:
     timeline: List[Dict[str, Any]] = field(default_factory=list)
     # Unplanned process exits during the scenario (local target's supervisor).
     target_events: List[str] = field(default_factory=list)
+    # daemon_kill_standby: seconds from the leader kill until another daemon
+    # held the leader lock (None: not measured / no takeover).
+    takeover_seconds: Optional[float] = None
+    takeover_bound: Optional[float] = None
+    leader_before: Optional[str] = None
+    leader_after: Optional[str] = None
+    # Local target: seconds from the kill until a surviving daemon's /health
+    # said role=leader (informational; None if not seen in the fault window).
+    leader_health_seconds: Optional[float] = None
+    # Set when the scenario hits a known, not-yet-fixed product defect.
+    known_issue: Optional[str] = None
 
 
-class _Sampler(threading.Thread):
-    def __init__(self, engine, prefix: str, every: float = 3.0):
-        super().__init__(daemon=True)
-        self.engine, self.prefix, self.every = engine, prefix, every
-        self.samples: List[measure.Backlog] = []
-        self.stop_evt = threading.Event()
+# Kept for callers of the old name; the sampler now lives in measure.
+_Sampler = measure.Sampler
 
-    def run(self) -> None:
-        while not self.stop_evt.is_set():
-            try:
-                rows = measure.fetch_rows(self.engine, self.prefix)
-                self.samples.append(measure.backlog(rows))
-            except Exception:  # noqa: BLE001 - database may be down (pg_restart)
-                pass
-            self.stop_evt.wait(self.every)
+
+def wait_takeover(
+    engine,
+    before: Optional[str],
+    bound: float,
+    *,
+    confirm: Optional[Callable[[], Optional[str]]] = None,
+    holder: Optional[Callable[[Any], Optional[str]]] = None,
+    poll: float = 0.25,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Tuple[Optional[float], Optional[str]]:
+    """Wait until a daemon other than ``before`` holds the leader lock.
+
+    Returns ``(seconds, new_holder)``, or ``(None, last_holder)`` when nothing
+    took over within ``bound`` seconds. With ``confirm`` (the local target's
+    /health check) the takeover counts only once a surviving daemon also says
+    it is the leader.
+    """
+    holder = holder or leader_holder
+    t0 = clock()
+    now = holder(engine)
+    while True:
+        if now is not None and now != before and (confirm is None or confirm()):
+            return round(clock() - t0, 2), now
+        if clock() - t0 >= bound:
+            return None, now
+        sleep(poll)
+        now = holder(engine)
 
 
 def run_scenario(
@@ -456,7 +603,7 @@ def run_scenario(
     )
     alerts = loadgen.load_corpus(loadgen.DEFAULT_CORPUS)
     prefix = loadgen.run_prefix(run_id)
-    sampler = _Sampler(engine, prefix)
+    sampler = measure.Sampler(engine, prefix)
     sampler.start()
     log = loadgen.ClientLog()
     errors: List[BaseException] = []
@@ -480,13 +627,51 @@ def run_scenario(
         timeline.append({"t": round(time.time() - t_start, 2), "event": event})
         log_event(f"[{scenario.name}] +{timeline[-1]['t']:.1f}s {event}")
 
+    takeover_failed: Optional[str] = None
     try:
         time.sleep(pre)
+        if scenario.takeover:
+            res.takeover_bound = takeover_bound()
+            res.leader_before = leader_holder(engine)
+            if res.leader_before is None:
+                raise RuntimeError("no daemon holds the leader lock before the kill")
         window = Window(inject_at=time.time(), heal_at=0.0)
         for action in scenario.inject:
             mark(f"inject {action}")
             target.do(action)
-        time.sleep(fault)
+        if scenario.takeover:
+            # Before the killed leader is restarted: the standby must take
+            # over on its own, or the restart would hide a failed election.
+            took, res.leader_after = wait_takeover(
+                engine, res.leader_before, res.takeover_bound
+            )
+            res.takeover_seconds = took
+            if took is None:
+                takeover_failed = (
+                    f"no standby took over within {res.takeover_bound:.0f}s of the "
+                    f"leader kill (lock holder: {res.leader_after or 'none'})"
+                )
+                mark("takeover NOT observed")
+            else:
+                mark(f"takeover after {took:.2f}s by {res.leader_after}")
+                # Informational: when the new leader's /health says so. Its
+                # health endpoint stalls while it starts its components, so
+                # this is later than the lock change and does not gate.
+                confirm = getattr(target, "takeover_confirmed", None)
+                if confirm is not None:
+                    rest = fault - (time.time() - window.inject_at)
+                    seen, _ = wait_takeover(
+                        engine,
+                        None,
+                        max(1.0, rest),
+                        confirm=confirm,
+                        holder=lambda _e: "any",
+                        poll=1.0,
+                    )
+                    res.leader_health_seconds = (
+                        None if seen is None else round(took + seen, 2)
+                    )
+        time.sleep(max(0.0, fault - (time.time() - window.inject_at)))
         for action in scenario.heal:
             mark(f"heal {action}")
             target.do(action)
@@ -497,7 +682,11 @@ def run_scenario(
             raise errors[0]
         remaining = max(30.0, scenario.recovery_bound - (time.time() - window.heal_at))
         rows = measure.wait_settled(
-            engine, prefix, log.accepted_ids(), timeout=remaining
+            engine,
+            prefix,
+            log.accepted_ids(),
+            timeout=remaining,
+            first_triage=sampler.first_triage,
         )
         settled_epochs = [measure.verdict_epoch(r) for r in rows]
         mark("settle wait finished")
@@ -531,6 +720,10 @@ def run_scenario(
         "duplicate_rows": acc.duplicate_rows,
         "unexpected_rows": len(acc.unexpected),
         "re_decided": acc.re_decided,
+        "double_processed": len(acc.double_processed),
+        "double_processed_ids": acc.double_processed[:20],
+        "max_double": scenario.max_double,
+        "retriaged": acc.retriaged,
         "deferred_verdict": acc.deferred_verdict,
     }
     res.client = log.summary()
@@ -551,6 +744,13 @@ def run_scenario(
             f"duplicates: {acc.duplicate_rows} duplicate, "
             f"{len(acc.unexpected)} unexpected row(s)"
         )
+    if len(acc.double_processed) > scenario.max_double:
+        fails.append(
+            f"double processing: {len(acc.double_processed)} finding(s) decided "
+            f"again after their verdict (max {scenario.max_double})"
+        )
+    if takeover_failed:
+        fails.append(takeover_failed)
     if acc.unsettled:
         fails.append(
             f"{len(acc.unsettled)} finding(s) without a verdict "
@@ -572,6 +772,8 @@ def run_scenario(
         fails.append("the API process exited")
     res.status = "FAIL" if fails else "PASS"
     res.reasons = fails
+    if fails and scenario.known_open():
+        res.known_issue = scenario.known_issue
     engine.dispose()
     return res
 
@@ -579,19 +781,29 @@ def run_scenario(
 def render(results: Sequence[ScenarioResult]) -> str:
     lines = [
         "| Scenario | Target | Status | Sent/accepted/stored | Lost | Dup | "
-        "Unsettled | Recovery (s) / bound | Backlog peak | Reasons | "
-        "Process exits |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "Double processed | Unsettled | Recovery (s) / bound | Takeover (s) | "
+        "Backlog peak | Reasons | Process exits |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
         a = r.accounting
+        status = r.status
+        if r.known_issue:
+            status += " (KNOWN, see reasons)"
+        reasons = list(r.reasons)
+        if r.known_issue:
+            reasons.append(r.known_issue)
+        takeover = "-"
+        if r.takeover_bound is not None:
+            takeover = f"{r.takeover_seconds} / {r.takeover_bound:.0f}"
         lines.append(
-            f"| {r.scenario} | {r.target} | {r.status} | "
+            f"| {r.scenario} | {r.target} | {status} | "
             f"{a.get('sent', '-')}/{a.get('accepted', '-')}/{a.get('stored', '-')} | "
             f"{a.get('lost', '-')} | {a.get('duplicate_rows', '-')} | "
+            f"{a.get('double_processed', '-')} | "
             f"{a.get('unsettled', '-')} | {r.recovery_seconds} / "
-            f"{r.recovery_bound:.0f} | {r.backlog_peak} | "
-            f"{'; '.join(r.reasons) or '-'} | {'; '.join(r.target_events) or '-'} |"
+            f"{r.recovery_bound:.0f} | {takeover} | {r.backlog_peak} | "
+            f"{'; '.join(reasons) or '-'} | {'; '.join(r.target_events) or '-'} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -607,10 +819,18 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--rules-fraction", type=float, default=0.3)
     p.add_argument("--no-seed-rules", action="store_true")
     p.add_argument("--workdir", type=Path, default=Path("/tmp/autosecops-chaos"))
-    p.add_argument(
+    standby = p.add_mutually_exclusive_group()
+    standby.add_argument(
         "--standby",
         action="store_true",
-        help="local: two daemons with leader election (needs W3.9)",
+        help="local: run EVERY scenario on one stack with two daemons and "
+        "leader election (needs W3.9)",
+    )
+    standby.add_argument(
+        "--no-standby",
+        action="store_true",
+        help="local: never start the two-daemon stack; daemon_kill_standby "
+        "is reported SKIP",
     )
     p.add_argument(
         "--out",
@@ -619,6 +839,31 @@ def _parser() -> argparse.ArgumentParser:
         help="directory for results.json and results.md",
     )
     return p  # fmt: skip
+
+
+def plan_local(
+    names: Sequence[str], *, standby: bool, no_standby: bool, supported: bool
+) -> List[Tuple[bool, List[str]]]:
+    """Which scenarios run on which local stack: ``[(two_daemons, names)]``.
+
+    By default the standby scenario gets its own two-daemon stack (W3.9 leader
+    election) when the checkout supports it, so ``--scenario all`` covers it
+    while the other scenarios keep the single-daemon stack they are written
+    for. ``--standby`` puts everything on the two-daemon stack;
+    ``--no-standby`` (or no W3.9) runs everything single-daemon, where the
+    standby scenario is skipped.
+    """
+    names = list(names)
+    if standby and supported:
+        return [(True, names)]
+    if no_standby or not supported or "daemon_kill_standby" not in names:
+        return [(False, names)]
+    rest = [n for n in names if n != "daemon_kill_standby"]
+    groups: List[Tuple[bool, List[str]]] = []
+    if rest:
+        groups.append((False, rest))
+    groups.append((True, ["daemon_kill_standby"]))
+    return groups
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -630,27 +875,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"unknown scenario(s): {unknown}; known: {list(catalogue)}")
         return 2
     args.out.mkdir(parents=True, exist_ok=True)
-    stack = None
-    if args.target == "local":
-        from tests.perf.stack import LocalStack
-
-        standby = args.standby and LocalStack.leader_election_supported()
-        stack = LocalStack(
-            args.workdir,
-            daemons=2 if standby else 1,
-            leader_election=standby,
-        )
-        stack.start()
-        target: Any = LocalTarget(stack)
-    else:
-        target = StagingTarget()
-        missing = target.missing()
-        if missing:
-            print(f"staging target needs: {', '.join(missing)}")
-            return 2
     results: List[ScenarioResult] = []
-    try:
-        for name in names:
+
+    def run_all(target: Any, group: Sequence[str]) -> None:
+        for name in group:
             res = run_scenario(
                 target,
                 catalogue[name],
@@ -662,14 +890,40 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 seed_rules=not args.no_seed_rules,
             )
             results.append(res)
-            print(f"{name}: {res.status} {res.reasons}", flush=True)
+            note = f" [{res.known_issue}]" if res.known_issue else ""
+            print(f"{name}: {res.status} {res.reasons}{note}", flush=True)
             (args.out / "results.json").write_text(
                 json.dumps([asdict(r) for r in results], indent=2, default=str),
                 encoding="utf-8",
             )
-    finally:
-        if stack is not None:
-            stack.stop()
+
+    if args.target == "local":
+        from tests.perf.stack import LocalStack
+
+        groups = plan_local(
+            names,
+            standby=args.standby,
+            no_standby=args.no_standby,
+            supported=LocalStack.leader_election_supported(),
+        )
+        for two, group in groups:
+            stack = LocalStack(
+                args.workdir / ("standby" if two and len(groups) > 1 else "."),
+                daemons=2 if two else 1,
+                leader_election=two,
+            )
+            try:
+                stack.start()
+                run_all(LocalTarget(stack), group)
+            finally:
+                stack.stop()
+    else:
+        target = StagingTarget()
+        missing = target.missing()
+        if missing:
+            print(f"staging target needs: {', '.join(missing)}")
+            return 2
+        run_all(target, names)
     (args.out / "results.md").write_text(render(results), encoding="utf-8")
     print(render(results))
     return 1 if any(r.status in ("FAIL", "ERROR") for r in results) else 0

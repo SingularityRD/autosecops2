@@ -35,8 +35,7 @@ def perf_out_dir() -> Path:
     return out
 
 
-@pytest.fixture(scope="session")
-def local_stack(tmp_path_factory):
+def _start_stack(tmp_path_factory, name: str, standby: bool):
     from tests.perf.stack import LocalStack, StackError
 
     reason = LocalStack.unavailable()
@@ -44,11 +43,10 @@ def local_stack(tmp_path_factory):
         if os.environ.get("CI") or os.environ.get("PERF_REQUIRED"):
             pytest.fail(reason)
         pytest.skip(reason)
-    standby = os.environ.get("CHAOS_STANDBY") in ("1", "true")
     if standby and not LocalStack.leader_election_supported():
         standby = False
     stack = LocalStack(
-        tmp_path_factory.mktemp("perf-stack"),
+        tmp_path_factory.mktemp(name),
         daemons=2 if standby else 1,
         leader_election=standby,
     )
@@ -57,6 +55,26 @@ def local_stack(tmp_path_factory):
     except StackError as e:
         stack.stop()
         pytest.fail(f"local stack did not start: {e}")
+    return stack
+
+
+@pytest.fixture(scope="session")
+def local_stack(tmp_path_factory):
+    stack = _start_stack(
+        tmp_path_factory,
+        "perf-stack",
+        os.environ.get("CHAOS_STANDBY") in ("1", "true"),
+    )
+    try:
+        yield stack
+    finally:
+        stack.stop()
+
+
+@pytest.fixture(scope="module")
+def local_standby_stack(tmp_path_factory):
+    """Two daemons with W3.9 leader election, for daemon_kill_standby."""
+    stack = _start_stack(tmp_path_factory, "perf-standby-stack", True)
     try:
         yield stack
     finally:

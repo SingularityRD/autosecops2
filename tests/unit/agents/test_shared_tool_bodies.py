@@ -48,7 +48,8 @@ async def test_both_doors_call_that_function(monkeypatch):
 
     assert "get_technique_rollup" in names
     assert "technique_rollup" not in mcp
-    assert len(names) >= 13
+    # Two fewer since W1.7b took approve_action and reject_action off both doors.
+    assert len(names) >= 12
 
     for name in names:
         body = tool_registry.__dict__[name]
@@ -147,49 +148,34 @@ async def test_a_note_is_stored_where_the_timeline_reads_it(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_model_cannot_name_the_approver():
-    with pytest.raises(TypeError):
-        await execute_backend_tool(
-            "approve_action", {"action_id": "act-1", "approved_by": "mallory"}
-        )
-
-
-def _approval_spy(monkeypatch):
+@pytest.mark.parametrize(
+    "tool,args",
+    [
+        ("approve_action", {"action_id": "act-1"}),
+        ("reject_action", {"action_id": "act-1", "reason": "no"}),
+    ],
+)
+async def test_no_backend_tool_decides_an_approval(monkeypatch, tool, args):
+    # W1.7b: every caller of execute_backend_tool is a model's tool call, and a
+    # model is not a person, even with a person's principal bound to it.
     called = []
 
     class _Approvals:
-        def approve_action(self, action_id, approved_by):
-            called.append((action_id, approved_by))
+        def approve_action(self, *a, **k):
+            called.append(a)
+
+        def reject_action(self, *a, **k):
+            called.append(a)
 
     monkeypatch.setattr(tool_registry, "_approvals", lambda: _Approvals())
-    return called
-
-
-@pytest.mark.asyncio
-async def test_approve_action_refuses_when_no_principal_is_bound(monkeypatch):
-    called = _approval_spy(monkeypatch)
-
-    result, handled = await execute_backend_tool(
-        "approve_action", {"action_id": "act-1"}
-    )
-
-    assert handled is True
-    assert result == {"error": "Action cannot be approved: no principal is bound"}
-    assert called == []
-
-
-@pytest.mark.asyncio
-async def test_approve_action_names_the_bound_principal(monkeypatch):
-    called = _approval_spy(monkeypatch)
-    monkeypatch.setattr(tool_registry, "username_has_permission", lambda *_: True)
 
     with acting_as("analyst"):
-        _result, handled = await execute_backend_tool(
-            "approve_action", {"action_id": "act-1"}
-        )
+        result, handled = await execute_backend_tool(tool, args)
 
-    assert handled is True
-    assert called == [("act-1", "analyst")]
+    assert handled is False
+    assert result is None
+    assert called == []
+    assert tool not in MANIFEST
 
 
 @pytest.mark.asyncio
@@ -251,32 +237,3 @@ async def test_technique_rollup_reads_the_sql_rollup(monkeypatch):
 
     assert handled is True
     assert result == {"total_techniques": 0, "techniques": []}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "tool,args",
-    [
-        ("approve_action", {"action_id": "act-1"}),
-        ("reject_action", {"action_id": "act-1", "reason": "no"}),
-    ],
-)
-async def test_a_principal_without_the_approval_right_cannot_decide(
-    monkeypatch, tool, args
-):
-    called = _approval_spy(monkeypatch)
-    asked = []
-
-    def _holds(username, permission):
-        asked.append((username, permission))
-        return False
-
-    monkeypatch.setattr(tool_registry, "username_has_permission", _holds)
-
-    with acting_as("vera_viewer"):
-        result, handled = await execute_backend_tool(tool, args)
-
-    assert handled is True
-    assert "ai_decisions.approve required" in result["error"]
-    assert asked == [("vera_viewer", "ai_decisions.approve")]
-    assert called == []

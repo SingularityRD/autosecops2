@@ -103,7 +103,7 @@ from core.agents.projections import read_projection, run_id_for
 from core.agents.queue import RUN_KINDS, build_start_job, enqueue_run
 from core.memory.entity_keys import finding_entity_keys, normalise_keys
 from core.response.approval_service import ApprovalService
-from core.response.checkpoints import raise_for_checkpoint
+from core.response.checkpoints import raise_for_checkpoint, split_tool_call
 from core.response.config import decision_rule
 from core.storage.arrays import text_array
 from core.storage.connection import get_db_manager
@@ -1648,6 +1648,9 @@ class Orchestrator:
 
     def _raise_run_approval(self, inv_id: str, checkpoint: Dict[str, Any]) -> None:
         question = checkpoint.get("question") or "Approve this action?"
+        # A harness checkpoint names the tool call it parks; the approval is
+        # bound to those arguments and shows them (W1.7b).
+        _context, tool_call = split_tool_call(checkpoint.get("context"))
         raise_for_checkpoint(
             run_id=run_id_for(inv_id),
             checkpoint_id=str(checkpoint.get("checkpoint_id")),
@@ -1655,6 +1658,7 @@ class Orchestrator:
             description=question,
             reason="The investigation parked on a call that needs a human",
             parameters={"investigation_id": inv_id},
+            tool_call=tool_call,
         )
 
     def _hourly_cost(self) -> Optional[float]:

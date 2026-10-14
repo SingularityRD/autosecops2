@@ -21,7 +21,7 @@ def test_help_exits_zero_and_full_warns_before_down_v() -> None:
     text = (REPO / "shutdown_all.sh").read_text(encoding="utf-8")
     help_at = text.index("-h|--help)")
     unknown_at = text.index("*)")
-    assert help_at < unknown_at < text.index("Stopping Vigil SOC...")
+    assert help_at < unknown_at < text.index("Stopping AutoSecOps...")
 
     help_arm = text[help_at:unknown_at]
     unknown_arm = text[unknown_at : text.index("esac", unknown_at)]

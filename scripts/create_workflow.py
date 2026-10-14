@@ -149,7 +149,7 @@ Examples:
     print()
     print("Next steps:")
     print(f"  1. Edit {workflow_file.relative_to(REPO_ROOT)} — replace the TODOs")
-    print(f"  2. Say \"Run {workflow_id} on finding <id>\" in the Vigil chat")
+    print(f"  2. Say \"Run {workflow_id} on finding <id>\" in the AutoSecOps chat")
     print()
     print(f"Available agents: {', '.join(AVAILABLE_AGENTS)}")
 

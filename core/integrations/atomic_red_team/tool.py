@@ -24,6 +24,7 @@ if _REPO_ROOT not in sys.path:
 import asyncio
 import json
 import logging
+import re
 import subprocess
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Mapping, Optional
@@ -46,6 +47,12 @@ RUNNER_TIMEOUT = 180
 _TECHNIQUE_FLAG = "--technique"
 _HOSTNAME_FLAG = "--hostname"
 _ATOMICS_FLAG = "--atomics-path"
+
+# Technique and hostname come from a tool call (so from a model that may have
+# read attacker text) and land in the runner's argv. Shape-check them, and
+# never let one start with "-", so neither can be read as a runner option (W0.11).
+_TECHNIQUE_RE = re.compile(r"^T\d{4}(?:\.\d{3})?$", re.IGNORECASE)
+_HOSTNAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,252}$")
 
 
 def result(data: Any) -> List[types.TextContent]:
@@ -100,6 +107,10 @@ def execute_atomic(
     technique = str(args.get("technique") or "").strip()
     if not technique:
         return {"error": "technique required"}
+    if not _TECHNIQUE_RE.match(technique):
+        return {"error": "technique must be an ATT&CK id such as T1059.001"}
+    if not _HOSTNAME_RE.match(hostname):
+        return {"error": "hostname must be a plain host name"}
 
     runner_path = (config.get("runner_path") or "").strip()
     if not runner_path:

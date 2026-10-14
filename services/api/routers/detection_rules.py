@@ -7,6 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from core.auth.permissions import permission_gate
 from core.deps import provide_detection_rules, provide_mcp_client, provide_mcp_registry
 from core.detections.detection_rules_service import DetectionRulesService
 from core.integrations.mcp.registry import MCPRegistry, register_connected
@@ -15,6 +16,11 @@ from core.routing import Auth, RouterMeta
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Adding, syncing or removing a rule source runs git on the API host and
+# restarts the detections MCP server: an administrator's call, not a viewer's
+# or an analyst's (W0.11; was login-only, so any role could reach git clone).
+_SOURCES_WRITE = [permission_gate("settings.write")]
 
 ROUTER_META = RouterMeta(
     prefix="/api/detection-rules",
@@ -69,7 +75,7 @@ def get_source(
     return source
 
 
-@router.post("/sources")
+@router.post("/sources", dependencies=_SOURCES_WRITE)
 def add_source(
     request: AddSourceRequest,
     service: DetectionRulesService = Depends(provide_detection_rules),
@@ -98,7 +104,7 @@ def add_source(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.delete("/sources/{source_id}")
+@router.delete("/sources/{source_id}", dependencies=_SOURCES_WRITE)
 def remove_source(
     source_id: str,
     delete_files: bool = False,
@@ -120,7 +126,7 @@ def remove_source(
     return {"success": True}
 
 
-@router.post("/sources/{source_id}/update")
+@router.post("/sources/{source_id}/update", dependencies=_SOURCES_WRITE)
 async def update_source(
     source_id: str,
     service: DetectionRulesService = Depends(provide_detection_rules),
@@ -145,10 +151,12 @@ async def update_source(
 
         return {"success": True, "source": source}
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        if service.get_source(source_id) is None:
+            raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/update-all")
+@router.post("/update-all", dependencies=_SOURCES_WRITE)
 async def update_all_sources(
     service: DetectionRulesService = Depends(provide_detection_rules),
     mcp_client=Depends(provide_mcp_client),
@@ -196,7 +204,7 @@ def get_mcp_env(
     return {"env_vars": env_vars}
 
 
-@router.post("/reload")
+@router.post("/reload", dependencies=_SOURCES_WRITE)
 async def reload_service(
     service: DetectionRulesService = Depends(provide_detection_rules),
     mcp_client=Depends(provide_mcp_client),

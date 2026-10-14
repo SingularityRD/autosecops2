@@ -19,6 +19,7 @@ from core.llm.tool_effects import (
     WRITE,
     effect_of,
     is_gated,
+    is_human_only,
 )
 from core.llm.tool_schemas import (
     ALL_TOOLS,
@@ -34,7 +35,8 @@ REMOTE = "remote"
 # Chat has no approval-resume path -- a parked call would hang forever, never
 # gate -- so a gated tool (``write`` / ``destructive``) is out of its reach.
 # Real containment goes through the approval queue (``create_approval_action``)
-# and workflows, not ad-hoc chat calls.
+# and workflows, not ad-hoc chat calls. Deciding that queue (``decision``) is
+# human-only and out of every model's reach (W1.7b): see ``_declare``.
 def _is_destructive_mcp(name: str) -> bool:
     """True for a tool that may run only once a person approves it.
 
@@ -110,6 +112,7 @@ def integration_tools(
         if t.get("name")
         and t["name"] not in static
         and not _is_destructive_mcp(t["name"])
+        and not is_human_only(t["name"])
     ]
 
 
@@ -149,16 +152,22 @@ def _declare(
     #
     # Chat has no approval-resume path, so a gated built-in is dropped by class
     # (none is today; ART execute, which is not a built-in, was the reason).
-    # ``approve_action`` is not dropped, and that is the decision rather than an
-    # oversight: what it approves is an action a person already queued and can
-    # already release from the approvals screen, so chat releasing it is the same
-    # authority reached by a different door -- whereas ``isolate_host`` in chat
-    # would be a detonation nobody queued. If that reading is ever revisited, the
-    # thing to change is this list, not the verb set, which decides a different
-    # question.
+    #
+    # A decision on the approval queue is dropped too, and by class rather than
+    # by name (W1.7b). Chat once declared ``approve_action`` on the reading that
+    # it only released what a person had queued -- but the model is what calls
+    # it, and the model reads alert text, case notes and tool output, so any of
+    # those could approve a pending isolation under the signed-in person's name,
+    # or supply the "second person" of a four-eyes rule. A person decides on the
+    # approvals screen; no built-in decides at all any more, and this filter is
+    # what keeps one that comes back out of a model's hands.
     static = {t["name"]: t for t in ALL_TOOLS if t.get("name")}
     names = list(static) if wanted is None else [n for n in wanted if n in static]
-    entries = [static[n] for n in names if n not in EXECUTE_IDS and not is_gated(n)]
+    entries = [
+        static[n]
+        for n in names
+        if n not in EXECUTE_IDS and not is_gated(n) and not is_human_only(n)
+    ]
     if integration_tools(mcp_tools):
         entries += INTEGRATION_TOOLS
     declared = []

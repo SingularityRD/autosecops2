@@ -41,6 +41,7 @@ from core.lanes.alert_lanes import (
     lane_triage_target,
     wants_llm_triage,
 )
+from core.llm.local_lane import get_local_lane
 from core.llm.outage import report_outage, report_recovered
 from core.time import utcnow
 from services.daemon.config import ProcessingConfig, ResponseConfig
@@ -56,6 +57,9 @@ logger = logging.getLogger(__name__)
 
 _GATEWAY_OUTAGE = "daemon-triage-gateway"
 _PROVIDER_OUTAGE = "daemon-triage-provider"
+_LOCAL_LANE_OUTAGE = "daemon-triage-local-lane"
+# meta["lane"] when triage ran on the local model lane (W2.3).
+LOCAL_TRIAGE_LANE = "local"
 
 # After this many consecutive failures (e.g. no provider key), pause enrichment
 # for the cooldown so a backfill can't stampede a dead gateway. Findings still ingest.
@@ -434,6 +438,19 @@ def legacy_triage_fields(verdict: Verdict) -> Dict[str, Any]:
         result["recommended_action"] = action
     result["reasoning"] = _reasoning(verdict)
     return result
+
+
+def _local_lane_for_this_task():
+    """The local model lane when this task's lane decision is the small model
+    and a local lane is configured (W2.3); else None."""
+    if lane_triage_target() is None:
+        return None
+    return get_local_lane()
+
+
+def uses_local_lane() -> bool:
+    """Whether triage in this task goes to the local model lane."""
+    return _local_lane_for_this_task() is not None
 
 
 class FindingProcessor:
@@ -1046,7 +1063,15 @@ class FindingProcessor:
             async with self._semaphore:
                 try:
                     triaged_ok = True
+                    # The local model lane (W2.3) is its own backend: whether it
+                    # answers says nothing about the shared gateway, so its
+                    # outcome neither trips nor resets the enrichment breaker
+                    # that pauses every other lane.
+                    triaged_locally = False
                     if self.config.auto_triage_enabled and wants_llm_triage(lane):
+                        # Asked as _get_ai_triage asks it (this task's lane
+                        # decision; the lane is cached per process).
+                        triaged_locally = uses_local_lane()
                         finding = await self._triage_finding(finding)
                         # _triage_finding sets ai_triage only when the gateway answered.
                         triaged_ok = bool(finding.get("ai_triage"))
@@ -1067,7 +1092,9 @@ class FindingProcessor:
                     if self.config.auto_enrich_enabled and finding.get("enrichment"):
                         self.stats["enriched"] += 1
 
-                    if triaged_ok:
+                    if triaged_locally:
+                        pass
+                    elif triaged_ok:
                         self._enrich_failures = 0
                         if self._enrich_breaker_tripped:
                             self._enrich_breaker_tripped = False
@@ -1434,7 +1461,30 @@ Rules:
         previously a worker failure came back as empty content and the finding
         was stored indistinguishable from a triaged, unremarkable one.
         ``meta`` (when given) receives ``model``: the model the call was
-        routed to, which the verdict is stamped with."""
+        routed to, which the verdict is stamped with; and ``lane`` =
+        ``"local"`` when the call went to the local model lane."""
+        # W2.3: the small-model lane runs on the local (Ollama) lane when one is
+        # configured or eval-selected, with the same prompt and the same JSON
+        # verdict reply. Its error stays the finding's error: there is no
+        # fallback to the queue's (possibly cloud) model.
+        if (local := _local_lane_for_this_task()) is not None:
+            if meta is not None:
+                meta["model"] = local.model
+                meta["lane"] = LOCAL_TRIAGE_LANE
+            answer = await local.triage(prompt)
+            if answer.error is not None:
+                report_outage(
+                    logger,
+                    _LOCAL_LANE_OUTAGE,
+                    "Local model lane triage failing (%s): %s",
+                    local.model,
+                    answer.error,
+                )
+                return None, answer.error
+            report_recovered(
+                logger, _LOCAL_LANE_OUTAGE, "Local model lane triage answering"
+            )
+            return answer.content, None
         await self._ensure_gateway()
         if self._llm_gateway is None:
             return None, "LLM gateway unavailable"

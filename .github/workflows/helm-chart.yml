@@ -15,6 +15,10 @@ on:
       - 'infra/database/init/**'
       - '.github/workflows/helm-chart.yml'
 
+# Read-only token by default; a job that needs more says so itself.
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Lint and Template

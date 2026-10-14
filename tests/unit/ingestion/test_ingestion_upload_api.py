@@ -14,11 +14,12 @@ for p in (str(_REPO_ROOT),):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from services.api.routers import ingestion as ingestion_api  # noqa: E402
 from core.ingestion import ingestion_service  # noqa: E402
 from core.ingestion.ingestion_jobs import IngestionJobRegistry  # noqa: E402
+from services.api.routers import ingestion as ingestion_api  # noqa: E402
+from tests.unit._signed_in import signed_in  # noqa: E402,F401 - fixture
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("signed_in")]
 
 
 class _FakeService:

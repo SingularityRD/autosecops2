@@ -20,11 +20,11 @@ from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional
 
 from opentelemetry.metrics import Observation
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from core.autonomy import AutonomyController, AutonomyDecision, AutonomyWatchOnly
-from core.autonomy.tiers import APPROVE, WATCH
+from core.autonomy.tiers import APPROVE, AUTONOMOUS, WATCH
 from core.response.config import (
     ResponseConfig,
     approval_requirement,
@@ -42,6 +42,13 @@ from core.time import utcnow
 logger = logging.getLogger(__name__)
 
 APPROVAL_CONFIG_KEY = "approval.force_manual_approval"
+
+# A reversal claim (``begin_reversal``) still pending after this long was
+# abandoned: the process died, or recording the outcome failed, between the
+# claim and ``finish_reversal``. Executors' vendor calls are bounded far below
+# it. Left alone, such a row holds ``reverse:<id>`` forever and the action can
+# never be reverted, by a person or by its ttl.
+REVERSAL_CLAIM_STALE = timedelta(hours=1)
 
 _pending_gauge: Any = None
 
@@ -87,6 +94,12 @@ class ActionType(Enum):
     ACCESS_REVOKE = "access_revoke"  # Cloudflare Zero Trust Access session revoke
     # Entra ID (W2.6): two-person rule by default (policy.DEFAULT_FOUR_EYES_TYPES).
     REVOKE_SESSIONS = "revoke_sessions"
+    # Undo types (policy.DEFAULT_UNDO_TYPES), taken by the Palo Alto, Defender
+    # and Entra executors. Without a member here a proposal of one was stored
+    # as ``custom``, which no executor takes, so it could never run.
+    UNBLOCK_IP = "unblock_ip"
+    UNISOLATE_HOST = "unisolate_host"
+    ENABLE_USER = "enable_user"
     CUSTOM = "custom"
 
 
@@ -635,8 +648,20 @@ class ApprovalService:
         requires_approval: Optional[bool] = None,
         workflow_run_id: Optional[str] = None,
         limit: int = 500,
+        action_types: Optional[Iterable[str]] = None,
+        undispatched: bool = False,
     ) -> List[PendingAction]:
-        """List actions with optional filters, newest first."""
+        """List actions with optional filters, newest first.
+
+        ``undispatched`` is the dispatcher's view: rows not yet claimed
+        (``executed_at`` unset), not a reverse row, and decided by a person,
+        held for one, or released by the autonomy tier (W3.1; the autonomy
+        record's ``effective`` is ``autonomous``), oldest first. Together with ``action_types`` (the
+        types something can execute) it keeps rows that will never be run
+        (workflow phases, custom, types without an executor) from filling the
+        page: newest-first with a cap, an action approved long after it was
+        proposed sat below 500 such rows and was never dispatched.
+        """
         try:
             db = get_db_manager()
             with db.session_scope() as session:
@@ -647,6 +672,29 @@ class ApprovalService:
                     stmt = stmt.where(
                         ApprovalActionRow.action_type == action_type.value
                     )
+                if action_types is not None:
+                    stmt = stmt.where(
+                        ApprovalActionRow.action_type.in_(sorted(set(action_types)))
+                    )
+                if undispatched:
+                    stmt = (
+                        stmt.where(ApprovalActionRow.executed_at.is_(None))
+                        .where(ApprovalActionRow.reverse_of.is_(None))
+                        .where(
+                            or_(
+                                ApprovalActionRow.requires_approval.is_(True),
+                                ApprovalActionRow.approved_by.is_not(None),
+                                # Released by the autonomy tier (W3.1) and by
+                                # nothing else: _dispatch re-decides the tier
+                                # before it runs. Any other row released
+                                # without a person is not listed.
+                                ApprovalActionRow.parameters["autonomy"][
+                                    "effective"
+                                ].astext
+                                == AUTONOMOUS,
+                            )
+                        )
+                    )
                 if requires_approval is not None:
                     stmt = stmt.where(
                         ApprovalActionRow.requires_approval == requires_approval
@@ -655,7 +703,12 @@ class ApprovalService:
                     stmt = stmt.where(
                         ApprovalActionRow.workflow_run_id == workflow_run_id
                     )
-                stmt = stmt.order_by(ApprovalActionRow.created_at.desc()).limit(limit)
+                order = (
+                    ApprovalActionRow.created_at.asc()
+                    if undispatched
+                    else ApprovalActionRow.created_at.desc()
+                )
+                stmt = stmt.order_by(order).limit(limit)
                 rows = session.execute(stmt).scalars().all()
                 return [_row_to_pending(r) for r in rows]
         except SQLAlchemyError as e:
@@ -678,6 +731,7 @@ class ApprovalService:
                 stmt = (
                     select(ApprovalActionRow.action_id)
                     .where(ApprovalActionRow.status == ActionStatus.PENDING.value)
+                    .where(ApprovalActionRow.reverse_of.is_(None))
                     .where(ApprovalActionRow.created_at < cutoff)
                     .order_by(ApprovalActionRow.created_at.asc())
                 )
@@ -712,9 +766,11 @@ class ApprovalService:
                 if row is None:
                     logger.warning("Action %s not found", action_id)
                     return None
-                if row.status != ActionStatus.PENDING.value:
+                if row.status != ActionStatus.PENDING.value or row.reverse_of:
+                    # A reverse row is a reversal in flight, not a question: an
+                    # approval would overwrite who reverted it.
                     logger.warning(
-                        "Action %s is not pending (status: %s)",
+                        "Action %s is not an open approval (status: %s)",
                         action_id,
                         row.status,
                     )
@@ -802,9 +858,11 @@ class ApprovalService:
                 if row is None:
                     logger.warning("Action %s not found", action_id)
                     return None
-                if row.status != ActionStatus.PENDING.value:
+                if row.status != ActionStatus.PENDING.value or row.reverse_of:
+                    # Rejecting a reversal in flight would leave its claim
+                    # holding reverse:<id> (only failed rows release a key).
                     logger.warning(
-                        "Action %s is not pending (status: %s)",
+                        "Action %s is not an open approval (status: %s)",
                         action_id,
                         row.status,
                     )
@@ -1055,9 +1113,39 @@ class ApprovalService:
                 original = session.get(ApprovalActionRow, original_id)
                 if original is None or original.reversed_at is not None:
                     return None
-                if _nonfailed_by_key(session, key) is not None:
-                    return None
                 now = utcnow()
+                held = _nonfailed_by_key(session, key)
+                supersedes: Optional[str] = None
+                if held is not None:
+                    abandoned = held.status == ActionStatus.REJECTED.value or (
+                        held.status == ActionStatus.PENDING.value
+                        and held.created_at is not None
+                        and held.created_at < now - REVERSAL_CLAIM_STALE
+                    )
+                    if not abandoned:
+                        return None
+                    # Release the key: a failed row no longer holds it.
+                    logger.warning(
+                        "Reversal claim %s of %s was abandoned (%s); claiming again",
+                        held.action_id,
+                        original_id,
+                        held.status,
+                    )
+                    held.status = ActionStatus.FAILED.value
+                    held.executed_at = now
+                    held.execution_result = {
+                        "success": False,
+                        "error": "abandoned: the reversal was never settled; "
+                        "superseded by a new claim",
+                        "superseded": True,
+                    }
+                    supersedes = held.action_id
+                    session.flush()
+                parameters = dict(original.parameters or {})
+                if supersedes is not None:
+                    # The takeover reads this: the earlier claimant may still
+                    # be alive, so the reverse checks state before acting.
+                    parameters["supersedes"] = supersedes
                 row = ApprovalActionRow(
                     action_id=f"action-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-rev",
                     action_type=original.action_type,
@@ -1073,7 +1161,7 @@ class ApprovalService:
                     status=ActionStatus.PENDING.value,
                     approved_at=now,
                     approved_by=actor,
-                    parameters=dict(original.parameters or {}),
+                    parameters=parameters,
                     reversibility=Reversibility.REVERSIBLE.value,
                     idempotency_key=key,
                     reverse_of=original_id,
@@ -1097,14 +1185,45 @@ class ApprovalService:
         before_state: Optional[Dict] = None,
         after_state: Optional[Dict] = None,
     ) -> Optional[PendingAction]:
-        """Settle a claimed reversal; on success stamp reversed_at on the original."""
+        """Settle a claimed reversal; on success stamp reversed_at on the original.
+
+        A claim superseded meanwhile (``begin_reversal`` took it over as
+        abandoned) keeps its failed status, so the key stays with the new
+        claim, but the late outcome is recorded on it (``late_outcome``) and a
+        reverse that did land still stamps ``reversed_at``: the change is
+        undone whoever settles last. The returned row's ``status`` says which.
+        """
         try:
             db = get_db_manager()
             with db.session_scope() as session:
-                row = session.get(ApprovalActionRow, reverse_id)
+                row = session.get(ApprovalActionRow, reverse_id, with_for_update=True)
                 if row is None or row.reverse_of is None:
                     return None
                 now = utcnow()
+                if row.status != ActionStatus.PENDING.value:
+                    late = dict(row.execution_result or {})
+                    late["late_outcome"] = {
+                        "succeeded": bool(succeeded),
+                        "result": result,
+                        "verify_status": verify_status,
+                        "settled_at": now.isoformat(),
+                    }
+                    row.execution_result = late
+                    if row.before_state is None:
+                        row.before_state = before_state
+                    if row.after_state is None:
+                        row.after_state = after_state
+                    if succeeded:
+                        original = session.get(ApprovalActionRow, row.reverse_of)
+                        if original is not None and original.reversed_at is None:
+                            original.reversed_at = now
+                    logger.warning(
+                        "Reversal claim %s settled after it was superseded (%s)",
+                        reverse_id,
+                        "reversed" if succeeded else "failed",
+                    )
+                    session.flush()
+                    return _row_to_pending(row)
                 row.status = (
                     ActionStatus.EXECUTED.value
                     if succeeded

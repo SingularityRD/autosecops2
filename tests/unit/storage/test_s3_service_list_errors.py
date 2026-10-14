@@ -12,8 +12,9 @@ from fastapi.testclient import TestClient
 
 from core.storage.s3_service import S3Service
 from services.api.routers import ingestion as ingestion_api
+from tests.unit._signed_in import signed_in  # noqa: E402,F401 - fixture
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("signed_in")]
 
 BUCKET = "vigil-bucket"
 

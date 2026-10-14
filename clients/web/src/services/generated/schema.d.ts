@@ -2040,6 +2040,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cases/{case_id}/evidence-pack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Evidence Pack
+         * @description The case's signed, self-verifying evidence pack as a ZIP.
+         *
+         *     Verify it offline with ``autosecops verify-bundle <file>`` (or the
+         *     ``verify_bundle.py`` inside it).
+         */
+        get: operations["get_api_cases_case_id_evidence-pack"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cases/{case_id}/evidence/{evidence_id}/chain-of-custody": {
         parameters: {
             query?: never;
@@ -4398,6 +4421,130 @@ export interface paths {
         get: operations["get_api_kafka_status"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lessons": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Lessons */
+        get: operations["get_api_lessons"];
+        put?: never;
+        /**
+         * Propose Lesson
+         * @description Propose a lesson. It does nothing until promoted.
+         *
+         *     ``analyst_override`` requires ``source_id``, and any ``source_id`` given
+         *     must name an existing finding. The scope and text are traced against that
+         *     finding's free text (title, description, raw event, adversary-authored
+         *     entities); a lesson built from it is tagged ``adversary_text`` and can
+         *     never be promoted.
+         */
+        post: operations["post_api_lessons"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lessons/{lesson_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Lesson */
+        get: operations["get_api_lessons_lesson_id"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lessons/{lesson_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Lesson Events */
+        get: operations["get_api_lessons_lesson_id_events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lessons/{lesson_id}/promote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Promote Lesson
+         * @description Replay now; activate only if no historical verdict got worse.
+         *
+         *     A failed replay answers 409 with the report. It is returned rather than
+         *     raised so the refusal's audit row is committed.
+         */
+        post: operations["post_api_lessons_lesson_id_promote"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lessons/{lesson_id}/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Replay Lesson
+         * @description Replay over labelled historical alerts; the status does not change.
+         */
+        post: operations["post_api_lessons_lesson_id_replay"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lessons/{lesson_id}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rollback Lesson
+         * @description Retire a proposed or active lesson. It stops applying at once.
+         */
+        post: operations["post_api_lessons_lesson_id_rollback"];
         delete?: never;
         options?: never;
         head?: never;
@@ -9240,6 +9387,8 @@ export interface components {
         };
         /** ChainResponse */
         ChainResponse: {
+            /** Anchored */
+            anchored?: boolean | null;
             /** Broken At */
             broken_at?: number | null;
             /** Ok */
@@ -10878,6 +11027,115 @@ export interface components {
             /** Reason */
             reason: string;
         };
+        /** LessonEventResponse */
+        LessonEventResponse: {
+            /** Action */
+            action: string;
+            /** Actor */
+            actor: string;
+            /** At */
+            at: string;
+            /** Detail */
+            detail: {
+                [key: string]: unknown;
+            };
+            /** Id */
+            id?: number | null;
+            /** Lesson Id */
+            lesson_id: string;
+        };
+        /** LessonEventsResponse */
+        LessonEventsResponse: {
+            /** Events */
+            events: components["schemas"]["LessonEventResponse"][];
+        };
+        /** LessonResponse */
+        LessonResponse: {
+            /** Applies To */
+            applies_to: {
+                [key: string]: unknown;
+            };
+            /** Approved At */
+            approved_at?: string | null;
+            /** Approved By */
+            approved_by?: string | null;
+            /** Category */
+            category?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /** Created By */
+            created_by: string;
+            /** Effect */
+            effect: string;
+            /** Expired */
+            expired: boolean;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Id */
+            id: string;
+            /** Lesson */
+            lesson: string;
+            /**
+             * Provenance
+             * @enum {string}
+             */
+            provenance: "analyst" | "adversary_text" | "system";
+            /** Provenance Detail */
+            provenance_detail: {
+                [key: string]: unknown;
+            };
+            /** Replay */
+            replay?: {
+                [key: string]: unknown;
+            } | null;
+            /** Replay Passed */
+            replay_passed: boolean;
+            /** Replayed At */
+            replayed_at?: string | null;
+            /** Retire Reason */
+            retire_reason?: string | null;
+            /** Retired At */
+            retired_at?: string | null;
+            /** Retired By */
+            retired_by?: string | null;
+            /** Source Id */
+            source_id?: string | null;
+            /** Source Kind */
+            source_kind: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "proposed" | "active" | "retired";
+        };
+        /** LessonScope */
+        LessonScope: {
+            /** Data Source */
+            data_source?: string | null;
+            /** File Hashes */
+            file_hashes?: string[] | null;
+            /** Hostnames */
+            hostnames?: string[] | null;
+            /**
+             * Max Severity
+             * @default medium
+             * @enum {string}
+             */
+            max_severity: "low" | "medium" | "high";
+            /** Mitre Technique */
+            mitre_technique?: string | null;
+            /** Rule Name */
+            rule_name?: string | null;
+            /** Src Ips */
+            src_ips?: string[] | null;
+            /** Usernames */
+            usernames?: string[] | null;
+        };
+        /** LessonsResponse */
+        LessonsResponse: {
+            /** Lessons */
+            lessons: components["schemas"]["LessonResponse"][];
+        };
         /**
          * LoginRequest
          * @description Login request.
@@ -11252,6 +11510,8 @@ export interface components {
             agent: string;
             /** Approval State */
             approval_state?: string | null;
+            /** Args */
+            args?: unknown | null;
             /** Checkpoint Id */
             checkpoint_id?: string | null;
             /** Error */
@@ -11270,6 +11530,8 @@ export interface components {
             question?: string | null;
             /** Status */
             status: string;
+            /** Tool */
+            tool?: string | null;
         };
         /**
          * PlatformDatabaseProxyConfig
@@ -11351,6 +11613,32 @@ export interface components {
             count: number;
             /** Priority */
             priority: string;
+        };
+        /** ProposeLessonRequest */
+        ProposeLessonRequest: {
+            applies_to: components["schemas"]["LessonScope"];
+            /** Category */
+            category?: ("phishing" | "malware" | "identity" | "network" | "cloud" | "other") | null;
+            /**
+             * Effect
+             * @enum {string}
+             */
+            effect: "benign_hint" | "escalate";
+            /**
+             * Expires In Days
+             * @default 30
+             */
+            expires_in_days: number;
+            /** Lesson */
+            lesson: string;
+            /** Source Id */
+            source_id?: string | null;
+            /**
+             * Source Kind
+             * @default analyst_override
+             * @enum {string}
+             */
+            source_kind: "analyst_override" | "manual";
         };
         /** PurgeBody */
         PurgeBody: {
@@ -11706,6 +11994,16 @@ export interface components {
             /** Relationship Type */
             relationship_type: string;
         };
+        /** ReplayResultResponse */
+        ReplayResultResponse: {
+            lesson: components["schemas"]["LessonResponse"];
+            /** Promoted */
+            promoted?: boolean | null;
+            /** Replay */
+            replay: {
+                [key: string]: unknown;
+            };
+        };
         /**
          * ResolutionStepAdd
          * @description Add resolution step to case.
@@ -11757,6 +12055,11 @@ export interface components {
             action: string;
             /** Notes */
             notes?: string | null;
+        };
+        /** RollbackRequest */
+        RollbackRequest: {
+            /** Reason */
+            reason: string;
         };
         /**
          * Routability
@@ -16477,6 +16780,46 @@ export interface operations {
             };
         };
     };
+    "get_api_cases_case_id_evidence-pack": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The signed evidence pack (ZIP). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": unknown;
+                };
+            };
+            /** @description Case not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     "post_api_cases_case_id_evidence_evidence_id_chain-of-custody": {
         parameters: {
             query?: never;
@@ -20817,6 +21160,257 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_lessons: {
+        parameters: {
+            query?: {
+                status?: ("proposed" | "active" | "retired") | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LessonsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_lessons: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProposeLessonRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LessonResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_lessons_lesson_id: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                lesson_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LessonResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_lessons_lesson_id_events: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                lesson_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LessonEventsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_lessons_lesson_id_promote: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                lesson_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplayResultResponse"];
+                };
+            };
+            /** @description The proposer cannot promote their own lesson */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Replay failed or the lesson cannot be promoted */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_lessons_lesson_id_replay: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                lesson_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplayResultResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_api_lessons_lesson_id_rollback: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                lesson_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RollbackRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LessonResponse"];
                 };
             };
             /** @description Validation Error */

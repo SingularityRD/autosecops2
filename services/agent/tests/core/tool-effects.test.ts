@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approvalId, type Harness, type TurnConfig } from "../../core/loop.js";
+import { approvalId, TOOL_CALL, type Harness, type TurnConfig } from "../../core/loop.js";
 import { drain, streamTurn } from "../../core/stream.js";
 import { budgetOf, FRESH, unmeteredQuota } from "../../core/budget.js";
 import { registryOf } from "../../core/registry.js";
@@ -7,9 +7,10 @@ import { InProcessState } from "../../core/state.js";
 import { nullMemory } from "../../core/memory.js";
 import { remoteDispatch } from "../../core/remote.js";
 import { SpecError, DEFAULT_BUDGETS, DEFAULT_DISPATCH, DEFAULT_RUNTIME, type RunSpec, type ToolSpec } from "../../core/spec.js";
-import { isGated, type RegisteredTool, type ToolApproval, type ToolResult } from "../../contracts/tool.js";
-import { EFFECTS, GATED, TOOL_EFFECTS } from "../../contracts/tool-effects.js";
+import { isGated, isHumanOnly, type RegisteredTool, type ToolApproval, type ToolResult } from "../../contracts/tool.js";
+import { EFFECTS, GATED, HUMAN_ONLY, TOOL_EFFECTS } from "../../contracts/tool-effects.js";
 import type { ToolDispatch } from "../../core/seams.js";
+import type { CheckpointPayload } from "../../contracts/events.js";
 import { toolsFrom, effectOf } from "../../tools/remote.js";
 import { grantsOf, runCompose } from "../../workflows/compose/workflow.js";
 import type { Mirror, PhaseUpdate } from "../../workflows/compose/mirror.js";
@@ -257,6 +258,46 @@ describe("a compose phase granted a destructive tool", () => {
       expect(parked?.status).toBe("pending_approval");
       // The question names the tool: the far side checks an approval is about it.
       expect(parked?.question).toContain(tool);
+      // And the call itself rides along: the approval is bound to these arguments
+      // and the person is shown them (W1.7b).
+      expect(parked?.tool).toBe(tool);
+      expect(parked?.args).toEqual(JSON.parse(ARGS));
     },
   );
+});
+
+// W1.7b: a decision on the approval queue is a person's, never a model's.
+describe("a tool that decides an approval", () => {
+  it("is the human-only class, and the table's approve/reject are in it", () => {
+    expect([...HUMAN_ONLY]).toEqual(["decision"]);
+    expect(TOOL_EFFECTS["approve_action"]).toBe("decision");
+    expect(TOOL_EFFECTS["reject_action"]).toBe("decision");
+  });
+
+  it.each(["approve_action", "reject_action"])("%s is never declared to the model nor dispatched", async (id) => {
+    const tools = toolsFrom([spec(id), spec("search_findings")]);
+    expect(isHumanOnly(tools[0] as RegisteredTool)).toBe(true);
+    const dispatch = counting();
+    const provider = scriptedProvider([{ calls: [{ tool: id, args: '{"action_id":"a"}' }] }, { content: "ok" }]);
+    const harness = { ...harnessOf(tools, [], dispatch), provider };
+    // Even with the run's approvals list naming it.
+    const outcome = await drain(streamTurn(turn([id]), harness));
+    const declared = provider.requests[0]?.tools.map((tool) => tool.id);
+
+    expect(declared).toEqual(["search_findings"]);
+    expect(outcome.status).toBe("completed");
+    expect(dispatch.calls).toEqual([]);
+  });
+});
+
+describe("a parked call's checkpoint", () => {
+  it("names the call and its parsed arguments for the backend to bind", async () => {
+    const state = new InProcessState();
+    const dispatch = counting();
+    await drain(streamTurn(turn(), harnessOf(toolsFrom([spec("mde_isolate")]), [{ calls: [{ tool: "mde_isolate", args: ARGS }] }], dispatch, state)));
+    const raised = (await state.read(RUN)).find((event) => event.kind === "checkpoint");
+    const payload = raised?.payload as CheckpointPayload;
+    expect(payload.context).toEqual({ [TOOL_CALL]: { tool: "mde_isolate", args: { target: "10.0.0.1" } } });
+    expect(payload.question).toContain(ARGS);
+  });
 });

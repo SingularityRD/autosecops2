@@ -354,7 +354,10 @@ def get_investigation_file(investigation_id: str, filename: str):
         raise
 
 
-@router.post("/investigations/{investigation_id}/wake")
+@router.post(
+    "/investigations/{investigation_id}/wake",
+    dependencies=[permission_gate("ai_chat.use")],
+)
 def wake_investigation(investigation_id: str):
     """Wake a sleeping investigation for further work."""
     try:
@@ -389,7 +392,10 @@ def wake_investigation(investigation_id: str):
         raise
 
 
-@router.post("/investigations/{investigation_id}/kill")
+@router.post(
+    "/investigations/{investigation_id}/kill",
+    dependencies=[permission_gate("ai_chat.use")],
+)
 def kill_investigation(investigation_id: str):
     """Kill a specific running investigation."""
     try:
@@ -418,7 +424,10 @@ class ReviewRequest(BaseModel):
     notes: Optional[str] = None
 
 
-@router.post("/investigations/{investigation_id}/review")
+@router.post(
+    "/investigations/{investigation_id}/review",
+    dependencies=[permission_gate("findings.write")],
+)
 def review_investigation(investigation_id: str, request: ReviewRequest):
     """Human review of an investigation: approve or request rework."""
     if request.action not in ("approve", "rework"):
@@ -479,7 +488,7 @@ def review_investigation(investigation_id: str, request: ReviewRequest):
         raise
 
 
-@router.post("/investigations")
+@router.post("/investigations", dependencies=[permission_gate("ai_chat.use")])
 def create_investigation(request: InvestigationCreateRequest):
     """Manually create a new investigation."""
     from services.daemon.orchestrator import insert_intake_trigger
@@ -514,7 +523,7 @@ class ScanFindingsRequest(BaseModel):
     severities: list = ["critical", "high"]
 
 
-@router.post("/scan-findings")
+@router.post("/scan-findings", dependencies=[permission_gate("ai_chat.use")])
 def scan_existing_findings(request: ScanFindingsRequest):
     """Insert detection trigger rows for matching findings not already investigated.
 
