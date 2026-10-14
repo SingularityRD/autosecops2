@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -38,14 +39,25 @@ def _clean(throwaway_database):
     purge()
 
 
+# What the two routes are gated on (W0.11): the stub user holds exactly these,
+# so the gates still run and a route gated on anything else would answer 403.
+GRANTED = {"findings.write", "ai_chat.use"}
+
+
 @pytest.fixture
 def client():
     from services.api.routers import findings
 
+    def check(user_id, permission, *_a, **_kw):
+        return user_id == _User.user_id and permission in GRANTED
+
     app = FastAPI()
     app.dependency_overrides[get_current_user] = lambda: _User()
     app.include_router(findings.router, prefix="/api/findings")
-    return TestClient(app)
+    with patch(
+        "core.auth.auth_service.AuthService.check_permission", side_effect=check
+    ):
+        yield TestClient(app)
 
 
 def _ids(day: datetime) -> list[str]:
@@ -128,3 +140,12 @@ def test_missing_finding_is_not_marked_or_launched(client):
             .count()
             == 0
         )
+
+
+def test_both_routes_refuse_a_user_without_their_permission(client):
+    with patch(
+        "core.auth.auth_service.AuthService.check_permission", return_value=False
+    ):
+        assert client.post("/api/findings/ov-act-missing/noise").status_code == 403
+        assert client.delete("/api/findings/ov-act-missing/noise").status_code == 403
+        assert client.post("/api/findings/ov-act-missing/intake").status_code == 403
