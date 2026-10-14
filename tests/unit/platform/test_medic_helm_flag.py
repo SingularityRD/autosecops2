@@ -77,29 +77,50 @@ def test_backend_flag_follows_medic_enabled(chart, sets, expected) -> None:
     assert _backend_env(chart, *sets)["VIGIL_MEDIC_ENABLED"] == expected
 
 
-def _notes(chart: Path, *sets: str) -> str:
-    out = subprocess.run(
-        [
-            "helm",
-            "install",
-            "t",
-            str(chart),
-            "--dry-run=client",
-            "--namespace",
-            "ns",
-            *[a for s in sets for a in ("--set", s)],
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+NOTES_PROBE = "templates/zz-notes-probe.yaml"
+
+
+@pytest.fixture(scope="module")
+def notes_chart(chart, tmp_path_factory) -> Path:
+    """The chart copy, with NOTES.txt also rendered by ``helm template``.
+
+    ``helm install --dry-run=client`` dials the cluster on Helm 3 (only
+    ``template`` is client-only there; Helm 4 changed that), and ``template``
+    leaves NOTES.txt out. So NOTES.txt goes, verbatim, into a define that a
+    ConfigMap renders: same text, same values, no cluster on any Helm.
+    """
+    dest = tmp_path_factory.mktemp("notes-chart") / "vigil"
+    shutil.copytree(chart, dest)
+    notes = (dest / "templates" / "NOTES.txt").read_text()
+    (dest / "templates" / "_zz_notes_probe.tpl").write_text(
+        '{{- define "zz.notesProbe" -}}\n' + notes + "\n{{- end -}}\n"
     )
-    assert out.returncode == 0, out.stderr
-    return out.stdout.split("NOTES:", 1)[1]
+    (dest / NOTES_PROBE).write_text(
+        "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: notes-probe\n"
+        'data:\n  notes: |-\n{{ include "zz.notesProbe" . | indent 4 }}\n'
+    )
+    return dest
 
 
-def test_notes_give_the_account_step_only_when_medic_is_on(chart) -> None:
-    assert "core.auth.service_account" not in _notes(chart)
-    notes = _notes(chart, *MEDIC_ON, "medic.gateway.viewer.passwordSecret.key=password")
+def _notes(chart: Path, *sets: str) -> str:
+    out = _helm(
+        chart,
+        "template",
+        "t",
+        "--namespace",
+        "ns",
+        "--show-only",
+        NOTES_PROBE,
+        *[a for s in sets for a in ("--set", s)],
+    )
+    return yaml.safe_load(out)["data"]["notes"]
+
+
+def test_notes_give_the_account_step_only_when_medic_is_on(notes_chart) -> None:
+    assert "core.auth.service_account" not in _notes(notes_chart)
+    notes = _notes(
+        notes_chart, *MEDIC_ON, "medic.gateway.viewer.passwordSecret.key=password"
+    )
     assert f"ensure {USER}" in notes
     assert "get secret medic-viewer -o jsonpath='{.data.password}'" in notes
     # The password travels on a pipe: no --from-literal, no value on a command line.

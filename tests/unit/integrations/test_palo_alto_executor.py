@@ -18,7 +18,11 @@ import httpx
 import pytest
 import respx
 
-from core.integrations.palo_alto.client import PanConfigError
+from core.integrations.palo_alto.client import (
+    PanApiError,
+    PanConfigError,
+    _safe_fromstring,
+)
 from core.integrations.palo_alto.executor import (
     DEFAULT_TAG,
     PaloAltoExecutor,
@@ -554,6 +558,15 @@ def test_a_dtd_in_the_response_is_refused(firewall, sleeps):
     result = _executor(sleeps).execute(_block())
     assert result.status == "failed"
     assert "DTD" in result.error
+
+
+def test_a_lowercase_doctype_is_not_parsed_either():
+    # The nosec B314 on _safe_fromstring rests on this: the DTD check is
+    # case-sensitive because XML is, so a lowercase doctype never reaches
+    # entity expansion; expat rejects it as malformed.
+    body = '<!doctype r [<!entity x "y">]><response status="success">&x;</response>'
+    with pytest.raises(PanApiError, match="unparseable"):
+        _safe_fromstring(body)
 
 
 # --------------------------------------------------------------------- #

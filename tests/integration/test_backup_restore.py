@@ -298,10 +298,15 @@ def _files(path: Path) -> list[tuple[str, int, bytes]]:
 
 
 def _names() -> list[str]:
+    # Sorted: pg_database has no order of its own, and a rename (as an undone
+    # restore does) rewrites the row, so heap order changes while the set holds.
     engine = create_engine(_url("postgres"), isolation_level="AUTOCOMMIT")
     with engine.connect() as conn:
         rows = conn.execute(
-            text("SELECT datname FROM pg_database WHERE datname LIKE 'vigil_r\\_%%'")
+            text(
+                "SELECT datname FROM pg_database WHERE datname LIKE 'vigil_r\\_%%'"
+                " ORDER BY datname"
+            )
         ).fetchall()
     engine.dispose()
     return [row[0] for row in rows]

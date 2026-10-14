@@ -59,7 +59,9 @@ class FakeDocker:
     """Records each request's raw head; replies per path, overridable per test."""
 
     def __init__(self) -> None:
-        self.dir = tempfile.mkdtemp(prefix="s5p", dir="/tmp")  # AF_UNIX ≤ 104 bytes
+        # AF_UNIX paths are <= 104 bytes, and macOS's default tempdir is too long.
+        # mkdtemp makes a fresh 0700 directory, so a fixed parent is safe.
+        self.dir = tempfile.mkdtemp(prefix="s5p", dir="/tmp")  # nosec B108
         self.path = f"{self.dir}/docker.sock"
         self.heads: list[bytes] = []
         self.closed = asyncio.Event()  # set when a client hangs up on a stream

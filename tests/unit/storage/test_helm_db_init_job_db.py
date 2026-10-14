@@ -128,10 +128,27 @@ def _create_all(engine) -> None:
     Base.metadata.create_all(engine)
 
 
+def chart_role() -> str:
+    """The role the Job logs in as on Helm, which the init SQL GRANTs to by name."""
+    values = yaml.safe_load((CHART / "values.yaml").read_text())
+    return values["postgresql"]["auth"]["username"]
+
+
 @pytest.fixture
 def scratch():
+    # 04/07/09/10/12/13 end with GRANT ... TO <chart user>. A Helm install
+    # always has that role (the Job logs in as it); a test cluster whose login is
+    # some other name (CI's "test") would fail those GRANTs and the files would
+    # never apply, which is not what this test is about. So the role exists here
+    # too, as on Helm, and goes again if this fixture made it.
+    role = chart_role()
     admin = create_engine(_url("postgres"), isolation_level="AUTOCOMMIT")
     with admin.connect() as conn:
+        made_role = not conn.execute(
+            text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": role}
+        ).scalar()
+        if made_role:
+            conn.execute(text(f'CREATE ROLE "{role}" NOLOGIN'))
         conn.execute(text(f"DROP DATABASE IF EXISTS {SCRATCH_DB} WITH (FORCE)"))
         conn.execute(text(f"CREATE DATABASE {SCRATCH_DB}"))
     engine = create_engine(_url(SCRATCH_DB))
@@ -141,6 +158,8 @@ def scratch():
         engine.dispose()
         with admin.connect() as conn:
             conn.execute(text(f"DROP DATABASE IF EXISTS {SCRATCH_DB} WITH (FORCE)"))
+            if made_role:
+                conn.execute(text(f'DROP ROLE IF EXISTS "{role}"'))
         admin.dispose()
 
 
