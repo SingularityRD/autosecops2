@@ -60,12 +60,20 @@ ACTION_CLASSES: tuple[str, ...] = (
     "gateway_block",
     "access_revoke",
     "revoke_sessions",
+    # Undo types (policy.DEFAULT_UNDO_TYPES). Governed so a proposal of one is
+    # decided like any other class, never autonomous: lifting a containment is
+    # a person's call (the TTL sweep reverses through reverse_action, not
+    # through a proposal of these).
+    "unblock_ip",
+    "unisolate_host",
+    "enable_user",
     "custom",
 )
 
 #: The only classes that may ever be autonomous: reversible by their nature,
 #: undone by the TTL sweep. Everything else (access_revoke, disable_user,
-#: revoke_sessions, quarantine_file, execute_spl_query, custom) is refused at
+#: revoke_sessions, quarantine_file, execute_spl_query, the undo types
+#: unblock_ip/unisolate_host/enable_user, custom) is refused at
 #: configuration and at every decision. The row's and the executor's
 #: reversibility are checked on top of this list, never instead of it.
 AUTONOMOUS_ELIGIBLE = frozenset(

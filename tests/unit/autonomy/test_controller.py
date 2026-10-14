@@ -77,6 +77,9 @@ class TestVocabulary:
             "revoke_sessions",
             "quarantine_file",
             "execute_spl_query",
+            "unblock_ip",
+            "unisolate_host",
+            "enable_user",
             "custom",
         ):
             assert never not in AUTONOMOUS_ELIGIBLE

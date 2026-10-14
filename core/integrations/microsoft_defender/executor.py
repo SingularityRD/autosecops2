@@ -94,6 +94,12 @@ class TargetError(Exception):
     """The target did not resolve to exactly one machine. ``str()`` says why."""
 
 
+#: The longest verify may poll. A reverse's verify runs while its claim is
+#: held; a claim older than REVERSAL_CLAIM_STALE (1h, approval_service) is
+#: taken over, so the poll must end well inside that window.
+MAX_VERIFY_TIMEOUT_SECONDS = 900.0
+
+
 @dataclass(frozen=True)
 class DefenderExecutorSettings:
     """Executor options. Credentials are not here: they come from a provider.
@@ -119,6 +125,12 @@ class DefenderExecutorSettings:
             raise ValueError("isolation_ttl must be positive or None")
         if self.verify_timeout_seconds < 0 or self.poll_interval_seconds <= 0:
             raise ValueError("verify timeout must be >= 0 and poll interval > 0")
+        if self.verify_timeout_seconds > MAX_VERIFY_TIMEOUT_SECONDS:
+            raise ValueError(
+                "verify_timeout_seconds must be at most "
+                f"{MAX_VERIFY_TIMEOUT_SECONDS:.0f} (a reversal claim is taken "
+                "over after an hour)"
+            )
 
 
 class DefenderIsolationExecutor:
