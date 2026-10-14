@@ -46,6 +46,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import contextvars
 import fcntl
 import functools
 import hashlib
@@ -425,6 +426,54 @@ REDACTED_PII = "[REDACTED-PII]"
 MAX_FIELD_CHARS = 16_384
 _SCAN_MARGIN = 512
 _TRUNCATED = "...[truncated]"
+REDACTED_BUDGET = "[REDACTED-BUDGET]"
+# Scrub work allowed per event (:class:`ScrubBudget`). Past any of these the
+# rest of the event is masked, not passed through, and the event is flagged
+# ``details._redaction_budget_exceeded``. ~0.5 M characters is about a second
+# of scanning on one core.
+EVENT_SCAN_CHARS = 512 * 1024
+EVENT_SCAN_NODES = 20_000
+EVENT_JSON_PARSES = 64
+
+
+class ScrubBudget:
+    """Total scrub work for one event: characters scanned, values visited
+    and JSON-in-a-string parses, across every nesting level."""
+
+    def __init__(
+        self,
+        chars: int = EVENT_SCAN_CHARS,
+        nodes: int = EVENT_SCAN_NODES,
+        json_parses: int = EVENT_JSON_PARSES,
+    ) -> None:
+        self.chars_left = chars
+        self.nodes_left = nodes
+        self.parses_left = json_parses
+        self.exceeded = False
+
+    def _spend(self, attr: str, n: int) -> bool:
+        if self.exceeded:
+            return False
+        left = getattr(self, attr) - n
+        if left < 0:
+            self.exceeded = True
+            return False
+        setattr(self, attr, left)
+        return True
+
+    def chars(self, n: int) -> bool:
+        return self._spend("chars_left", n)
+
+    def node(self) -> bool:
+        return self._spend("nodes_left", 1)
+
+    def json_parse(self) -> bool:
+        return self._spend("parses_left", 1)
+
+
+_BUDGET: "contextvars.ContextVar[Optional[ScrubBudget]]" = contextvars.ContextVar(
+    "audit_export_scrub_budget", default=None
+)
 
 # -- e-mail addresses: a linear-time scanner, not a regular expression ---------
 #
@@ -2299,6 +2348,9 @@ def _redact_json_text(value: str, depth: int) -> Optional[str]:
         or (s[0] == '"' and s[-1] == '"')
     ):
         return None
+    budget = _BUDGET.get()
+    if budget is not None and not budget.json_parse():
+        return REDACTED_BUDGET
     try:
         parsed = json.loads(s)
     except (ValueError, RecursionError):
@@ -2465,6 +2517,9 @@ class Redactor:
         max_string: int = 2048,
         max_depth: int = 6,
         max_items: int = 100,
+        event_chars: int = EVENT_SCAN_CHARS,
+        event_nodes: int = EVENT_SCAN_NODES,
+        event_json_parses: int = EVENT_JSON_PARSES,
         _depth: int = 0,
     ) -> None:
         self._scrubber = SensitiveAttributeScrubber()
@@ -2472,8 +2527,12 @@ class Redactor:
         self.max_string = max_string
         self.max_depth = max_depth
         self.max_items = max_items
+        self.event_chars = event_chars
+        self.event_nodes = event_nodes
+        self.event_json_parses = event_json_parses
         self._nest = _depth
         self.count = 0  # values redacted, for metrics
+        self.budget_exceeded = 0  # events cut short by the per-event budget
 
     def _key_strength(self, path: str) -> int:
         """Key first: a key naming a credential or personal data masks its
@@ -2505,6 +2564,10 @@ class Redactor:
             limit = MAX_FIELD_CHARS  # JSON in a string: walk it whole
         clipped = len(value) > limit
         scanned = value[:limit] if clipped else value
+        budget = _BUDGET.get()
+        if budget is not None and not budget.chars(len(scanned)):
+            self.count += 1
+            return REDACTED_BUDGET
         out = redact_text(scanned, _depth=self._nest)
         if self.redact_pii and pii:
             out = mask_personal_data(out)
@@ -2534,6 +2597,10 @@ class Redactor:
         id allowed under that key (:func:`allowed_identifier`)."""
         if isinstance(value, bool) or value is None:
             return value
+        budget = _BUDGET.get()
+        if budget is not None and not budget.node():
+            self.count += 1
+            return REDACTED_BUDGET
         strength = self._key_strength(path) if path else 0
         if strength == STRONG and not _is_argv(value):
             if value == "" or value == {} or value == []:
@@ -2602,6 +2669,29 @@ class Redactor:
         return [self.event(ev) for ev in events]
 
     def event(self, ev: AuditEvent) -> AuditEvent:
+        """Scrub one event within a fresh :class:`ScrubBudget`: once spent,
+        every remaining value is masked (``[REDACTED-BUDGET]``) and
+        ``details._redaction_budget_exceeded`` is set."""
+        budget = ScrubBudget(
+            self.event_chars, self.event_nodes, self.event_json_parses
+        )
+        token = _BUDGET.set(budget)
+        try:
+            out = self._event(ev)
+        finally:
+            _BUDGET.reset(token)
+        if budget.exceeded:
+            self.budget_exceeded += 1
+            details = out.details if isinstance(out.details, dict) else {}
+            out = replace(
+                out, details={**details, "_redaction_budget_exceeded": True}
+            )
+        return out
+
+    def _event(self, ev: AuditEvent) -> AuditEvent:
+        message = self.text(ev.message)
+        actor = self.text(ev.actor, pii=False) if ev.actor else ev.actor
+        user_agent = self.text(ev.user_agent) if ev.user_agent else ev.user_agent
         details = ev.details
         if ev.source == "audit_checkpoints" and isinstance(details, dict):
             # Our own signer's output (public key, hashes, signature, the
@@ -2614,11 +2704,7 @@ class Redactor:
         else:
             details = self.value("", details)
         return replace(
-            ev,
-            message=self.text(ev.message),
-            actor=self.text(ev.actor, pii=False) if ev.actor else ev.actor,
-            user_agent=self.text(ev.user_agent) if ev.user_agent else ev.user_agent,
-            details=details,
+            ev, message=message, actor=actor, user_agent=user_agent, details=details
         )
 
 
@@ -4459,6 +4545,8 @@ class PipelineMetrics:
     delivery_failures: int = 0
     source_errors: int = 0
     redactions: int = 0
+    # Events whose scrub hit the per-event budget (the rest was masked).
+    redaction_budget_exceeded: int = 0
     queue_depth: int = 0
     queue_max: int = 0
     cursor_commit_failures: int = 0
@@ -4642,10 +4730,14 @@ class Pipeline:
                     # process, so it runs in a worker thread. Only this loop
                     # uses this pipeline's redactor.
                     before = self.redactor.count
+                    cut = self.redactor.budget_exceeded
                     scrubbed = await asyncio.to_thread(
                         self.redactor.events, [event for event, _ in rows]
                     )
                     self.metrics.redactions += self.redactor.count - before
+                    self.metrics.redaction_budget_exceeded += (
+                        self.redactor.budget_exceeded - cut
+                    )
                 else:
                     scrubbed = []
                 for (_, cursor), safe in zip(rows, scrubbed):

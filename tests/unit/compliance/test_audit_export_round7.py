@@ -398,3 +398,72 @@ def test_url_values_lose_embedded_credentials(url):
         out = Redactor().value("", {key: url})[key]
         assert FAKE not in out, out
         assert out.startswith(url.split(":", 1)[0])  # the rest of the URL stays
+
+
+# -- (c) per-event scrub budget ---------------------------------------------------
+
+
+def _big_event(details: dict) -> AuditEvent:
+    return AuditEvent(
+        id="config:big",
+        source="config",
+        category="configuration",
+        action="config.update",
+        outcome="success",
+        severity=5,
+        timestamp=TS,
+        message="bulk import",
+        details=details,
+    )
+
+
+_CHUNK = ("token:abc Ab1 x@y.co 4111 " * 80)[:1640]
+
+
+def test_a_16_mb_event_is_scrubbed_in_a_few_seconds_and_flagged():
+    details = {"rows": [{f"f{j}": _CHUNK for j in range(100)} for _ in range(100)]}
+    assert len(json.dumps(details)) > 16_000_000
+    t0 = time.perf_counter()
+    out = Redactor().event(_big_event(details))
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 10, elapsed  # was ~45 s before the budget
+    assert out.details["_redaction_budget_exceeded"] is True
+    rows = out.details["rows"]
+    # The tail is masked, not passed through.
+    assert rows[-1] == "[REDACTED-BUDGET]" or set(rows[-1].values()) == {
+        "[REDACTED-BUDGET]"
+    }
+    assert out.message == "bulk import"  # scrubbed before details
+
+
+def test_json_in_string_parses_are_bounded_and_fail_closed():
+    inner = json.dumps({"password": FAKE, "n": 1})
+    details = {f"j{i}": inner for i in range(80)}
+    r = Redactor(event_json_parses=10)
+    out = r.event(_big_event(details))
+    assert FAKE not in json.dumps(out.details)
+    assert out.details["_redaction_budget_exceeded"] is True
+    assert out.details["j79"] == "[REDACTED-BUDGET]"
+    assert r.budget_exceeded == 1
+
+
+def test_node_budget_masks_the_remainder():
+    details = {"items": [{"v": f"value {i}"} for i in range(90)]}
+    out = Redactor(event_nodes=50).event(_big_event(details))
+    flat = json.dumps(out.details)
+    assert "value 89" not in flat and "[REDACTED-BUDGET]" in flat
+    assert out.details["_redaction_budget_exceeded"] is True
+
+
+def test_small_events_are_not_flagged():
+    out = Redactor().event(_big_event({"a": "b", "nested": {"c": [1, 2, "d"]}}))
+    assert "_redaction_budget_exceeded" not in out.details
+    assert out.details == {"a": "b", "nested": {"c": [1, 2, "d"]}}
+
+
+def test_checkpoints_are_outside_the_budget():
+    ev, body = _checkpoint(400)
+    raw = AuditEvent(**{**ev.__dict__})
+    out = Redactor(event_chars=100, event_nodes=5).event(raw)
+    assert out.details["body"] == body
+    assert out.details["signature"] == ev.details["signature"]
