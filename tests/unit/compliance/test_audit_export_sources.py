@@ -242,6 +242,6 @@ def test_build_sources_honours_toggles():
         {"sources": {"approvals": False, "auth": False}}
     )
     names = [s.name for s in build_sources(cfg, lambda: None, None)]
-    assert names == ["agent_events", "config", "case_audit"]
+    assert names == ["agent_events", "config", "case_audit", "audit_checkpoints"]
     every = [s.name for s in build_sources(AuditExportConfig(), lambda: None, None)]
     assert "approvals.decided" in every and "approvals.reversed" in every

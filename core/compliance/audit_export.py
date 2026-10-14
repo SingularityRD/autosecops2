@@ -12,6 +12,13 @@ source                    read from
                           user routers (login/logout/MFA/password/role change)
 ``config``                ``config_audit_log``
 ``case_audit``            ``case_audit_logs``
+``audit_checkpoints``     W1.10's signed chain heads (``audit_checkpoints``):
+                          each checkpoint body, its hash and Ed25519
+                          signature, verbatim, so a copy of every head lives
+                          outside the database. The ``audit_chain`` rows are
+                          not exported: they chain ``approval_actions`` and
+                          ``case_audit_logs``, which ``approvals`` and
+                          ``case_audit`` already export.
 ========================  ==================================================
 
 How it leaves: RFC 5424 syslog over TLS (RFC 5425 octet-counting framing), or
@@ -98,7 +105,14 @@ APP_NAME = "autosecops"
 # RFC 5612 documentation PEN: a private-use SD-ID that needs no IANA number.
 SD_ID = "autosecops@32473"
 
-SOURCE_NAMES = ("agent_events", "approvals", "auth", "config", "case_audit")
+SOURCE_NAMES = (
+    "agent_events",
+    "approvals",
+    "auth",
+    "config",
+    "case_audit",
+    "audit_checkpoints",
+)
 APPROVAL_TRANSITIONS = ("created", "decided", "executed", "verified", "reversed")
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -210,6 +224,7 @@ class SourceToggles(_Strict):
     auth: bool = True
     config: bool = True
     case_audit: bool = True
+    audit_checkpoints: bool = True
 
     def enabled(self) -> list[str]:
         return [name for name in SOURCE_NAMES if getattr(self, name)]
@@ -401,10 +416,313 @@ def iso_utc(value: datetime) -> str:
 
 
 REDACTED = "[REDACTED]"
-_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+REDACTED_EMAIL = "[REDACTED-EMAIL]"
+REDACTED_PII = "[REDACTED-PII]"
+# Longest single string the scrubber looks at. Longer input is cut to this
+# before any pattern runs, so one oversized field (a pasted log, a 10 MB user
+# agent) costs bounded time; ``Redactor`` cuts further, to ``max_string`` plus
+# a margin, so what it exports was scanned with its right-hand context.
+MAX_FIELD_CHARS = 16_384
+_SCAN_MARGIN = 512
+_TRUNCATED = "...[truncated]"
+
+# -- e-mail addresses: a linear-time scanner, not a regular expression ---------
+#
+# The former ``[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`` was quadratic:
+# on a long run of local-part characters with no ``@`` (``"a" * n``) every
+# start position rescanned the rest of the run (20 000 characters: 0.4 s, on
+# the event loop). Here each ``@`` is found with ``str.find`` and the local
+# part / domain are walked outward from it. A left walk stops at the previous
+# ``@`` or match, a right walk at the next ``@``, so walks never overlap and
+# the whole scan is O(n).
+_EMAIL_LOCAL_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._%+-"
+)
+_EMAIL_DOMAIN_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-"
+)
+_EMAIL_MAX_LITERAL = 64  # ``user@[192.0.2.1]``, ``user@[IPv6:2001:db8::1]``
+
+
+def _email_end(text_: str, at: int) -> int:
+    """End of the domain of an address whose ``@`` is at ``at``, or -1.
+
+    Accepts what the former pattern did (domain characters up to the last
+    ``.`` followed by two or more letters), plus a bracketed IP literal."""
+    n = len(text_)
+    start = at + 1
+    if start < n and text_[start] == "[":
+        close = text_.find("]", start, start + _EMAIL_MAX_LITERAL)
+        if close > start + 1:
+            inner = text_[start + 1 : close]
+            if inner.lower().startswith("ipv6:"):
+                inner = inner[5:]
+            with contextlib.suppress(ValueError):
+                ipaddress.ip_address(inner)
+                return close + 1
+        return -1
+    end = start
+    while end < n and text_[end] in _EMAIL_DOMAIN_CHARS:
+        end += 1
+    dot = text_.rfind(".", start + 1, end)
+    while dot != -1:
+        tld = dot + 1
+        while tld < end and text_[tld].isascii() and text_[tld].isalpha():
+            tld += 1
+        if tld - dot - 1 >= 2:
+            return tld
+        dot = text_.rfind(".", start + 1, dot)
+    return -1
+
+
+# Candidate ``@``: a local-part character before it and a dot (or ``[``)
+# ahead within its domain run. The lookahead stops at the next character that
+# cannot be in a domain (another ``@`` included), so the lookaheads of
+# different ``@`` cover disjoint text: linear, and the Python walk below only
+# runs for plausible addresses.
+_EMAIL_AT = re.compile(r"(?<=[A-Za-z0-9._%+\-])@(?=[A-Za-z0-9\-]*\.|\[)")
+
+
+def email_spans(text_: str) -> list[tuple[int, int]]:
+    """``(start, end)`` of each e-mail address in ``text_``, in O(len)."""
+    spans: list[tuple[int, int]] = []
+    if "@" not in text_:
+        return spans
+    floor = 0
+    for m in _EMAIL_AT.finditer(text_):
+        at = m.start()
+        if at < floor:
+            continue
+        lo = at
+        # Stop at the previous match, and at the previous ``@``: walks of
+        # different candidates never overlap.
+        while lo > floor and text_[lo - 1] in _EMAIL_LOCAL_CHARS:
+            lo -= 1
+        end = _email_end(text_, at) if lo < at else -1
+        if end != -1:
+            spans.append((lo, end))
+            floor = end
+        else:
+            floor = at + 1
+    return spans
+
+
+def mask_emails(text_: str, replacement: str = REDACTED_EMAIL) -> str:
+    spans = email_spans(text_)
+    if not spans:
+        return text_
+    out: list[str] = []
+    pos = 0
+    for lo, hi in spans:
+        out.append(text_[pos:lo])
+        out.append(replacement)
+        pos = hi
+    out.append(text_[pos:])
+    return "".join(out)
+
+
+# -- other personal data in free text ------------------------------------------
+#
+# Each shape is validated (Luhn, IBAN mod 97, T.C. kimlik checksum, SSN
+# ranges, digit count) so the many numeric ids in audit text (event ids,
+# epoch milliseconds, cloud account numbers) are not taken for one. Every
+# pattern starts at a boundary and every quantifier is bounded: linear time.
+_CARD = re.compile(r"(?<![\w\-.])[2-6]\d{3}(?:[ \-]?\d){9,15}(?![\w\-]|\.\d)")
+_IBAN = re.compile(
+    r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}"
+    r"(?:[A-Z0-9]{11,30}|(?: [A-Z0-9]{4}){2,7}(?: [A-Z0-9]{1,4})?)"
+    r"(?![A-Za-z0-9])"
+)
+_SSN = re.compile(r"(?<![\w\-])(\d{3})-(\d{2})-(\d{4})(?![\w\-])")
+_TCKN = re.compile(r"(?<![\w\-.])[1-9]\d{10}(?![\w\-]|\.\d)")
+_PHONE = re.compile(r"(?<![\w+])\+[1-9][\d \-.()]{6,20}\d(?![\w\-])")
+
+
+def _luhn(digits: str) -> bool:
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        d = ord(ch) - 48
+        if i % 2:
+            d = d * 2 - 9 if d > 4 else d * 2
+        total += d
+    return total % 10 == 0
+
+
+def _card_redaction(m: "re.Match[str]") -> str:
+    digits = "".join(c for c in m.group(0) if c.isdigit())
+    return REDACTED_PII if 13 <= len(digits) <= 19 and _luhn(digits) else m.group(0)
+
+
+def _iban_redaction(m: "re.Match[str]") -> str:
+    raw = m.group(0).replace(" ", "")
+    if not 15 <= len(raw) <= 34:
+        return m.group(0)
+    moved = raw[4:] + raw[:4]
+    number = int("".join(str(int(c, 36)) for c in moved))
+    return REDACTED_PII if number % 97 == 1 else m.group(0)
+
+
+def _ssn_redaction(m: "re.Match[str]") -> str:
+    area, group, serial = m.group(1), m.group(2), m.group(3)
+    if area in ("000", "666") or area[0] == "9" or group == "00" or serial == "0000":
+        return m.group(0)
+    return REDACTED_PII
+
+
+def _tckn_valid(s: str) -> bool:
+    d = [ord(c) - 48 for c in s]
+    odd = d[0] + d[2] + d[4] + d[6] + d[8]
+    even = d[1] + d[3] + d[5] + d[7]
+    return (odd * 7 - even) % 10 == d[9] and sum(d[:10]) % 10 == d[10]
+
+
+def _phone_redaction(m: "re.Match[str]") -> str:
+    digits = sum(c.isdigit() for c in m.group(0))
+    return REDACTED_PII if 8 <= digits <= 15 else m.group(0)
+
+
+def mask_personal_data(text_: str) -> str:
+    """Mask e-mail addresses, payment card numbers, IBANs, US SSNs, Turkish
+    national ids (T.C. kimlik) and ``+``-prefixed phone numbers in text."""
+    out = mask_emails(text_)
+    out = _IBAN.sub(_iban_redaction, out)
+    out = _CARD.sub(_card_redaction, out)
+    out = _SSN.sub(_ssn_redaction, out)
+    out = _TCKN.sub(
+        lambda m: REDACTED_PII if _tckn_valid(m.group(0)) else m.group(0), out
+    )
+    return _PHONE.sub(_phone_redaction, out)
+
+
+# -- identifiers that are neither personal data nor credentials ----------------
+#
+# A value behind a WEAK key (``token``, ``sig``, ``sid``, ``session_id``) or
+# after one in free text passes through when it has the shape of an object
+# identifier. Which shapes depends on the key: a ticket id is never a token,
+# but a GUID can be one (``token: <uuid>``) and a hex string can be an API key
+# (``key: <40 hex>``), so GUIDs pass only under id-like keys and hex digests
+# only under signature/hash-like keys. A STRONG key (``password``) masks
+# every shape: a GUID can be a password.
+_ID_ANY_KEY = re.compile(
+    r"S-1-\d{1,2}(?:-\d{1,10}){1,15}"  # Windows SID
+    r"|T\d{4}(?:\.\d{3})?"  # MITRE ATT&CK technique
+    r"|CVE-\d{4}-\d{4,7}"
+    r"|[A-Z]{2,10}(?:-\d{1,10}){1,3}"  # CASE-2026-000123, SEC-4821
+    r"|[A-Z]{2,10}\d{4,12}"  # INC0012345
+    r"|[A-Z]{2,10}-[0-9a-f]{6,16}"  # FND-7f3a9c21
+)
+_ID_GUID = re.compile(
+    r"\{?[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}?"
+    r"|[0-7][0-9A-HJKMNP-TV-Z]{25}"  # ULID
+)
+_ID_DIGEST = re.compile(
+    r"(?:(?:md5|sha1|sha-1|sha256|sha-256|sha512|sha-512):)?"
+    r"(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{40}|[0-9a-fA-F]{56}|[0-9a-fA-F]{64}"
+    r"|[0-9a-fA-F]{96}|[0-9a-fA-F]{128})"
+)
+_CREDENTIAL_WEAK = frozenset(
+    {"token", "auth", "key", "pass", "cookie", "cookies", "sas", "otp", "totp", "pin"}
+)
+_SIGNATURE_WEAK = frozenset(
+    {"sig", "signature", "hash", "digest", "checksum", "fingerprint", "thumbprint"}
+)
+
+
+def allowed_identifier(value: str, key: str = "") -> bool:
+    """Whether ``value`` (whole) is an object identifier that may pass under
+    the WEAK key ``key`` (unknown key: only the shapes safe under any key)."""
+    s = value.strip()
+    if len(s) >= 2 and s[0] in "\"'" and s[-1] == s[0]:
+        s = s[1:-1]
+    if not 0 < len(s) <= 140:
+        return False
+    if _ID_ANY_KEY.fullmatch(s):
+        return True
+    segments = set(key_segments(key.strip("\"'-\\ :"))) if key else set()
+    if not segments:
+        return False
+    if segments & _SIGNATURE_WEAK and _ID_DIGEST.fullmatch(s):
+        return True
+    return not (segments & _CREDENTIAL_WEAK) and _ID_GUID.fullmatch(s) is not None
+
+
+# Keys naming personal data: a whole segment (``email``, ``userEmail``,
+# ``contact_phone``), consecutive segments (``first_name``,
+# ``date_of_birth``) or a whole short key (``pan``, ``zip``).
 _PII_KEYS = frozenset(
     {"email", "phone", "full_name", "ssn", "national_id", "tckn", "address"}
 )
+_PII_SEGMENTS = frozenset(
+    {
+        "email",
+        "emails",
+        "phone",
+        "phones",
+        "mobile",
+        "telephone",
+        "msisdn",
+        "ssn",
+        "tckn",
+        "iban",
+        "passport",
+        "dob",
+        "birthdate",
+        "birthday",
+        "surname",
+        "cvv",
+        "cvc",
+        "cvv2",
+        "address",
+    }
+)
+_PII_PHRASES = tuple(
+    tuple(p.split("_"))
+    for p in (
+        "full_name",
+        "first_name",
+        "last_name",
+        "middle_name",
+        "given_name",
+        "family_name",
+        "maiden_name",
+        "date_of_birth",
+        "birth_date",
+        "national_id",
+        "social_security",
+        "tax_id",
+        "tax_number",
+        "driver_license",
+        "drivers_license",
+        "driving_licence",
+        "card_number",
+        "credit_card",
+        "debit_card",
+        "cc_number",
+        "postal_code",
+        "zip_code",
+        "tc_kimlik",
+        "kimlik_no",
+    )
+)
+_PII_LEAVES = frozenset({"pan", "zip", "postcode"})
+
+
+def pii_key(name: str) -> bool:
+    """Whether a key names personal data (``email``, ``userPhone``,
+    ``first_name``, ``date_of_birth``, ``iban``, ``pan``), so its value is
+    masked whatever it looks like. ``email_count`` / ``phone_type`` are about
+    personal data, not personal data."""
+    lowered = name.lower()
+    if lowered in _PII_KEYS or lowered in _PII_LEAVES:
+        return True
+    segments = key_segments(name)
+    if _has_phrase(segments, _PII_PHRASES):
+        return True
+    if len(segments) > 1 and segments[-1] in _NON_SECRET_LEAVES:
+        return False
+    return bool(_PII_SEGMENTS.intersection(segments))
+
+
 # Keys naming who acted. The audit trail exists to answer "who did this", so
 # these are exported verbatim even with ``redact_pii`` on (secrets inside them
 # are still cut). See AUDIT_EXPORT.md, "Redaction policy".
@@ -469,6 +787,13 @@ _SECRET_WORDS = frozenset(
         "phpsessid",
         "jsessionid",
         "aspsessionid",
+        "mnemonic",
+        "seedphrase",
+        "sshkey",
+        "kubeconfig",
+        "keytab",
+        "psk",
+        "samlresponse",
     }
 )
 _WEAK_WORDS = frozenset(
@@ -526,6 +851,19 @@ _SECRET_PHRASES = tuple(
         "conn_str",
         "mfa_secret",
         "recovery_codes",
+        "backup_codes",
+        "seed_phrase",
+        "ssh_key",
+        "storage_key",
+        "shared_key",
+        "pre_shared_key",
+        "wpa_key",
+        "wifi_key",
+        "snmp_community",
+        "community_string",
+        "saml_response",
+        "client_assertion",
+        "code_verifier",
     )
 )
 _WEAK_PHRASES = tuple(
@@ -537,11 +875,13 @@ _WEAK_PHRASES = tuple(
         "mfa_code",
         "auth_code",
         "verification_code",
+        "oauth_code",
+        "authorization_code",
     )
 )
 # A one-word key that is a credential only on its own (``auth``, not
 # ``auth_scheme``), and only when its value reads as one.
-_WEAK_LEAVES = frozenset({"pass", "key", "auth"})
+_WEAK_LEAVES = frozenset({"pass", "key", "auth", "session"})
 # ``token_count``, ``password_policy``, ``credential_dumping``,
 # ``cookie_consent``: about a credential, not one.
 _NON_SECRET_LEAVES = frozenset(
@@ -588,8 +928,27 @@ _NON_SECRET_LEAVES = frozenset(
         "hint",
         "name",
         "names",
+        # ``token_id``, ``credential_id``, ``user_sid``-like references and
+        # timestamps (``password_last_set``, ``token_issued_at``): about a
+        # credential, not one. ``secret_id`` (Vault AppRole) and
+        # ``session_id`` are handled before this list (identifier_strength).
+        "id",
+        "ids",
+        "uuid",
+        "guid",
+        "arn",
+        "at",
+        "set",
+        "date",
+        "time",
+        "timestamp",
+        "version",
     }
 )
+# ``<word>_id`` that is a credential after all.
+_ID_LEAVES = frozenset({"id", "ids"})
+_SECRET_ID_PREFIXES = frozenset({"secret"})  # Vault AppRole ``secret_id``
+_WEAK_ID_PREFIXES = frozenset({"session"})
 # Words containing a secret word that are not about one.
 _NOT_EMBEDDED = ("secretary", "secretariat")
 
@@ -648,6 +1007,29 @@ _NOT_GLUED = frozenset({"bypass", "compass", "surpass", "overpass", "underpass"}
 _INDIRECT_FLAG = re.compile(r"(?i)[-_](?:stdin|file|path|env|prompt|policy)$")
 
 
+def _id_strength(segments: list[str]) -> int:
+    """``<prefix>_id`` keys that still name a credential: ``secret_id``
+    (Vault AppRole), ``private_key_id`` / ``access_key_id`` (a STRONG phrase
+    before ``id``) are STRONG, ``session_id`` WEAK; other ids (``token_id``,
+    ``key_id``, ``credential_id``) 0."""
+    if len(segments) < 2 or segments[-1] not in _ID_LEAVES:
+        return 0
+    prefix = segments[:-1]
+    if prefix[-1] in _SECRET_ID_PREFIXES or _has_phrase(prefix, _SECRET_PHRASES):
+        return STRONG
+    if prefix[-1] in _WEAK_ID_PREFIXES:
+        return WEAK
+    return 0
+
+
+def _non_secret_leaf(segments: list[str]) -> bool:
+    """``token_count``, ``credential_id``, ``password_last_set``: a key about
+    a credential. Not ``secret_id``, ``private_key_id``, ``session_id``."""
+    if len(segments) < 2 or segments[-1] not in _NON_SECRET_LEAVES:
+        return False
+    return not _id_strength(segments)
+
+
 @functools.lru_cache(maxsize=8192)
 def identifier_strength(name: str) -> int:
     """0, :data:`WEAK` or :data:`STRONG`: how surely a key, flag, tag or
@@ -666,7 +1048,10 @@ def identifier_strength(name: str) -> int:
     if not segments:
         return 0
     leaf = segments[-1]
-    if len(segments) > 1 and leaf in _NON_SECRET_LEAVES:
+    id_strength = _id_strength(segments)
+    if id_strength:
+        return id_strength
+    if _non_secret_leaf(segments):
         return 0
     flat = re.sub(r"[^a-z0-9]", "", bare.lower())
     if any(word in flat for word in _EMBEDDED_WORDS) and not any(
@@ -781,28 +1166,48 @@ def _wordy(value: str) -> bool:
     )
 
 
-def _secretish(value: str, numeric_ok: bool = False) -> bool:
+# A value is judged on its first characters only: whether ``token: <x>`` reads
+# as a secret does not need all of a 16 KB ``x``, and judging it whole made
+# ``token:token:token:…`` quadratic.
+_SECRETISH_SCAN = 256
+_NUMERIC_SECRET = re.compile(r"\d{4,12}")
+_WHITESPACE = re.compile(r"\s")
+_DIGIT = re.compile(r"\d")
+_SYMBOL = re.compile(r"[!@#$%^*+=~]")
+
+
+def _secretish(value: str, numeric_ok: bool = False, key: Optional[str] = "") -> bool:
     """Whether a value behind a WEAK key reads as a credential rather than a
-    status word, a count, a rule name, a registry path or a ticket id."""
+    status word, a count, a rule name, a registry path or an object id.
+
+    ``key`` is the WEAK key the value sits under: object-id shapes allowed
+    under it (:func:`allowed_identifier`) are not secrets. ``None`` turns
+    the id shapes off (URL ``?sig=``/``?code=``: a signed URL is a bearer
+    credential whatever its signature looks like)."""
     s = value.strip()
     if len(s) >= 2 and s[0] in "\"'" and s[-1] == s[0]:
         s = s[1:-1]
-    if numeric_ok and re.fullmatch(r"\d{4,12}", s):
+    if len(s) > _SECRETISH_SCAN:
+        s = s[:_SECRETISH_SCAN]
+    if numeric_ok and _NUMERIC_SECRET.fullmatch(s):
         return True
-    if len(s) < 6 or any(c.isspace() for c in s) or s.startswith("[REDACTED"):
+    if len(s) < 6 or _WHITESPACE.search(s) or s.startswith("[REDACTED"):
         return False
     if s.lower() in _STATUS_WORDS:
+        return False
+    if key is not None and allowed_identifier(s, key):
         return False
     if "\\" in s or s.startswith("/"):
         return False  # a registry key or a path
     if _HEX_RUN.fullmatch(s):
         return True
-    upper = any(c.isupper() for c in s)
-    lower = any(c.islower() for c in s)
-    digit = any(c.isdigit() for c in s)
+    # str methods and one regex search, not per-character Python loops.
+    upper = s != s.lower()
+    lower = s != s.upper()
+    digit = _DIGIT.search(s) is not None
     if len(s) >= 8 and upper and lower and digit:
         return True
-    if len(s) >= 8 and (digit or upper) and any(c in "!@#$%^*+=~" for c in s):
+    if len(s) >= 8 and (digit or upper) and _SYMBOL.search(s):
         return True
     if len(s) >= 12 and digit and (upper or lower) and not _wordy(s):
         return True
@@ -821,14 +1226,36 @@ _KEY_SEP = re.compile(
 )
 # ``PASSWORD<tab>value``, ``token value``, ``--password value``.
 _KEY_SPACE = re.compile(r"(?<![A-Za-z0-9_.\-%=:/\\])(" + _IDENT + r")([ \t]+)")
+# Every quantifier is bounded: a value is matched at each ``key=`` in the
+# text, and an unbounded value ran to the end of the line each time, which
+# made ``key:key:key:…`` quadratic. An unquoted value that reaches the bound
+# is extended (:func:`_value_end`) only when it is being cut, after which the
+# scan resumes past it: linear overall.
+_VALUE_MAX = 1024
 _VALUE = re.compile(
-    r"\\\r?\n[ \t]*[^\s;&,\"'<>]+"  # ``DB_PASS=\`` + continuation line
-    r"|\\\"(?:[^\"\\]|\\[^\"])*\\\"|\"[^\"]*\"|'[^']*'|\{[^}]*\}"
-    r"|[^\s;&,\"'<>][^\s;&,\"<>]*"
+    r"\\\r?\n[ \t]{0,64}[^\s;&,\"'<>]{1,1024}"  # ``DB_PASS=\`` + next line
+    r"|\\\"(?:[^\"\\]|\\[^\"]){0,8192}\\\"|\"[^\"]{0,8192}\"|'[^']{0,8192}'"
+    r"|\{[^}]{0,8192}\}"
+    r"|[^\s;&,\"'<>][^\s;&,\"<>]{0,1023}"
 )
+_VALUE_TAIL = re.compile(r"[^\s;&,\"<>]+")
 # ``Password=ab;cd`` where ``cd`` is no ``key=`` of its own: still the value.
 _SEMI_TAIL = re.compile(r";([^\s;=&,\"'<>]+)(?=[\s,]|$)")
-_SPACE_VALUE = re.compile(r"\"[^\"]*\"|'[^']*'|[^\s;,\"'<>|]+")
+_SPACE_VALUE = re.compile(r"\"[^\"]{0,8192}\"|'[^']{0,8192}'|[^\s;,\"'<>|]{1,1024}")
+_SPACE_VALUE_TAIL = re.compile(r"[^\s;,\"'<>|]+")
+
+
+def _value_end(text_: str, vm: "re.Match[str]", tail: "re.Pattern[str]") -> int:
+    """End of the value ``vm`` matched, past the match bound when an
+    unquoted value is longer than :data:`_VALUE_MAX`."""
+    end = vm.end()
+    if end - vm.start() >= _VALUE_MAX and text_[vm.start()] not in "\"'{\\":
+        more = tail.match(text_, end)
+        if more is not None:
+            end = more.end()
+    return end
+
+
 _YAML_BLOCK_INDICATOR = re.compile(r"^[|>][+-]?\d*$")
 # ``password: >-`` / ``password: |`` and the indented lines under it.
 _YAML_BLOCK = re.compile(
@@ -961,6 +1388,10 @@ _TOKEN_SHAPES = [
         r"\bhf_[A-Za-z0-9]{30,}",
         r"\bnpm_[A-Za-z0-9]{36}\b",
         r"\bpypi-[A-Za-z0-9_\-]{50,}",
+        r"\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_\-]{16,}",
+        # Twilio API key SID, Terraform Cloud / Enterprise API token.
+        r"\bSK[0-9a-fA-F]{32}\b",
+        r"\batlasv1\.[A-Za-z0-9_\-=]{40,}",
         r"\bSG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}",
         r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*",
         # HashiCorp Vault service/batch/recovery tokens.
@@ -1055,10 +1486,10 @@ def _redact_pairs(text_: str) -> str:
         if (
             strength == WEAK
             and not _is_flag_key(text_, m.start(2), ident)
-            and not _secretish(value, _numeric_identifier(ident))
+            and not _secretish(value, _numeric_identifier(ident), ident)
         ):
             continue
-        end = vm.end()
+        end = _value_end(text_, vm, _VALUE_TAIL)
         if strength == STRONG:
             while True:
                 tail = _SEMI_TAIL.match(text_, end)
@@ -1115,13 +1546,14 @@ def _redact_spaced(text_: str) -> str:
             if _INDIRECT_FLAG.search(ident):
                 continue
         elif strength == WEAK:
-            if not _secretish(value, _numeric_identifier(ident)):
+            if not _secretish(value, _numeric_identifier(ident), ident):
                 continue
         elif not _random_enough(value):
             continue
         out.append(text_[pos : vm.start()])
-        out.append(_redacted_value(value))
-        pos = vm.end()
+        end = _value_end(text_, vm, _SPACE_VALUE_TAIL)
+        out.append(_redacted_value(value) if end == vm.end() else REDACTED)
+        pos = end
     out.append(text_[pos:])
     return "".join(out)
 
@@ -1130,7 +1562,7 @@ def _pair_hit(name: str, value: str) -> bool:
     strength = identifier_strength(name)
     if strength == STRONG:
         return True
-    return strength == WEAK and _secretish(value, _numeric_identifier(name))
+    return strength == WEAK and _secretish(value, _numeric_identifier(name), name)
 
 
 def _yaml_block_redaction(match: "re.Match[str]") -> str:
@@ -1203,8 +1635,9 @@ def _redact_named_values(text_: str) -> str:
         if not _pair_hit(m.group(3), vm.group(0)):
             continue
         out.append(text_[pos : vm.start()])
-        out.append(_redacted_value(vm.group(0)))
-        pos = vm.end()
+        end = _value_end(text_, vm, _VALUE_TAIL)
+        out.append(_redacted_value(vm.group(0)) if end == vm.end() else REDACTED)
+        pos = end
     out.append(text_[pos:])
     return "".join(out)
 
@@ -1409,6 +1842,24 @@ for _names, _spec in (
     ),
     (("net", "net1"), _CliSpec(positional=(("user", 2),), ci=True)),
     (("mysqladmin",), _CliSpec(positional=(("password", 1),))),
+    (
+        (
+            "snmpwalk",
+            "snmpbulkwalk",
+            "snmpget",
+            "snmpgetnext",
+            "snmpbulkget",
+            "snmpset",
+            "snmptable",
+            "snmptrap",
+            "snmpinform",
+            "snmpdelta",
+            "snmpstatus",
+            "onesixtyone",
+        ),
+        # v1/v2c community, v3 auth and privacy pass phrases.
+        _CliSpec(flags={"-c": "all", "-A": "all", "-X": "all"}),
+    ),
 ):
     for _name in _names:
         _CLI_TOOLS[_name] = _spec
@@ -1504,6 +1955,8 @@ def _redact_cli(text_: str) -> str:
             "crackmap",
             "nxc",
             "rpc",
+            "snmp",
+            "onesixtyone",
         )
     ):
         return text_
@@ -1587,7 +2040,10 @@ def _redact_raw(value: str, depth: int = 0) -> str:
     out = _WEBHOOK_URLS.sub(lambda m: m.group(1) + REDACTED, out)
     out = _URL_USERINFO.sub(lambda m: m.group(1) + REDACTED + "@", out)
     out = _URL_CODE.sub(
-        lambda m: m.group(1) + REDACTED if _secretish(m.group(2)) else m.group(0), out
+        lambda m: (
+            m.group(1) + REDACTED if _secretish(m.group(2), key=None) else m.group(0)
+        ),
+        out,
     )
     for pattern in _TOKEN_SHAPES:
         out = pattern.sub(REDACTED, out)
@@ -1690,7 +2146,12 @@ def redact_text(value: str, *, _depth: int = 0) -> str:
     escapes or HTML entities is also redacted after decoding (``password%3Dx``,
     ``password\\u003dx``, ``password&#61;x``); when the decoded form hides a
     secret the raw form did not show, the decoded, redacted text is what is
-    exported. Base64 blobs that decode to a credential are cut whole."""
+    exported. Base64 blobs that decode to a credential are cut whole.
+
+    Input longer than :data:`MAX_FIELD_CHARS` is cut to it first (and marked
+    ``...[truncated]``): the scan is bounded per field."""
+    if len(value) > MAX_FIELD_CHARS:
+        return redact_text(value[:MAX_FIELD_CHARS], _depth=_depth) + _TRUNCATED
     if _depth < _MAX_NEST:
         structured = _redact_json_text(value, _depth)
         if structured is not None:
@@ -1751,11 +2212,12 @@ _JWK_PRIVATE = frozenset({"d", "p", "q", "dp", "dq", "qi", "k", "oth"})
 
 def _paired_value_keys(mapping: dict) -> dict:
     """Keys of ``mapping`` whose value is a secret named by a sibling field,
-    mapped to ``(strength, numeric)`` of the naming field. A name that is
+    mapped to ``(strength, numeric, name)`` of the naming field. A name that is
     prose (``"Rotate API key"``, ``"OS Credential Dumping"``) counts as WEAK:
     its value goes only when it reads as a secret."""
     best = 0
     numeric = False
+    name = ""
     for k, v in mapping.items():
         if str(k).lower() not in _NAME_FIELDS or not isinstance(v, str):
             continue
@@ -1763,11 +2225,15 @@ def _paired_value_keys(mapping: dict) -> dict:
         if strength and any(c.isspace() for c in v.strip()):
             strength = WEAK
         if strength:
+            if strength > best:
+                name = v
             best = max(best, strength)
             numeric = numeric or _numeric_identifier(v)
     if not best:
         return {}
-    return {k: (best, numeric) for k in mapping if str(k).lower() in _VALUE_FIELDS}
+    return {
+        k: (best, numeric, name) for k in mapping if str(k).lower() in _VALUE_FIELDS
+    }
 
 
 _FLAG = re.compile(r"^-{1,2}[A-Za-z][A-Za-z0-9_.\-]*$")
@@ -1833,11 +2299,14 @@ class Redactor:
         self.count = 0  # values redacted, for metrics
 
     def _key_strength(self, path: str) -> int:
+        """Key first: a key naming a credential or personal data masks its
+        value whatever the value looks like (patterns come second, in
+        :meth:`text`)."""
         leaf = path.rsplit(".", 1)[-1]
         segments = key_segments(leaf)
-        if self.redact_pii and (leaf.lower() in _PII_KEYS or set(segments) & _PII_KEYS):
+        if self.redact_pii and pii_key(leaf):
             return STRONG
-        if len(segments) > 1 and segments[-1] in _NON_SECRET_LEAVES:
+        if _non_secret_leaf(segments):
             return 0
         strength = identifier_strength(leaf)
         if strength:
@@ -1850,13 +2319,24 @@ class Redactor:
         return 0
 
     def text(self, value: str, *, pii: bool = True) -> str:
-        out = redact_text(value, _depth=self._nest)
+        # Cut before scanning: every pattern then runs on bounded input. The
+        # margin past ``max_string`` keeps a secret that straddles the export
+        # cut whole for the patterns (and the part of it that is exported is
+        # inside the scanned text).
+        limit = min(MAX_FIELD_CHARS, self.max_string + _SCAN_MARGIN)
+        if value[:1] in ("{", "[") and len(value) <= MAX_FIELD_CHARS:
+            limit = MAX_FIELD_CHARS  # JSON in a string: walk it whole
+        clipped = len(value) > limit
+        scanned = value[:limit] if clipped else value
+        out = redact_text(scanned, _depth=self._nest)
         if self.redact_pii and pii:
-            out = _EMAIL.sub("[REDACTED-EMAIL]", out)
-        if out != value:
+            out = mask_personal_data(out)
+        if out != scanned:
             self.count += 1
         if len(out) > self.max_string:
-            out = out[: self.max_string] + "...[truncated]"
+            out = out[: self.max_string] + _TRUNCATED
+        elif clipped:
+            out += _TRUNCATED
         return out
 
     def _redact(self) -> str:
@@ -1869,10 +2349,12 @@ class Redactor:
         value: Any,
         depth: int = 0,
         weak: Optional[bool] = None,
+        weak_key: str = "",
     ) -> Any:
         """Redact ``value`` found under ``path``. ``weak`` is set below a WEAK
-        key: strings there go when they read as secrets (``True``: numbers
-        too, under ``pin``/``otp``)."""
+        key (``weak_key``): strings there go when they read as secrets
+        (``True``: numbers too, under ``pin``/``otp``) and not as an object
+        id allowed under that key (:func:`allowed_identifier`)."""
         if isinstance(value, bool) or value is None:
             return value
         strength = self._key_strength(path) if path else 0
@@ -1881,7 +2363,8 @@ class Redactor:
                 return value
             return self._redact()
         if strength == WEAK:
-            weak = bool(weak) or _numeric_identifier(path.rsplit(".", 1)[-1])
+            weak_key = path.rsplit(".", 1)[-1]
+            weak = bool(weak) or _numeric_identifier(weak_key)
         if depth >= self.max_depth:
             return "[truncated]"
         if isinstance(value, dict):
@@ -1897,14 +2380,14 @@ class Redactor:
                     out[key] = self._redact()
                     continue
                 if k in paired and v not in (None, "", {}, []):
-                    pstrength, numeric = paired[k]
+                    pstrength, numeric, pname = paired[k]
                     if pstrength == STRONG or (
-                        isinstance(v, (str, int)) and _secretish(str(v), numeric)
+                        isinstance(v, (str, int)) and _secretish(str(v), numeric, pname)
                     ):
                         out[key] = self._redact()
                         continue
                 out[key] = self.value(
-                    f"{path}.{key}" if path else key, v, depth + 1, weak
+                    f"{path}.{key}" if path else key, v, depth + 1, weak, weak_key
                 )
             return out
         if isinstance(value, (list, tuple)):
@@ -1921,12 +2404,12 @@ class Redactor:
                 if isinstance(v, str) and v and _secret_argument(value, i):
                     items.append(self._redact())
                     continue
-                items.append(self.value(item_path, v, depth + 1, weak))
+                items.append(self.value(item_path, v, depth + 1, weak, weak_key))
             if len(value) > self.max_items:
                 items.append("[truncated]")
             return items
         if weak is not None:
-            if isinstance(value, (str, int)) and _secretish(str(value), weak):
+            if isinstance(value, (str, int)) and _secretish(str(value), weak, weak_key):
                 return self._redact()
         if isinstance(value, str):
             leaf = path.rsplit(".", 1)[-1]
@@ -1937,13 +2420,28 @@ class Redactor:
             return value
         return self.text(str(value))
 
+    def events(self, events: list[AuditEvent]) -> list[AuditEvent]:
+        """:meth:`event` over a batch (the pipeline runs this off the loop)."""
+        return [self.event(ev) for ev in events]
+
     def event(self, ev: AuditEvent) -> AuditEvent:
+        details = ev.details
+        if ev.source == "audit_checkpoints" and isinstance(details, dict):
+            # Our own signer's output (public key, hashes, signature, the
+            # signed body): verbatim, or the signature no longer verifies.
+            # Anything else in details is scrubbed as usual.
+            keep = AuditCheckpointSource.VERBATIM
+            rest = {k: v for k, v in details.items() if k not in keep}
+            scrubbed = self.value("", rest) if rest else {}
+            details = {k: (v if k in keep else scrubbed[k]) for k, v in details.items()}
+        else:
+            details = self.value("", details)
         return replace(
             ev,
             message=self.text(ev.message),
             actor=self.text(ev.actor, pii=False) if ev.actor else ev.actor,
             user_agent=self.text(ev.user_agent) if ev.user_agent else ev.user_agent,
-            details=self.value("", ev.details),
+            details=details,
         )
 
 
@@ -3134,6 +3632,113 @@ class CaseAuditSource(_IdSource):
         )
 
 
+class AuditCheckpointSource(_IdSource):
+    """W1.10's signed audit-chain checkpoints (``audit_checkpoints``).
+
+    The chain itself (``audit_chain``) is not exported: its rows mirror
+    ``approval_actions`` and ``case_audit_logs`` changes, which the
+    ``approvals`` and ``case_audit`` sources already send. What the SIEM
+    gains is each checkpoint: the Ed25519-signed body naming the
+    ``audit_chain`` head (seq, hash) and the agent-ledger heads, its
+    ``body_hash``, ``prev_body_hash`` link and signature. W1.10 can only
+    show chain-tail deletion or rewriting back to a checkpoint when a copy of
+    the checkpoints is kept outside the database; the SIEM is that copy.
+    ``python -m core.audit.verify --checkpoint-file`` style checks can be run
+    against the exported ``body`` + ``signature``, so they are exported
+    verbatim (see :meth:`Redactor.event`).
+
+    A database without W1.10's schema has no such table: the source then
+    reads nothing (and looks again on later polls) instead of failing.
+    """
+
+    name = "audit_checkpoints"
+    table = "audit_checkpoints"
+    id_col = "id"
+    ts_col = "created_at"
+    columns = (
+        "id, created_at, key_id, public_key, body, body_hash, prev_body_hash, "
+        "signature, tsa_token"
+    )
+    VERBATIM = frozenset(
+        {
+            "key_id",
+            "public_key",
+            "body",
+            "body_hash",
+            "prev_body_hash",
+            "signature",
+            "tsa_token",
+            "audit_chain_head",
+            "schema_change",
+        }
+    )
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._present = False
+
+    def _table_present(self) -> bool:
+        if self._present:
+            return True
+        from sqlalchemy import inspect as sa_inspect
+
+        with self.session_scope() as session:
+            self._present = bool(sa_inspect(session.get_bind()).has_table(self.table))
+        return self._present
+
+    def initial_cursor(self, start_from: str) -> dict:
+        if not self._table_present():
+            # Created later (W1.10 installed afterwards): every checkpoint
+            # it will hold is newer than this enable.
+            return {"xid": 0, "id": 0}
+        return super().initial_cursor(start_from)
+
+    def fetch(self, cursor: dict, limit: int) -> list[tuple[AuditEvent, dict]]:
+        if not self._table_present():
+            return []
+        return super().fetch(cursor, limit)
+
+    def event(self, row: dict) -> AuditEvent:
+        body = _json(row["body"])
+        body = body if isinstance(body, dict) else {}
+        chain = (
+            body.get("audit_chain") if isinstance(body.get("audit_chain"), dict) else {}
+        )
+        head = chain.get("head")
+        rebaseline = "schema_change" in body
+        return AuditEvent(
+            id=f"audit_checkpoints:{row['id']}",
+            source=self.name,
+            category="integrity",
+            action="audit.checkpoint.rebaseline" if rebaseline else "audit.checkpoint",
+            outcome="success",
+            severity=5 if rebaseline else 3,
+            timestamp=as_utc(row["created_at"]),
+            message=(
+                f"audit chain checkpoint {row['id']} signed by key {row['key_id']}"
+                + (
+                    f", chain head seq {head.get('seq')}"
+                    if isinstance(head, dict)
+                    else ""
+                )
+            ),
+            target_type="audit_checkpoint",
+            target_id=str(row["id"]),
+            hash=row["body_hash"],
+            details={
+                "key_id": row["key_id"],
+                "public_key": row["public_key"],
+                "body": row["body"],
+                "body_hash": row["body_hash"],
+                "prev_body_hash": row["prev_body_hash"],
+                "signature": row["signature"],
+                "tsa_token": row["tsa_token"],
+                "audit_chain_head": head,
+                "schema_change": body.get("schema_change"),
+            },
+        )
+
+
 class AgentEventsSource(_DbSource):
     """The agent ledger, keyset-paged on ``(xid, run_id, seq)`` on Postgres
     (``(ts, run_id, seq)`` up to the settle cutoff elsewhere).
@@ -3460,6 +4065,8 @@ def build_sources(
             sources.append(ConfigAuditSource(session_scope, **db))
         if "case_audit" in on:
             sources.append(CaseAuditSource(session_scope, **db))
+        if "audit_checkpoints" in on:
+            sources.append(AuditCheckpointSource(session_scope, **db))
     if "auth" in on and spool is not None:
         sources.append(AuthSpoolSource(spool))
     return sources
@@ -3656,10 +4263,19 @@ class Pipeline:
                         self.cfg.max_backoff_s, max(1.0, self.cfg.poll_interval_s)
                     )
                     continue
-                for event, cursor in rows:
+                if rows:
+                    # Scrubbing is CPU-bound pattern work: a batch of large
+                    # fields would stall every other coroutine of the API
+                    # process, so it runs in a worker thread. Only this loop
+                    # uses this pipeline's redactor.
                     before = self.redactor.count
-                    safe = self.redactor.event(event)
+                    scrubbed = await asyncio.to_thread(
+                        self.redactor.events, [event for event, _ in rows]
+                    )
                     self.metrics.redactions += self.redactor.count - before
+                else:
+                    scrubbed = []
+                for (_, cursor), safe in zip(rows, scrubbed):
                     # Blocks while the queue is full: backpressure on reading.
                     await self._queue.put(_Item(source.name, safe, cursor))
                     self.metrics.queue_depth = self._queue.qsize()
