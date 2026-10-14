@@ -65,6 +65,17 @@ sürelerini kaydetmenizi öneririz.
 şifreli kasa) durur; paketin içinde hiçbir anahtar yoktur. Anahtar üretimi ve
 sızma durumunda yapılacaklar: [infra/airgap/README.md](../../infra/airgap/README.md) §1.
 
+Uygulama imajları yerelde derlenmez. Pakete, `v<sürüm>` etiketiyle `release.yml`'nin
+GHCR'a yayımladığı imzalı imajlar girer:
+`ghcr.io/singularityrd/autosecops-{backend,daemon,agent}:<sürüm>` (Helm ve paket
+varsayılanı). Paketi üretmeden önce GitHub Release dosyalarını indirip
+`sh verify-release.sh --dir release-<sürüm> --version <sürüm>` ile doğrulayın
+(`RESULT: VERIFIED`; bkz. [docs/release/dogrulama.md](../release/dogrulama.md)),
+paketi ürettikten sonra çekilen imajların kimliğini imzalı `images.json`'daki
+`config_digest` ile karşılaştırın
+([infra/airgap/README.md](../../infra/airgap/README.md) §2, adım 3). Etiket
+itilmeden bu imajlar yoktur; paket üretimi `not found` ile durur.
+
 ```bash
 # 1) Önce neyin pakete gireceğini görün (hiçbir şey çekilmez)
 infra/airgap/build-bundle.sh --dry-run --version 2.0.0

@@ -11,8 +11,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../../.."
 VERSION="$(node -p "require('./clients/desktop/package.json').version")"
-BACKEND_IMAGE="ghcr.io/vigil-soc/vigil-backend:${VERSION}"
-AGENT_IMAGE="ghcr.io/vigil-soc/vigil-agent:${VERSION}"
+BACKEND_IMAGE="ghcr.io/singularityrd/autosecops-backend:${VERSION}"
+AGENT_IMAGE="ghcr.io/singularityrd/autosecops-agent:${VERSION}"
 PLATFORM="${1:-linux/arm64}"
 # Name kept for stageStandalone(), which skips it by name; it holds both images.
 OUT="clients/desktop/standalone/backend-image.tar.gz"

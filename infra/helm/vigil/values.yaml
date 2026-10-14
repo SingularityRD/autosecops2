@@ -6,11 +6,12 @@
 # Global
 # -----------------------------------------------------------------------------
 global:
-  # Container registry where Vigil images live. Set in release.yml.
+  # Registry and namespace of the AutoSecOps images. Images resolve to
+  # <registry>/<namespace>-<component>, e.g.
+  # ghcr.io/singularityrd/autosecops-backend: the names .github/workflows/
+  # release.yml publishes (IMAGE_PREFIX). tests/unit/airgap checks they agree.
   imageRegistry: ghcr.io
-  # Image repo namespace. Images resolve to <registry>/<namespace>-<component>
-  # e.g. ghcr.io/vigil-soc/vigil-backend
-  imageNamespace: vigil-soc/vigil
+  imageNamespace: singularityrd/autosecops
   imagePullPolicy: IfNotPresent
   imagePullSecrets: []
 
