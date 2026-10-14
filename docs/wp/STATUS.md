@@ -23,7 +23,7 @@ W0.1–W0.7, W0.9, W0.10, W0.11 (güvenlik hotfix: detection-rules git/SSRF, Vie
 
 ## 3. Başlanmadı / insan kararı
 
-- **W1.4** (prompt-injection değerlendirme seti): saldırı metni yazımı güvenlik sınıflandırıcısına takıldı → insan yazmalı veya mevcut v1 240 vakalık set kullanılmalı.
+- **W1.4** (prompt-injection değerlendirme seti): spec taslağı `wp/w1.4-injection-set` @ 7b50fa61 dalında (`docs/wp/w1.4.md`). Saldırı metni yazımı güvenlik sınıflandırıcısına takıldı → insan yazmalı veya mevcut v1 240 vakalık set kullanılmalı.
 - **W0.8**, **W4.4** (dış pentest): insan/dış iş. **W2.9**: isteğe bağlı.
 - **Uzak dal silme**: birleşmiş `wp/*` dallarını remote'tan silmek kullanıcı onayı bekliyor (izin sınıflandırıcısı engelledi). Yerel temizlik yapıldı.
 - **İnsan onayı**: main'e giren tüm Yüksek riskli WP'ler (özellikle W1.7b `/mcp` araç kaldırma, W0.13 auth-api ile Helm'de CSRF zorlaması `VIGIL_CSRF_REPORT_ONLY=false`, W0.12b spool disk biçimi, W4.5 DB yükseltme, W1.9 SSO/RBAC) için ürün sahibinin onayı alınmalı.
