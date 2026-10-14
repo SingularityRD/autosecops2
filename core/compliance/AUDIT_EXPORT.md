@@ -451,11 +451,11 @@ Kapsanan biçimler (`PAIR_FORMS`):
 
 | Biçim | Örnek |
 |---|---|
-| `inline` | `k=v`, `k: v`, `k => v`, `k -> v`, `k%3Dv`, `user.k=v`; köşeli parantezli anahtar (Rails/PHP): `user[k]=v`, `data[User][k]=v`, `k[0]=v`, `k[]=v` |
-| `quoted` | `k="v"`, `'k': 'v'`, `"k": "v"` (JSON benzeri), `\"k\": \"v\"` |
+| `inline` | `k=v`, `k: v`, `k => v`, `k -> v`, `k%3Dv`, `user.k=v`; köşeli parantezli anahtar (Rails/PHP): `user[k]=v`, `data[User][k]=v`, `k[0]=v`, `k[]=v`, ayırıcı çevresinde boşlukla `user[k] = v` / `user[k]= v` ve `:` ile `user[k]: v` (boşluklar maskenin dışında kalır); tırnaklı ve sembol alt simge: `$db['default']['k'] = 'v'`, `ENV['K'] = 'v'`, `os.environ["K"] = "v"`, `params[:k] = v` |
+| `quoted` | `k="v"`, `'k': 'v'`, `"k": "v"` (JSON benzeri), `\"k\": \"v\"`, `settings[k] = "v"` |
 | `braced` | `k={…}` |
 | `query` | `?k=v&k2=v2` (değer `&`, `#` ya da boşlukta biter); `?user[k]=v`, yüzde kodlu `&user%5Bk%5D=v` |
-| `xml` | `<k>v</k>`, `<ns:K a="1">v</ns:K>`, `<k><![CDATA[v]]></k>`, `<k><Value>v</Value></k>`; alt öğeli `<k>` altında **her** alt öğenin metni, eşleşen `</k>`'ye kadar (yoksa satır sonuna): `<password><hash>h</hash><value>v</value></password>`, FHIR `<diagnosis><code>B20</code><text>HIV</text></diagnosis>` |
+| `xml` | `<k>v</k>`, `<ns:K a="1">v</ns:K>`, `<k><![CDATA[v]]></k>`, `<k><Value>v</Value></k>`; alt öğeli `<k>` altında **her** alt öğenin metni, eşleşen `</k>`'ye kadar (yoksa satır sonuna): `<password><hash>h</hash><value>v</value></password>`, FHIR `<diagnosis><code>B20</code><text>HIV</text></diagnosis>`; alt öğedeki CDATA'nın içeriği (`<password><value><![CDATA[v]]></value></password>`; `<![CDATA[`/`]]>` işaretleri kalır) |
 | `xml_attr` | `<k value="v"/>`, `<add key="k" value="v"/>`, `<field name="k">v</field>` |
 | `yaml_block` | `k: \|` / `k: >-` ve altındaki girintili satırlar |
 | `yaml_scalar` | `k:` ve sonraki daha girintili satır(lar) |
@@ -467,7 +467,19 @@ Köşeli parantezli anahtar en içteki adlı parçasıyla sınıflandırılır
 (`user[password]` → `password`; dizin ve `[]` ad sayılmaz: `password[0]` →
 `password`); o bir sınıfa girmezse anahtarın tamamıyla (`password[x]`).
 Yalnız değer maskelenir; ayırıcılar ve diğer parametreler (`&commit=Log+in`)
-bayt bayt korunur. ZAYIF anahtar altındaki tırnaklı ya da YAML değeri
+bayt bayt korunur. Sınırı belli olmayan bir değer bir sonraki anahtardan
+önce biter; bu, düz (`k=`), noktalı (`user.k=`), köşeli parantezli
+(`user[k]=`, `data[User][k]=`) ve yüzde kodlu (`user%5Bk%5D=`) anahtarların
+hepsi için geçerlidir: `user[password]=S&user[name]=bob` →
+`user[password]=[REDACTED]&user[name]=bob`; Rails gövdesi
+`user[email]=…&user[password]=S&user[remember_me]=1&commit=Log+in`'de
+`&user[remember_me]=1&commit=Log+in` aynen kalır.
+
+Kapsanmayanlar: köşeli parantez içinde `[\w.-]` dışı karakter (boşluk,
+yüzde kodlu Unicode `user%5B%C5%9Fifre%5D` — yalnız çözülmüş metin geçişiyle
+yakalanır), bozuk parantezler (`user[[password]]`, `user[password]]`), 8'den
+fazla parça ya da 64 karakterden uzun parça, `user[password]==S`, değişken
+ya da ifade alt simgesi (`cfg[$name]`, `ENV.fetch('K')`). ZAYIF anahtar altındaki tırnaklı ya da YAML değeri
 (`token: "S S2"`, `token:\n  S\n  S2`) bütün olarak yargılanır: sözcüklerinden
 biri gizliyse değerin tamamı maskelenir.
 

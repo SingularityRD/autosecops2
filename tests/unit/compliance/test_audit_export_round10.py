@@ -135,6 +135,54 @@ FORMS = {
         "query",
     ),
     "dotted_key": (lambda k, v: f"user.{k}={v}\nn=1", ["\nn=1", "user."], "inline"),
+    # Round 12: a bracket key with spaces around ``=`` or with ``:``; a
+    # bracket value followed by more bracket / encoded / dotted params, which
+    # must come out byte-identical; quoted and symbol subscripts.
+    "bracket_space": (
+        lambda k, v: f"data[User][{k}] = {v}\nnext=1",
+        ["data[User][", "] = ", "\nnext=1"],
+        "inline",
+    ),
+    "bracket_space_after": (
+        lambda k, v: f"user[{k}]= {v}; n=1",
+        ["user[", "]= ", "; n=1"],
+        "inline",
+    ),
+    "bracket_space_quoted": (
+        lambda k, v: f'settings[{k}] = "{v}" n=1',
+        ["settings[", '] = "', '" n=1'],
+        "quoted",
+    ),
+    "bracket_colon": (
+        lambda k, v: f"user[{k}]: {v}\nn=1",
+        ["user[", "]: ", "\nn=1"],
+        "inline",
+    ),
+    "bracket_multi_param": (
+        lambda k, v: f"user[{k}]={v}&user[remember_me]=1&user[locale]=tr&commit=Log+in",
+        ["user[", "]=", "&user[remember_me]=1&user[locale]=tr&commit=Log+in"],
+        "inline",
+    ),
+    "bracket_multi_param_spaced": (
+        lambda k, v: f"data[User][{k}]={v} data[User][login]=bob data[User][role]=admin",
+        ["data[User][", " data[User][login]=bob data[User][role]=admin"],
+        "inline",
+    ),
+    "bracket_then_encoded_and_dotted": (
+        lambda k, v: f"user[{k}]={v}&user%5Blogin%5D=bob&user.role=admin",
+        ["user[", "&user%5Blogin%5D=bob&user.role=admin"],
+        "inline",
+    ),
+    "quoted_subscript": (
+        lambda k, v: f"$db['default']['{k}'] = '{v}';\nn=1",
+        ["$db['default']['", "'] = '", "';\nn=1"],
+        "quoted",
+    ),
+    "symbol_subscript": (
+        lambda k, v: f"params[:{k}] = {v}\nn=1",
+        ["params[:", "] = ", "\nn=1"],
+        "inline",
+    ),
     "xml_element": (
         lambda k, v: f"<r><{k}>{v}</{k}><n>1</n></r>",
         ["<n>1</n></r>"],
@@ -151,6 +199,19 @@ FORMS = {
             f"</{k}>\n<n>1</n>"
         ),
         ["</display>\n  </coding>\n", "\n<n>1</n>"],
+        "xml",
+    ),
+    # Round 12: CDATA inside a descendant; the markers stay.
+    "xml_descendants_cdata": (
+        lambda k, v: f"<{k}><value><![CDATA[{v}]]></value></{k}><n>1</n>",
+        ["<value><![CDATA[", "]]></value></", "><n>1</n>"],
+        "xml",
+    ),
+    "xml_descendants_cdata_mixed": (
+        lambda k, v: (
+            f"<{k}>\n  <a>{v}</a>\n  <b><![CDATA[{v}]]></b>\n</{k}>\n<n>1</n>"
+        ),
+        ["</a>\n  <b><![CDATA[", "]]></b>\n</", "\n<n>1</n>"],
         "xml",
     ),
     "xml_descendants_unclosed": (

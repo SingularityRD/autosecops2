@@ -2444,12 +2444,15 @@ def _redact_spaced(text_: str) -> str:
 # test_audit_export_round10.py runs every form against every key class).
 #
 # Forms (:data:`PAIR_FORMS`):
-#   inline       ``k=v``, ``k: v``, ``k => v``, ``k -> v``, ``k%3Dv``
+#   inline       ``k=v``, ``k: v``, ``k => v``, ``k -> v``, ``k%3Dv``;
+#                ``user[k] = v``, ``user[k]: v``, ``$a['x']['k'] = v``,
+#                ``params[:k] = v`` (:func:`_locate_brackets`)
 #   quoted       ``k="v"``, ``"k": "v"``, ``'k': 'v'``, ``\"k\": \"v\"``
 #   braced       ``k={...}``
 #   query        ``?k=v&k2=v2`` (the value ends at ``&``, ``#`` or a blank)
 #   xml          ``<k>v</k>``, ``<ns:K a="1">v</ns:K>``, ``<k><![CDATA[v]]></k>``,
-#                ``<k><Value>v</Value></k>``
+#                ``<k><Value>v</Value></k>``, every descendant's text and
+#                CDATA (``<k><a><![CDATA[v]]></a></k>``)
 #   xml_attr     ``<k value="v"/>``, ``<add key="k" value="v"/>``,
 #                ``<field name="k">v</field>``
 #   yaml_block   ``k: |`` / ``k: >-`` and the indented lines under it
@@ -2467,8 +2470,10 @@ def _redact_spaced(text_: str) -> str:
 # personal-data key runs to the end of the line, and on over following lines
 # that do not start a new record (:func:`_phrase_end`), stopping only at a
 # quote or bracket that closes something opened before the key, at a tag, or
-# right before the next ``key=`` / ``key:`` token. Delimiters that are not
-# part of the value (``&``, ``;``, ``,``, the closing bracket) stay.
+# right before the next ``key=`` / ``key:`` token (plain, dotted, bracket
+# or percent-encoded bracket: ``&user[name]=``, ``&user%5Bname%5D=``).
+# Delimiters that are not part of the value (``&``, ``;``, ``,``, the
+# closing bracket) stay.
 
 PAIR_FORMS = (
     "inline",
@@ -2680,8 +2685,15 @@ class _Pair:
 
 
 # ``k=v`` / ``k: v`` / ``k => v`` / ``k -> v`` / ``k%3Dv``: the key token.
+# A bracket segment of a form-field key: ``[name]``, ``[0]``, ``[]``,
+# ``%5Bname%5D``, and the quoted / symbol subscripts of code
+# (``['password']``, ``["API_KEY"]``, ``[:password]``).
+_BRACKET_SEG = (
+    r"(?:\[(?:[\w.\-]{0,64}|'[\w.\-]{1,64}'|\"[\w.\-]{1,64}\"|:[\w]{1,64})\]"
+    r"|%5[Bb][\w.\-]{0,64}%5[Dd])"
+)
 _PHRASE_KEY = (
-    r"\\?[\"']?[^\W\d][\w.\-]{0,255}(?:\\?[\"'])?[ \t]*"
+    r"\\?[\"']?[^\W\d][\w.\-]{0,255}" + _BRACKET_SEG + r"{0,8}(?:\\?[\"'])?[ \t]*"
     r"(?:=>|->|=(?!=)|:(?![/\\:])|%3[DdAa])"
 )
 _NEWLINES = "\r\n\u2028\u2029\x85\x0b\x0c"
@@ -2965,10 +2977,10 @@ def _locate_xml(text_: str, pairs: list) -> None:
 # percent-encoded): a base name and one or more bracket segments.
 _BRACKET_KEY = re.compile(
     r"(?<![\w.\-%\[\]])([^\W\d][\w.\-]{0,255})"
-    r"((?:\[[\w.\-]{0,64}\]|%5[Bb][\w.\-]{0,64}%5[Dd]){1,8})"
-    r"[ \t]*(=(?!=)|%3[Dd])"
+    r"(" + _BRACKET_SEG + r"{1,8})"
+    r"[ \t]*(=(?!=)|%3[Dd]|:(?![/\\:]))[ \t]*"
 )
-_BRACKET_SEGMENT = re.compile(r"\[([\w.\-]*)\]|%5[Bb]([\w.\-]*)%5[Dd]")
+_BRACKET_SEGMENT = re.compile(r"\[[:'\"]?([\w.\-]*)['\"]?\]|%5[Bb]([\w.\-]*)%5[Dd]")
 
 
 def _bracket_key(base: str, brackets: str) -> Optional[str]:
@@ -2993,7 +3005,9 @@ def _locate_brackets(text_: str, pairs: list) -> None:
             continue
         ks, vstart = m.start(1), m.end()
         query = (
-            (ks > 0 and text_[ks - 1] in "?&") or "%" in m.group(2) or m.group(3) != "="
+            (ks > 0 and text_[ks - 1] in "?&")
+            or "%" in m.group(2)
+            or m.group(3).startswith("%")
         )
         if query:
             vm = _QUERY_VALUE.match(text_, vstart)
@@ -3016,7 +3030,9 @@ def _locate_brackets(text_: str, pairs: list) -> None:
 _XML_PARENT = re.compile(
     r"<((?:[^\W\d][\w.\-]*:)?([^\W\d][\w.\-]*))(\s[^<>]{0,4096})?>(?=\s*<[^\W\d])"
 )
-_XML_TEXT = re.compile(r"(?<=>)[^<>]+")
+# The text of a descendant, or the start of a CDATA section in one
+# (``<diagnosis><text><![CDATA[HIV]]></text></diagnosis>``).
+_XML_TEXT = re.compile(r"<!\[CDATA\[|(?<=>)[^<>]+")
 _XML_ANY_TAG = re.compile(
     r"<(/?)((?:[^\W\d][\w.\-]*:)?[^\W\d][\w.\-]*)(\s[^<>]{0,4096})?>"
 )
@@ -3056,12 +3072,26 @@ def _locate_xml_descendants(text_: str, pairs: list) -> None:
                 default=len(text_),
             )
         covered = end
-        for t in _XML_TEXT.finditer(text_, m.end(), end):
-            body = t.group(0)
+        pos = m.end()
+        while True:
+            t = _XML_TEXT.search(text_, pos, end)
+            if t is None:
+                break
+            if t.group(0) == "<![CDATA[":
+                # The section's content, up to its ``]]>`` (or the end of the
+                # element); the markers stay.
+                cs = t.end()
+                ce = text_.find("]]>", cs, end)
+                ce = end if ce < 0 else ce
+                pos = ce + 3 if ce < end else end
+            else:
+                cs, ce = t.start(), t.end()
+                pos = t.end()
+            body = text_[cs:ce]
             if not body.strip():
                 continue
-            s = t.start() + (len(body) - len(body.lstrip()))
-            e = t.end() - (len(body) - len(body.rstrip()))
+            s = cs + (len(body) - len(body.lstrip()))
+            e = ce - (len(body) - len(body.rstrip()))
             pairs.append(_Pair(m.group(2), m.start(2), s, e, "xml"))
 
 
