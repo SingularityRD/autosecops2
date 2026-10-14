@@ -28,6 +28,12 @@ Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) → yalnızca spe
 | W0.22 CI imaj taraması + PyJWT 2.14.0 | PASS (Yüksek) | backend/daemon imajları CI'da push'suz build + Trivy; **PyJWT CVE-2026-102268 (CRITICAL) kapatıldı** (tek-algoritma allow-list'lerimiz yüzünden istismar edilemiyordu) |
 | W0.23 tarama sertleştirme + PyJWT 2.15.1 | PASS, tur 2 (Yüksek) | Tüm Trivy adımları SHA+v0.75.0; her imajda ayrı gizli bilgi kapısı (her şiddet); UI'daki sahte GCP anahtar placeholder'ı kaldırıldı |
 
+## 1b. Sürüm adayı
+
+`v2.0.0-rc.1` @ `87b1438e` (kullanıcı GitHub arayüzünden oluşturdu; bu oturumun proxy'si etiket push'unu reddediyor). Release run 38644995176 başarılı: 3 imaj GHCR'de (amd64+arm64), SBOM, cosign imza + SLSA, SHA256SUMS, öz-doğrulama, taslak Release. Release sayfası "Latest" görünüyordu → pre-release işaretlenmeli.
+
+**Satışa hazırlık eksik listesi: `docs/wp/GA_GAPS.md`** (yedi persona/yaşam döngüsü incelemesi, ayrıntılar `docs/wp/gaps/`). Sıradaki iş oradaki §5 sırası.
+
 ## 2. Dalda / sürmekte
 
 | WP | Durum | Sıradaki adım |
