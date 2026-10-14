@@ -977,11 +977,14 @@ export interface paths {
         post?: never;
         /**
          * Disable Mfa
-         * @description Disable MFA for current user.
+         * @description Disable MFA for current user. Once MFA is enabled this needs a current
+         *     TOTP or recovery code in ``code``: a session alone can't remove it.
          *
          *     Args:
+         *         request: FastAPI request (used by the rate limiter).
          *         current_user: Current authenticated user
          *         session: Database session
+         *         body: The current MFA code
          *
          *     Returns:
          *         Success message
@@ -1004,7 +1007,8 @@ export interface paths {
         /**
          * Regenerate Recovery Codes
          * @description Generate a fresh set of one-time MFA recovery codes, invalidating any
-         *     previous codes. Requires MFA to already be set up.
+         *     previous codes. Requires MFA to already be set up, and once it is
+         *     enabled, a current TOTP or recovery code in ``code``.
          *
          *     Returns:
          *         The new plaintext recovery codes, shown only once.
@@ -11299,6 +11303,16 @@ export interface components {
             };
         };
         /**
+         * MFACodeRequest
+         * @description A current TOTP or recovery code, proving the caller still holds the
+         *     second factor. Required to weaken MFA once it is on: a stolen session
+         *     alone must not be able to turn it off or mint fresh recovery codes.
+         */
+        MFACodeRequest: {
+            /** Code */
+            code?: string | null;
+        };
+        /**
          * MFASetupResponse
          * @description MFA setup response.
          */
@@ -15275,7 +15289,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["MFACodeRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -15306,7 +15324,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["MFACodeRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
