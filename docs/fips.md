@@ -1,8 +1,13 @@
 # FIPS 140-3 modu
 
-AutoSecOps, `FIPS_MODE=true` ile yalnızca FIPS 140-3 onaylı algoritmaları kullanan
-bir modda çalışır. Bu belge modun ne yaptığını, FIPS etkin bir imajın nasıl
-hazırlanacağını ve mevcut bir kurulumun nasıl geçirileceğini anlatır.
+AutoSecOps, `FIPS_MODE=true` ile OpenSSL 3 FIPS sağlayıcısı etkin değilse başlamayan
+ve yeni parola hash'lerini ile MFA kurtarma kodlarını FIPS 140-3 onaylı
+PBKDF2-HMAC-SHA256 ile üreten bir modda çalışır. Mod her algoritmayı kapsamaz; iki
+istisna vardır (bkz. [Bilinen boşluklar](#bilinen-boşluklar)): denetim kontrol noktası
+ve kanıt paketi imzaları Ed25519 kalır (FIPS onaylı sayılmaz) ve veritabanı
+proxy'sinin `ssh_tunnel` türü FIPS modunda desteklenmez. Bu belge modun ne yaptığını,
+FIPS etkin bir imajın nasıl hazırlanacağını ve mevcut bir kurulumun nasıl
+geçirileceğini anlatır.
 
 ## Mod ne yapar
 

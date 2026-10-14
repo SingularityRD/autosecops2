@@ -204,3 +204,97 @@ def test_settling_decisions_passes_an_outage_through(monkeypatch):
     monkeypatch.setattr(decision_store, "_session_scope", scope)
     with pytest.raises(ConnectionError):
         decision_store.settling_decisions(["f-1"])
+
+
+class _SqlState(Exception):
+    def __init__(self, code, msg):
+        super().__init__(msg)
+        self.pgcode = code
+
+
+@pytest.mark.parametrize(
+    "code, msg",
+    [
+        ("42703", 'column "verdict_run_id" of relation "alert_lane_decisions" does not exist'),
+        ("42883", "operator does not exist: integer = text"),
+        ("42501", "permission denied for table alert_lane_decisions"),
+    ],
+)
+def test_settling_decisions_takes_only_42p01_for_a_missing_table(monkeypatch, code, msg):
+    """W0.18: SQLAlchemy's message quotes the SQL (FROM alert_lane_decisions);
+    another SQLSTATE must not read as a missing table and fail the backfill open."""
+    from sqlalchemy.exc import ProgrammingError
+
+    def scope():
+        raise ProgrammingError(
+            "SELECT ... FROM alert_lane_decisions WHERE ... does not exist", {}, _SqlState(code, msg)
+        )
+
+    monkeypatch.setattr(decision_store, "_session_scope", scope)
+    with pytest.raises(ProgrammingError):
+        decision_store.settling_decisions(["f-1"])
+
+
+@pytest.mark.external_service
+@pytest.mark.database
+def test_real_postgres_sqlstates_classify_the_missing_table_only(monkeypatch):
+    """W0.18: against a real Postgres, in a throwaway schema that the rollback removes."""
+    import contextlib
+    import uuid
+
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    from core.storage.connection import get_db_manager
+
+    suffix = uuid.uuid4().hex[:10]
+    schema, role = f"w018_tmp_{suffix}", f"w018_noperm_{suffix}"
+
+    def run(conn, setup):
+        sp = conn.begin_nested()
+        try:
+            for stmt in setup:
+                conn.execute(text(stmt))
+
+            @contextlib.contextmanager
+            def scope():
+                yield conn
+
+            monkeypatch.setattr(decision_store, "_session_scope", scope)
+            try:
+                decision_store.settling_decisions(["f-1"])
+            except decision_store.DecisionTableMissing:
+                return "missing"
+            except DBAPIError as exc:
+                return getattr(exc.orig, "pgcode", None)
+            return "ok"
+        finally:
+            sp.rollback()
+
+    with get_db_manager().engine.connect() as conn:
+        tx = conn.begin()
+        try:
+            conn.execute(text(f"CREATE SCHEMA {schema}"))
+            conn.execute(text(f"SET LOCAL search_path TO {schema}"))
+            assert run(conn, []) == "missing"  # 42P01
+            assert run(conn, ["CREATE TABLE alert_lane_decisions (finding_id text)"]) == "42703"
+            cols = (
+                "id bigserial, finding_id integer, tenant_id text, lane text, reason text, risk real,"
+                " factors jsonb, rule_kind text, rule_id text, outcome jsonb, deferred_verdict boolean,"
+                " degraded_from text, verdict_run_id text, model text, decided_at timestamptz"
+            )
+            assert run(conn, [f"CREATE TABLE alert_lane_decisions ({cols})"]) == "42883"
+            assert (
+                run(
+                    conn,
+                    [
+                        f"CREATE TABLE alert_lane_decisions ({cols.replace('finding_id integer', 'finding_id text')})",
+                        f"CREATE ROLE {role}",
+                        f"GRANT USAGE ON SCHEMA {schema} TO {role}",
+                        f"SET LOCAL ROLE {role}",
+                    ],
+                )
+                == "42501"
+            )
+        finally:
+            tx.rollback()

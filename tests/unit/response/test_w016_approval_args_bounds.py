@@ -50,12 +50,22 @@ class _Runs:
     def __init__(self) -> None:
         self.phases: List[Dict[str, Any]] = []
         self.statuses: List[str] = []
+        self.finalized: List[Dict[str, Any]] = []
+        self.run_status = "running"
 
     def upsert_phase(self, run_id, phase_id, **kw):
         self.phases.append({"phase_id": phase_id, **kw})
 
     def set_status(self, run_id, status, **_):
         self.statuses.append(status)
+
+    def get_run(self, run_id):
+        return {"run_id": run_id, "status": self.run_status}
+
+    def finalize_run(self, run_id, **kw):
+        self.finalized.append(kw)
+        self.run_status = kw["status"]
+        return True
 
 
 def _raise(approvals, args, **kw):
@@ -304,3 +314,39 @@ def test_every_candidate_target_is_shown_not_just_the_first():
         ["ip", "10.0.0.9"],
         ["user_ids", '["u1"]'],
     ]
+
+
+def test_a_refused_parked_phase_fails_and_ends_the_run(monkeypatch):
+    """W0.18: no approval exists for a refused call, so the step cannot stay
+    pending_approval and the run cannot stay paused waiting for one."""
+    from core.workflows import run_bridge_router as bridge
+
+    monkeypatch.setattr(bridge, "authorise", lambda *_: None)
+    approvals, runs = _Approvals(), _Runs()
+    update = _phase({"machine_id": "h", "blob": "x" * MAX_ARGS_BYTES})
+    with pytest.raises(HTTPException) as err:
+        bridge.record_phase("run-1", update, "Bearer x", runs, approvals)
+    assert err.value.status_code == 413
+    [phase] = runs.phases
+    assert phase["status"] == "failed"
+    assert phase["approval_state"] == "refused"
+    assert phase["finished_at"] is not None
+    assert "refused to park" in phase["error"]
+    assert "paused" not in runs.statuses
+    [final] = runs.finalized
+    assert final["status"] == "failed"
+    assert "refused to park" in final["reason"] and "refused to park" in final["error"]
+    assert approvals.created == []
+
+
+def test_a_refused_phase_does_not_reopen_an_ended_run(monkeypatch):
+    from core.workflows import run_bridge_router as bridge
+
+    monkeypatch.setattr(bridge, "authorise", lambda *_: None)
+    approvals, runs = _Approvals(), _Runs()
+    runs.run_status = "cancelled"
+    update = _phase({"machine_id": "h", "blob": "x" * MAX_ARGS_BYTES})
+    with pytest.raises(HTTPException):
+        bridge.record_phase("run-1", update, "Bearer x", runs, approvals)
+    assert runs.finalized == []
+    assert runs.phases[0]["approval_state"] == "refused"

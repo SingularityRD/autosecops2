@@ -423,17 +423,33 @@ def test_a_rotated_key_reaches_the_backend(run, how) -> None:
 
 FAKE_LINUX_UNAME = "#!/bin/sh\necho Linux\n"
 # The script reads file modes with GNU `stat -c %a` once it believes it is on
-# Linux; answer that on the Mac running the test.
+# Linux; answer that on the Mac running the test, and pass through to a GNU
+# stat (where `-f` means the file system, not a format).
 FAKE_GNU_STAT = """#!/bin/sh
+if /usr/bin/stat -c %a / >/dev/null 2>&1; then exec /usr/bin/stat "$@"; fi
 if [ "$1" = -c ] && [ "$2" = %a ]; then exec /usr/bin/stat -f %Lp "$3"; fi
 exec /usr/bin/stat "$@"
 """
+# W0.18: the script picks how to hand the files over by `id -u` (chown itself
+# as root, a throwaway root container otherwise). Say which, so the test does
+# not depend on who runs it (a root CI container took the chown branch).
+FAKE_ID = """#!/bin/sh
+if [ "$1" = -u ]; then echo "$FAKE_UID"; exit 0; fi
+exec /usr/bin/id "$@"
+"""
+# Records chown / chmod as root would run them, without touching the files.
+FAKE_RECORD = """#!/bin/sh
+( IFS='|'; printf '%s\\n' "$(basename "$0")|$*" ) >> "$FAKE_DIR/calls"
+"""
 
 
-def _as_linux(run: Run) -> None:
-    for name, body in (("uname", FAKE_LINUX_UNAME), ("stat", FAKE_GNU_STAT)):
+def _as_linux(run: Run, uid: int = 501) -> None:
+    fakes = [("uname", FAKE_LINUX_UNAME), ("stat", FAKE_GNU_STAT), ("id", FAKE_ID)]
+    if uid == 0:
+        fakes += [("chown", FAKE_RECORD), ("chmod", FAKE_RECORD)]
+    for name, body in fakes:
         path = run.bin / name
-        path.write_text(body)
+        path.write_text(body.replace("$FAKE_UID", str(uid)))
         path.chmod(0o755)
 
 
@@ -461,3 +477,21 @@ def test_linux_hands_the_key_to_its_own_group(run) -> None:
         and "backend" in c
     )
     assert calls.index(chown) < first_backend_up
+
+
+def test_linux_as_root_hands_the_key_over_without_a_container(run) -> None:
+    """W0.18: the `id -u` = 0 branch chowns the files itself, before Medic or
+    the backend start, and starts no throwaway container for it."""
+    _as_linux(run, uid=0)
+    done = run(VIGIL_MEDIC_DOCKER_GID="999")
+    assert done.returncode == 0, done.stdout + done.stderr
+    calls = run.calls()
+    assert [c for c in calls if c[:1] == ["run"]] == []
+    secrets = str(run.secrets)
+    owned = [c for c in calls if c[:1] in (["chown"], ["chmod"])]
+    assert ["chown", "10002:10002", f"{secrets}/viewer_password"] in owned
+    assert ["chown", "0:10010", f"{secrets}/api_key"] in owned
+    assert ["chmod", "0640", f"{secrets}/api_key"] in owned
+    last = max(calls.index(c) for c in owned)
+    first_up = next(i for i, c in enumerate(calls) if c[:1] == ["compose"] and "up" in c)
+    assert last < first_up
