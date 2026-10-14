@@ -140,6 +140,22 @@ U+2028/U+2029/NEL `\u` kaçışıyla yazılır.
   çerçeveleme; UDP'de her olay bir datagram.
 - Mesaj `max_message_bytes`'ı aşarsa önce `details` atılır
   (`{"_truncated": true}`), sonra mesaj karakter sınırında kesilir.
+  **İstisna — W1.10 kontrol noktaları hiçbir zaman kesilmez:** SD öğesi
+  `keyId`, `publicKey`, `signature`, `bodyHash`, `prevBodyHash`,
+  `chainHeadSeq`, `chainHeadHash` parametrelerini her zaman taşır. Olay tek
+  mesaja sığmazsa ilk mesaj `body` dışındaki tüm alanları ve yapısal bir
+  bayrak taşır: `details._truncated = {"fields": ["body"], "reason":
+  "max_message_bytes", "body_chars": N, "body_parts": K,
+  "body_part_action": "audit.checkpoint.body_part"}`. Ardından aynı
+  bağlantıda/sırada K adet `audit.checkpoint.body_part` mesajı gelir
+  (`id` = `<olay id>:body:<i>`, `details`: `checkpoint_event_id`,
+  `body_hash`, `part`, `parts`, `body_chunk`). `part` 1..K sırasıyla
+  `body_chunk` değerleri birleştirilince imzalanan gövde bayt bayt elde edilir
+  (`sha256` = `bodyHash`, Ed25519 imzası `publicKey` ile doğrulanır). Bu,
+  JSON ve CEF gövdeleri için aynıdır. Yalnızca `max_message_bytes` başlık ve
+  SD öğesine bile yer bırakmayacak kadar küçükse (≈ 480 bayt) parça
+  gönderilemez (`body_parts: 0`); o durumda gövde SIEM'e ulaşmaz ama
+  `bodyHash` ve imza yine SD'dedir.
 
 ## Alan eşlemesi
 
@@ -160,7 +176,11 @@ U+2028/U+2029/NEL `\u` kaçışıyla yazılır.
 | `src_ip` | `src` (yalnız geçerli IP) | `srcIp` | İstemci adresi (auth, case_audit) |
 | `user_agent` | `requestClientApplication` | — | İstemci UA (≤256) |
 | `hash` | `cs5` (`cs5Label=eventHash`) | — | Ajan defteri `event_hash` |
-| `details` | `cs4` (`cs4Label=details`, JSON, ≤1024) | — | Kaynağa özgü ayrıntı |
+| `details` | `cs4` (`cs4Label=details`, JSON, ≤1024) | — | Kaynağa özgü ayrıntı. Sınırı aşan ayrıntı yine geçerli JSON'dur: sığan üst düzey anahtarlar kalır, `"_truncated": {"original_chars": N, "omitted_keys": K}` eklenir (dize ortasından kesilmez). `audit_checkpoints` olaylarında sınır yoktur |
+| `details.signature` (kontrol noktası) | `cs6` (`cs6Label=checkpointSignature`) | `signature` | Ed25519 imzası (base64), hiç kesilmez |
+| `details.public_key` (kontrol noktası) | `flexString1` (`flexString1Label=checkpointPublicKey`) | `publicKey` | İmzalayan açık anahtar (hex) |
+| `details.audit_chain_head` (kontrol noktası) | `cn1` (`chainHeadSeq`), `flexString2` (`chainHeadHash`) | `chainHeadSeq`, `chainHeadHash` | `audit_chain` başı |
+| `details.body` (kontrol noktası) | `rawEvent` (olduğu gibi; `cs4` gövdesiz geri kalanı taşır) | MSG içinde ya da `audit.checkpoint.body_part` parçaları | İmzalanan kanonik JSON gövde |
 | `observer.host` | `dvchost` | başlık HOSTNAME | Aktaran AutoSecOps düğümü |
 | `observer.version` | başlık Device Version | — | AutoSecOps sürümü |
 
@@ -216,6 +236,41 @@ yeniden kullanılır.
 - `redact_pii: true` (varsayılan) iken e-posta adresleri `[REDACTED-EMAIL]` olur
   ve `email`, `phone`, `full_name`, `address`, `tckn`, `national_id`, `ssn`
   anahtarları maskelenir.
+- **Round 7 — anahtar adları:** `<önek>_key` / `<önek>Key` / `<önek>-key`
+  (ve `_keys`) önek bilinmese de GÜÇLÜ'dür (`primaryKey`/`secondaryKey` —
+  Azure hesap anahtarları —, `storage_account_key`, `wrapping_key`); yalnızca
+  gizli olmayan bir arama/satır anahtarını adlandıran önekler hariçtir
+  (`public`, `config`, `cache`, `idempotency`, `partition`, `sort`, `row`,
+  `range`, `hash`, `shard`, `routing`, `foreign`, `lookup`, `issue`,
+  `project`, `object`, `metric`, `label`, `tag`, `group`, `correlation`,
+  `trace`, `event`, `lock`, `rule`, `registry` …). `*_key_id`
+  (`primary_key_id`, `key_id`) bir kimliktir, maskelenmez; önünde kimlik
+  bilgisi ifadesi olan `access_key_id`/`private_key_id` maskelenir.
+  `kek`, `dek`, `xsrf`, `csrf`, `<önek>_seed` (`random_seed`/`rng_seed`
+  hariç; tek başına `seed` ZAYIF), `backup_code(s)`, `recovery_code(s)`,
+  `security_answer`, `secret_answer` GÜÇLÜ'dür. URL değerlerinde
+  (`jdbc_url`, `callbackUrl` …) userinfo, gizli sorgu/`;` parametreleri
+  (`password=`, `pwd=`) ve Oracle `jdbc:oracle:thin:kullanıcı/parola@`
+  parolası kesilir. Kişisel veri anahtarları (`redact_pii`): `account_number`,
+  `bank_account`, `routing_number`, `sort_code`, `iban`, `vkn`, `vergi_no`,
+  `tckn`, `nin`, `national_insurance`, `aadhaar`, `cpf`, `nhs_number`; özel
+  nitelikli veriler: `gender`, `sex`, `health` (tek başına; `health_check`
+  değil), `health_data`/`health_record`, `medical_record`, `religion`,
+  `religious_belief`, `ethnicity`, `ethnic_origin`, `sexual_orientation`,
+  `political` (tek başına) / `political_party`/`political_opinion`,
+  `biometric`, `genetic`, `trade_union`. snake/camel/kebab yazımları ve
+  serbest metindeki `anahtar=değer` / `"anahtar": "değer"` çiftleri
+  (`[REDACTED-PII]`) dahildir.
+- **Round 7 — olay başına iş bütçesi:** bir olayın taranması toplamda
+  sınırlıdır (`ScrubBudget`): en çok 512 Ki karakter taranır, 20 000 değer
+  ziyaret edilir ve 64 "dize içinde JSON" ayrıştırılır (alan başına
+  16 384 karakter, derinlik 6, düzey başına 100 öğe ve 4 iç içe çözme
+  sınırları ayrıca geçerlidir). Bütçe aşılınca kalan her değer geçirilmez,
+  `[REDACTED-BUDGET]` olur ve olaya `details._redaction_budget_exceeded:
+  true` eklenir (metrik: `redaction_budget_exceeded`). `message`, `actor`
+  ve `user_agent` `details`'ten önce taranır. 16 MB'lık bir olay birkaç
+  saniyede biter (eskiden ~45 s). Kontrol noktalarının imzalı alanları
+  taranmaz, bütçeye girmez.
 - **Başarısız giriş:** yazılan kullanıcı adı doğrulanmamış girdidir (çoğu zaman
   yanlış kutuya yazılmış bir parola). Var olan bir hesabı adlandırıyorsa o
   hesabın adı/kimliği aktarılır; yoksa `actor` boş kalır ve yalnızca kurulum
@@ -503,10 +558,15 @@ göremiyorsa (`pg_read_all_stats` yok) yalnız ilerlemeyen `xmin`'e bakılır.
   `31_agent_ledger_hash_chain.sql`) olduğu gibi aktarılır. W1.10'un
   (`core/audit/*`, `51_audit_chain.sql`) imzalı kontrol noktaları
   `audit_checkpoints` kaynağıyla aktarılır; `audit_chain` satırları
-  aktarılmaz (bkz. "Ne aktarılır"). Çok büyük bir kontrol noktası gövdesi
-  (çok sayıda ajan çalıştırması) alıcının boyut sınırını aşarsa olay
-  `details: {"_truncated": true}` ile gider; o noktanın imzası SIEM'de
-  doğrulanamaz.
+  aktarılmaz (bkz. "Ne aktarılır"). Kontrol noktaları her biçimde eksiksiz
+  gider: HTTPS JSON'da olduğu gibi, CEF'te (HTTPS ya da syslog) imza, açık
+  anahtar, gövde özeti ve zincir başı ayrı uzantılarda, gövde `rawEvent`'te;
+  syslog'da `max_message_bytes`'a sığmayan gövde sıralı
+  `audit.checkpoint.body_part` mesajlarına bölünür (bkz. "RFC 5424
+  syslog"). Bir SIEM tek alan için kendi uzunluk sınırını uyguluyorsa
+  (`rawEvent`/`cs4` için ör. 4000 karakter) gövdeyi o alıcı keser; bunu
+  ancak alıcı tarafındaki sınır yükseltilerek ya da syslog'un parçalı
+  biçimi kullanılarak önleyebilirsiniz.
 - Serbest metindeki kişisel veri kalıpları (kart, IBAN, SSN, T.C. kimlik,
   `+` önekli telefon) doğrulama (Luhn, mod 97, sağlama hanesi) ile sınırlıdır;
   `+` öneki olmayan yerel telefon numaraları ve ad/soyad gibi serbest metin
