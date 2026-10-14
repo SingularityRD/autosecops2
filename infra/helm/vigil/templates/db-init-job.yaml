@@ -45,6 +45,8 @@ spec:
                 secretKeyRef:
                   name: {{ include "vigil.postgres.passwordSecret" . }}
                   key: {{ include "vigil.postgres.passwordSecretKey" . }}
+            - name: APP_SCHEMA_WAIT_SECONDS
+              value: {{ .Values.dbInit.appSchemaWaitSeconds | default 0 | toString | quote }}
           command:
             - /bin/sh
             - -ec
@@ -76,6 +78,26 @@ spec:
               # "relation does not exist" as fatal here would regress parity.
               # The marker table still records what's been applied so idempotency
               # works on upgrade.
+              # Releases before the W0.13 review recorded a file even when it
+              # failed, so an install made then holds markers for 50/58 whose
+              # tables were never created. Those files are rerunnable (IF NOT
+              # EXISTS / DROP TRIGGER IF EXISTS), so a marker whose tables are
+              # missing is dropped and the file applied again. Succeeds (0) when
+              # the marker for $1 is such a ghost.
+              ghost_marker() {
+                local tables t present
+                case "$1" in
+                  50_regulatory_clocks.sql) tables="regulatory_clock_events regulatory_report_drafts" ;;
+                  58_broadcast_unique_and_clock_heads.sql) tables="regulatory_clock_heads" ;;
+                  *) return 1 ;;
+                esac
+                for t in $tables; do
+                  present=$(psql -tA -c "SELECT to_regclass('public.$t') IS NOT NULL" || true)
+                  [ "$present" = "t" ] || return 0
+                done
+                return 1
+              }
+
               apply() {
                 local f="$1"
                 # Marker-table check goes FIRST so already-applied filenames
@@ -98,6 +120,11 @@ spec:
                 # being reused.
                 local marker
                 marker=$(psql -tA -c "SELECT 1 FROM _vigil_schema_versions WHERE filename='$f' LIMIT 1" || true)
+                if [ "$marker" = "1" ] && ghost_marker "$f"; then
+                  echo "HEAL $f: recorded as applied but its tables are missing; re-applying"
+                  psql -v ON_ERROR_STOP=1 -c "DELETE FROM _vigil_schema_versions WHERE filename='$f'"
+                  marker=""
+                fi
                 if [ "$marker" = "1" ]; then
                   echo "SKIP $f (already applied)"
                   return 0
@@ -119,14 +146,29 @@ spec:
                   return 1
                 fi
                 echo "APPLY $f"
-                if psql -f "/sql/$f"; then
-                  echo "  applied cleanly"
-                else
-                  echo "  applied with warnings (likely tables not yet created by ORM — safe to ignore on first install)"
+                # psql exits 0 after a failed statement unless ON_ERROR_STOP is
+                # set, so its status says nothing; an ERROR line does. A file
+                # with one is NOT recorded: on a first install those are the
+                # files whose tables (cases, sla_policies, ...) the backend's
+                # create_all has not built yet (50/58 never created the
+                # regulatory clock tables on Helm), and recording them would
+                # skip them for good. They are retried below once the backend
+                # has built its tables, and on every later upgrade until they
+                # apply cleanly; the files are rerunnable (compose's db-seed
+                # re-applies all of them on every `up`).
+                local out
+                out=$(psql -v ON_ERROR_STOP=0 -f "/sql/$f" 2>&1) || true
+                [ -z "$out" ] || printf '%s\n' "$out"
+                if printf '%s\n' "$out" | grep -q '^psql:.*ERROR:'; then
+                  echo "  NOT recorded: errors above; retried later"
+                  pending="$pending $f"
+                  return 0
                 fi
+                echo "  applied cleanly"
                 psql -v ON_ERROR_STOP=1 -c "INSERT INTO _vigil_schema_versions (filename) VALUES ('$f') ON CONFLICT (filename) DO NOTHING"
               }
 
+              pending=""
               {{- range .Values.dbInit.sqlFiles }}
               apply {{ . | quote }}
               {{- end }}
@@ -140,6 +182,34 @@ spec:
               fi
               echo "setting vigil_app password"
               printf '%s\n' "ALTER ROLE vigil_app PASSWORD :'pw';" | psql -v ON_ERROR_STOP=1 --set=pw="$pw"
+
+              # Second pass, as compose's db-seed does: with the password set the
+              # backend can log in and run create_all; wait (bounded) for its
+              # tables, then retry what failed. Whatever still fails stays
+              # unrecorded and the next upgrade retries it.
+              if [ -n "$pending" ]; then
+                wait_s="${APP_SCHEMA_WAIT_SECONDS:-0}"
+                case "$wait_s" in ''|*[!0-9]*) wait_s=0 ;; esac
+                echo "Not yet applied:$pending; waiting up to ${wait_s}s for the backend's tables"
+                waited=0
+                while :; do
+                  ready=$(psql -tA -c "SELECT to_regclass('public.cases') IS NOT NULL AND to_regclass('public.sla_policies') IS NOT NULL" || true)
+                  [ "$ready" = "t" ] && break
+                  [ "$waited" -lt "$wait_s" ] || break
+                  sleep 5
+                  waited=$((waited + 5))
+                done
+                if [ "$ready" = "t" ]; then
+                  retry="$pending"
+                  pending=""
+                  for f in $retry; do
+                    apply "$f"
+                  done
+                fi
+                if [ -n "$pending" ]; then
+                  echo "WARNING: not applied:$pending (backend tables missing or errors above); the next helm upgrade retries them" >&2
+                fi
+              fi
 
               echo "Database initialization complete."
           volumeMounts:

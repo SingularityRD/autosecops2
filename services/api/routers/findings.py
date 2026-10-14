@@ -144,7 +144,11 @@ def clear_all_findings(
     return {"success": True, "deleted": count, "message": f"Deleted {count} findings"}
 
 
-@router.post("/{finding_id}/noise", response_model=NoiseMarkResponse)
+@router.post(
+    "/{finding_id}/noise",
+    response_model=NoiseMarkResponse,
+    dependencies=[permission_gate("findings.write")],
+)
 def mark_finding_noise(
     finding_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -162,7 +166,11 @@ def mark_finding_noise(
     )
 
 
-@router.delete("/{finding_id}/noise", response_model=NoiseMarkResponse)
+@router.delete(
+    "/{finding_id}/noise",
+    response_model=NoiseMarkResponse,
+    dependencies=[permission_gate("findings.write")],
+)
 def clear_finding_noise(
     finding_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -179,7 +187,11 @@ def clear_finding_noise(
     )
 
 
-@router.post("/{finding_id}/intake", response_model=IntakeLaunchResponse)
+@router.post(
+    "/{finding_id}/intake",
+    response_model=IntakeLaunchResponse,
+    dependencies=[permission_gate("ai_chat.use")],
+)
 def launch_finding_into_intake(
     finding_id: str,
     session: UnitOfWorkSession,

@@ -282,7 +282,7 @@ def print_sample(findings: List[Dict], cases: List[Dict]):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate sample data for Vigil SOC")
+    parser = argparse.ArgumentParser(description="Generate sample data for AutoSecOps")
     parser.add_argument(
         "--count", "-n", type=int, default=20, help="Number of findings to generate"
     )
@@ -295,7 +295,7 @@ def main():
     args = parser.parse_args()
 
     print("\n" + "=" * 60)
-    print(" Vigil SOC - Sample Data Generator")
+    print(" AutoSecOps - Sample Data Generator")
     print("=" * 60)
 
     # Generate data

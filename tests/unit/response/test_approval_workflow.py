@@ -1,8 +1,9 @@
 """Unit tests for the approval gate's confidence band and the correlation logic."""
 
-import pytest
 from contextlib import contextmanager
 from unittest.mock import MagicMock, Mock, patch
+
+import pytest
 
 from core.config import get_settings
 from core.response.approval_service import (
@@ -13,6 +14,10 @@ from core.response.approval_service import (
 )
 from core.response.autonomous_response_service import AutonomousResponseService
 from core.response.config import ResponseConfig
+from tests.unit.response._autonomy import autonomous_everywhere  # noqa: F401
+
+# Pre-W3.1 confidence-band tests: run under the autonomous tier.
+pytestmark = pytest.mark.usefixtures("autonomous_everywhere")
 
 
 @pytest.fixture

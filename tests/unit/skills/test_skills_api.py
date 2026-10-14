@@ -22,8 +22,9 @@ from core.llm.router.router import LLMRouter, ProviderSpec
 from core.skills.skill_library import LIBRARY_ROOT, parse_skill
 from services.api.errors import register_exception_handlers
 from services.api.routers import skills as skills_router
+from tests.unit._signed_in import signed_in  # noqa: E402,F401 - fixture
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("signed_in")]
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 BUNDLED = "phishing-triage"
@@ -456,7 +457,12 @@ def test_a_copy_leaves_hidden_files_behind_and_lists_what_it_copied(
     listed = client.get("/api/skills/wip").json()["files"]
     resp = client.post(
         "/api/skills",
-        json={"name": "wip-copy", "description": "d", "body": "Steps.", "source": "wip"},
+        json={
+            "name": "wip-copy",
+            "description": "d",
+            "body": "Steps.",
+            "source": "wip",
+        },
     )
     assert resp.status_code == 200
     copied = client.get("/api/skills/wip-copy").json()["files"]

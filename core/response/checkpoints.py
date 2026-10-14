@@ -3,10 +3,72 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+# How much of a tool call's arguments the approval prompt shows a person. The
+# digest covers all of them; the summary is only what fits on the screen.
+ARGS_SUMMARY_CHARS = 600
+
+
+def canonical_args(args: Any) -> str:
+    """One spelling of a tool call's arguments, whatever order they came in.
+
+    Both sides of the binding are computed here, from the arguments as this
+    process parsed them off the wire: once when the checkpoint is raised and
+    once when the approved call arrives at /internal/tools/invoke. Key order
+    and whitespace are the sender's; sorted keys and fixed separators are not.
+    """
+    return json.dumps(
+        args, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
+    )
+
+
+def args_digest(args: Any) -> str:
+    """The sha256 an approval is bound to (W1.7b): approving ``mde_isolate`` of
+    host A approves that call, and replaying the approval for host B fails."""
+    return hashlib.sha256(canonical_args(args).encode("utf-8")).hexdigest()
+
+
+def args_summary(args: Any) -> str:
+    text = canonical_args(args)
+    if len(text) <= ARGS_SUMMARY_CHARS:
+        return text
+    return f"{text[:ARGS_SUMMARY_CHARS]}... ({len(text)} characters in all)"
+
+
+def tool_call_parameters(tool: str, args: Any) -> Dict[str, Any]:
+    """What an approval row carries about the one call it approves."""
+    return {
+        "tool": tool,
+        "args_sha256": args_digest(args),
+        "args_summary": args_summary(args),
+    }
+
+
+# The key under which the agent layer's checkpoint context names the one tool
+# call a harness checkpoint parks (services/agent/core/stream.ts park()).
+TOOL_CALL_KEY = "tool_call"
+
+
+def split_tool_call(
+    context: Optional[Dict[str, Any]],
+) -> "tuple[Dict[str, Any], Optional[Dict[str, Any]]]":
+    """A checkpoint's context, and the tool call it parks (if it parks one)."""
+    rest = dict(context or {})
+    call = rest.pop(TOOL_CALL_KEY, None)
+    if not isinstance(call, dict) or not call.get("tool"):
+        return rest, None
+    return rest, {"tool": str(call["tool"]), "args": call.get("args")}
+
+
+def tool_call_prompt(tool: str, args: Any) -> str:
+    """The lines a person reads under the question: exactly what would run."""
+    return f"Tool: {tool}\nArguments: {args_summary(args)}"
 
 
 def pending_for(run_id: str, checkpoint_id: str, approvals=None):
@@ -33,12 +95,32 @@ def raise_for_checkpoint(
     parameters: Optional[Dict[str, Any]] = None,
     phase_id: Optional[str] = None,
     approvals=None,
+    tool_call: Optional[Dict[str, Any]] = None,
 ) -> bool:
+    """Queue the question a parked run is waiting on.
+
+    ``tool_call`` (``{"tool": ..., "args": ...}``) is set when the checkpoint
+    parks one gated tool call. The row then names that tool, carries the
+    digest of those arguments -- /internal/tools/invoke runs the call only
+    when the arguments it is handed hash the same (W1.7b) -- and the person is
+    shown the arguments, not just the tool's name. Computed here, never taken
+    from the caller: a digest the sender supplied would bind nothing.
+    """
     from core.response.approval_service import ActionType, ApprovalService
 
     service = approvals or ApprovalService()
     if pending_for(run_id, checkpoint_id, service) is not None:
         return False
+
+    parameters = dict(parameters or {})
+    # Only this function writes these, from tool_call.
+    for key in ("tool", "args_sha256", "args_summary"):
+        parameters.pop(key, None)
+    if tool_call and tool_call.get("tool"):
+        tool = str(tool_call["tool"])
+        call_args = tool_call.get("args")
+        parameters.update(tool_call_parameters(tool, call_args))
+        description = f"{description}\n\n{tool_call_prompt(tool, call_args)}"
 
     service.create_action(
         action_type=ActionType.WORKFLOW_PHASE,
@@ -53,7 +135,7 @@ def raise_for_checkpoint(
         annotate_rule=False,
         evidence=[run_id],
         created_by="agent",
-        parameters={"checkpoint_id": checkpoint_id, **(parameters or {})},
+        parameters={**parameters, "checkpoint_id": checkpoint_id},
         workflow_run_id=run_id,
         workflow_phase_id=phase_id,
     )

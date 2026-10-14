@@ -52,8 +52,9 @@ prepare_backup_mounts() {
         *) investigations="$REPO_ROOT/$investigations" ;;
     esac
     mkdir -p "$investigations"
-    export VIGIL_BACKUP_STATE_DIR="$(host_state_dir)"
-    export VIGIL_BACKUP_INVESTIGATIONS_DIR="$(cd "$investigations" && pwd)"
+    VIGIL_BACKUP_STATE_DIR="$(host_state_dir)"
+    VIGIL_BACKUP_INVESTIGATIONS_DIR="$(cd "$investigations" && pwd)"
+    export VIGIL_BACKUP_STATE_DIR VIGIL_BACKUP_INVESTIGATIONS_DIR
     BACKUP_RUN_ARGS=(--user "$(id -u):$(id -g)")
     if [ -f "$REPO_ROOT/.env" ]; then
         BACKUP_RUN_ARGS+=(-v "$REPO_ROOT/.env:/app/.env:$env_mode")
@@ -276,7 +277,7 @@ mkdir -p "$LOGS_DIR"
 print_ready() {
     echo ""
     echo "=========================================="
-    echo "Vigil SOC v$VERSION - Ready"
+    echo "AutoSecOps v$VERSION - Ready"
     echo "=========================================="
     echo "Backend:  http://localhost:6987"
     echo "Frontend: http://localhost:6988"

@@ -281,6 +281,7 @@ class LLMRouter:
         thinking_budget: int = 10000,
         interaction_id: Optional[str] = None,
         effort: Optional[str] = None,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Send a chat completion via Bifrost.
 
@@ -319,6 +320,7 @@ class LLMRouter:
                 enable_thinking=enable_thinking,
                 extra_headers=extra_headers_or_none,
                 effort=effort,
+                response_format=response_format,
             )
         )
 
@@ -337,6 +339,7 @@ class LLMRouter:
         enable_thinking: bool = False,
         extra_headers: Optional[Dict[str, str]] = None,
         effort: Optional[str] = None,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         from openai import AsyncOpenAI  # lazy — avoids hard dep for tests
 
@@ -375,6 +378,10 @@ class LLMRouter:
             kwargs["tools"] = anthropic_tools_to_openai(tools)
         if extra_headers:
             kwargs["extra_headers"] = extra_headers
+        # Structured output (OpenAI ``response_format``); Bifrost hands it to the
+        # provider, which for Ollama constrains decoding to the JSON schema.
+        if response_format:
+            kwargs["response_format"] = response_format
 
         try:
             started = time.monotonic()

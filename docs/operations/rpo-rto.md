@@ -14,7 +14,7 @@ Varsayılan değerlerle (`daemon.leaderElection.leaseSeconds=15`,
 
 | Arıza | RPO | RTO (hedef) | Mekanizma |
 |---|---|---|---|
-| Daemon süreci çöker / `SIGKILL` / OOM | DB: 0. Bellekteki işlenmemiş bulgular (aşağıya bakın) | ≤ 2 sn devralma + bileşen açılışı (tipik 10–60 sn) | Kilit oturumu kapanır, yedek en geç `retrySeconds` içinde alır |
+| Daemon süreci çöker / `SIGKILL` / OOM | DB: 0. Webhook'un kabul ettikleri: 0 (pod'un spool'unda; [ingest-durability.md](ingest-durability.md)) | ≤ 2 sn devralma + bileşen açılışı (tipik 10–60 sn) | Kilit oturumu kapanır, yedek en geç `retrySeconds` içinde alır |
 | Planlı yeniden başlatma / rollout (`SIGTERM`) | 0 | ≤ 2 sn + açılış | Lider bileşenleri durdurur, kilidi bırakır |
 | Daemon düğümü kaybı, ağ bölünmesi, süreç donması (SIGSTOP, VM duraklaması) | DB: 0 (çitleme) | 10–17 sn devralma + açılış | Sunucu tarafı `idle_session_timeout` kilidi düşürür |
 | Postgres verisinin kaybı (disk/PVC bozulması, yanlış silme) | ≤ yedek aralığı (varsayılan 24 saat) | Geri yükleme süresi + uygulama açılışı; hedef ≤ 1 saat (≤ 10 GB veritabanı) | `backup` CronJob'u + §5 prosedürü |
@@ -155,9 +155,11 @@ yazımı işlenmez (testte satır kimlikleriyle doğrulanır).
   yükünde liderlik dönemini taşıyıp agent-worker'da doğrulamak) bu WP'nin
   kapsamı dışındadır.
 - **Bellekteki kuyruklar**: processor/responder kuyruklarındaki henüz
-  saklanmamış bulgular lider değişiminde kaybolur. Federation imleçleri
-  veritabanında olduğundan kaynaklar yeniden okunur; webhook gönderenler 503 ya
-  da zaman aşımında yeniden dener.
+  saklanmamış bulgular lider değişiminde bellekten gider. Federation imleçleri
+  veritabanında olduğundan kaynaklar yeniden okunur. Webhook'un 200 ile kabul
+  ettikleri pod'un kendi PVC'sindeki spool'dadır (W0.12): o pod yeniden lider
+  olunca oynatılır; takipçi olarak dönerse bekler (bkz.
+  [ingest-durability.md §5](ingest-durability.md)).
 - **Takipçiye düşen webhook istekleri**: Kubernetes Service iki poda da yönlendirir;
   takipçi 503 + `Retry-After` döner. Gönderenler zaten 503'te yeniden denediği
   için veri kaybı olmaz, ancak gecikme artabilir.

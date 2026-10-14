@@ -20,6 +20,7 @@ from core.response.approval_service import (
     ApprovalService,
     SecondApproverConflict,
     needs_you,
+    second_approver_detail,
 )
 from core.routing import Auth, RouterMeta
 from core.storage.models import User
@@ -252,12 +253,10 @@ async def approve_action(
     approved_by = current_user.username
     try:
         updated = service.approve_action(action_id, approved_by=approved_by)
-    except SecondApproverConflict:
-        # Two-person rule (W2.4): the first approver cannot also be the second.
-        raise HTTPException(
-            status_code=409,
-            detail="A different person must give the second approval",
-        )
+    except SecondApproverConflict as e:
+        # Two-person rule (W2.4): the first approver cannot also be the second;
+        # for distinct-role types (W3.2) not someone of the first's role either.
+        raise HTTPException(status_code=409, detail=second_approver_detail(e))
     if updated is None:
         raise HTTPException(status_code=500, detail="Failed to approve action")
 

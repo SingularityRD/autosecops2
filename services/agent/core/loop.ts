@@ -11,6 +11,11 @@ import type { Memory, State, ToolDispatch } from "./seams.js";
 // class alone. Workflow classes are the workflow's; this one is the harness's.
 export const TOOL_APPROVAL = "tool_approval";
 
+// The key under which such a checkpoint's context names the call it parks:
+// { tool, args }. Read by the backend (core/response/checkpoints.py
+// split_tool_call), which binds the approval to the arguments' digest (W1.7b).
+export const TOOL_CALL = "tool_call";
+
 
 export type Status = "completed" | "waiting_approval" | "failed";
 

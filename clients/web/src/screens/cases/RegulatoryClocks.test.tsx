@@ -181,6 +181,28 @@ describe('RegulatoryClocks', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('row 2: hash mismatch')
   })
 
+  it('warns when the chain head is unavailable, without a row number', async () => {
+    vi.mocked(regulatoryApi.clocks).mockResolvedValue({ data: status({ chain: { ok: false, broken_at: null, why: 'chain head unavailable', rows: null } }) } as never)
+    render(<RegulatoryClocks caseId="c-1" />)
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('does not verify (chain head unavailable)')
+    expect(alert).not.toHaveTextContent('row')
+  })
+
+  it('says when a verified history was not checked against a chain head', async () => {
+    vi.mocked(regulatoryApi.clocks).mockResolvedValue({ data: status({ chain: { ok: true, broken_at: null, why: null, rows: 2, anchored: false } }) } as never)
+    render(<RegulatoryClocks caseId="c-1" />)
+    expect(await screen.findByText(/no chain head was checked/)).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('shows no head note for an anchored chain', async () => {
+    vi.mocked(regulatoryApi.clocks).mockResolvedValue({ data: status({ chain: { ok: true, broken_at: null, why: null, rows: 2, anchored: true } }) } as never)
+    render(<RegulatoryClocks caseId="c-1" />)
+    await screen.findByRole('tablist')
+    expect(screen.queryByText(/no chain head was checked/)).toBeNull()
+  })
+
   it('says so when the clocks cannot be read', async () => {
     vi.mocked(regulatoryApi.clocks).mockRejectedValue(new Error('down'))
     render(<RegulatoryClocks caseId="c-1" />)

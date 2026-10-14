@@ -25,7 +25,7 @@ from core.auth import tool_principal
 from core.deps import provide_mcp_registry
 from core.integrations.mcp.registry import MCPRegistry
 from core.integrations.mcp.surface import acting_as
-from core.llm.tool_effects import classify
+from core.llm.tool_effects import HUMAN_ONLY, classify
 from core.llm.tool_schemas import CALL_INTEGRATION_TOOL
 from core.routing import Auth, RouterMeta
 from core.skills.skill_library import READ_SKILL_TOOL
@@ -262,12 +262,23 @@ def _names_tool(text: str, tool: str) -> bool:
 # config said: a person approved this run's checkpoint, and that checkpoint is
 # about this tool. A run's own approvals list is a convenience that parks the
 # call for a person; this is what makes an omission there fail closed.
+#
+# And about these arguments (W1.7b): the row carries the digest of the call a
+# person was shown, and a call whose arguments hash otherwise -- an approved
+# isolation of host A presented for host B -- is not the call they approved. A
+# row with no digest binds no arguments, so it approves nothing.
 def _approved(
-    approval: Optional[Approval], tool: str, approvals: ApprovalsSource
+    approval: Optional[Approval],
+    tool: str,
+    args: Dict[str, Any],
+    approvals: ApprovalsSource,
 ) -> bool:
     if approval is None:
         return False
     from core.response.approval_service import ActionStatus
+    from core.response.checkpoints import args_digest
+
+    digest = args_digest(args)
 
     try:
         actions = approvals().list_actions(
@@ -279,6 +290,8 @@ def _approved(
     for action in actions:
         parameters = action.parameters or {}
         if str(parameters.get("checkpoint_id") or "") != approval.checkpoint_id:
+            continue
+        if parameters.get("args_sha256") != digest:
             continue
         if parameters.get("tool") == tool:
             return True
@@ -293,11 +306,20 @@ def _approved(
 
 
 # True when the call is gated and was approved; False for an ungated call.
-def _gate(tool: str, body: InvokeRequest, approvals: ApprovalsSource) -> bool:
+def _gate(
+    tool: str, args: Dict[str, Any], body: InvokeRequest, approvals: ApprovalsSource
+) -> bool:
     effect = classify(tool)
+    # Deciding an approval is a person's own HTTP request, never a tool call:
+    # every caller of this route is a model's turn (W1.7b). No checkpoint opens it.
+    if effect.effect in HUMAN_ONLY:
+        raise GateRefused(
+            f"{tool} decides an approval; only a person does that, on the "
+            "approvals screen, and no tool call can"
+        )
     if not effect.gated:
         return False
-    if _approved(body.approval, tool, approvals):
+    if _approved(body.approval, tool, args, approvals):
         return True
     raise GateRefused(
         f"{tool} is a {effect.effect} tool and runs only once a person approves "
@@ -318,7 +340,7 @@ async def _run(
     if tool == CALL_INTEGRATION_TOOL:
         tool, raw = resolve_integration_call(registry, raw)
     # After the proxy is unwrapped, so the call it stands for is what is judged.
-    approved = _gate(tool, body, approvals)
+    approved = _gate(tool, raw, body, approvals)
     args = _bounded(raw, body.bounds.max_rows, tool, registry)
 
     result, handled = await asyncio.wait_for(

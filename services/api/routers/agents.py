@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from core.agents.enablement import set_agent_enabled
 from core.agents.manager import CUSTOM_AGENT_ID_PREFIX, AgentManager
+from core.auth.permissions import permission_gate
 from core.routing import Auth, RouterMeta
 from core.storage.models import User
 from services.api.middleware.auth import get_current_active_user
@@ -79,7 +80,9 @@ class AgentEnabledRequest(BaseModel):
     enabled: bool
 
 
-@router.put("/agents/{agent_id}/enabled")
+@router.put(
+    "/agents/{agent_id}/enabled", dependencies=[permission_gate("settings.write")]
+)
 async def set_enabled(
     agent_id: str,
     body: AgentEnabledRequest,
