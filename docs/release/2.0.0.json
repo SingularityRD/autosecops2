@@ -71,6 +71,26 @@
       "topic_en": "follow-up fixes of merged WPs (init SQL 58)"
     },
     {
+      "id": "W0.11",
+      "topic": "Güvenlik acil düzeltmesi: detection-rules git kaynağı, saat zinciri başı, Viewer yazma rotaları",
+      "topic_en": "security hotfix (detection-rules git source, clock chain head, Viewer write routes)"
+    },
+    {
+      "id": "W0.12",
+      "topic": "Alım dayanıklılığı: daemon webhook'u kalıcı kabul (spool)",
+      "topic_en": "ingest durability (webhook spool)"
+    },
+    {
+      "id": "W0.12b",
+      "topic": "Spool sertleştirme (W0.12 doğrulayıcı bulguları)",
+      "topic_en": "spool hardening (W0.12 verifier findings)"
+    },
+    {
+      "id": "W0.13",
+      "topic": "Commit geçmişi incelemesi: data/infra/CI, response-integrations, triage-agents (auth-api incelemesi birleşmedi)",
+      "topic_en": "history review: data/infra/CI, response integrations, triage agents (auth-api review not merged)"
+    },
+    {
       "id": "W1.1",
       "topic": "Eval düzeneği (evalkit)",
       "topic_en": "eval harness"
@@ -104,6 +124,11 @@
       "id": "W1.7",
       "topic": "Araç etki sınıfları",
       "topic_en": "tool effect classes"
+    },
+    {
+      "id": "W1.7b",
+      "topic": "Hiçbir model onay veremez; onay argümanlara bağlı",
+      "topic_en": "no model can approve, approvals bound to arguments"
     },
     {
       "id": "W1.8",
@@ -172,8 +197,8 @@
     },
     {
       "id": "W3.2",
-      "topic": "Dört göz onayı (ikinci yarı)",
-      "topic_en": "four-eyes approval (second half)"
+      "topic": "Dört göz onayı (ikinci yarı): farklı rol, görevler ayrılığı, init SQL 61",
+      "topic_en": "four-eyes approval (second half; init SQL 61)"
     },
     {
       "id": "W3.3",
@@ -222,13 +247,14 @@
     },
     {
       "id": "W4.1",
-      "topic": "Yük testi",
+      "topic": "Yük testi (W4.2 ile aynı dalda)",
       "topic_en": "load test"
     },
     {
       "id": "W4.2",
-      "topic": "Kaos testleri",
-      "topic_en": "chaos tests"
+      "topic": "Kaos testleri (`wp/w4.1-load-chaos` ile)",
+      "topic_en": "chaos tests",
+      "branch": "wp/w4.1-load-chaos"
     },
     {
       "id": "W4.3",
@@ -343,6 +369,72 @@
       "text": "**İnternetsiz kurulum:** air-gap paketi (W3.3) ve çıkış trafiği sıfır testi (W3.4)."
     },
     {
+      "when": [
+        "W1.7b"
+      ],
+      "text": "**Model onay veremez:** onay kuyruğu kararı (approve / reject) hiçbir modele açık yüzeyden (chat, compose, investigate, hunt, root-cause, `/mcp`, `/internal/tools/invoke`) verilemez; onay, onaylanan aracın argümanlarına bağlıdır (W1.7b)."
+    },
+    {
+      "when": [
+        "W1.10"
+      ],
+      "text": "**Denetim zinciri:** onay kararları ve vaka denetim kayıtları tetikleyicilerle tek bir SHA-256 hash zincirine (`audit_chain`) yazılır; zincir başları Ed25519 imzalı kontrol noktalarıyla sabitlenir (W1.10)."
+    },
+    {
+      "when": [
+        "W3.1"
+      ],
+      "text": "**Otonomi denetleyicisi:** (uyarı kategorisi × eylem sınıfı) başına Watch / Suggest / Approve / Autonomous katmanı; GA varsayılanı Approve (W3.1)."
+    },
+    {
+      "when": [
+        "W3.2"
+      ],
+      "text": "**Görevler ayrılığı:** eylem sınıfı başına \"ikinci onaylayan farklı rolde olmalı\" koşulu, karar anındaki rolle `approval_decisions` kaydı ve görevler ayrılığı raporu (W3.2)."
+    },
+    {
+      "when": [
+        "W3.7"
+      ],
+      "text": "**Kanıt paketi:** vaka sayfasından imzalı, kendi kendini doğrulayan ZIP (vaka, bulgular, eylemler, defter olayları, AI karar kökeni, düzenleyici saatler; W3.7)."
+    },
+    {
+      "when": [
+        "W3.11"
+      ],
+      "text": "**Dersler:** analist düzeltmesi kapsamlı ve süreli bir derse dönüşür; yalnızca çevrimdışı replay gerilemesiz iyileşme gösterirse etkinleşir, tek istekle geri alınır (W3.11)."
+    },
+    {
+      "when": [
+        "W2.3"
+      ],
+      "text": "**Yerel model şeridi:** triage, Bifrost üzerinden Ollama'ya JSON şemasıyla kısıtlanmış olarak gönderilebilir; varsayılan model eval ile seçilir, buluta geri düşme yoktur (W2.3)."
+    },
+    {
+      "when": [
+        "W0.12"
+      ],
+      "text": "**Alım dayanıklılığı:** daemon webhook'u bir bulguya 200 demeden önce onu `fsync`'li yerel spool'a yazar; veritabanı kesintisinde kabul edilen bulgu kaybolmaz, spool doluysa 503 + `Retry-After` (W0.12)."
+    },
+    {
+      "when": [
+        "W4.1"
+      ],
+      "text": "**Yük ve kaos testleri:** şerit başına p50/p95/p99 raporu ve yedi kaos senaryosu (`-m load`, `-m chaos`; W4.1/W4.2)."
+    },
+    {
+      "when": [
+        "W4.3"
+      ],
+      "text": "**Kırmızı takım regresyon paketi:** her rota için rol × rota yetki matrisi ratchet'i ve enjeksiyon paketi CI'da (W4.3)."
+    },
+    {
+      "when": [
+        "W4.5"
+      ],
+      "text": "**Yükseltme yolu:** Vigil 0.7.1 veritabanı tek komutla 2.0 şemasına yükseltilir (`python scripts/upgrade_database.py --backup <dosya>`, `--dry-run` ile önizleme; W4.5)."
+    },
+    {
       "when": [],
       "text": "**Tedarik zinciri:** imzalı imajlar, CycloneDX SBOM'ları, SLSA provenance ve çevrimdışı doğrulama (W4.7, bkz. `docs/release/dogrulama.md`)."
     }
@@ -374,6 +466,36 @@
         "W3.6"
       ],
       "text": "**LLM sağlayıcısı Tailscale / CGNAT (100.64.0.0/10) üzerindeyse:** `url_safety` artık global olmayan her adresi (CGNAT dahil) reddeder. Tailscale üzerinden erişilen şirket içi LLM ağ geçidi için `LLM_PROVIDER_ALLOWED_CIDRS` (ağ geçidinin `/32`'si ya da `100.64.0.0/10`), webhook'lar için `WEBHOOK_ALLOWED_CIDRS` ayarlayın; bulut metadata adresleri bu aralıkların içinde de reddedilir."
+    },
+    {
+      "when": [
+        "W4.5"
+      ],
+      "text": "**0.7.1'den yükseltme:** önce `python scripts/upgrade_database.py --backup <dosya> --dry-run` ile planı görün, sonra `--dry-run` olmadan çalıştırın; komut `pg_dump -Fc` yedeği alır, yeni init SQL dosyalarını uygular ve şemayı `core/storage/schema.snapshot.json` ile karşılaştırır (W4.5)."
+    },
+    {
+      "when": [
+        "W1.7b"
+      ],
+      "text": "**MCP (kırıcı, güvenlik):** `approve_action` ve `reject_action` araçları `/mcp` sunucusundan ve chat / compose / investigate / hunt / root-cause araç kataloglarından kaldırıldı; bu adları çağıran MCP istemcisi bilinmeyen araç hatası alır. Karar Onaylar ekranından (ya da oturum açmış kullanıcı olarak `POST /api/approvals/...`) verilir. Yükseltmeden önce bekletilmiş onay satırları argüman özeti taşımaz ve devam ettirildiğinde reddedilir: o araç çağrılarını yükseltmeden sonra yeniden çalıştırın (W1.7b)."
+    },
+    {
+      "when": [
+        "W3.1"
+      ],
+      "text": "**Otomatik onay davranışı değişti:** otonomi satırı yapılandırılmamışsa yüksek güvenli, geri alınabilir bir eylem de artık kişi onayı bekler (önceden güven bandı tek başına otomatik onaylıyordu). Kişisiz çalışması istenen sınıflar için otonomi katmanını açıkça Autonomous yapın (W3.1)."
+    },
+    {
+      "when": [
+        "W0.11"
+      ],
+      "text": "**Detection-rules git kaynakları:** `POST /api/detection-rules/sources` `settings.write` ister ve yalnızca `https://host/yol` kabul eder; iç/özel adrese çözülen git sunucusu reddedilir. Şirket içi git sunucusu kullananlar `VIGIL_DETECTION_GIT_ALLOWED_CIDRS` ayarlamalıdır; daha önce kaydedilmiş URL'ler de aynı denetimden geçer (W0.11)."
+    },
+    {
+      "when": [
+        "W0.12"
+      ],
+      "text": "Daemon webhook spool'u varsayılan olarak `<VIGIL_DIR>/spool/webhook` altındadır; kalıcı bir birime koyun ve sınırları `DAEMON_INGEST_SPOOL_MAX_FINDINGS` / `DAEMON_INGEST_SPOOL_MAX_MB` ile ayarlayın (W0.12)."
     },
     {
       "text": "Web konsolu backend imajının içinde gelir; `autosecops-2.0.0-web.tar.gz` aynı statik dosyaları ayrı bir sunucudan servis etmek isteyenler içindir."
@@ -412,7 +534,58 @@
     },
     {
       "wp": "W1.7",
-      "text": "Onay argümanlara bağlı değil: onaylanan bir aracın sonraki çağrısı farklı argümanlarla da onaylı sayılabilir."
+      "text": "Onay argümanlara bağlı değil: onaylanan bir aracın sonraki çağrısı farklı argümanlarla da onaylı sayılabilir.",
+      "fixed_by": "W1.7b"
+    },
+    {
+      "wp": "W4.3",
+      "text": "F-1: detection-rules git kaynağında argüman enjeksiyonu (kör SSRF, herhangi bir rolle yerel depo klonlama); F-2: Viewer'ın erişebildiği durum değiştiren rotalar.",
+      "fixed_by": "W0.11"
+    },
+    {
+      "wp": "W3.8",
+      "text": "Düzenleyici saat tablolarında TRUNCATE reddedilmiyordu; zincir başı tablosu yoksa doğrulama bunu raporlamıyordu.",
+      "fixed_by": "W0.11"
+    },
+    {
+      "wp": "W4.1",
+      "text": "Kaos dumanı: 30 sn'lik Postgres kesintisinde daemon webhook'unun 200 dediği bulgular kaybolabiliyordu.",
+      "fixed_by": "W0.12"
+    },
+    {
+      "wp": "W0.12",
+      "text": "Doğrulayıcı bulguları (yeniden oynatmada çift triage, yazımı reddeden veritabanının karantinaya yol açması, bozuk satırın segmenti götürmesi vb.).",
+      "fixed_by": "W0.12b",
+      "open_note": "W0.12b (`wp/w0.12b-spool-hardening`) bu sürümde birleşmedi."
+    },
+    {
+      "wp": "W0.13",
+      "text": "`.github/workflows/ci-cd.yml` `aquasecurity/trivy-action@master` dal adıyla sabitli (tedarik zinciri); init SQL DB testleri `external_service` işaretli olduğundan kapı betiğinde koşmuyor."
+    },
+    {
+      "wp": "W2.2",
+      "text": "Webhook/Kafka gövdesindeki önceki hüküm alanları (`triage_confidence`, `ai_enrichment.verdict` …) şerit riskini düşürebiliyordu.",
+      "fixed_by": "W0.13"
+    },
+    {
+      "wp": "W2.2",
+      "text": "`ALERT_LANES_VERDICT_ENABLED=true` etkisiz: `verdict_enqueuer` hiçbir kodda atanmıyor, 3. şerit verdict run'a gitmiyor (W0.13 triage-agents #2)."
     }
-  ]
+  ],
+  "sections": {
+    "compat": [
+      {
+        "unless": [
+          "W1.7b"
+        ],
+        "text": "`/api/v1` sözleşmesi ve dondurulmuş MCP araçları\n(`VERSIONING.md`) bu sürümde geriye uyumludur."
+      },
+      {
+        "when": [
+          "W1.7b"
+        ],
+        "text": "`/api/v1` sözleşmesi geriye uyumludur. Dondurulmuş MCP\naraçlarından `approve_action` ve `reject_action` güvenlik nedeniyle **kaldırılmıştır**\n(W1.7b; bkz. Yükseltme notları): `VERSIONING.md`'ye göre bu bir ana sürüm değişikliğidir."
+      }
+    ]
+  }
 }

@@ -77,6 +77,11 @@ jobs:
         run: |
           set -eu
           auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          # check-on-main and check-notes need the full history; release_tool
+          # refuses a shallow clone, so unshallow if the checkout was shallow.
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            git -c "http.extraheader=AUTHORIZATION: basic ${auth}" fetch --unshallow --no-tags origin
+          fi
           git -c "http.extraheader=AUTHORIZATION: basic ${auth}" fetch --no-tags \
             origin +refs/heads/main:refs/remotes/origin/main
           python3 scripts/release/release_tool.py check-on-main \

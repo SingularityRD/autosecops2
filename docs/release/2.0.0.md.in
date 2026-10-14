@@ -16,8 +16,7 @@
 AutoSecOps 2.0, Vigil 0.7.1 tabanından ayrılan (hard fork) ilk ana sürümdür ve
 düzenlemeye tabi sektörler (bankacılık, finans, kamu) için hazırlanmıştır.
 Ana sürüm numarası; ürün adının, imaj adlarının ve sürüm/imza sürecinin değişmesi
-nedeniyle artırılmıştır. `/api/v1` sözleşmesi ve dondurulmuş MCP araçları
-(`VERSIONING.md`) bu sürümde geriye uyumludur.
+nedeniyle artırılmıştır. {{compat}}
 
 ## Öne çıkanlar
 

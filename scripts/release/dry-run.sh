@@ -9,7 +9,12 @@
 #   2. docs/release/<V>.md: every "Dahil" WP has a merge commit; with
 #      --strict-notes also every merged wp/<id>-* branch has a "Dahil" row and
 #      the notes + CHANGELOG block equal `release_tool.py render-notes` output
-#      for HEAD (docs/release/<V>.json; the tag pipeline runs strict)
+#      for HEAD (docs/release/<V>.json; the tag pipeline runs strict).
+#      Needs the full history: in a shallow clone (CI checkout with the
+#      default fetch-depth: 1) or an export without .git the step is skipped
+#      with a notice, and with --strict-notes it fails; fetch the history with
+#      `git fetch --unshallow --tags` first (the tag pipeline checks out with
+#      fetch-depth: 0 and unshallows if needed)
 #   3. CycloneDX SBOMs from requirements.lock and every package-lock.json,
 #      validated, into DIR
 #   4. SHA256SUMS over DIR, checked back with sha256sum/shasum
@@ -32,7 +37,7 @@ while [ $# -gt 0 ]; do
     --version) version="${2:?--version needs a value}"; shift 2 ;;
     --tag) tag="${2:?--tag needs a value}"; shift 2 ;;
     --strict-notes) strict="--strict"; shift ;;
-    -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "dry-run: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -51,7 +56,18 @@ step "release notes"
 notes="$repo/docs/release/${version%%-*}.md"
 [ -f "$notes" ] || { echo "dry-run: release notes $notes missing" >&2; exit 1; }
 data="$repo/docs/release/${version%%-*}.json"
-if [ -n "$strict" ] && [ -f "$data" ]; then
+shallow=$(git -C "$repo" rev-parse --is-shallow-repository 2>/dev/null || echo nogit)
+if [ "$shallow" != false ]; then
+  why="shallow clone"
+  [ "$shallow" = true ] || why="no git repository"
+  if [ -n "$strict" ]; then
+    echo "dry-run: --strict-notes needs the full merge history ($why);" \
+      "run: git fetch --unshallow --tags" >&2
+    exit 1
+  fi
+  echo "SKIP release notes: $why, the merge history is incomplete" \
+    "(git fetch --unshallow --tags to check them)"
+elif [ -n "$strict" ] && [ -f "$data" ]; then
   "$PY" "$tool" --repo "$repo" check-notes --notes "$notes" --strict --data "$data"
 else
   # shellcheck disable=SC2086  # $strict is empty or one flag

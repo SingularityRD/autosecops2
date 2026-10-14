@@ -145,31 +145,85 @@ def check_versions(repo: Path = REPO) -> str:
 
 # --------------------------------------------------------------------------- notes
 
-MERGE_RE = re.compile(r"^Merge (?:branch )?'?(?P<branch>[\w./-]+)'?")
+# Subjects of the merge commits that bring a branch in, most specific first:
+#   Merge pull request #12 from owner/wp/w1.2-x          (GitHub merge button)
+#   Merge remote-tracking branch 'origin/wp/w1.2-x' [into y]
+#   Merge branch 'wp/w1.2-x' [into y]                    (git merge default)
+#   Merge wp/w1.2-x into integration (verified PASS)     (this repo's merges)
+#   Merge brand/x: summary
+# GitHub's owner/ (fork) and the remote name are not part of the branch.
+MERGE_RE = (
+    re.compile(r"^Merge pull request #(?P<pr>\d+) from [^/\s]+/(?P<branch>[^\s']+)"),
+    re.compile(r"^Merge remote-tracking branch '[^/']+/(?P<branch>[^']+)'"),
+    re.compile(r"^Merge branch '(?P<branch>[^']+)'"),
+    re.compile(r"^Merge (?:branch )?(?P<branch>\w[\w./-]*)(?=[\s:,]|$)"),
+)
+# A squash merge is an ordinary commit; GitHub appends " (#N)" to the PR title.
+# Only a title that names its WP ("W1.2: ..." / "W1.2 ...") counts, and the
+# merged "branch" is the label "PR #N (W1.2)" (the branch name is gone).
+SQUASH_RE = re.compile(r"^(?P<wp>W\d+\.\d+[a-z]?)\b[^\n]*\(#(?P<pr>\d+)\)$")
+SQUASH_LABEL_RE = re.compile(r"^PR #\d+ \((?P<wp>W\d+\.\d+[a-z]?)\)$")
 # wp/<id>-<slug>: w0.4b, w0.10, w0.11, w12.3 ... (the id is upper-cased: W0.10)
 WP_BRANCH_RE = re.compile(r"^wp/(?P<id>w\d+\.\d+[a-z]?)-")
 
+SHALLOW_HINT = (
+    "run `git fetch --unshallow --tags` (CI: actions/checkout with fetch-depth: 0)"
+)
+
+
+def is_shallow(repo: Path) -> bool:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--is-shallow-repository"],
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
+def require_full_history(repo: Path, why: str) -> None:
+    """A shallow clone lacks merges: refuse instead of answering wrongly."""
+    if is_shallow(repo):
+        raise ReleaseError(f"{repo} is a shallow clone; {why} needs the full history: {SHALLOW_HINT}")
+
+
+def branch_of_subject(subject: str, parents: int = 2) -> Optional[str]:
+    """Branch (or squash label) brought in by a commit with this subject."""
+    subject = subject.strip()
+    if parents > 1:
+        for rx in MERGE_RE:
+            m = rx.match(subject)
+            if m:
+                return m.group("branch")
+        return None
+    m = SQUASH_RE.match(subject)
+    return f"PR #{m.group('pr')} ({m.group('wp')})" if m else None
+
 
 def merged_branches(repo: Path, ref: str = "HEAD") -> set[str]:
-    """Branch names of every merge commit reachable from ref."""
+    """Branches merged into ref (merge commits and squash-merged WP PRs)."""
+    require_full_history(repo, "reading the merged branches")
     proc = subprocess.run(
-        ["git", "-C", str(repo), "log", "--merges", "--format=%s", ref],
+        ["git", "-C", str(repo), "log", "--format=%P%x09%s", ref],
         capture_output=True,
         text=True,
         check=True,
     )
     out = set()
     for line in proc.stdout.splitlines():
-        m = MERGE_RE.match(line.strip())
-        if m:
-            out.add(m.group("branch"))
+        parents, _, subject = line.partition("\t")
+        b = branch_of_subject(subject, len(parents.split()))
+        if b:
+            out.add(b)
     return out
 
 
 def wp_id_of_branch(branch: str) -> Optional[str]:
     """W<major>.<minor>[x] for a wp/<id>-<slug> branch, else None."""
     m = WP_BRANCH_RE.match(branch)
-    return ("W" + m.group("id")[1:]) if m else None
+    if m:
+        return "W" + m.group("id")[1:]
+    m = SQUASH_LABEL_RE.match(branch)
+    return m.group("wp") if m else None
 
 
 def merged_wps(merged: Iterable[str]) -> dict[str, str]:
@@ -179,6 +233,16 @@ def merged_wps(merged: Iterable[str]) -> dict[str, str]:
         wp = wp_id_of_branch(b)
         if wp and wp not in out:
             out[wp] = b
+    return out
+
+
+def merged_wp_branches(merged: Iterable[str]) -> dict[str, list[str]]:
+    """WP id -> every merged branch of it (W0.13 has several review branches)."""
+    out: dict[str, list[str]] = {}
+    for b in sorted(merged):
+        wp = wp_id_of_branch(b)
+        if wp:
+            out.setdefault(wp, []).append(b)
     return out
 
 
@@ -196,12 +260,15 @@ def parse_notes(text: str) -> list[dict]:
             raise ReleaseError(
                 f"{cells[0]}: status must be Dahil or 'Dahil değil', got {status!r}"
             )
-        branch = cells[3].strip("` ")
+        branches = [
+            b.strip("` ") for b in cells[3].split(",") if b.strip("` ") not in ("", "—", "-")
+        ]
         rows.append(
             {
                 "wp": cells[0],
                 "included": status == "Dahil",
-                "branch": None if branch in ("", "—", "-") else branch,
+                "branch": branches[0] if branches else None,
+                "branches": branches,
             }
         )
     if not rows:
@@ -237,10 +304,12 @@ def check_notes(
         if row["included"]:
             if not row["branch"]:
                 errors.append(f"{wp}: marked Dahil without a merged branch")
-            elif row["branch"] not in merged:
-                errors.append(
-                    f"{wp}: marked Dahil but branch {row['branch']} has no merge commit on {ref}"
-                )
+            else:
+                for b in row["branches"]:
+                    if b not in merged:
+                        errors.append(
+                            f"{wp}: marked Dahil but branch {b} has no merge commit on {ref}"
+                        )
         elif strict and wp in by_wp:
             errors.append(
                 f"{wp}: marked 'Dahil değil' but {by_wp[wp]} is merged on {ref};"
@@ -361,15 +430,19 @@ def render_notes(data: dict, repo: Path, ref: str = "HEAD") -> dict[Path, str]:
     """{path: content} for the notes (and the CHANGELOG block when configured)."""
     merged = merged_branches(repo, ref)
     by_wp = merged_wps(merged)
+    all_by_wp = merged_wp_branches(merged)
     rows, included = [], set()
     for wp in data["wps"]:
-        branch = wp.get("branch") or by_wp.get(wp["id"])
-        inc = bool(branch) and branch in merged
+        if wp.get("branch"):
+            branches = [wp["branch"]] if wp["branch"] in merged else []
+        else:
+            branches = all_by_wp.get(wp["id"], [])
+        inc = bool(branches)
         if inc:
             included.add(wp["id"])
+        cell = ", ".join(f"`{b}`" for b in branches) if inc else "—"
         rows.append(
-            f"| {wp['id']} | {wp['topic']} | {'Dahil' if inc else 'Dahil değil'}"
-            f" | {('`' + branch + '`') if inc else '—'} |"
+            f"| {wp['id']} | {wp['topic']} | {'Dahil' if inc else 'Dahil değil'} | {cell} |"
         )
     self_ids = set(data.get("self", []))
     known = {w["id"] for w in data["wps"]} | self_ids
@@ -400,6 +473,10 @@ def render_notes(data: dict, repo: Path, ref: str = "HEAD") -> dict[Path, str]:
         "upgrade_notes": _bullets(data.get("upgrade_notes", []), included),
         "known_issues": "\n".join(open_issues) if open_issues else "- —",
         "fixed_issues": "\n".join(fixed_issues) if fixed_issues else "- —",
+        **{
+            name: "\n".join(i["text"] for i in items if _applies(i, included))
+            for name, items in data.get("sections", {}).items()
+        },
         "init_sql": _ranges(
             init_sql_numbers(repo, ref, int(data.get("init_sql_from", 0)))
         ),
@@ -460,6 +537,8 @@ def check_on_main(repo: Path, commit: str, main_ref: str) -> str:
         text=True,
     )
     if proc.returncode == 1:
+        # In a shallow clone "not an ancestor" may just be missing history.
+        require_full_history(repo, "check-on-main")
         raise ReleaseError(
             f"{commit} ({sha[:12]}) is not on {main_ref} ({main_sha[:12]}); release"
             " tags must point at a commit already merged to main"
