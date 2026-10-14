@@ -309,6 +309,10 @@ def route_gate(route, method: str, public_patterns, path: Optional[str] = None) 
                 gate.dep_permissions.append(perm)
         elif qual == "require_admin" and "canary" in getattr(call, "__module__", ""):
             gate.admin_role_only = True
+        elif getattr(call, "admin_role_only", False) is True:
+            # A dependency that declares it admits, of the built-in roles,
+            # only role-admin (W1.9's require_sso_administrator).
+            gate.admin_role_only = True
         elif qual == "verify_inbound_key":
             gate.service_key = True
 

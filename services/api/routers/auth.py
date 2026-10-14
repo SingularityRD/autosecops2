@@ -18,7 +18,7 @@ from core.auth.auth_cookies import (
     ACCESS_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
     clear_auth_cookies,
-    set_auth_cookies,
+    issue_session_cookies,
 )
 from core.auth.auth_service import (
     PASSWORD_HISTORY_LIMIT,
@@ -26,8 +26,11 @@ from core.auth.auth_service import (
     AuthService,
     password_matches_any,
 )
+from core.auth.login_policy import local_login_allowed
+from core.auth.oidc_accounts import is_sso_only
 from core.auth.password_reset import (
     generate_reset_token,
+    token_matches_email,
     verify_reset_token,
 )
 from core.auth.password_validator import (
@@ -48,6 +51,7 @@ from core.storage.schemas import UserSchema
 from core.time import utcnow
 from services.api.middleware.auth import get_current_active_user
 from services.api.middleware.rate_limit import limiter
+from services.api.routers.users import refuse_address_collision
 
 logger = logging.getLogger(__name__)
 
@@ -318,6 +322,17 @@ def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Once an administrator turns local sign-in off, a password works only for
+    # break-glass and service accounts (core/auth/login_policy.py). Checked
+    # after the password so the answer reveals nothing to someone without it;
+    # the 403 rolls back the login bookkeeping authenticate_user just did.
+    if not local_login_allowed(user, session):
+        logger.info("Local sign-in refused by policy for: %s", user.username)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Local sign-in is disabled for this account. Use single sign-on.",
+        )
+
     # Check MFA if enabled
     if user.mfa_enabled:
         if not payload.mfa_code:
@@ -333,20 +348,9 @@ def login(
                 detail="Invalid MFA code",
             )
 
-    # Generate tokens
-    _ua = request.headers.get("user-agent")
-    access_token = AuthService.generate_jwt_token(user, "access", user_agent=_ua)
-    refresh_token = AuthService.generate_jwt_token(user, "refresh", user_agent=_ua)
-
-    # Extract exp claims so the cookie Max-Age matches the JWT lifetime.
-    access_payload = AuthService.verify_jwt_token(access_token) or {}
-    refresh_payload = AuthService.verify_jwt_token(refresh_token) or {}
-    set_auth_cookies(
-        response,
-        access_token,
-        refresh_token,
-        access_exp=access_payload.get("exp"),
-        refresh_exp=refresh_payload.get("exp"),
+    # Generate tokens; the same issuance single sign-on uses.
+    access_token, refresh_token = issue_session_cookies(
+        response, user, request.headers.get("user-agent")
     )
 
     logger.info(f"User logged in: {user.username}")
@@ -495,18 +499,8 @@ async def refresh_token(
         )
 
     # Generate new tokens
-    _ua = request.headers.get("user-agent")
-    access_token = AuthService.generate_jwt_token(user, "access", user_agent=_ua)
-    refresh_token = AuthService.generate_jwt_token(user, "refresh", user_agent=_ua)
-
-    access_payload = AuthService.verify_jwt_token(access_token) or {}
-    refresh_payload = AuthService.verify_jwt_token(refresh_token) or {}
-    set_auth_cookies(
-        response,
-        access_token,
-        refresh_token,
-        access_exp=access_payload.get("exp"),
-        refresh_exp=refresh_payload.get("exp"),
+    access_token, refresh_token = issue_session_cookies(
+        response, user, request.headers.get("user-agent")
     )
 
     return LoginResponse(
@@ -542,17 +536,12 @@ def _apply_profile_update(
     if full_name:
         user.full_name = full_name
 
-    if email:
-        existing = (
-            session.query(User)
-            .filter(User.email == email, User.user_id != user.user_id)
-            .first()
-        )
-        if existing:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already in use",
-            )
+    if email and email != user.email:
+        # Same rule as creating or editing a user: the address must be
+        # acceptable and must not compare equal (case, Unicode, IDNA, a
+        # trailing dot) to another account's email or address-shaped
+        # username, or SSO linking and sign-in by email become ambiguous.
+        refuse_address_collision(session, email, exclude_user_id=user.user_id)
         user.email = email
         user.is_verified = False
         email_changed = True
@@ -826,8 +815,10 @@ def password_reset_request(
     with DEV_MODE on it logs the link.
     """
     user = session.query(User).filter(User.email == body.email).first()
-    if user and user.is_active:
-        token = generate_reset_token(user.user_id)
+    # An account single sign-on created has no password to reset; giving it one
+    # would let it outlive its removal at the identity provider.
+    if user and user.is_active and not is_sso_only(user):
+        token = generate_reset_token(user.user_id, user.email)
         frontend_base = get_settings().vigil_frontend_url.rstrip("/")
         if frontend_base:
             reset_link = f"{frontend_base}/reset-password?token={token}"
@@ -883,6 +874,12 @@ async def password_reset_confirm(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Account no longer eligible for reset",
+        )
+    if not token_matches_email(body.token, user.email):
+        # The account's email changed after this link was sent.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
         )
 
     try:

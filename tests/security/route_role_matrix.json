@@ -32,6 +32,14 @@
    "role-manager": "allow",
    "role-admin": "allow"
   },
+  "DELETE /api/auth/sso/admin/providers/{provider_id}": {
+   "gate": "login + perm:settings.write + perm:users.write + role:admin",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
+   "role-manager": "deny",
+   "role-admin": "allow"
+  },
   "DELETE /api/bifrost/{path}": {
    "gate": "login + inline:settings.write",
    "role-viewer": "deny",
@@ -426,6 +434,38 @@
   },
   "GET /api/auth/me": {
    "gate": "login",
+   "role-viewer": "allow",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "GET /api/auth/sso/admin/config": {
+   "gate": "login + perm:settings.write + perm:users.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "GET /api/auth/sso/providers": {
+   "gate": "public",
+   "role-viewer": "allow",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "GET /api/auth/sso/{provider_id}/callback": {
+   "gate": "webhook-hmac",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
+   "role-manager": "deny",
+   "role-admin": "deny"
+  },
+  "GET /api/auth/sso/{provider_id}/login": {
+   "gate": "public",
    "role-viewer": "allow",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
@@ -3270,6 +3310,22 @@
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "PUT /api/auth/sso/admin/login-policy": {
+   "gate": "login + perm:settings.write + perm:users.write + role:admin",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
+   "role-manager": "deny",
+   "role-admin": "allow"
+  },
+  "PUT /api/auth/sso/admin/providers/{provider_id}": {
+   "gate": "login + perm:settings.write + perm:users.write + role:admin",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
+   "role-manager": "deny",
    "role-admin": "allow"
   },
   "PUT /api/autonomy/tiers/{category}/{action_type}": {

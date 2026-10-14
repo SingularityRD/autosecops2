@@ -139,6 +139,11 @@ class AuthService:
         Returns:
             True if password matches
         """
+        if not password_hash or not password_hash.startswith("$2"):
+            # Not a bcrypt hash at all: an account with no password, such as
+            # one single sign-on created ("!sso-only"). Nothing can match it,
+            # and it is not an error worth a traceback on every attempt.
+            return False
         return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
 
     @staticmethod

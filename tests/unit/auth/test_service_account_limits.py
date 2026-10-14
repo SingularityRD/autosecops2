@@ -109,6 +109,11 @@ def admin(monkeypatch):
         users_router.AuthService, "check_permission", staticmethod(lambda *a, **k: True)
     )
     monkeypatch.setattr(users_router, "_can_assign_role", lambda *a, **k: True)
+    # Target-side guards are tested in test_user_email_change_guard.py.
+    monkeypatch.setattr(users_router, "_refuse_unless_may_manage", lambda *a, **k: None)
+    monkeypatch.setattr(
+        users_router, "_refuse_losing_admin_access", lambda *a, **k: None
+    )
     current = MagicMock()
     current.username = "admin"
     return current
