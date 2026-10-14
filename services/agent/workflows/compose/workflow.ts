@@ -1,7 +1,7 @@
 import type { SpendPayload } from "../../contracts/budget.js";
 import type { CheckpointPayload, DispatchPayload, NewEvent, ResolutionPayload, RunOutcome } from "../../contracts/events.js";
 import { commitTurn, type Harness, type Outcome, type TurnConfig } from "../../core/loop.js";
-import { drain, streamTurn } from "../../core/stream.js";
+import { drain, parseArgs, streamTurn } from "../../core/stream.js";
 import type { State } from "../../core/seams.js";
 import { SpecError, type PhaseSpec, type RunSpec } from "../../core/spec.js";
 import { nullMirror, type Mirror, type PhaseUpdate } from "./mirror.js";
@@ -116,8 +116,13 @@ function at(phase: PhaseSpec, order: number): Pick<PhaseUpdate, "phase_id" | "ag
   return { phase_id: phase.id, agent: phase.agent, name: phase.name, order: order + 1 };
 }
 
-function idOf(pending: Outcome<unknown>["pending"]): { checkpoint_id?: string } {
-  return pending === null ? {} : { checkpoint_id: pending.checkpoint_id };
+// With the call the step parked on, when it parked on one: the backend binds
+// the approval to these arguments and shows them to the person (W1.7b).
+function idOf(pending: Outcome<unknown>["pending"]): Pick<PhaseUpdate, "checkpoint_id" | "tool" | "args"> {
+  if (pending === null) return {};
+  if (pending.tool === null) return { checkpoint_id: pending.checkpoint_id };
+  const args = pending.args === null ? {} : (parseArgs(pending.args) ?? pending.args);
+  return { checkpoint_id: pending.checkpoint_id, tool: pending.tool, args };
 }
 
 // A gate that has been answered says so on the row. Without it the projection

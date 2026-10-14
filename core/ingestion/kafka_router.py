@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from core.auth.current_user import get_current_user
+from core.auth.permissions import permission_gate
 from core.config import get_settings
 from core.routing import Auth, RouterMeta
 from core.storage.config_service import get_config_service
@@ -116,7 +117,7 @@ async def get_kafka_config() -> Dict[str, Any]:
     return merged
 
 
-@router.put("/config")
+@router.put("/config", dependencies=[permission_gate("settings.write")])
 async def put_kafka_config(
     body: KafkaConfigBody,
     current_user: User = Depends(get_current_user),

@@ -427,7 +427,7 @@ verify_python_env() {
     local probe='import sqlalchemy, fastapi, uvicorn, arq, redis, anthropic'
     "$venv/bin/python" -c "$probe" 2>/dev/null && return 0
     echo "" >&2
-    echo "The venv is missing packages Vigil needs:" >&2
+    echo "The venv is missing packages AutoSecOps needs:" >&2
     "$venv/bin/python" -c "$probe" >&2 || true
     echo "" >&2
     echo "Install log: $REPO_ROOT/logs/pip-install.log" >&2

@@ -12,9 +12,14 @@ Each tool AutoSecOps can reach is declared here with an **effect class**:
     Puts a request in the approval queue (``create_approval_action``). This is
     the gate itself: it changes nothing but the queue, and a person releases it.
 ``decision``
-    Decides a queued approval (``approve_action`` / ``reject_action``). Only a
-    bound human principal holding the approve permission may; the tool refuses
-    an agent itself (``core.agents.tool_registry``).
+    Decides a queued approval (approve / reject). **Human-only** (W1.7b): no
+    model-facing surface -- chat, compose, investigate, hunt, root-cause, the
+    ``/mcp`` server, ``/internal/tools/invoke`` -- declares, resolves or runs
+    one. A decision is made only by a person's own authenticated, CSRF-checked
+    HTTP request (``/api/v1/approvals/{id}/approve|reject``, the run resume /
+    cancel routes). A model is not a second person: alert text, case notes and
+    tool output reach its context, so a decision it could make is a decision a
+    prompt injection could make under the signed-in person's name.
 ``write``
     Changes or sends something outside AutoSecOps (posts a message, submits a
     sample to a sandbox). Gated.
@@ -29,9 +34,10 @@ it (``config.approvals``); ``/internal/tools/invoke`` refuses it without an
 approved checkpoint; hunts and root-cause bind read capabilities only.
 
 A name that is not in the table falls back to a verb heuristic which defaults
-to the most restrictive class: only a name that plainly reads (a read lead verb
-and no write or destructive verb) is ``read_only``; anything else is
-``destructive``.
+to the most restrictive class: a name carrying a decision verb (approve,
+reject, ...) is ``decision`` and so human-only; only a name that plainly reads
+(a read lead verb and no write or destructive verb) is ``read_only``; anything
+else is ``destructive``.
 
 The agent layer (TypeScript) reads the same table through a generated mirror,
 ``services/agent/contracts/tool-effects.ts``; a ratchet holds the two equal.
@@ -58,6 +64,9 @@ EFFECTS: Tuple[str, ...] = (READ_ONLY, RECORDS, APPROVAL, DECISION, WRITE, DESTR
 
 # Runs only once a person approves it, on every surface.
 GATED = frozenset({WRITE, DESTRUCTIVE})
+
+# Never reachable from a model's tool list, on any surface, approved or not.
+HUMAN_ONLY = frozenset({DECISION})
 
 MANIFEST_SOURCE = "manifest"
 HEURISTIC_SOURCE = "heuristic"
@@ -109,8 +118,6 @@ BUILTIN: Dict[str, str] = {
     "propose_feed_hunts": READ_ONLY,
     "list_pending_approvals": READ_ONLY,
     "get_approval_action": READ_ONLY,
-    "approve_action": DECISION,
-    "reject_action": DECISION,
     "get_approval_stats": READ_ONLY,
     "recall_entity": READ_ONLY,
     "check_hunt_coverage": READ_ONLY,
@@ -154,6 +161,13 @@ VIGIL_MCP: Dict[str, str] = {
     "create_approval_action": APPROVAL,
     "list_approval_actions": READ_ONLY,
     "get_approval_action": READ_ONLY,
+}
+
+# Decisions on the approval queue. No tool body implements these any more
+# (W1.7b): they are the names a model-facing surface once carried, held here so
+# a server that still offers one -- an old AutoSecOps, a copy of its MCP server
+# -- is classified human-only by the table rather than by its name.
+HUMAN_ONLY_TOOLS: Dict[str, str] = {
     "approve_action": DECISION,
     "reject_action": DECISION,
 }
@@ -319,7 +333,7 @@ def _build() -> Dict[str, str]:
             raise ValueError(f"{name} is declared both {held} and {effect}")
         table[name] = effect
 
-    for source in (BUILTIN, VIGIL_MCP, THIRD_PARTY, LOCAL):
+    for source in (BUILTIN, VIGIL_MCP, HUMAN_ONLY_TOOLS, THIRD_PARTY, LOCAL):
         for name, effect in source.items():
             put(name, effect)
     for server, tools in INTEGRATIONS.items():
@@ -337,6 +351,18 @@ TOOL_EFFECTS: Mapping[str, str] = _build()
 
 
 # --- the fallback -----------------------------------------------------------
+
+# Verbs that decide something a person is meant to decide. Checked before every
+# other verb: a name that approves anything is human-only, whatever else it does.
+DECISION_VERBS = frozenset(
+    {
+        "approve",
+        "reject",
+        "decline",
+        "authorize",
+        "authorise",
+    }
+)
 
 # Direct-action verbs: calling one changes the world and a later read cannot
 # undo it.
@@ -400,8 +426,6 @@ WRITE_VERBS = frozenset(
         "rename",
         "restore",
         "rollback",
-        "approve",
-        "reject",
         "escalate",
         "install",
         "deploy",
@@ -450,7 +474,7 @@ READ_VERBS = frozenset(
 
 
 _WORD = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+")
-_ALL_VERBS = DESTRUCTIVE_VERBS | WRITE_VERBS | READ_VERBS
+_ALL_VERBS = DECISION_VERBS | DESTRUCTIVE_VERBS | WRITE_VERBS | READ_VERBS
 # Server and vendor prefixes a tool name may lead with, in front of its verb.
 _PREFIX_SEGMENTS = 2
 _SHORT_PREFIX = 4  # vendor abbreviations: mde, cb, pan, aad, xdr, otx, jira
@@ -504,7 +528,8 @@ def heuristic(name: str) -> str:
 
     The name is split into words on ``_``, ``-`` and camelCase, so
     ``get_hostAndIsolate`` and ``list-users-delete`` show their verbs. A
-    destructive verb anywhere is ``destructive`` and a write verb anywhere is
+    decision verb anywhere (``approve``, ``reject``, ...) is ``decision``,
+    which no model surface reaches. A destructive verb anywhere is ``destructive`` and a write verb anywhere is
     ``write``, whatever leads. Otherwise the name is ``read_only`` only when
     its leading verb reads: the first word after at most two server or vendor
     prefixes (``shodan_search_host``, ``acme-edr_xdr_get_host``; see
@@ -516,6 +541,8 @@ def heuristic(name: str) -> str:
     """
     segments = [seg for seg in name.split("_") if seg]
     words = [w for seg in segments for w in _words(seg)]
+    if any(w in DECISION_VERBS for w in words):
+        return DECISION
     if any(w in DESTRUCTIVE_VERBS for w in words):
         return DESTRUCTIVE
     if any(w in WRITE_VERBS for w in words):
@@ -551,6 +578,16 @@ def effect_of(name: str) -> str:
 def is_gated(name: str) -> bool:
     """True when ``name`` may run only once a person approves it."""
     return effect_of(name) in GATED
+
+
+def is_human_only(name: str) -> bool:
+    """True when ``name`` decides an approval: only a person's HTTP request may."""
+    return effect_of(name) in HUMAN_ONLY
+
+
+def model_may_call(name: str) -> bool:
+    """Whether ``name`` may appear on any model's tool list at all (W1.7b)."""
+    return not is_human_only(name)
 
 
 def gated_ids(names: Iterable[str]) -> List[str]:
@@ -595,6 +632,9 @@ def render_mirror() -> str:
         "",
         "// Runs only once a person approves it, on every surface.",
         f"export const GATED: ReadonlySet<Effect> = new Set<Effect>({json.dumps(sorted(GATED))});",
+        "",
+        "// Never on a model's tool list, approved or not: a person decides these over HTTP.",
+        f"export const HUMAN_ONLY: ReadonlySet<Effect> = new Set<Effect>({json.dumps(sorted(HUMAN_ONLY))});",
         "",
         "export const TOOL_EFFECTS: Readonly<Record<string, Effect>> = {",
     ]

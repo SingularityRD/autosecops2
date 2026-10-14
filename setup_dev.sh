@@ -3,7 +3,7 @@
 # Usage: ./setup_dev.sh
 source "$(dirname "$0")/scripts/lib.sh"
 
-echo "Vigil SOC - Development Setup"
+echo "AutoSecOps - Development Setup"
 echo ""
 
 # Prerequisites

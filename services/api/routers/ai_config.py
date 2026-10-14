@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from core.agents.builtins import blank_model
+from core.auth.permissions import permission_gate
 from core.llm.providers.registry import (
     COMPONENTS,
     FALLBACK_KEY,
@@ -171,7 +172,11 @@ def get_ai_config(db: UnitOfWorkSession):
     return AIConfigResponse(components=list(COMPONENTS), assignments=assignments)
 
 
-@router.put("/config/{component}", response_model=ComponentAssignmentResponse)
+@router.put(
+    "/config/{component}",
+    response_model=ComponentAssignmentResponse,
+    dependencies=[permission_gate("settings.write")],
+)
 def set_component_assignment(
     component: str,
     payload: ComponentAssignmentUpdate,
@@ -229,7 +234,7 @@ def set_component_assignment(
     )
 
 
-@router.delete("/config/{component}")
+@router.delete("/config/{component}", dependencies=[permission_gate("settings.write")])
 def clear_component_assignment(
     component: str,
     db: UnitOfWorkSession,

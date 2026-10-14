@@ -173,19 +173,6 @@
     "title": "add_finding_to_caseArguments",
     "type": "object"
   },
-  "approve_action": {
-    "properties": {
-      "action_id": {
-        "title": "Action Id",
-        "type": "string"
-      }
-    },
-    "required": [
-      "action_id"
-    ],
-    "title": "approve_actionArguments",
-    "type": "object"
-  },
   "bulk_add_iocs": {
     "properties": {
       "case_id": {
@@ -605,24 +592,6 @@
       }
     },
     "title": "list_findingsArguments",
-    "type": "object"
-  },
-  "reject_action": {
-    "properties": {
-      "action_id": {
-        "title": "Action Id",
-        "type": "string"
-      },
-      "reason": {
-        "title": "Reason",
-        "type": "string"
-      }
-    },
-    "required": [
-      "action_id",
-      "reason"
-    ],
-    "title": "reject_actionArguments",
     "type": "object"
   },
   "remove_finding_from_case": {

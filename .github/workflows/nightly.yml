@@ -6,6 +6,10 @@ on:
     - cron: '0 2 * * *'
   workflow_dispatch:  # Allow manual trigger
 
+# Read-only token by default; a job that needs more says so itself.
+permissions:
+  contents: read
+
 jobs:
   # ============================================================================
   # Full Test Suite

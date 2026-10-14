@@ -11,6 +11,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from core.auth.permissions import permission_gate
 from core.routing import Auth, RouterMeta
 from core.storage.schemas import AIDecisionLogSchema
 from core.storage.service import DatabaseService
@@ -118,7 +119,15 @@ class AIDecisionStatsResponse(BaseModel):
 # ========== API Endpoints ==========
 
 
-@router.post("/decisions", response_model=AIDecisionResponse, status_code=201)
+# Writing a decision record is how an agent logs what it decided; a person
+# forging one would plant a fake verdict in the QA sample, so it needs the
+# same grant as running the AI (W0.11 round 5).
+@router.post(
+    "/decisions",
+    response_model=AIDecisionResponse,
+    status_code=201,
+    dependencies=[permission_gate("ai_chat.use")],
+)
 async def create_ai_decision(request: CreateAIDecisionRequest):
     """
     Log an AI decision for tracking and feedback.
@@ -147,7 +156,12 @@ async def create_ai_decision(request: CreateAIDecisionRequest):
     return AIDecisionResponse(**AIDecisionLogSchema.dump(decision))
 
 
-@router.post("/decisions/{decision_id}/feedback", response_model=AIDecisionResponse)
+# Grading a decision is analyst work (DecisionsScreen), not a Viewer's.
+@router.post(
+    "/decisions/{decision_id}/feedback",
+    response_model=AIDecisionResponse,
+    dependencies=[permission_gate("findings.write")],
+)
 async def submit_feedback(decision_id: str, request: SubmitFeedbackRequest):
     """
     Submit human feedback on an AI decision.
