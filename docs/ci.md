@@ -13,10 +13,22 @@ secret gerektirmez.
 | `helm-chart.yml` | `infra/helm/**` değişince | Yol filtreli. |
 | `medic.yml`, `medic-helm.yml` | Medic dosyaları değişince | Yol filtreli. |
 | `nightly.yml` | Her gün 02:00 UTC | Actions dakikası harcar. |
-| `release-please.yml`, `release.yml` | — | **Kapalı.** Upstream'e (`ghcr.io/vigil-soc/*`) yayın yapar; koşul hâlâ `Vigil-SOC/vigil`, burada asla çalışmaz. |
+| `release.yml` | `v*` etiketi push'u (yalnızca `SingularityRD/autosecops2`) | AutoSecOps sürüm hattı (W4.7): backend, daemon, agent imajlarını `ghcr.io/singularityrd/autosecops-*` adına derler, imzalar, SBOM ve provenance ekler; taslak sürüm açar. Etiketlenen commit `main` üzerinde olmalıdır. |
+| `release-please.yml` | — | **Kapalı.** Koşulu hâlâ `Vigil-SOC/vigil`; burada çalışmaz. |
 
-`ci-cd.yml` içindeki `build-images` ve `scan-images` işleri de `if: false` ile
-kapalıdır (registry'ye imaj iter).
+`ci-cd.yml` hiçbir registry'ye imaj itmez; imajları yalnızca `release.yml` bir
+etikette yayımlar (imza, SBOM, provenance). Eskiden `if: false` ile kapalı duran
+ve ghcr'a iten `build-images` / `scan-images` işleri W0.22'de kaldırıldı.
+
+## İmaj taraması (etiketten önce)
+
+`Agent Image` ve `Service Image (backend)` / `Service Image (daemon)` işleri her
+PR'da ve `main` push'unda imajı yerelde derler (`push: false`, `load: true`),
+Trivy ile HIGH/CRITICAL bulguları raporlar, **düzeltmesi olan** bir CRITICAL
+zafiyette düşer ve imajın içinde uygulamanın içe aktarıldığını doğrulayan bir
+duman testi çalıştırır. Servis imajı işleri yalnızca `contents: read` izniyle
+çalışır, secret kullanmaz; eylemler commit SHA'sıyla, Trivy sürümü açıkça
+sabitlenmiştir (`tests/unit/release/test_ci_image_scan.py`).
 
 ## `main` için zorunlu (required) kontroller
 
@@ -28,6 +40,7 @@ görünen adlarıyla):
 - `Generated API Types`
 - `Lint Dockerfiles`
 - `Agent Image`
+- `Service Image (backend)`, `Service Image (daemon)`
 - `Unit Tests - Backend`
 - `Unit Tests - Backend (DB-backed)`
 - `Unit Tests - Frontend`
