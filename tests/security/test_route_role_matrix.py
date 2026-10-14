@@ -40,9 +40,8 @@ def test_matrix_file_matches_the_live_app_and_seed():
     new, gone, changed = rm.diff(committed, computed)
     assert not new, f"routes with no matrix row (unknown/new — regenerate): {new}"
     assert not gone, f"matrix rows for routes that no longer exist: {gone}"
-    assert not changed, (
-        "gate/role outcome changed for: "
-        + ", ".join(f"{k} -> {computed[k]}" for k in changed)
+    assert not changed, "gate/role outcome changed for: " + ", ".join(
+        f"{k} -> {computed[k]}" for k in changed
     )
 
 
@@ -146,13 +145,46 @@ def _fill_path(key: str) -> tuple[str, str]:
     return method, "/".join(out)
 
 
-@pytest.mark.parametrize(
-    "key,gate,row", _GATED_ROWS, ids=[r[0] for r in _GATED_ROWS]
-)
-def test_dependency_gated_route_enforces_the_matrix(key, gate, row, monkeypatch):
+def _isolate_handler_side_effects(key, app, monkeypatch, tmp_path) -> None:
+    """Keep allowed roles' handler runs off the machine's real state.
+
+    An ``allow`` role reaches the handler. For the detection-rules routes that
+    used to mean the app's real service ``git pull``-ing every repo under
+    ``~/security-detections`` over the network, rewriting
+    ``~/.vigil/detection_sources.json``, and restarting a configured
+    ``security-detections`` MCP stdio server inside the TestClient portal
+    (anyio "cancel scope" RuntimeError). Whether that passed depended on the
+    machine. Only the services are swapped: the route's permission dependency
+    is untouched, so the 403/allow outcome is still the real gate's.
+    """
+    if not key.split(" ", 1)[1].startswith("/api/detection-rules"):
+        return
+    from core import deps
+    from core.detections.detection_rules_service import DetectionRulesService
+
+    state = tmp_path / "vigil"
+    state.mkdir()
+    (state / "detection_sources.json").write_text('{"sources": [], "version": 1}')
+    monkeypatch.setenv("VIGIL_DIR", str(state))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    service = DetectionRulesService()  # no sources: nothing to clone or pull
+    for dep, value in (
+        (deps.provide_detection_rules, service),
+        (deps.provide_mcp_client, None),  # no MCP server to restart
+        (deps.provide_mcp_registry, None),
+    ):
+        # setitem: removed again at teardown.
+        monkeypatch.setitem(app.dependency_overrides, dep, lambda v=value: v)
+
+
+@pytest.mark.parametrize("key,gate,row", _GATED_ROWS, ids=[r[0] for r in _GATED_ROWS])
+def test_dependency_gated_route_enforces_the_matrix(
+    key, gate, row, monkeypatch, tmp_path
+):
     grants = rm.load_role_grants()
     method, path = _fill_path(key)
     app = backend_main.app
+    _isolate_handler_side_effects(key, app, monkeypatch, tmp_path)
 
     for role_id in rm.BUILTIN_ROLES:
         role_grants = grants[role_id]
@@ -220,7 +252,15 @@ def test_flag_gated_routers_have_rows_whatever_the_flag(monkeypatch):
 
         def forced():
             return [
-                (n, r, dataclasses.replace(m, enabled=pinned(m.enabled)) if m.enabled else m)
+                (
+                    n,
+                    r,
+                    (
+                        dataclasses.replace(m, enabled=pinned(m.enabled))
+                        if m.enabled
+                        else m
+                    ),
+                )
                 for n, r, m in specs
             ]
 
@@ -251,19 +291,31 @@ def test_frontend_and_context_path_do_not_change_the_matrix(tmp_path):
     async def health():
         return {}
 
-    paths = [p for _, p, _ in rm.route_inventory(main_app=fake, context_path="/vigil", discover=False)]
+    paths = [
+        p
+        for _, p, _ in rm.route_inventory(
+            main_app=fake, context_path="/vigil", discover=False
+        )
+    ]
     assert "/api/health" in paths
     assert not any("static" in p for p in paths)
     assert "/vigil" not in paths and "/" not in paths
-    route = next(r for r, p, _ in rm.route_inventory(
-        main_app=fake, context_path="/vigil", discover=False) if p == "/api/health")
+    route = next(
+        r
+        for r, p, _ in rm.route_inventory(
+            main_app=fake, context_path="/vigil", discover=False
+        )
+        if p == "/api/health"
+    )
     gate = rm.route_gate(route, "GET", PUBLIC_API_PATHS, path="/api/health")
     assert gate.public
 
 
 def test_internal_routes_are_gated_by_the_agent_token():
     rows = rm.load_matrix()
-    internal = {k: r for k, r in rows.items() if k.split(" ", 1)[1].startswith("/internal/")}
+    internal = {
+        k: r for k, r in rows.items() if k.split(" ", 1)[1].startswith("/internal/")
+    }
     assert internal, "no /internal routes found"
     for key, row in internal.items():
         assert "internal-token" in row["gate"], f"{key} lost its internal-token gate"
@@ -310,7 +362,12 @@ def test_a_user_session_is_not_the_internal_token(monkeypatch):
         "core.agents.internal_auth.get_secret",
         lambda name: "w43-probe-token" if name == "AGENT_INTERNAL_TOKEN" else None,
     )
-    for presented in (None, "", "Bearer eyJhbGciOiJIUzI1NiJ9.admin.session", "w43-probe-token"):
+    for presented in (
+        None,
+        "",
+        "Bearer eyJhbGciOiJIUzI1NiJ9.admin.session",
+        "w43-probe-token",
+    ):
         with pytest.raises(HTTPException) as exc:
             authorise(presented, "probe")
         assert exc.value.status_code == 401, presented
@@ -320,3 +377,44 @@ def test_a_user_session_is_not_the_internal_token(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         authorise("Bearer anything", "probe")
     assert exc.value.status_code == 503
+
+
+def test_enforcement_never_reaches_the_apps_real_detection_services(
+    monkeypatch, tmp_path
+):
+    """W0.17: the allow-role probe of detection-rules routes is hermetic.
+
+    It once ran the app's real DetectionRulesService (network ``git pull``,
+    writes to ``~/.vigil``) and restarted a real MCP stdio server, so it
+    failed only on machines where that server was configured. Here the app's
+    real services are booby-trapped: touching them fails the test.
+    """
+
+    touched: list[str] = []
+
+    class _Trap:
+        # The app turns a handler exception into a 500, which an allow-role
+        # probe accepts, so record the touch instead of only raising.
+        def __getattr__(self, name):
+            touched.append(name)
+            raise AssertionError(f"real app service touched: .{name}")
+
+        def __bool__(self):
+            touched.append("__bool__")
+            raise AssertionError("real app service touched")
+
+    app = backend_main.app
+    for attr in ("detection_rules", "mcp_client", "mcp_registry"):
+        monkeypatch.setattr(app.state, attr, _Trap(), raising=False)
+    rows = {key: (gate, row) for key, gate, row in _GATED_ROWS}
+    for key in (
+        "POST /api/detection-rules/update-all",
+        "POST /api/detection-rules/reload",
+    ):
+        assert key in rows, key
+        gate, row = rows[key]
+        sub = tmp_path / key.replace("/", "_").replace(" ", "_")
+        sub.mkdir()
+        with pytest.MonkeyPatch.context() as mp:
+            test_dependency_gated_route_enforces_the_matrix(key, gate, row, mp, sub)
+    assert not touched, touched
