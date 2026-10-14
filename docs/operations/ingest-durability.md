@@ -54,12 +54,17 @@ gönderen ──POST──▶ webhook ──append+fsync──▶ spool (disk) �
   bağlantı hataları (SQLSTATE `08…`), salt-okunur işlem (`25006`, yük devri
   sonrası bekleme sunucusu), disk dolu / kaynak yetersiz (`53…`), yetki yok
   (`42501`), operatör müdahalesi / kurtarma (`57…`), G/Ç (`58…`), kilitlenme ve
-  serileştirme (`40…`), kilit alınamadı (`55P03`), eşzamanlı ekleme (`23505`).
+  serileştirme (`40…`), kilit alınamadı (`55P03`).
   SQLSTATE taşımayan hatalarda ileti metnine bakılır ("read-only transaction",
   "No space left on device", "permission denied", ...).
+- **Benzersiz anahtar çakışması (`23505`, W0.12b round 6):** önce yerinde
+  yeniden denenir (eşzamanlı ekleme ise ikinci deneme satırı "zaten var" bulur);
+  çözülmezse veritabanı yanıt vermiş demektir ve zehirli bulgu gibi sayılır.
+  Boş (`""` ya da yalnız boşluk) `external_id` `NULL` olarak yazılır, bu yüzden
+  `uniq_findings_source_extid`'e hiç çarpmaz.
 - **Zehirli bulgu:** yalnızca bulgunun kendisinden kaynaklanan hata (`22…` veri
-  hatası, `23…` bütünlük kısıtı, `54…` sınır aşımı, bulgu içeriğinden doğan
-  `ValueError`/`TypeError`) ya da sınıflandırılamayan bir hata veritabanı
+  hatası, `23…` bütünlük kısıtı, çözülmeyen `23505`, `54…` sınır aşımı, bulgu
+  içeriğinden doğan `ValueError`/`TypeError`) ya da sınıflandırılamayan bir hata veritabanı
   `SELECT 1`'e yanıt verirken 5 kez yinelenirse bulgu `dead/` altına (aynı
   biçimde, `fsync`'li, `0600`) ayrılır ve kuyruk tıkanmaz. Silinmez: dosya
   spool dizinine geri taşınırsa sonraki açılışta yeniden oynatılır.
@@ -68,10 +73,14 @@ gönderen ──POST──▶ webhook ──append+fsync──▶ spool (disk) �
   satırlar yalnızca kendileri `corrupt/<segment>-lines-<ns>.jsonl` dosyasına
   (özgün başlık + satırlar olduğu gibi) kopyalanır ve işaretlenir; segmentin
   diğer bulguları oynatılır. Satırlar düzeltilip dosya spool dizinine geri
-  taşınırsa oynatılır.
+  taşınırsa oynatılır. Okunamayan (ör. `EACCES`, `EIO`) bir segment yalnızca
+  kendisini etkiler: `corrupt/`'a taşınır, taşınamazsa yerinde bırakılıp
+  loglanır; `.done` işaretleri okunamayan segment yerinde bırakılır ve
+  oynatılmaz (`unreadable_segments` sayacı). Spool'un kalanı çalışır.
 - **İzinler:** spool dizini, `dead/` ve `corrupt/` `0700`; tüm dosyalar `0600`.
   Açılışta mevcut dizin ve dosyalar bu kipe getirilir (sahibi başkasıysa
-  uyarı yazılır).
+  uyarı yazılır). Sembolik bağlar izlenmez: hedeflerinin kipi değişmez;
+  sembolik bağ olan `dead/`/`corrupt/` içine yazılmaz.
 - Bir dizini aynı anda tek süreç kullanır (`.lock` üzerinde `flock`).
 
 Spool kapalıysa (`DAEMON_INGEST_SPOOL_ENABLED=false`) ya da açılamazsa (dizin
