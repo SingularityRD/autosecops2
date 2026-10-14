@@ -17,6 +17,20 @@ Aktarım **varsayılan olarak kapalıdır.** Yapılandırma yokken ya da
 | `auth` | API sürecinin yazdığı yerel biriktirici (`$VIGIL_DIR/audit_export/auth_spool/`) | `auth.login` (başarılı / `failure` / `locked` / `mfa_failure`), `auth.logout`, `auth.password_change`, `auth.password_reset_request`, `auth.password_reset`, `auth.mfa_setup`, `auth.mfa_enable`, `auth.mfa_disable`, `auth.mfa_recovery_codes`, `auth.user_create`, `auth.user_update`, `auth.user_delete`, `auth.role_change`, `auth.user_activate`, `auth.user_deactivate` |
 | `config` | `config_audit_log` | `config.create` / `config.update` / `config.delete` (aktarım yapılandırmasının kendisindeki değişiklikler de dahil, önem 6) |
 | `case_audit` | `case_audit_logs` | `case.<entity_type>.<action>` |
+| `audit_checkpoints` | W1.10 imzalı zincir başları (`audit_checkpoints`) | `audit.checkpoint` (önem 3), `audit.checkpoint.rebaseline` (önem 5); `details`: `key_id`, `public_key`, `body` (imzalanan kanonik JSON), `body_hash`, `prev_body_hash`, `signature`, `tsa_token`, `audit_chain_head` (`seq`, `hash`), `schema_change`; `hash` = `body_hash` |
+
+**W1.10 denetim zinciri ile ilişki.** `audit_chain` satırları aktarılmaz:
+bunlar `approval_actions` ve `case_audit_logs` değişikliklerinin zincirlenmiş
+kopyasıdır ve o tablolar zaten `approvals` / `case_audit` kaynaklarıyla
+aktarılır (aynı olay iki kez gitmez). Aktarım bu tabloları yalnızca okur;
+W1.10'un ertelenmiş tetikleyicileri, kilitleri ve `vigil_app` izinleriyle
+çakışmaz. SIEM'e eklenen, her imzalı kontrol noktasıdır: gövde, imza ve
+genel anahtar **olduğu gibi** (maskelemeden ve kesmeden) gider, böylece SIEM
+W1.10'un "veritabanı dışındaki kopya" rolünü üstlenir — bir süper kullanıcı
+zincirin kuyruğunu son kontrol noktasına kadar silse ya da yeniden yazsa
+bile SIEM'deki başlar bunu gösterir. `body` + `signature` + `public_key` ile
+imza bağımsız olarak doğrulanabilir. W1.10 şeması olmayan bir veritabanında
+kaynak hiçbir şey okumaz (hata vermez) ve tablo oluşunca okumaya başlar.
 
 Ajan defteri için yalnızca defter koordinatları, tür, hash zinciri değerleri ve
 `payload`'ın üst düzey skaler alanları (string'ler 256 karaktere kadar) gönderilir;
@@ -256,6 +270,40 @@ yeniden kullanılır.
   `email`/`phone`/… anahtarları `redact_pii: true` iken maskelenir.
 - **Bilinçli maskelemeler:** OTP/MFA kodları reddedilmiş ya da süresi geçmiş
   olsa da maskelenir.
+- **Önce anahtar, sonra kalıp.** Kimlik bilgisi (`password`, `api_key`,
+  `backup_codes`, `seed_phrase`, `ssh_key`, `kubeconfig`, `psk`,
+  `snmp_community`, `saml_response`, `client_assertion`, `secret_id`,
+  `private_key_id` …) ya da kişisel veri adlandıran anahtarlar (`email`,
+  `phone`/`mobile`, `first_name`/`last_name`/`surname`, `dob`/
+  `date_of_birth`, `passport`, `iban`, `card_number`/`pan`/`cvv`, `ssn`,
+  `tax_id`, `driver_license`, `national_id`/`tckn`/`tc_kimlik_no`,
+  `postal_code`/`zip`, `*_address`) değeri neye benzerse benzesin maskeler
+  (kişisel veri anahtarları yalnız `redact_pii: true` iken). Ardından metin
+  kalıpları: bilinen jeton biçimleri; `redact_pii` açıkken e-posta (IP
+  literal'i dahil), Luhn geçerli kart numarası, mod-97 geçerli IBAN, SSN,
+  sağlama hanesi geçerli T.C. kimlik no, `+` önekli telefon
+  (`[REDACTED-PII]`).
+- **İzinli kimlik biçimleri (aşırı maskelemeye karşı).** ZAYIF anahtarların
+  (`token`, `sig`, `sid`, `session_id` …) altındaki ve serbest metindeki
+  nesne kimlikleri olduğu gibi geçer: Windows SID (`S-1-5-21-…`), vaka/bulgu/
+  bilet kimlikleri (`CASE-2026-000123`, `FND-7f3a9c21`, `SEC-4821`,
+  `INC0012345`), `CVE-…`, ATT&CK `T1003.001` her ZAYIF anahtarda; GUID/UUID
+  ve ULID kimlik benzeri anahtarlarda (`session_id`, `sid`, `object_guid`)
+  ama `token`/`key`/`auth`/`cookie` altında değil (GUID bir taşıyıcı jeton
+  olabilir); hash özetleri (32/40/56/64/96/128 hex) imza/özet benzeri
+  anahtarlarda (`sig`, `signature`, `hash`, `thumbprint`). `*_id`, `*_uuid`,
+  `*_guid`, `*_at`, `*_set`, `*_timestamp` anahtarları bir kimlik bilgisine
+  atıftır, onu taşımaz (`token_id`, `credential_id`, `password_last_set`);
+  istisna `secret_id` (Vault AppRole), `private_key_id`/`access_key_id`
+  (GÜÇLÜ). GÜÇLÜ anahtar her biçimi maskeler (`password: <GUID>`); imzalı
+  URL'deki `?sig=`/`X-Amz-Signature=` hex olsa da maskelenir.
+- **Sınırlı süre.** Her alan, herhangi bir kalıp çalışmadan önce
+  `max_string + 512` karaktere (doğrudan `redact_text` için
+  `MAX_FIELD_CHARS` = 16384; JSON görünümlü dizeler bu sınıra kadar bütün
+  olarak yürütülür) kesilir; e-posta eşleştirme doğrusal zamanlı bir
+  tarayıcıdır, değer kalıplarındaki tüm niceleyiciler sınırlıdır. Bir
+  partinin maskelenmesi olay döngüsünde değil, işçi iş parçacığında
+  (`asyncio.to_thread`) çalışır.
 - Dizeler 2048 karakterde, iç içe yapı 6 seviyede, listeler/sözlükler 100
   öğede kesilir. Maskelenen değer sayısı `redactions` metriğindedir.
 
@@ -281,7 +329,7 @@ düşer ve kendisi de aktarılır).
     "start_from": "now",
     "redact_pii": true,
     "sources": {"agent_events": true, "approvals": true, "auth": true,
-                "config": true, "case_audit": true},
+                "config": true, "case_audit": true, "audit_checkpoints": true},
     "destinations": [
       {"type": "syslog", "name": "qradar", "host": "siem.corp.example",
        "port": 6514, "protocol": "tls", "format": "rfc5424",
@@ -452,6 +500,15 @@ göremiyorsa (`pg_read_all_stats` yok) yalnız ilerlemeyen `xmin`'e bakılır.
   geçtiği bir kümeye geri yükleme fark edilmez; geri yüklemeden sonra
   `cursors.json`'u silin (`start_from` uygulanır).
 - Bağımlılık notu: ajan defteri hash zinciri (`prev_hash`, `event_hash`,
-  `31_agent_ledger_hash_chain.sql`) olduğu gibi aktarılır. Paralel yürüyen
-  denetim zinciri işi (W1.10, `core/audit/*`) bu modülce kullanılmaz; o iş
-  birleştiğinde onun tablosu ayrı bir kaynak olarak eklenebilir.
+  `31_agent_ledger_hash_chain.sql`) olduğu gibi aktarılır. W1.10'un
+  (`core/audit/*`, `51_audit_chain.sql`) imzalı kontrol noktaları
+  `audit_checkpoints` kaynağıyla aktarılır; `audit_chain` satırları
+  aktarılmaz (bkz. "Ne aktarılır"). Çok büyük bir kontrol noktası gövdesi
+  (çok sayıda ajan çalıştırması) alıcının boyut sınırını aşarsa olay
+  `details: {"_truncated": true}` ile gider; o noktanın imzası SIEM'de
+  doğrulanamaz.
+- Serbest metindeki kişisel veri kalıpları (kart, IBAN, SSN, T.C. kimlik,
+  `+` önekli telefon) doğrulama (Luhn, mod 97, sağlama hanesi) ile sınırlıdır;
+  `+` öneki olmayan yerel telefon numaraları ve ad/soyad gibi serbest metin
+  kişisel verisi kalıpla yakalanmaz — bunlar ancak anahtar adıyla
+  (`phone`, `first_name` …) maskelenir.
