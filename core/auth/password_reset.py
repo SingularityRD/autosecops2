@@ -14,10 +14,10 @@ Design:
   acceptable; the alternative is to reject all reset attempts during
   the outage, which could lock users out.
 
-The token payload is just the user_id. We look up the user at confirm
-time; if the email changed, that's fine — the reset still binds to the
-original user. If the account was deactivated in the meantime, the
-confirm handler rejects.
+The token payload is the user_id plus a hash of the address it was mailed
+to. We look up the user at confirm time; if the email changed since, the
+token is refused, so changing an address invalidates every pending reset.
+If the account was deactivated in the meantime, the confirm handler rejects.
 """
 
 import hashlib
@@ -45,7 +45,13 @@ def _get_serializer() -> URLSafeTimedSerializer:
     # Import lazily so tests can stub JWT_SECRET_KEY via env before auth_service loads.
     from core.auth.auth_service import JWT_SECRET_KEY
 
-    return URLSafeTimedSerializer(JWT_SECRET_KEY, salt=RESET_TOKEN_PURPOSE)
+    # SHA-256 + HMAC key derivation instead of itsdangerous' default
+    # (SHA-1 "django-concat"): FIPS-approved, see docs/fips.md (W3.10).
+    return URLSafeTimedSerializer(
+        JWT_SECRET_KEY,
+        salt=RESET_TOKEN_PURPOSE,
+        signer_kwargs={"digest_method": hashlib.sha256, "key_derivation": "hmac"},
+    )
 
 
 def _token_hash(token: str) -> str:
@@ -59,8 +65,33 @@ def _redis_client():
     return get_async_redis("reset single-use check")
 
 
-def generate_reset_token(user_id: str) -> str:
-    return _get_serializer().dumps({"user_id": user_id})
+def _email_binding(email: Optional[str]) -> str:
+    return hashlib.sha256((email or "").strip().lower().encode("utf-8")).hexdigest()[
+        :32
+    ]
+
+
+def generate_reset_token(user_id: str, email: Optional[str] = None) -> str:
+    """A reset token for ``user_id``, bound to the address it is mailed to.
+
+    The binding (a hash, not the address) makes every pending token stop
+    working once the account's email changes; see :func:`token_matches_email`.
+    """
+    return _get_serializer().dumps({"user_id": user_id, "eb": _email_binding(email)})
+
+
+def token_matches_email(token: str, email: Optional[str]) -> bool:
+    """Whether ``token`` was issued while the account's email was ``email``.
+
+    Call after :func:`verify_reset_token` accepted the token (this does not
+    check expiry). A token without a binding is refused.
+    """
+    try:
+        payload = _get_serializer().loads(token)
+    except BadSignature:
+        return False
+    bound = payload.get("eb") if isinstance(payload, dict) else None
+    return isinstance(bound, str) and bound == _email_binding(email)
 
 
 async def verify_reset_token(token: str) -> Optional[str]:

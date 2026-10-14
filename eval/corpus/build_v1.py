@@ -584,7 +584,7 @@ def _make(rng: random.Random, category: str, pair: Pair, verdict: str, uid: str)
     }
     ts = _EPOCH + timedelta(seconds=rng.randint(0, 270 * 86400))
     prefix = _SOURCE_PREFIX[pair.source]
-    ext_id = hashlib.sha1(uid.encode()).hexdigest()[:20]
+    ext_id = hashlib.sha1(uid.encode(), usedforsecurity=False).hexdigest()[:20]
     alert = {
         "finding_id": f"{prefix}-{ext_id}",
         "timestamp": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),

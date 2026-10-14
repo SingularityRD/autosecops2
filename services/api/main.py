@@ -72,6 +72,12 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset(
         # First-run account creation — unauthenticated by necessity; only ever
         # live on an empty instance (see services/api/routers/auth.py bootstrap).
         "/api/auth/bootstrap",
+        # Single sign-on starts signed out: the sign-in screen's provider list,
+        # the redirect to the identity provider, and its redirect back
+        # (core/auth/oidc_router.py). The /admin routes there are gated.
+        "/api/auth/sso/providers",
+        "/api/auth/sso/{provider_id}/login",
+        "/api/auth/sso/{provider_id}/callback",
         # Health check — used by load balancers and Docker.
         "/api/health",
         "/api/health/ready",
@@ -476,6 +482,33 @@ def _build_services(app: FastAPI):
     # burns startup time building findings nothing will read.
     app.state.demo_data = DemoDataService() if is_demo_mode() else None
 
+    app.state.audit_export = _build_audit_export()
+
+
+def _build_audit_export():
+    """The audit stream exporter (WP w3.6). Off until an admin enables it; its
+    supervisor is started with the other background tasks, not here."""
+    from core.compliance.audit_export import (
+        AuditExportService,
+        PgAdvisoryLeader,
+        SystemConfigStore,
+    )
+    from core.config import vigil_path
+    from core.secrets_manager import get_secret
+    from core.storage.connection import get_db_manager
+
+    # Resolved lazily: building the app must not open a database connection.
+    def session_scope():
+        return get_db_manager().session_scope()
+
+    return AuditExportService(
+        state_dir=vigil_path("audit_export"),
+        config_store=SystemConfigStore(),
+        secrets=get_secret,
+        session_scope=session_scope,
+        leader=PgAdvisoryLeader(lambda: get_db_manager().engine),
+    )
+
 
 def _announce_mcp_surface() -> None:
     """Say what this install is serving on /mcp, and whether anyone can open it."""
@@ -667,6 +700,7 @@ async def _startup(app: FastAPI):
     else:
         await _connect_external_services(app.state.mcp_client, app.state.mcp_registry)
         _start_medic_poller(app)
+        await app.state.audit_export.start()
 
     # Load custom agents from DB into the AgentManager so built-in + custom
     # agents are visible in one merged list. Lookup misses for "custom-*" IDs
@@ -702,6 +736,12 @@ async def _stop_medic_poller(app) -> None:
 async def _shutdown(app: FastAPI):
     """Clean up LLM gateway and MCP connections on shutdown."""
     await _stop_medic_poller(app)
+    audit_export = getattr(app.state, "audit_export", None)
+    if audit_export is not None:
+        try:
+            await audit_export.stop()
+        except Exception as e:  # noqa: BLE001 - shutdown continues regardless
+            logger.warning("Audit export shutdown error (non-fatal): %s", e)
     logger.info("Shutting down LLM Gateway...")
     try:
         from core.llm.gateway.gateway import close_llm_gateway

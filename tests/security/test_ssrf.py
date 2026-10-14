@@ -35,6 +35,10 @@ BLOCKED_URLS = [
     "http://172.16.0.1/admin?x=",
     "http://192.168.1.1/admin?x=",
     "http://fd00::1/admin",  # private IPv6
+    "http://100.64.0.1/admin",  # carrier-grade NAT (not is_private)
+    "http://100.100.100.200/latest/meta-data",  # Alibaba Cloud metadata
+    "http://198.18.0.1/",  # benchmarking range
+    "http://[fd00:ec2::254]/latest/meta-data",  # AWS IMDS over IPv6
     "file:///etc/passwd",
     "gopher://attacker/",
     "ftp://attacker/",
@@ -99,3 +103,102 @@ def test_allow_loopback_permits_localhost_but_not_metadata():
         validate_provider_url(
             "http://169.254.169.254/latest/meta-data", allow_loopback=True
         )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://100.100.100.200/latest/meta-data",
+        "http://[fd00:ec2::254]/latest/meta-data",
+        "http://169.254.170.2/v2/credentials",
+    ],
+)
+def test_metadata_addresses_blocked_even_with_loopback(url):
+    with pytest.raises(UrlSafetyError, match="metadata"):
+        validate_provider_url(url, allow_loopback=True)
+
+
+# W3.6 made carrier-grade NAT (100.64.0.0/10) "non-global" and refused. An
+# on-prem LLM gateway reached over Tailscale lives there: the operator opts it
+# in with LLM_PROVIDER_ALLOWED_CIDRS, and metadata addresses stay refused.
+def test_allowed_networks_admit_a_tailscale_gateway_but_not_metadata():
+    from core.platform.url_safety import parse_networks
+
+    nets = parse_networks("100.64.0.0/10")
+    with pytest.raises(UrlSafetyError):
+        validate_provider_url("http://100.101.102.103:8080/v1", allow_custom=True)
+    safe = validate_provider_url(
+        "http://100.101.102.103:8080/v1", allow_custom=True, allowed_networks=nets
+    )
+    assert safe.host == "100.101.102.103"
+    with pytest.raises(UrlSafetyError):
+        validate_provider_url(
+            "http://100.100.100.200/latest/meta-data",
+            allow_custom=True,
+            allowed_networks=nets,
+        )
+
+
+def test_llm_provider_allowed_cidrs_setting_reaches_discovery(monkeypatch):
+    from core.config import get_settings
+    from core.llm.providers import discovery
+
+    monkeypatch.setenv("LLM_PROVIDER_ALLOWED_CIDRS", "100.64.0.0/10")
+    get_settings.cache_clear()
+    try:
+        nets = discovery.provider_allowed_networks()
+        assert [str(n) for n in nets] == ["100.64.0.0/10"]
+        monkeypatch.setenv("LLM_PROVIDER_ALLOWED_CIDRS", "100.64.0.0/10,oops")
+        get_settings.cache_clear()
+        assert discovery.provider_allowed_networks() == ()
+    finally:
+        get_settings.cache_clear()
+
+
+# Round 5 (W3.6): more metadata endpoints, NAT64 / 6to4 embeddings of the
+# metadata address, and IPv6 zone ids.
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://[fd20:ce::254]/computeMetadata/v1/",  # GCP over IPv6
+        "http://192.0.0.192/opc/v1/instance/",  # Oracle Cloud legacy
+        "http://[64:ff9b::a9fe:a9fe]/latest/meta-data",  # NAT64 well-known
+        "http://[64:ff9b:1::a9fe:a9fe]/latest/meta-data",  # NAT64 local-use
+        "http://[2002:a9fe:a9fe::1]/latest/meta-data",  # 6to4
+    ],
+)
+def test_round5_metadata_forms_blocked_even_with_allowances(url):
+    from core.platform.url_safety import parse_networks
+
+    with pytest.raises(UrlSafetyError, match="metadata"):
+        validate_provider_url(
+            url,
+            allow_loopback=True,
+            allowed_networks=parse_networks("::/0, 0.0.0.0/0"),
+        )
+
+
+def test_nat64_of_a_public_address_is_classified_as_that_address():
+    from core.platform.url_safety import blocked_reason
+
+    assert blocked_reason("64:ff9b::808:808") is None  # 8.8.8.8
+    assert blocked_reason("64:ff9b::a00:1") == "private address"  # 10.0.0.1
+
+
+@pytest.mark.parametrize(
+    "url", ["http://[fe80::1%25eth0]/", "http://[fd00::1%25eth0]/"]
+)
+def test_scoped_ipv6_address_is_refused(url):
+    with pytest.raises(UrlSafetyError, match="scoped"):
+        validate_provider_url(url, allow_loopback=True)
+
+
+def test_scoped_address_refused_by_resolver_and_audit_export():
+    from core.compliance.audit_export import refuse_reserved_literal
+    from core.platform.url_safety import blocked_reason
+
+    assert blocked_reason("fd00::1%eth0") == "scoped address"
+    with pytest.raises(ValueError, match="scoped"):
+        refuse_reserved_literal("fd12::1%eth0")
+    with pytest.raises(ValueError, match="metadata"):
+        refuse_reserved_literal("fd20:ce::254")  # inside the allowed ULA range

@@ -4,7 +4,7 @@ import { useRef, useState } from 'react'
 import { Icon } from '../../shared/icons'
 import { InfoTip } from '../../shared/InfoTip'
 import { Field, Select, TextInput } from '../../shared/ui'
-import { basePath } from '../../config/basePath'
+import { streamFetch } from '../../services/api'
 import { INTEGRATION_CATEGORIES } from '../../config/integrations'
 import type { SectionProps } from './types'
 
@@ -39,7 +39,9 @@ interface Validation {
 
 const STEPS = ['Provide documentation', 'Review and edit', 'Test and save']
 const CATEGORY_OPTIONS = INTEGRATION_CATEGORIES.map((c) => ({ value: c, label: c }))
-const JSON_POST = { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' } } as const
+// streamFetch adds the X-CSRF-Token header, cookie credentials and the 401
+// refresh retry that axios callers get from the interceptors.
+const JSON_POST = { method: 'POST', headers: { 'Content-Type': 'application/json' } } as const
 
 const chipLabel = (f: SettingField) => (f.type === 'password' ? `${f.label} (secret)` : f.label)
 const checkLabel = (k: string) => k.replace(/_/g, ' ').replace(/^\w/, (l) => l.toUpperCase())
@@ -96,7 +98,7 @@ export default function CustomIntegrationBuilder({ notify, onWrote, onSaved }: P
     setBusy('generate')
     setError(null)
     try {
-      const resp = await fetch(`${basePath}/api/custom-integrations/generate`, {
+      const resp = await streamFetch('/custom-integrations/generate', {
         ...JSON_POST,
         body: JSON.stringify({
           documentation,
@@ -129,7 +131,7 @@ export default function CustomIntegrationBuilder({ notify, onWrote, onSaved }: P
   // writes the server file and metadata, unless this exact code is already on disk
   const write = async (g: GeneratedIntegration) => {
     if (savedCode === serverCode) return false
-    const resp = await fetch(`${basePath}/api/custom-integrations/save`, {
+    const resp = await streamFetch('/custom-integrations/save', {
       ...JSON_POST,
       body: JSON.stringify({ integration_id: g.integration_id, metadata: g.metadata, server_code: serverCode }),
     })
@@ -145,9 +147,8 @@ export default function CustomIntegrationBuilder({ notify, onWrote, onSaved }: P
     try {
       const wrote = await write(generated)
       if (wrote) onWrote()
-      const res = await fetch(`${basePath}/api/custom-integrations/${generated.integration_id}/validate`, {
+      const res = await streamFetch(`/custom-integrations/${encodeURIComponent(generated.integration_id)}/validate`, {
         method: 'POST',
-        credentials: 'include',
       })
       if (!res.ok) throw new Error('Failed to validate integration')
       setValidation(await res.json())
