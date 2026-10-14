@@ -1,10 +1,10 @@
-# AutoSecOps 2.0 — İş paketi durumu (14 Ekim 2026, akşam)
+# AutoSecOps 2.0 — İş paketi durumu (14 Ekim 2026, gece)
 
 > Yeni oturumda devam etmek için önce `docs/wp/HANDOFF.md` (kurulum + başlangıç komutu), sonra bu dosya.
 Hedef: düzenlenmiş sektör GA, 30 Ekim 2026 (31 Ekim tampon). Plan: `docs/wp/NORTHSTAR_PLAN.md`.
 Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) → yalnızca spec + diff gören bağımsız doğrulayıcı → PASS → `integration`'a merge → tam test + gates → `integration` ve `main` push.
 
-**`main` == `integration` == `a72f686a`** (remote `target` = SingularityRD/autosecops2). Ürün sürümü **2.0.0** (`release_tool.py check-versions`); sürüm notları `docs/release/2.0.0.md` (54 dahil, 4 hariç: W0.8, W1.4, W2.9, W4.4). **`v2.0.0` etiketi yok.**
+**`main` == `integration` == bu commit (W0.23 sonrası)** (remote `target` = SingularityRD/autosecops2). Ürün sürümü **2.0.0** (`release_tool.py check-versions`); sürüm notları `docs/release/2.0.0.md` (58 dahil, 4 hariç: W0.8, W1.4, W2.9, W4.4). **`v2.0.0` etiketi yok.**
 
 ## 1. main'de (doğrulandı, birleşti)
 
@@ -23,22 +23,25 @@ Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) → yalnızca spe
 | W0.18 GA takipleri | PASS (Yüksek: run durumu) | SQLSTATE-yalnız tablo tespiti, FIPS doküman girişi, 413'te run `failed`/`refused`, medic testi (root), liteparse exit-134, R29 geri yükleme mesajı |
 | W0.20 doküman listesi kontrolü | PASS (Normal) | `merged_wps.txt` HEAD yerine belgelenen tabana karşı |
 | W4.7 sürüm aracı / notlar / 2.0.0 | PASS, tur 9 (Yüksek) | SBOM, cosign anahtarsız imza, `allow_late` (birim testi toleranslı, etiket hattı katı) |
+| W0.19 GitHub CI yeşil | PASS (Normal) | Bandit 7 yanlış pozitif `nosec`+gerekçe; SSO admin rotalarında yetki DB oturumundan önce; Medic gizli ad listesi W3.7 ile eşitlendi; DB/integration test düzeltmeleri |
+| W0.21 air-gap imaj adları | PASS (insan onayı: varsayılan imajlar) | Varsayılanlar `ghcr.io/singularityrd/autosecops-*` (release.yml ile testle bağlı); build-bundle temizliği, model çekiminde proxy |
+| W0.22 CI imaj taraması + PyJWT 2.14.0 | PASS (Yüksek) | backend/daemon imajları CI'da push'suz build + Trivy; **PyJWT CVE-2026-102268 (CRITICAL) kapatıldı** (tek-algoritma allow-list'lerimiz yüzünden istismar edilemiyordu) |
+| W0.23 tarama sertleştirme + PyJWT 2.15.1 | PASS, tur 2 (Yüksek) | Tüm Trivy adımları SHA+v0.75.0; her imajda ayrı gizli bilgi kapısı (her şiddet); UI'daki sahte GCP anahtar placeholder'ı kaldırıldı |
 
 ## 2. Dalda / sürmekte
 
 | WP | Durum | Sıradaki adım |
 |---|---|---|
-| W0.19 GitHub CI yeşil | Sürüyor (`wp/w0.19-ci-green`) | `main`'de CI/CD Pipeline 165c5f1f'den beri kırmızı: Unit Tests – Backend (DB-backed) ve Security Scan – Python (Bandit) kesin; Backend/Integration teyit edilecek. Bu yüzden "Build/Scan Docker Images" hiç koşmadı. Doğrula → birleştir → notları yeniden üret (`render-notes --data docs/release/2.0.0.json --write`). |
 | W1.4 prompt-injection seti | Spec taslağı `wp/w1.4-injection-set` | İnsan kararı (aşağı §3). |
 
 ## 3. GA kontrol listesi (sahibiyle)
 
 | # | Madde | Sahip | Durum |
 |---|---|---|---|
-| 1 | `main`'de GitHub CI tamamen yeşil, imaj build + Trivy taraması koşmuş | Ajan (W0.19) | sürüyor |
-| 2 | İnternetsiz kurulum temiz VM'de < 30 dk (Kapı C) | Ajan + insan (gerçek VM) | yapılmadı; bu makinede Docker var, `kind` ile simülasyon mümkün |
+| 1 | `main`'de GitHub CI tamamen yeşil, imaj build + Trivy taraması koşmuş | Ajan (W0.19/22/23) | dalda yeşil; `main` koşusu teyit edilmeli |
+| 2 | İnternetsiz kurulum temiz VM'de < 30 dk (Kapı C) | İnsan (gerçek VM) + rc.1 imajları | prova: paket/imza/sahtecilik reddi/registry yükleme çalışıyor; bu konteynerde Kubernetes koşmuyor, proxy apt'yi engelliyor → süre ölçülemedi |
 | 3 | Yük ve kaos SLO'ları son `main` üzerinde | Ajan | W4.1 birleşik; son taban üzerinde yeniden koşulmadı |
-| 4 | Yüksek riskli WP'lerin ürün sahibi onayı: W1.7b (`/mcp` approve/reject kaldırıldı), W1.9 SSO, W4.5 DB yükseltme, W0.13 auth-api (CSRF), W0.12b spool, W0.15, W3.10, W3.6, W0.18, W4.7 | Ürün sahibi | kullanıcı 14 Ekim'de merge/push'u onayladı; ürün onayı ayrıca kaydedilmeli |
+| 4 | Yüksek riskli WP'lerin ürün sahibi onayı: W1.7b (`/mcp` approve/reject kaldırıldı), W1.9 SSO, W4.5 DB yükseltme, W0.13 auth-api (CSRF), W0.12b spool, W0.15, W3.10, W3.6, W0.18, W4.7, W0.21, W0.22, W0.23 | Ürün sahibi | kullanıcı 14 Ekim'de merge/push'u onayladı; ürün onayı ayrıca kaydedilmeli |
 | 5 | Dış pentest (26 Ekim başlangıç) ön bulguları | İnsan | rezervasyon teyit edilmeli |
 | 6 | W1.4: insan yazımı saldırı seti mi, mevcut v1 240 vaka mı | İnsan | karar bekliyor |
 | 7 | Etiket koruması ruleset'leri (`scripts/release/rulesets/`) | Repo yöneticisi | uygulanmadı |
@@ -55,6 +58,9 @@ Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) → yalnızca spe
 - W3.10: imzalar FIPS'te Ed25519 (ECDSA bağlantısı ayrı WP).
 - W0.16: hedef anahtar adları uzunluk sınırsız; tek surrogate 500 (önceden vardı).
 - W4.5, W1.9, W0.12b, W0.13 auth-api takipleri: önceki sürümdeki listeler geçerli (Helm `vigil_app` grant testi, `?sslpassword=` argv, SSO formu 403, spool başlık bozulması, `reset-setup.sh` CSRF).
+- W0.19: init SQL yetkileri sabit `deeptempo` rolüne; farklı DB kullanıcılı Helm kurulumunda 6 dosya uygulanamaz (şema değişikliği, ayrı WP). `ubuntu-latest` 19 Ekim'de Ubuntu 26'ya geçiyor.
+- W0.21: kullanıcı:parola içeren loopback proxy host ağını almıyor; göreli `AIRGAP_CA_BUNDLE` mutlaklaştırılmıyor. Medic imajları hiçbir iş akışında yayımlanmıyor (`medic.enabled=false`).
+- W0.22/23: OS seviyesi HIGH bulgular (backend 58 + restic 19, daemon 48, agent 53 + zlib CRITICAL düzeltmesiz) raporlanıyor. CI tarama testi, kasıtlı iş akışı düzenlemelerini (yanlış `scan-ref`, `if: false`, önceki adımda `$GITHUB_ENV`) yakalamıyor; inceleme ile korunuyor.
 - Bazı birim testleri `deeptempo_soc`'a satır yazıyor (`intake_triggers` `human_ask`), ayrı WP.
 
 ## 5. Uzak dal temizliği
