@@ -15,7 +15,6 @@ from typing import Any, Dict, List
 import pytest
 
 from core.response.checkpoints import (
-    ARGS_SUMMARY_CHARS,
     args_digest,
     canonical_args,
     raise_for_checkpoint,
@@ -69,7 +68,8 @@ def test_a_tool_call_checkpoint_carries_tool_digest_and_shows_the_arguments():
     assert params["checkpoint_id"] == "apr-1"
     assert params["tool"] == "mde_isolate"
     assert params["args_sha256"] == args_digest(ARGS)
-    assert params["args_summary"] == canonical_args(ARGS)
+    assert params["args_canonical"] == canonical_args(ARGS)
+    assert params["args_targets"] == [["machine_id", "host-a"]]
     # The person reads exactly what would run, not just the tool's name.
     assert "Tool: mde_isolate" in row["description"]
     assert '"machine_id":"host-a"' in row["description"]
@@ -100,14 +100,44 @@ def test_a_digest_the_sender_supplied_is_never_kept():
     assert params["args_sha256"] == args_digest({"machine_id": "host-a"})
 
 
-def test_long_arguments_are_summarised_but_fully_digested():
+# W0.14: the person used to read the first 600 characters of the canonical
+# arguments while the digest covered all of them. Keys sort, so a long
+# ``comment`` pushed ``machine_id`` out of what was shown: an analyst approved
+# an isolation without seeing which host it isolated.
+PADDED = {"comment": "x" * 5000, "machine_id": "host-b"}
+
+
+def test_padding_cannot_push_the_target_out_of_what_the_approver_sees():
     approvals = _Approvals()
-    big = {"note": "x" * (ARGS_SUMMARY_CHARS * 2)}
-    _raise(approvals, tool_call={"tool": "mde_isolate", "args": big})
+    _raise(approvals, tool_call={"tool": "mde_isolate", "args": PADDED})
+    row = approvals.created[0]
+    params = row["parameters"]
+    assert params["args_sha256"] == args_digest(PADDED)
+    # The row carries every byte the digest covers, so a reader of the row can
+    # check what they approve hashes to what runs.
+    assert params["args_canonical"] == canonical_args(PADDED)
+    assert params["args_targets"] == [["machine_id", "host-b"]]
+    assert "args_summary" not in params
+    assert canonical_args(PADDED) in row["description"]
+    assert "Target: machine_id=host-b" in row["description"]
+    assert "characters in all" not in row["description"]
+
+
+def test_a_sender_cannot_supply_the_shown_arguments():
+    approvals = _Approvals()
+    _raise(
+        approvals,
+        parameters={
+            "args_canonical": '{"machine_id":"host-a"}',
+            "args_targets": [["machine_id", "host-a"]],
+            "args_summary": "harmless",
+        },
+        tool_call={"tool": "mde_isolate", "args": {"machine_id": "host-b"}},
+    )
     params = approvals.created[0]["parameters"]
-    assert params["args_sha256"] == args_digest(big)
-    assert len(params["args_summary"]) < len(canonical_args(big))
-    assert "characters in all" in params["args_summary"]
+    assert params["args_canonical"] == '{"machine_id":"host-b"}'
+    assert params["args_targets"] == [["machine_id", "host-b"]]
+    assert "args_summary" not in params
 
 
 def test_a_checkpoint_without_a_tool_call_binds_no_arguments():
@@ -173,3 +203,30 @@ def test_a_parked_compose_phase_binds_its_call():
     assert row["parameters"]["args_sha256"] == args_digest(ARGS)
     assert row["parameters"]["tool"] == "mde_isolate"
     assert "Arguments:" in row["description"]
+
+
+def test_a_parked_compose_phase_names_its_target_even_behind_padding():
+    from core.workflows import run_bridge_router as bridge
+
+    approvals = _Approvals()
+    bridge._raise_approval(
+        "run-1",
+        bridge.PhaseUpdate(
+            phase_id="p1",
+            agent="auto_responder",
+            name="Respond",
+            order=1,
+            status="waiting",
+            checkpoint_id="apr-1",
+            question="parked on approval for mde_isolate",
+            tool="mde_isolate",
+            args=PADDED,
+        ),
+        approvals,
+    )
+    row = approvals.created[0]
+    # The compose question names only the tool; the title names the host.
+    assert row["title"] == "Approve mde_isolate on machine_id=host-b"
+    assert row["description"].startswith("parked on approval for mde_isolate\n")
+    assert '"machine_id":"host-b"' in row["description"]
+    assert row["parameters"]["args_canonical"] == canonical_args(PADDED)

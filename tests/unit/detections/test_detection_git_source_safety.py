@@ -306,6 +306,8 @@ def test_update_fetches_the_stored_url_not_the_clone_origin(service):
     def fake_run(argv, **kwargs):
         calls.append(argv)
         out = "core.bare\nremote.origin.url\n" if "config" in argv else ""
+        if "rev-parse" in argv:
+            out = f"{clone}\n"
         return subprocess.CompletedProcess(argv, 0, out, "")
 
     clone = service.base_dir / "rules"
@@ -402,3 +404,125 @@ def test_update_source_refuses_a_stored_local_path_outside_the_roots(service):
     )
     with pytest.raises(ValueError, match="Local path must be under"):
         service.update_source("local1")
+
+
+# --- W0.14: a source folder that is not a repository of its own ------------
+
+
+@pytest.mark.parametrize("stored", ["", ".", "rules/.."])
+def test_the_clone_root_itself_is_not_a_source_path(service, stored):
+    service.base_dir.mkdir(parents=True, exist_ok=True)
+    service.sources.append(
+        {
+            "id": "root1",
+            "name": "Root",
+            "type": "git",
+            "git_url": "https://git.example.com/org/rules.git",
+            "format": "sigma",
+            "local_path": stored,
+            "status": "ready",
+        }
+    )
+    with patch.object(drs.subprocess, "run") as run:
+        with pytest.raises(ValueError, match="not it"):
+            service.update_source("root1")
+        with pytest.raises(ValueError, match="not it"):
+            service._git_pull(str(service.base_dir), "https://git.example.com/o/r.git")
+        with pytest.raises(ValueError, match="not it"):
+            service._git_clone("https://git.example.com/o/r.git", stored)
+    run.assert_not_called()
+    # And delete_files never removes the whole clone root.
+    assert service.remove_source("root1", delete_files=True)
+    assert service.base_dir.is_dir()
+
+
+def test_git_never_looks_above_the_source_folder(tmp_path):
+    env = drs._git_env(str(tmp_path / "rules"))
+    assert env["GIT_CEILING_DIRECTORIES"] == str(tmp_path.resolve())
+    assert "GIT_CEILING_DIRECTORIES" not in drs._git_env() or (
+        drs._git_env()["GIT_CEILING_DIRECTORIES"] != str(tmp_path.resolve())
+    )
+
+
+def _parent_repo_with_a_plain_source(service, tmp_path):
+    """base_dir is itself a work tree; base_dir/rules is a plain folder in it."""
+    up = tmp_path / "upstream"
+    up.mkdir()
+    _git("init", "-q", "-b", "main", cwd=up)
+    (up / "parent.txt").write_text("upstream\n")
+    _git("add", ".", cwd=up)
+    _git("commit", "-qm", "up", cwd=up)
+
+    parent = service.base_dir
+    parent.mkdir(parents=True, exist_ok=True)
+    _git("init", "-q", "-b", "main", cwd=parent)
+    (parent / "parent.txt").write_text("the parent's own work\n")
+    _git("add", ".", cwd=parent)
+    _git("commit", "-qm", "parent", cwd=parent)
+    (parent / "parent.txt").write_text("uncommitted edit in the parent\n")
+    rules = parent / "rules"
+    rules.mkdir()
+    (rules / "a.yml").write_text("rule\n")
+    return up, parent, rules
+
+
+@pytest.mark.skipif(not HAS_GIT, reason="git not installed")
+def test_a_plain_source_folder_does_not_fetch_or_reset_the_repository_above_it(
+    service, tmp_path, monkeypatch
+):
+    up, parent, rules = _parent_repo_with_a_plain_source(service, tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=parent, capture_output=True, text=True
+    ).stdout
+    # The real environment (ceiling included), plus the file:// transport so
+    # the local upstream stands in for an https one: without the W0.14 checks
+    # this fetches into the parent and resets its work tree.
+    real_env = drs._git_env
+    monkeypatch.setattr(
+        drs,
+        "_git_env",
+        lambda *a, **k: {**real_env(*a, **k), "GIT_ALLOW_PROTOCOL": "file"},
+    )
+    with (
+        patch.object(drs, "check_git_url", return_value=[]),
+        patch.object(drs, "_GIT_SAFE_CONFIG", ("-c", "protocol.file.allow=always")),
+    ):
+        with pytest.raises(ValueError, match="not a git repository"):
+            service._git_pull(str(rules), f"file://{up}")
+    # The parent repository is exactly as it was: no fetch, no reset --hard.
+    assert (parent / "parent.txt").read_text() == "uncommitted edit in the parent\n"
+    assert (
+        subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=parent, capture_output=True, text=True
+        ).stdout
+        == head
+    )
+    assert not (parent / ".git" / "FETCH_HEAD").exists()
+    assert (rules / "a.yml").read_text() == "rule\n"
+
+
+@pytest.mark.skipif(not HAS_GIT, reason="git not installed")
+def test_a_repository_whose_top_is_elsewhere_is_refused(service, tmp_path, monkeypatch):
+    """Even if discovery reached a parent (say, the ceiling were lost), the
+    top-level check alone refuses before any fetch or reset."""
+    up, parent, rules = _parent_repo_with_a_plain_source(service, tmp_path)
+    real_env = drs._git_env
+    monkeypatch.setattr(
+        drs,
+        "_git_env",
+        lambda *a, **k: {**real_env(), "GIT_ALLOW_PROTOCOL": "file"},
+    )
+    with (
+        patch.object(drs, "check_git_url", return_value=[]),
+        patch.object(drs, "_GIT_SAFE_CONFIG", ("-c", "protocol.file.allow=always")),
+    ):
+        with pytest.raises(ValueError, match="not a repository of its own"):
+            service._git_pull(str(rules), f"file://{up}")
+    assert (parent / "parent.txt").read_text() == "uncommitted edit in the parent\n"
+    assert not (parent / ".git" / "FETCH_HEAD").exists()
+
+
+@pytest.mark.skipif(not HAS_GIT, reason="git not installed")
+def test_a_real_clone_still_passes_the_own_repository_check(service, tmp_path):
+    _, clone = _upstream_and_clone(service, tmp_path)
+    service._check_own_repository(str(clone))
