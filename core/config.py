@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, List, Literal, Optional
 
-from pydantic import ValidationError, field_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -244,6 +244,20 @@ class Settings(BaseSettings):
     password_reset_ttl_seconds: int = 3600
     revocation_fail_open: bool = False
 
+    # FIPS 140-3 mode (W3.10). True refuses to start unless the OpenSSL 3 FIPS
+    # provider is active for both hashlib and cryptography (core/crypto/fips.py),
+    # and new password hashes become PBKDF2-HMAC-SHA256. Audit checkpoint and
+    # evidence-pack signatures stay Ed25519 even in FIPS mode (known gap, see
+    # docs/fips.md "Bilinen boşluklar").
+    fips_mode: bool = False
+    # bcrypt | pbkdf2_sha256. Blank means bcrypt, or pbkdf2_sha256 under
+    # FIPS_MODE; bcrypt together with FIPS_MODE is a configuration error.
+    password_hash_scheme: Optional[Literal["bcrypt", "pbkdf2_sha256"]] = None
+    password_pbkdf2_iterations: int = Field(default=600_000, ge=100_000, le=10_000_000)
+    # Under FIPS_MODE, still verify (then rehash) legacy bcrypt hashes at login.
+    # Turn off once every account has migrated; bcrypt users then need a reset.
+    fips_legacy_bcrypt_verify: bool = True
+
     # LLM / gateway
     # Host-run default: `bifrost` resolves only inside the compose network, and
     # compose, Helm and start.sh all inject the right hostname explicitly.
@@ -465,6 +479,7 @@ class Settings(BaseSettings):
         "demo_mode",
         "daemon_slack_enabled",
         "mcp_auto_connect_on_startup",
+        "password_hash_scheme",
         mode="before",
     )
     # Tri-state: blank means "no opinion, use the call site's fallback".
@@ -473,6 +488,15 @@ class Settings(BaseSettings):
         if isinstance(v, str) and not v.strip():
             return None
         return v
+
+    @model_validator(mode="after")
+    def _fips_forbids_bcrypt(self) -> "Settings":
+        if self.fips_mode and self.password_hash_scheme == "bcrypt":
+            raise ValueError(
+                "PASSWORD_HASH_SCHEME=bcrypt is not FIPS-approved; leave it blank "
+                "or set pbkdf2_sha256 when FIPS_MODE=true"
+            )
+        return self
 
 
 @lru_cache(maxsize=1)
@@ -491,10 +515,19 @@ def _format_validation_error(exc: ValidationError) -> str:
 
 def validate_settings_or_exit() -> Settings:
     try:
-        return get_settings()
+        settings = get_settings()
     except ValidationError as exc:
         print(f"configuration error: {_format_validation_error(exc)}", file=sys.stderr)
         sys.exit(os.EX_CONFIG)
+    if settings.fips_mode:
+        # Lazy: the probe imports cryptography, which nothing else here needs.
+        from core.crypto.fips import fips_refusal_reason
+
+        reason = fips_refusal_reason()
+        if reason:
+            print(f"configuration error: FIPS_MODE=true but {reason}", file=sys.stderr)
+            sys.exit(os.EX_CONFIG)
+    return settings
 
 
 def is_demo_mode() -> bool:
