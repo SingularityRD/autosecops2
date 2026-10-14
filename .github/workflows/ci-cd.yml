@@ -340,10 +340,16 @@ jobs:
           exit-code: '1'
           timeout: 15m0s
 
+      # The backend refuses to import without JWT_SECRET_KEY (DEV_MODE=false):
+      # a throwaway random value, made here and gone with the container, not a
+      # secret of this repo.
       - name: Smoke test — the app imports inside the image
         env:
           SMOKE: ${{ matrix.smoke }}
-        run: docker run --rm -e SMOKE "$IMAGE" python -c "$SMOKE"
+        run: |
+          JWT_SECRET_KEY="$(openssl rand -hex 32)"
+          export JWT_SECRET_KEY
+          docker run --rm -e SMOKE -e JWT_SECRET_KEY "$IMAGE" python -c "$SMOKE"
 
   # ============================================================================
   # Unit Tests

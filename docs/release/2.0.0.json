@@ -132,6 +132,11 @@
       "topic_en": "docs merged-list check against the documented base (tests only)"
     },
     {
+      "id": "W0.21",
+      "topic": "Air-gap imaj adları: varsayılanlar `ghcr.io/singularityrd/autosecops-*` (Helm, air-gap, masaüstü compose), imajların edinilmesi ve doğrulanması belgelendi; paket temizliği, model çekme vekili, `--ollama-image` düzeltmeleri",
+      "topic_en": "air-gap image names (ghcr.io/singularityrd/autosecops-*), image download and verification documented, bundle cleanup, model-pull proxy and --ollama-image fixes"
+    },
+    {
       "id": "W0.22",
       "topic": "Backend ve daemon imajları etiketten önce CI'da taranır (Trivy, fixable CRITICAL kapısı); ci-cd.yml'deki kapalı ghcr itme işleri kaldırıldı",
       "topic_en": "backend and daemon images scanned in CI before any tag, disabled ghcr push jobs removed"
@@ -536,6 +541,12 @@
       "text": "**Etiketten önce imaj taraması:** backend ve daemon imajları her PR'da ve `main`'de yerelde derlenip Trivy ile taranır (HIGH/CRITICAL rapor, düzeltmesi olan CRITICAL'da CI düşer) ve imajın içinde duman testinden geçer; `ci-cd.yml` hiçbir registry'ye imaj itmez. İlk taramanın bulduğu CVE-2026-102268 (PyJWT, açık anahtar doğrulamasında kimlik doğrulama atlatması; CRITICAL) için PyJWT 2.14.0'a yükseltildi (W0.22)."
     },
     {
+      "when": [
+        "W0.21"
+      ],
+      "text": "**Air-gap paketi:** `build-bundle.sh` sürüm imajlarını (`ghcr.io/singularityrd/autosecops-*`) çeker ve `--image-namespace` değerini pakete giren `values-airgap.yaml`'a taşır; başarısız bir derleme yarım paketi siler (yeniden deneme \"already exists\" ile reddedilmez); Ollama model çekme adımı derleme makinesinin vekil (proxy) ayarlarını ve isteğe bağlı CA'yı kullanır, `--ollama-image` ile verilen imajı çeker (W0.21)."
+    },
+    {
       "when": [],
       "text": "**Tedarik zinciri:** imzalı imajlar, CycloneDX SBOM'ları, SLSA provenance ve çevrimdışı doğrulama (W4.7, bkz. `docs/release/dogrulama.md`)."
     }
@@ -548,7 +559,10 @@
       "text": "**MCP (kırıcı, güvenlik):** `approve_action` ve `reject_action` araçları `/mcp` sunucusundan ve chat / compose / investigate / hunt / root-cause araç kataloglarından kaldırıldı; bu adları çağıran MCP istemcisi bilinmeyen araç hatası alır. Karar Onaylar ekranından ya da `POST /api/approvals/{action_id}/approve` / `.../reject` ile, `ai_decisions.approve` yetkisi olan bir kullanıcı tarafından (varsayılan rollerde Senior Analyst, Manager, Admin; Analyst ve Viewer'da yok) verilir. Yükseltmeden önce bekletilmiş onay satırları argüman özeti taşımaz ve devam ettirildiğinde reddedilir: o araç çağrılarını yükseltmeden sonra yeniden çalıştırın (W1.7b)."
     },
     {
-      "text": "**İmaj adları değişti.** 2.0 imajları `ghcr.io/singularityrd/autosecops-{backend,daemon,agent}:2.0.0` adıyla yayımlanır. Helm grafiği (`global.imageNamespace`) ve air-gap paketi bu adları varsayılan olarak kullanır (W0.21); eski ad alanını `--set` ile sabitleyen bir kurulum bu ayarı kaldırmalıdır."
+      "text": "**İmaj adları değişti (kırıcı).** 2.0 imajları `ghcr.io/singularityrd/autosecops-{backend,daemon,agent}:2.0.0` adıyla yayımlanır. Helm grafiği (`global.imageNamespace`), air-gap paketi (`build-bundle.sh`, `values-airgap.yaml`) ve masaüstü compose dosyası bu adları varsayılan olarak kullanır (W0.21). Eski `ghcr.io/vigil-soc/vigil-*` imajlarını ya da ad alanını (`--set global.imageNamespace=...`, `image.repository`, kendi compose / ayna yapılandırmanız) sabitleyen her kurulum yeni adlara geçmelidir; eski adlarda 2.0 imajı yoktur. İmajları imzalı sürümden alın, `verify-release.sh` ile doğrulayın ve imzalı `images.json` ile karşılaştırın (bkz. `docs/release/dogrulama.md`).",
+      "when": [
+        "W0.21"
+      ]
     },
     {
       "unless": [
