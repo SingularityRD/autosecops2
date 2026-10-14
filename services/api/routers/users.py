@@ -10,12 +10,16 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, EmailStr
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from core.auth.auth_service import AuthService
+from core.auth.login_policy import get_login_policy
+from core.auth.oidc_accounts import email_owner, normalize_email
 from core.auth.password_validator import PasswordPolicyError, validate_password_strength
 from core.auth.token_blacklist import revoke_all_for_user
 from core.compliance.audit_export import record_auth_event
+from core.platform.email_service import send_email
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
 from core.storage.models import Role, User
 from core.storage.schemas import RoleSchema, UserSchema
@@ -90,6 +94,131 @@ def _can_assign_role(current_user: User, target_role: Role, session: Session) ->
         if granted and not current_perms.get(perm, False):
             return False
     return True
+
+
+ADMIN_ROLE_ID = "role-admin"
+
+
+def _may_change_identity_of(current_user: User, target: User, session: Session) -> bool:
+    """Whether ``current_user`` may change ``target``'s email, role or
+    active state, or delete it.
+
+    The email is where a password reset is sent, so changing it is a way
+    into the account; a role change or deactivation can strip an
+    administrator so that the next step succeeds. Without the Admin role, a
+    caller may do it only for themselves or for an account strictly below
+    their own privileges: never an administrator's, nor a peer's or a
+    superior's.
+    """
+    if current_user.role_id == ADMIN_ROLE_ID:
+        return True
+    if target.user_id == current_user.user_id:
+        return True
+    if target.role_id == ADMIN_ROLE_ID:
+        return False
+    role = session.query(Role).filter(Role.role_id == target.role_id).first()
+    target_perms = {
+        p
+        for p, granted in ((role.permissions or {}) if role else {}).items()
+        if granted
+    }
+    actor_perms = {
+        p
+        for p, granted in (
+            AuthService.get_user_permissions(current_user.user_id, session) or {}
+        ).items()
+        if granted
+    }
+    return target_perms < actor_perms
+
+
+def _refuse_unless_may_manage(
+    current_user: User, target: User, session: Session, what: str
+) -> None:
+    if not _may_change_identity_of(current_user, target, session):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Only an administrator can {what} an account with "
+                "privileges equal to or above your own"
+            ),
+        )
+
+
+#: pg_advisory_xact_lock key serialising changes that remove an active Admin.
+_ADMIN_CHANGE_LOCK = "users:last-active-admin"
+
+
+def lock_admin_changes(session: Session) -> None:
+    """Hold, until the transaction ends, the lock every change that could
+    remove the last active Admin takes before counting the others. A no-op
+    off PostgreSQL (SQLite unit tests run single-threaded)."""
+    bind = session.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": _ADMIN_CHANGE_LOCK},
+        )
+
+
+def _refuse_losing_admin_access(
+    session: Session, target: User, new_role_id: str, new_active: bool
+) -> None:
+    """Never leave the instance without an active Admin, and never strip a
+    configured break-glass account (it is the way back in when single
+    sign-on fails)."""
+    was_admin = target.is_active is not False and target.role_id == ADMIN_ROLE_ID
+    stays_admin = new_active and new_role_id == ADMIN_ROLE_ID
+    if was_admin and not stays_admin:
+        # Two requests each removing a different Admin would otherwise both
+        # see the other one still active and both commit: no Admin left.
+        # Serialise every "lose an Admin" change for the rest of the
+        # transaction; the count below then sees any such change already
+        # committed (READ COMMITTED: each statement takes a new snapshot).
+        lock_admin_changes(session)
+        others = (
+            session.query(User.user_id)
+            .filter(
+                User.role_id == ADMIN_ROLE_ID,
+                User.is_active.is_(True),
+                User.user_id != target.user_id,
+            )
+            .first()
+        )
+        if others is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This is the last active administrator",
+            )
+    changes = new_role_id != target.role_id or new_active != (
+        target.is_active is not False
+    )
+    if changes and target.user_id in get_login_policy(session).break_glass_user_ids:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This is a break-glass account; remove it from the single "
+                "sign-on login policy first"
+            ),
+        )
+
+
+def refuse_address_collision(
+    session: Session, address: str, exclude_user_id: Optional[str] = None
+) -> None:
+    """Refuse an address that is not acceptable or compares equal (case,
+    Unicode, IDNA) to another account's email or username."""
+    key = normalize_email(address)
+    if key is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email address is not acceptable",
+        )
+    if email_owner(session, key, exclude_user_id) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already in use",
+        )
 
 
 @router.get("/")
@@ -259,6 +388,17 @@ def create_user(
             detail="Cannot assign a role with more privileges than your own",
         )
 
+    refuse_address_collision(session, request.email)
+    username_key = normalize_email(request.username)
+    if "@" in request.username and (
+        username_key is None or email_owner(session, username_key) is not None
+    ):
+        # Sign-in takes a username or an email: they must never collide.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username or email already exists",
+        )
+
     # Create user
     user = AuthService.create_user(
         username=request.username,
@@ -289,9 +429,10 @@ def create_user(
 
 def _apply_user_update(
     session: Session, current_user: User, user_id: str, request: UpdateUserRequest
-) -> tuple[User, Optional[str], dict]:
+) -> tuple[User, Optional[str], dict, Optional[str]]:
     """Sync half of update_user. Returns the user, what made its existing
-    tokens stale (an email or role change, else None), and the payload."""
+    tokens stale (an email or role change, else None), the payload, and the
+    previous address when the email changed (to be told of the change)."""
     if not AuthService.check_permission(current_user.user_id, "users.write"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -305,29 +446,36 @@ def _apply_user_update(
         )
 
     stale_reason = None
+    old_email: Optional[str] = None
     if request.full_name is not None:
         user.full_name = request.full_name
 
-    if request.email is not None:
+    if request.email is not None and request.email != user.email:
         if user.service_account is True:
             # A reachable address is the first step to a password reset.
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="A service account's email can't be changed",
             )
-        existing = (
-            session.query(User)
-            .filter(User.email == request.email, User.user_id != user_id)
-            .first()
-        )
-        if existing:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already in use",
-            )
+        # Change the address, then request a reset: account takeover.
+        _refuse_unless_may_manage(current_user, user, session, "change the email of")
+        refuse_address_collision(session, request.email, exclude_user_id=user_id)
+        old_email = user.email
         user.email = request.email
         user.is_verified = False
         stale_reason = "Email changed"
+
+    new_role_id = request.role_id if request.role_id is not None else user.role_id
+    new_active = (
+        request.is_active if request.is_active is not None else user.is_active
+    ) is not False
+    if new_role_id != user.role_id or new_active != (user.is_active is not False):
+        # Demote or deactivate an administrator, then take the account over
+        # (or lock everyone out): only for accounts below the caller.
+        _refuse_unless_may_manage(
+            current_user, user, session, "change the role or status of"
+        )
+        _refuse_losing_admin_access(session, user, new_role_id, new_active)
 
     if request.role_id is not None:
         role = session.query(Role).filter(Role.role_id == request.role_id).first()
@@ -346,13 +494,31 @@ def _apply_user_update(
         user.role_id = request.role_id
 
     if request.is_active is not None:
+        if request.is_active is False and user.is_active is not False:
+            stale_reason = stale_reason or "Account deactivated"
         user.is_active = request.is_active
 
     # Flush so the read-back sees server defaults; the request's unit
     # of work commits.
     session.flush()
     session.refresh(user)
-    return user, stale_reason, UserSchema.dump(user)
+    return user, stale_reason, UserSchema.dump(user), old_email
+
+
+def _notify_email_changed(old_email: str, user: User, changed_by: str) -> None:
+    """Tell the previous address its account's email changed (unsilenceable
+    by whoever changed it, and the only warning if it was not the owner)."""
+    send_email(
+        to=old_email,
+        subject="AutoSecOps — your account email was changed",
+        body=(
+            f"Hello {user.full_name or user.username},\n\n"
+            f"The email address of your account ({user.username}) was changed "
+            f"by {changed_by}. Password reset links sent before this change no "
+            "longer work.\n\n"
+            "If you did not expect this, contact your administrator at once."
+        ),
+    )
 
 
 @router.put("/{user_id}")
@@ -379,9 +545,13 @@ async def update_user(
         before: tuple[Optional[str], Optional[bool]] = (None, None)
         if _audit_on(http_request):
             before = await asyncio.to_thread(_account_state, session, user_id)
-        user, stale_reason, payload = await asyncio.to_thread(
+        user, stale_reason, payload, old_email = await asyncio.to_thread(
             _apply_user_update, session, current_user, user_id, request
         )
+        if old_email:
+            await asyncio.to_thread(
+                _notify_email_changed, old_email, user, current_user.username
+            )
 
         # Sign the user out everywhere so their next session carries the new
         # email or role, not the claims and permissions cached at login.
@@ -489,6 +659,9 @@ def delete_user(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
+
+    _refuse_unless_may_manage(current_user, user, session, "delete")
+    _refuse_losing_admin_access(session, user, user.role_id, False)
 
     try:
         username = user.username

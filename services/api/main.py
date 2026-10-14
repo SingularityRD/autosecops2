@@ -72,6 +72,12 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset(
         # First-run account creation — unauthenticated by necessity; only ever
         # live on an empty instance (see services/api/routers/auth.py bootstrap).
         "/api/auth/bootstrap",
+        # Single sign-on starts signed out: the sign-in screen's provider list,
+        # the redirect to the identity provider, and its redirect back
+        # (core/auth/oidc_router.py). The /admin routes there are gated.
+        "/api/auth/sso/providers",
+        "/api/auth/sso/{provider_id}/login",
+        "/api/auth/sso/{provider_id}/callback",
         # Health check — used by load balancers and Docker.
         "/api/health",
         "/api/health/ready",

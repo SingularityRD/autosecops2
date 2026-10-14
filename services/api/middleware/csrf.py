@@ -18,11 +18,13 @@ How it works:
 
 Exempt paths:
 - Endpoints that authenticate themselves (webhooks using HMAC, ingestion
-  endpoints using bearer/API-key, the MCP surface using a minted credential,
+  endpoints called by scripts with a Bearer token, the MCP surface using a minted credential,
   the agent layer's /internal endpoints using the shared internal token)
   are always exempt; `VIGIL_CSRF_EXEMPT_PATHS` adds to that set rather than
   replacing it. Any request whose path starts with one of those prefixes
-  skips both the cookie check and the cookie seeding.
+  skips both the cookie check and the cookie seeding -- unless it carries the
+  `access_token` session cookie: then it is a browser session (the ingestion
+  routes accept one) and is checked like any other path.
 
 Report-only mode:
 - `VIGIL_CSRF_REPORT_ONLY=true` logs violations at WARNING but lets the
@@ -38,7 +40,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from core.auth.auth_cookies import context_path_prefix, cookie_root_path
+from core.auth.auth_cookies import (
+    ACCESS_COOKIE_NAME,
+    context_path_prefix,
+    cookie_root_path,
+)
 from core.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -136,7 +142,12 @@ class CSRFMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         path = request.url.path
-        if self._is_exempt(path):
+        # The exemption is for callers that authenticate with a header. A
+        # request carrying the session cookie is a browser session whatever
+        # the path, and get_current_user prefers that cookie over a Bearer
+        # header -- so /api/ingest/ (session-authenticated, not API-key) would
+        # otherwise accept a forged cross-site upload.
+        if self._is_exempt(path) and ACCESS_COOKIE_NAME not in request.cookies:
             return await call_next(request)
 
         if request.method in UNSAFE_METHODS:

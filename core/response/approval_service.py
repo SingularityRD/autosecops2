@@ -342,14 +342,23 @@ def _cap_ttl(parameters: Dict[str, Any], ttl_seconds: Optional[int]) -> None:
     parameters["ttl_seconds"] = int(ttl_seconds)
 
 
-def _nonfailed_by_key(session, key: str) -> Optional[ApprovalActionRow]:
-    """The live row for ``key``, if any. Failed rows are excluded so they can retry."""
-    return session.execute(
+def _nonfailed_by_key(
+    session, key: str, *, for_update: bool = False
+) -> Optional[ApprovalActionRow]:
+    """The live row for ``key``, if any. Failed rows are excluded so they can retry.
+
+    ``for_update`` row-locks it and reloads its attributes, so what the caller
+    reads is what it holds until commit (W0.14).
+    """
+    stmt = (
         select(ApprovalActionRow)
         .where(ApprovalActionRow.idempotency_key == key)
         .where(ApprovalActionRow.status != ActionStatus.FAILED.value)
         .limit(1)
-    ).scalar_one_or_none()
+    )
+    if for_update:
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
+    return session.execute(stmt).scalar_one_or_none()
 
 
 class ApprovalService:
@@ -1114,7 +1123,20 @@ class ApprovalService:
                 if original is None or original.reversed_at is not None:
                     return None
                 now = utcnow()
-                held = _nonfailed_by_key(session, key)
+                # Locked in finish_reversal's order (the claim, then the
+                # original), and re-read under the lock: a claimant that
+                # settles between an unlocked read and the takeover below had
+                # its executed reversal overwritten as "abandoned", and the
+                # change was reversed twice (W0.14).
+                held = _nonfailed_by_key(session, key, for_update=True)
+                original = session.get(
+                    ApprovalActionRow,
+                    original_id,
+                    with_for_update=True,
+                    populate_existing=True,
+                )
+                if original is None or original.reversed_at is not None:
+                    return None
                 supersedes: Optional[str] = None
                 if held is not None:
                     abandoned = held.status == ActionStatus.REJECTED.value or (
