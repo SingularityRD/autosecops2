@@ -599,7 +599,7 @@ export function KeyDialog({
                     rows={6}
                     value={secret}
                     onChange={(e) => setSecret(e.target.value)}
-                    placeholder={existing ? '•••••••• (unchanged)' : '{\n  "type": "service_account",\n  ...\n}'}
+                    placeholder={existing ? '•••••••• (unchanged)' : 'Paste the whole key file (JSON) here'}
                     autoComplete="off"
                     spellCheck={false}
                   />
