@@ -7,6 +7,7 @@ under a deadline, so one bad file cannot stall the API.
 """
 
 import asyncio
+import atexit
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -90,6 +91,24 @@ NO_OCR_REASON = (
     "server and could not be downloaded. Put it in a folder and set "
     "TESSDATA_PREFIX to that folder."
 )
+
+
+def close_parsers() -> None:
+    """Stop the worker pools (registered with atexit below). Left to
+    LiteParse's ``__del__`` at interpreter shutdown, closing a worker's pipe
+    while its daemon reader thread holds the pipe's lock aborts the process
+    ("Fatal Python error: _enter_buffered_busy", exit 134)."""
+    with _parsers_lock:
+        parsers = list(_parsers.values())
+        _parsers.clear()
+    for parser in parsers:
+        try:
+            parser.close()
+        except Exception:  # noqa: BLE001 - shutting down; nothing to report to
+            pass
+
+
+atexit.register(close_parsers)
 
 
 def _liteparse(ocr: bool):

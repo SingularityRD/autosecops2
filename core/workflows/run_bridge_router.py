@@ -41,6 +41,8 @@ ROUTER_META = RouterMeta(
 logger = logging.getLogger(__name__)
 
 WAITING = "pending_approval"
+# A gated call refused before it was parked (W0.16): no approval exists for it.
+REFUSED = "refused"
 
 # What a run's status becomes when a phase reports one. A step that is waiting is
 # the only one that says anything about the run as a whole.
@@ -140,6 +142,31 @@ def record_phase(
             refused = str(exc)
 
     now = utcnow()
+    if refused:
+        # No approval can ever answer this step (W0.18): the phase fails and
+        # the run ends, rather than sitting paused on a question never asked.
+        run_service.upsert_phase(
+            run_id,
+            update.phase_id,
+            phase_order=update.order,
+            agent_id=update.agent,
+            status="failed",
+            output=update.output,
+            error=refused,
+            approval_state=REFUSED,
+            finished_at=now,
+        )
+        # A run already ended (cancelled, say) keeps its own end.
+        if (run_service.get_run(run_id) or {}).get("status") in ("running", "paused"):
+            run_service.finalize_run(
+                run_id,
+                status="failed",
+                error=f"{update.name}: {refused}",
+                reason=refused,
+            )
+        logger.warning("run %s: %s", run_id, refused)
+        raise HTTPException(status_code=413, detail=refused)
+
     run_service.upsert_phase(
         run_id,
         update.phase_id,
@@ -147,7 +174,7 @@ def record_phase(
         agent_id=update.agent,
         status=update.status,
         output=update.output,
-        error=refused or update.error,
+        error=update.error,
         # The agent layer says how a gate was answered; a waiting step is the only
         # state this side can name on its own.
         approval_state=update.approval_state
@@ -157,9 +184,6 @@ def record_phase(
     )
     run_service.set_status(run_id, RUN_STATUS.get(update.status, "running"))
 
-    if refused:
-        logger.warning("run %s: %s", run_id, refused)
-        raise HTTPException(status_code=413, detail=refused)
     if update.status == WAITING and update.checkpoint_id:
         _raise_approval(run_id, update, approvals)
 

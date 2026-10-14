@@ -117,19 +117,39 @@ class DecisionTableMissing(RuntimeError):
 
 
 def _is_undefined_table(exc: BaseException) -> bool:
+    """True only for SQLSTATE 42P01 (undefined_table) in ``exc``'s chain.
+
+    The SQLSTATE decides whenever the driver gives one: SQLAlchemy's message
+    quotes the statement, which names ``alert_lane_decisions``, so a text match
+    would also take 42703 (undefined column), 42883 (undefined function) or
+    42501 (permission denied) for a missing table and fail the backfill open.
+    The message is read only when no error in the chain carries a SQLSTATE
+    (e.g. SQLite's "no such table").
+    """
+    chain = []
     seen = set()
     cur: Any = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
-        code = getattr(cur, "pgcode", None) or getattr(cur, "sqlstate", None)
-        if code == _UNDEFINED_TABLE or type(cur).__name__ == "UndefinedTable":
-            return True
-        text = str(cur).lower()
+        chain.append(cur)
+        cur = getattr(cur, "orig", None) or cur.__cause__ or cur.__context__
+    codes = [
+        c
+        for c in (
+            getattr(e, "pgcode", None) or getattr(e, "sqlstate", None) for e in chain
+        )
+        if isinstance(c, str) and c
+    ]
+    if codes:
+        return _UNDEFINED_TABLE in codes
+    if any(type(e).__name__ == "UndefinedTable" for e in chain):
+        return True
+    for e in chain:
+        text = str(e).lower()
         if "alert_lane_decisions" in text and (
             "does not exist" in text or "no such table" in text
         ):
             return True
-        cur = getattr(cur, "orig", None) or cur.__cause__ or cur.__context__
     return False
 
 

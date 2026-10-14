@@ -930,7 +930,8 @@ def test_key_held_outside_the_install_rotates_into_secrets(
     secrets_path = dest["state"] / "secrets.enc"
     assert "approvals expired: 2" in restored.stdout
     assert str(secrets_path) in restored.stdout
-    assert "clear or replace JWT_SECRET_KEY in the environment" in restored.stdout
+    assert "read the rotated key from secrets.enc" in restored.stdout
+    assert "outranks" not in restored.stdout
     stored = json.loads(
         Fernet((dest["state"] / "master.key").read_bytes()).decrypt(
             secrets_path.read_bytes()

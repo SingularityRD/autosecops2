@@ -274,3 +274,23 @@ def test_pasted_text_is_named_for_what_it_is(tmp_path):
     )
 
     assert row.name == "Pasted text"
+
+
+def test_a_process_that_built_the_worker_pool_exits_cleanly():
+    """W0.18: the pool is stopped at exit, not by LiteParse's ``__del__`` during
+    interpreter shutdown, which aborted with exit 134 ("_enter_buffered_busy")."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    code = (
+        "from core.documents import extract\n"
+        "extract._liteparse(True).warm_up()\n"
+        "extract._liteparse(False).warm_up()\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", code], cwd=root, capture_output=True, text=True, timeout=120
+    )
+    assert done.returncode == 0, done.stderr[-2000:]
+    assert "Fatal Python error" not in done.stderr

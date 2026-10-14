@@ -1147,6 +1147,21 @@ class _Scanner(ast.NodeVisitor):
     def _jwt_call(self, node: ast.Call, leaf: str) -> None:
         if leaf == "encode":
             alg = _arg(node, 2, "algorithm")
+            if alg is None:
+                # W0.18: ``jwt.encode(p, k, **opts)`` / ``(*args)`` may carry
+                # the algorithm; take it from a provable literal or count it.
+                for kw in node.keywords:
+                    if kw.arg is not None:
+                        continue
+                    opts = self._kwargs_dict(kw.value)
+                    if opts is None:
+                        self.found["jwt algorithm unproven"] += 1
+                        return
+                    if "algorithm" in opts:
+                        alg = opts["algorithm"]
+                if alg is None and any(isinstance(a, ast.Starred) for a in node.args):
+                    self.found["jwt algorithm unproven"] += 1
+                    return
             self._jwt_alg(alg)
             # Round 8: the signing side picks the algorithm itself, so it must
             # be provable (decode's allow-list may be checked at runtime).
@@ -2484,6 +2499,16 @@ def test_typescript_scanner_round7_passes(source):
         ),
         ("import jwt\njwt.encode(p, k, algorithm=alg)", "jwt algorithm unproven"),
         ("import jwt\njwt.encode(p, k, settings.jwt_alg)", "jwt algorithm unproven"),
+        ("import jwt\njwt.encode(p, k, **opts)", "jwt algorithm unproven"),
+        ("import jwt\njwt.encode(p, *rest)", "jwt algorithm unproven"),
+        (
+            "import jwt\njwt.encode(p, k, **{'algorithm': 'EdDSA'})",
+            "jwt algorithm (EdDSA)",
+        ),
+        (
+            "import jwt\nO = dict(algorithm='ES256K')\njwt.encode(p, k, **O)",
+            "jwt algorithm (ES256K)",
+        ),
         (
             "import jwt\nA = 'HS256'\nglobals()['A'] = 'EdDSA'\n"
             "jwt.encode(p, k, algorithm=A)",
@@ -2532,6 +2557,8 @@ def test_scanner_catches_round8(source, expected):
         "import builtins\nbuiltins.__import__('json')",
         "import jwt\nA = 'HS256'\njwt.encode(p, k, algorithm=A)",
         "import jwt\njwt.encode(p, k, algorithm='RS' + '256')",
+        "import jwt\njwt.encode(p, k, **{'algorithm': 'HS256'})",
+        "import jwt\njwt.encode(p, k, **{'headers': {}})",  # PyJWT default HS256
         "import hashlib\nN = 'sha256'\nglobals()['M'] = 'md5'\nhashlib.new(N)",
         _ITS + "Signer(k, key_derivation='hmac', digest_method=hashlib.sha256)",
         _ITS + "URLSafeSerializer(k, signer_kwargs={'digest_method': hashlib.sha256,"
