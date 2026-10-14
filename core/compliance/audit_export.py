@@ -2672,9 +2672,7 @@ class Redactor:
         """Scrub one event within a fresh :class:`ScrubBudget`: once spent,
         every remaining value is masked (``[REDACTED-BUDGET]``) and
         ``details._redaction_budget_exceeded`` is set."""
-        budget = ScrubBudget(
-            self.event_chars, self.event_nodes, self.event_json_parses
-        )
+        budget = ScrubBudget(self.event_chars, self.event_nodes, self.event_json_parses)
         token = _BUDGET.set(budget)
         try:
             out = self._event(ev)
@@ -2683,9 +2681,7 @@ class Redactor:
         if budget.exceeded:
             self.budget_exceeded += 1
             details = out.details if isinstance(out.details, dict) else {}
-            out = replace(
-                out, details={**details, "_redaction_budget_exceeded": True}
-            )
+            out = replace(out, details={**details, "_redaction_budget_exceeded": True})
         return out
 
     def _event(self, ev: AuditEvent) -> AuditEvent:
@@ -2809,9 +2805,7 @@ def bounded_details_json(details: Any, max_chars: int) -> str:
     return json.dumps(kept, sort_keys=True, separators=(",", ":"))
 
 
-def format_cef(
-    ev: AuditEvent, host: str, *, max_details: int = CEF_DETAILS_MAX
-) -> str:
+def format_cef(ev: AuditEvent, host: str, *, max_details: int = CEF_DETAILS_MAX) -> str:
     """One CEF:0 line (no trailing newline).
 
     ``details`` goes in ``cs4`` as JSON of at most ``max_details`` characters
@@ -2849,7 +2843,10 @@ def format_cef(
             ("flexString2Label", "chainHeadHash"),
             ("flexString2", head.get("hash")),
             ("cn1Label", "chainHeadSeq"),
-            ("cn1", seq if isinstance(seq, int) and not isinstance(seq, bool) else None),
+            (
+                "cn1",
+                seq if isinstance(seq, int) and not isinstance(seq, bool) else None,
+            ),
             ("rawEvent", cp.get("body")),
         ]
     elif ev.source == CHECKPOINT_SOURCE:
@@ -2985,7 +2982,9 @@ def _render_rfc5424(
 BODY_PART_ACTION = "audit.checkpoint.body_part"
 
 
-def _checkpoint_body_part(ev: AuditEvent, part: int, parts: int, chunk: str) -> AuditEvent:
+def _checkpoint_body_part(
+    ev: AuditEvent, part: int, parts: int, chunk: str
+) -> AuditEvent:
     cp = ev.details
     return AuditEvent(
         id=f"{ev.id}:body:{part}",
