@@ -590,9 +590,11 @@ def _require_secret_on_repoint(
 #: imported (at startup, before any request could store one). Taken once:
 #: SecretsManager.set also writes os.environ, so the live environment cannot
 #: tell a deployment's variable from one the application stored.
+_STARTUP_ENV = os.environ.items()  # noqa: ENV001 - which secrets the deployment set
 _STARTUP_ENV_SECRET_KEYS = frozenset(
-    k for k, v in os.environ.items() if k.startswith("OIDC_CLIENT_SECRET_") and v
+    k for k, v in _STARTUP_ENV if k.startswith("OIDC_CLIENT_SECRET_") and v
 )
+del _STARTUP_ENV
 
 
 def _secret_from_environment(key: str) -> bool:
@@ -607,7 +609,7 @@ def _secret_from_environment(key: str) -> bool:
     """
     if key in _STARTUP_ENV_SECRET_KEYS:
         return True
-    value = os.environ.get(key)
+    value = os.environ.get(key)  # noqa: ENV001 - the environment backend itself
     if not value:
         return False
     manager = get_secrets_manager()
