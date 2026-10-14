@@ -2504,8 +2504,61 @@ def _valid_ip(value: Optional[str]) -> Optional[str]:
         return None
 
 
-def format_cef(ev: AuditEvent, host: str, *, max_details: int = 1024) -> str:
-    """One CEF:0 line (no trailing newline)."""
+CHECKPOINT_SOURCE = "audit_checkpoints"
+# The signed checkpoint fields a verifier needs. They never go through the
+# CEF ``details`` limit or the syslog size cut: they ride in their own CEF
+# extensions / SD parameters, and a body too big for one syslog message is
+# sent whole across ``audit.checkpoint.body_part`` messages.
+CEF_DETAILS_MAX = 1024
+
+
+def checkpoint_details(ev: AuditEvent) -> Optional[dict]:
+    """``details`` of a W1.10 checkpoint event, else None."""
+    if ev.source != CHECKPOINT_SOURCE or not isinstance(ev.details, dict):
+        return None
+    return ev.details if ev.details.get("signature") else None
+
+
+def bounded_details_json(details: Any, max_chars: int) -> str:
+    """``details`` as compact JSON of at most about ``max_chars``.
+
+    Over the limit the result is still a JSON object, never a cut string:
+    top-level keys that fit are kept (sorted order) and the rest are dropped,
+    and ``"_truncated": {"original_chars": N, "omitted_keys": K}`` says so.
+    """
+    full = json.dumps(details, sort_keys=True, separators=(",", ":"))
+    if len(full) <= max_chars:
+        return full
+    if not isinstance(details, dict):
+        details = {"value": details}
+    flag_room = 96
+    kept: dict = {}
+    used = 2
+    omitted = 0
+    for key in sorted(details, key=str):
+        piece = len(json.dumps({str(key): details[key]}, separators=(",", ":"))) - 1
+        if used + piece + flag_room <= max_chars:
+            kept[str(key)] = details[key]
+            used += piece
+        else:
+            omitted += 1
+    kept["_truncated"] = {"original_chars": len(full), "omitted_keys": omitted}
+    return json.dumps(kept, sort_keys=True, separators=(",", ":"))
+
+
+def format_cef(
+    ev: AuditEvent, host: str, *, max_details: int = CEF_DETAILS_MAX
+) -> str:
+    """One CEF:0 line (no trailing newline).
+
+    ``details`` goes in ``cs4`` as JSON of at most ``max_details`` characters
+    (:func:`bounded_details_json`: still valid JSON, with a ``_truncated``
+    object when keys were dropped). A W1.10 checkpoint is never cut: its
+    signed ``body`` goes verbatim in ``rawEvent``, the signature in ``cs6``,
+    the Ed25519 public key in ``flexString1``, the chain head in
+    ``cn1`` (seq) / ``flexString2`` (hash), ``body_hash`` in ``cs5`` and the
+    other checkpoint fields complete in ``cs4``.
+    """
     header = "|".join(
         [
             "CEF:0",
@@ -2517,9 +2570,30 @@ def format_cef(ev: AuditEvent, host: str, *, max_details: int = 1024) -> str:
             str(max(0, min(10, int(ev.severity)))),
         ]
     )
-    details = json.dumps(ev.details, sort_keys=True, separators=(",", ":"))
-    if len(details) > max_details:
-        details = details[:max_details] + "...[truncated]"
+    cp = checkpoint_details(ev)
+    extra: list[tuple[str, Any]] = []
+    if cp is not None:
+        rest = {k: v for k, v in cp.items() if k != "body"}
+        details = json.dumps(rest, sort_keys=True, separators=(",", ":"))
+        head = cp.get("audit_chain_head")
+        head = head if isinstance(head, dict) else {}
+        seq = head.get("seq")
+        extra = [
+            ("cs6Label", "checkpointSignature"),
+            ("cs6", cp.get("signature")),
+            ("flexString1Label", "checkpointPublicKey"),
+            ("flexString1", cp.get("public_key")),
+            ("flexString2Label", "chainHeadHash"),
+            ("flexString2", head.get("hash")),
+            ("cn1Label", "chainHeadSeq"),
+            ("cn1", seq if isinstance(seq, int) and not isinstance(seq, bool) else None),
+            ("rawEvent", cp.get("body")),
+        ]
+    elif ev.source == CHECKPOINT_SOURCE:
+        # A body part (or other checkpoint record): our own data, never cut.
+        details = json.dumps(ev.details, sort_keys=True, separators=(",", ":"))
+    else:
+        details = bounded_details_json(ev.details, max_details)
     ext: list[tuple[str, Any]] = [
         ("rt", int(as_utc(ev.timestamp).timestamp() * 1000)),
         ("externalId", ev.id),
@@ -2542,6 +2616,7 @@ def format_cef(ev: AuditEvent, host: str, *, max_details: int = 1024) -> str:
         ("cs4", details),
         ("cs5Label", "eventHash"),
         ("cs5", ev.hash),
+        *extra,
     ]
     present = {k for k, v in ext if v not in (None, "") and not k.endswith("Label")}
     parts = []
@@ -2586,21 +2661,14 @@ def syslog_severity(cef_severity: int) -> int:
 _BOM = "\ufeff"
 
 
-def format_rfc5424(
+def _render_rfc5424(
     ev: AuditEvent,
     *,
     host: str,
-    facility: int = 13,
-    body: Literal["rfc5424", "cef"] = "rfc5424",
-    max_bytes: int = 8192,
-    procid: Optional[int] = None,
+    facility: int,
+    body: Literal["rfc5424", "cef"],
+    procid: Optional[int],
 ) -> bytes:
-    """One RFC 5424 message (unframed) with the event in an SD element.
-
-    The MSG part is the event as JSON (``rfc5424``) or a CEF line (``cef``),
-    UTF-8 with the BOM RFC 5424 §6.4 asks for. Too long for ``max_bytes``,
-    ``details`` is dropped first, then the MSG is cut on a character boundary.
-    """
     pri = facility * 8 + syslog_severity(ev.severity)
     header = " ".join(
         [
@@ -2612,7 +2680,7 @@ def format_rfc5424(
             _printable(ev.category, 32),
         ]
     )
-    params = [
+    params: list[tuple[str, Any]] = [
         ("id", ev.id),
         ("src", ev.source),
         ("act", ev.action),
@@ -2623,31 +2691,156 @@ def format_rfc5424(
         ("targetId", ev.target_id),
         ("srcIp", _valid_ip(ev.src_ip)),
     ]
+    cp = checkpoint_details(ev)
+    if cp is not None:
+        head = cp.get("audit_chain_head")
+        head = head if isinstance(head, dict) else {}
+        params += [
+            ("keyId", cp.get("key_id")),
+            ("publicKey", cp.get("public_key")),
+            ("signature", cp.get("signature")),
+            ("bodyHash", cp.get("body_hash")),
+            ("prevBodyHash", cp.get("prev_body_hash")),
+            ("chainHeadSeq", head.get("seq")),
+            ("chainHeadHash", head.get("hash")),
+        ]
     sd = (
         "["
         + SD_ID
         + "".join(f' {k}="{sd_escape(v)}"' for k, v in params if v not in (None, ""))
         + "]"
     )
+    if body == "cef":
+        msg = format_cef(ev, host)
+    else:
+        msg = json_line_safe(
+            json.dumps(ev.to_dict(host), separators=(",", ":"), ensure_ascii=False)
+        )
+    return f"{header} {sd} {_BOM}{msg}".encode("utf-8")
+
+
+BODY_PART_ACTION = "audit.checkpoint.body_part"
+
+
+def _checkpoint_body_part(ev: AuditEvent, part: int, parts: int, chunk: str) -> AuditEvent:
+    cp = ev.details
+    return AuditEvent(
+        id=f"{ev.id}:body:{part}",
+        source=ev.source,
+        category=ev.category,
+        action=BODY_PART_ACTION,
+        outcome=ev.outcome,
+        severity=ev.severity,
+        timestamp=ev.timestamp,
+        message=f"audit chain checkpoint {ev.target_id} body part {part}/{parts}",
+        target_type=ev.target_type,
+        target_id=ev.target_id,
+        hash=ev.hash,
+        details={
+            "checkpoint_event_id": ev.id,
+            "body_hash": cp.get("body_hash"),
+            "part": part,
+            "parts": parts,
+            "body_chunk": chunk,
+        },
+    )
+
+
+def _split_checkpoint(
+    ev: AuditEvent, max_bytes: int, render: Callable[[AuditEvent], bytes]
+) -> list[bytes]:
+    """A checkpoint too big for one message: the event with every field but
+    ``body`` (``_truncated`` says where the body went), then the body, in
+    order, across ``audit.checkpoint.body_part`` messages. Concatenating the
+    ``body_chunk`` values of parts 1..N gives the signed body byte for byte."""
+    cp = ev.details
+    body_text = cp.get("body")
+    body_text = body_text if isinstance(body_text, str) else json.dumps(body_text)
+    probe = render(_checkpoint_body_part(ev, 99999, 99999, ""))
+    room = max_bytes - len(probe) - 8
+    chunks: list[str] = []
+    if room >= 48:
+        # Escaping at most triples a character of the (ASCII) canonical body:
+        # '"' is '\\"' inside a CEF-escaped JSON string.
+        size = room // 3
+        while True:
+            chunks = [body_text[i : i + size] for i in range(0, len(body_text), size)]
+            n = len(chunks)
+            msgs = [
+                render(_checkpoint_body_part(ev, i + 1, n, c))
+                for i, c in enumerate(chunks)
+            ]
+            if all(len(m) <= max_bytes for m in msgs) or size <= 16:
+                break
+            size //= 2
+    else:
+        msgs = []
+    flag = {
+        "fields": ["body"],
+        "reason": "max_message_bytes",
+        "body_chars": len(body_text),
+        "body_parts": len(msgs),
+        "body_part_action": BODY_PART_ACTION if msgs else None,
+    }
+    rest = {k: v for k, v in cp.items() if k != "body"}
+    primary = render(replace(ev, details={**rest, "_truncated": flag}))
+    if len(primary) > max_bytes:
+        primary = render(
+            replace(ev, message=ev.action, details={**rest, "_truncated": flag})
+        )
+    if len(primary) > max_bytes:
+        primary = primary[:max_bytes].decode("utf-8", "ignore").encode("utf-8")
+    return [primary, *[m for m in msgs if len(m) <= max_bytes]]
+
+
+def encode_rfc5424(
+    ev: AuditEvent,
+    *,
+    host: str,
+    facility: int = 13,
+    body: Literal["rfc5424", "cef"] = "rfc5424",
+    max_bytes: int = 8192,
+    procid: Optional[int] = None,
+) -> list[bytes]:
+    """The RFC 5424 messages (unframed) that carry ``ev``: one, except for a
+    W1.10 checkpoint too large for ``max_bytes`` (see :func:`_split_checkpoint`).
+
+    The MSG part is the event as JSON (``rfc5424``) or a CEF line (``cef``),
+    UTF-8 with the BOM RFC 5424 §6.4 asks for. Any other event too long for
+    ``max_bytes`` loses ``details`` first (``{"_truncated": true}``), then
+    the MSG is cut on a character boundary.
+    """
+    pid = procid if procid is not None else os.getpid()
 
     def render(event: AuditEvent) -> bytes:
-        if body == "cef":
-            msg = format_cef(event, host)
-        else:
-            msg = json_line_safe(
-                json.dumps(
-                    event.to_dict(host), separators=(",", ":"), ensure_ascii=False
-                )
-            )
-        return f"{header} {sd} {_BOM}{msg}".encode("utf-8")
+        return _render_rfc5424(
+            event, host=host, facility=facility, body=body, procid=pid
+        )
 
     out = render(ev)
     if len(out) <= max_bytes:
-        return out
+        return [out]
+    if checkpoint_details(ev) is not None:
+        return _split_checkpoint(ev, max_bytes, render)
     out = render(replace(ev, details={"_truncated": True}))
     if len(out) <= max_bytes:
-        return out
-    return out[:max_bytes].decode("utf-8", "ignore").encode("utf-8")
+        return [out]
+    return [out[:max_bytes].decode("utf-8", "ignore").encode("utf-8")]
+
+
+def format_rfc5424(
+    ev: AuditEvent,
+    *,
+    host: str,
+    facility: int = 13,
+    body: Literal["rfc5424", "cef"] = "rfc5424",
+    max_bytes: int = 8192,
+    procid: Optional[int] = None,
+) -> bytes:
+    """One RFC 5424 message: the first of :func:`encode_rfc5424`."""
+    return encode_rfc5424(
+        ev, host=host, facility=facility, body=body, max_bytes=max_bytes, procid=procid
+    )[0]
 
 
 def frame_octet_count(message: bytes) -> bytes:
@@ -2753,11 +2946,11 @@ class SyslogTransport(Transport):
             )
         return self._ssl
 
-    def encode(self, ev: AuditEvent) -> bytes:
+    def encode(self, ev: AuditEvent) -> list[bytes]:
         limit = self.dest.max_message_bytes
         if self.dest.protocol == "udp":
             limit = min(limit, 65000)
-        return format_rfc5424(
+        return encode_rfc5424(
             ev,
             host=self.host,
             facility=self.dest.facility,
@@ -2809,7 +3002,9 @@ class SyslogTransport(Transport):
         if self._dead or self._writer is None or self._writer.is_closing():
             await self._connect()
         assert self._writer is not None
-        payload = b"".join(frame_octet_count(self.encode(ev)) for ev in events)
+        payload = b"".join(
+            frame_octet_count(m) for ev in events for m in self.encode(ev)
+        )
         try:
             self._writer.write(payload)
             await asyncio.wait_for(self._writer.drain(), timeout=self.dest.timeout_s)
@@ -2829,7 +3024,8 @@ class SyslogTransport(Transport):
         try:
             sock.settimeout(self.dest.timeout_s)
             for ev in events:
-                sock.sendto(self.encode(ev), (addresses[0], self.dest.port))
+                for msg in self.encode(ev):
+                    sock.sendto(msg, (addresses[0], self.dest.port))
         except OSError as exc:
             raise DeliveryError("send_failed") from exc
         finally:
