@@ -192,7 +192,6 @@ _FOREIGN_LIBS = {
     "gnupg": "pgp",
     "sha3": "keccak (pysha3)",
     "pyblake2": "blake2",
-    "Cryptodome": "pycryptodome",
     "simplecrypt": "simplecrypt",
     "ed25519": "ed25519",
     "pure25519": "ed25519",
@@ -201,6 +200,14 @@ _FOREIGN_LIBS = {
     "sshtunnel": "paramiko",
     "crypt": "crypt(3)",
     "_crypt": "crypt(3)",
+    # Round 7: crypto libraries whose names the _CRYPTO_CAPABLE regex misses.
+    # authlib's JOSE/OAuth layer picks algorithms itself (EdDSA, HS*, RSA1_5,
+    # A*KW) outside FIPS_MODE's control; ntlm_auth / requests_ntlm compute
+    # MD4/MD5/RC4; pyspx is SPHINCS+ (no validated implementation).
+    "authlib": "authlib (jose)",
+    "ntlm_auth": "ntlm (md4/rc4)",
+    "requests_ntlm": "ntlm (md4/rc4)",
+    "pyspx": "sphincs+ (pyspx)",
 }
 # Round 6 allow-list: an import whose top-level name looks crypto-capable
 # (_CRYPTO_CAPABLE) must be in _FOREIGN_LIBS (counted) or here (vetted, with
@@ -212,7 +219,9 @@ _VETTED_CRYPTO_LIBS = {
     "secrets": "os.urandom; no algorithm choice",
     "ssl": "system OpenSSL; the FIPS provider governs TLS ciphers",
     "cryptography": "OpenSSL-backed; hazmat algorithms are checked per use",
-    "jwt": "PyJWT on cryptography; decode pins algorithms=[HS256]",
+    "jwt": "PyJWT on cryptography: HS256 sessions / tool principals, RS256 / "
+    "ES256 OIDC ID tokens (core/auth/oidc.py ALLOWED_ALGORITHMS); literal "
+    "algorithm= / algorithms= values are checked per call (_JWT_APPROVED)",
     "pyotp": "TOTP = HMAC-SHA1, approved (SP 800-131A); see Non-goals",
     "itsdangerous": "HMAC signer; core/auth/password_reset.py pins SHA-256 + "
     "HMAC key derivation (test_password_reset_serializer_is_sha256_hmac)",
@@ -248,6 +257,12 @@ _APPROVED_DIGESTS = frozenset(
     | {"shake_128", "shake_256"}
 )
 _APPROVED_HELPER = "core.crypto.fips.approved_digest"
+# Round 7: JWS algorithms whose primitives are FIPS-approved (HMAC-SHA2,
+# RSASSA-PKCS1-v1_5 / PSS, ECDSA P-256/384/521). EdDSA, ES256K and "none" are
+# not; a literal outside this set in jwt.encode / jwt.decode is counted.
+_JWT_APPROVED = frozenset(
+    f"{family}{bits}" for family in ("HS", "RS", "PS", "ES") for bits in (256, 384, 512)
+)
 _ITSDANGEROUS_SERIALIZERS = {
     "Serializer",
     "URLSafeSerializer",
@@ -255,10 +270,23 @@ _ITSDANGEROUS_SERIALIZERS = {
     "URLSafeTimedSerializer",
 }
 _ITSDANGEROUS_SIGNERS = {"Signer", "TimestampSigner"}
+# Round 7: positional index of digest_method / signer / signer_kwargs.
+_ITS_SIGNER_DIGEST_POS = 4
+_ITS_SERIALIZER_SIGNER_POS = 4
+_ITS_SERIALIZER_KWARGS_POS = 5
 _DIGEST_CALLS = {"hashlib.new", "hashlib.pbkdf2_hmac", "hashlib.file_digest"}
 _HMAC_CALLS = {"hmac.new", "hmac.digest", "hmac.HMAC"}
 _IMPORT_CALLS = {"importlib.import_module", "__import__"}
-_KNOWN_CALLS = _DIGEST_CALLS | _HMAC_CALLS | _IMPORT_CALLS
+# Round 7: calls that locate / run / resolve a module by name without an
+# import statement: (call, name keyword).
+_SPEC_CALLS = {
+    "importlib.util.find_spec": "name",
+    "importlib.find_loader": "name",
+    "pkgutil.get_loader": "module_or_name",
+    "pkgutil.resolve_name": "name",
+    "runpy.run_module": "mod_name",
+}
+_KNOWN_CALLS = _DIGEST_CALLS | _HMAC_CALLS | _IMPORT_CALLS | set(_SPEC_CALLS)
 
 
 def _is_test_path(rel: str) -> bool:
@@ -361,6 +389,33 @@ def _resolve_relative(name: str, package: str | None) -> str | None:
     return ".".join(base + ([rest] if rest else []))
 
 
+def _bound_names(node: ast.AST):
+    """(name, import target or None) for each name a node binds. Round 7:
+    imports, def / class statements and match captures count as rebinding,
+    besides stores, parameters and except-as."""
+    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+        yield node.id, None
+    elif isinstance(node, ast.arg):
+        yield node.arg, None
+    elif isinstance(node, ast.ExceptHandler) and node.name:
+        yield node.name, None
+    elif isinstance(node, ast.Import):
+        for alias in node.names:
+            bound = alias.asname or alias.name.split(".")[0]
+            yield bound, alias.name if alias.asname else bound
+    elif isinstance(node, ast.ImportFrom):
+        for alias in node.names:
+            if alias.name != "*":
+                target = f"{'.' * node.level}{node.module or ''}.{alias.name}"
+                yield alias.asname or alias.name, target
+    elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        yield node.name, None
+    elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+        yield node.name, None
+    elif isinstance(node, ast.MatchMapping) and node.rest:
+        yield node.rest, None
+
+
 class _Scanner(ast.NodeVisitor):
     """Resolves import aliases (and ``x = hashlib`` style reassignments,
     ``sys.modules[...]``, ``getattr``, ``import_module``) to dotted names,
@@ -382,6 +437,16 @@ class _Scanner(ast.NodeVisitor):
             set(parent.asym_counted) if parent else set()
         )
         self.handled: set[int] = set()
+        # Round 7: every binding site per name (assignments, imports, defs,
+        # classes, parameters, match captures ...) and plain-assignment values.
+        self.bindings: Counter = Counter(parent.bindings) if parent else Counter()
+        self.assigned: dict[str, list] = (
+            {k: list(v) for k, v in parent.assigned.items()} if parent else {}
+        )
+        # Round 7: local itsdangerous subclasses: name -> (kind, approved).
+        self.its_classes: dict[str, tuple[str, bool]] = (
+            dict(parent.its_classes) if parent else {}
+        )
 
     # --- entry ---------------------------------------------------------------
 
@@ -402,6 +467,9 @@ class _Scanner(ast.NodeVisitor):
         self._collect_consts(nodes, assigns)
         for _ in range(3):  # chains: a = hashlib; b = a
             self._collect_module_aliases(assigns)
+        classes = [n for n in nodes if isinstance(n, ast.ClassDef)]
+        for _ in range(3):  # chains: class A(Signer); class B(A)
+            self._collect_its_classes(classes)
         self.visit(_without_imports(tree))
         return +self.found
 
@@ -414,14 +482,20 @@ class _Scanner(ast.NodeVisitor):
         # with / walrus / augmented / unpacking target, except-as.
         simple = {id(node.targets[0]) for node in assigns}
         rebound = set()
+        imports: set[tuple[str, str]] = set()
         for n in nodes:
-            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
-                if id(n) not in simple:
-                    rebound.add(n.id)
-            elif isinstance(n, ast.arg):
-                rebound.add(n.arg)
-            elif isinstance(n, ast.ExceptHandler) and n.name:
-                rebound.add(n.name)
+            for bound, target in _bound_names(n):
+                if target is not None:
+                    # the same import repeated (module level and lazily in a
+                    # function) is one binding, a different target is another
+                    if (bound, target) in imports:
+                        continue
+                    imports.add((bound, target))
+                self.bindings[bound] += 1
+                if not (isinstance(n, ast.Name) and id(n) in simple):
+                    rebound.add(bound)
+        for name, values in seen.items():
+            self.assigned.setdefault(name, []).extend(values)
         for _ in range(2):  # a = "md"; b = a + "5"
             for name, values in seen.items():
                 folded = {self.fold(v) for v in values}
@@ -445,7 +519,7 @@ class _Scanner(ast.NodeVisitor):
             if (
                 resolved
                 and _canon(resolved).split(".")[0]
-                in _CRYPTO_ROOTS | {"sys", "importlib"}
+                in _CRYPTO_ROOTS | {"sys", "importlib", "itsdangerous", "pkgutil"}
                 and not _classify(resolved)
                 and not _asym_of(resolved)
             ):
@@ -532,6 +606,9 @@ class _Scanner(ast.NodeVisitor):
                     if func != "sys.modules.get"
                     else (self._fold_str(_arg(node, 0, "key")))
                 )
+            if func == "pkgutil.resolve_name":
+                text = self._fold_str(_arg(node, 0, "name"))
+                return text.replace(":", ".") if text else None
             if func == "getattr" and len(node.args) >= 2:
                 owner = self.resolve(node.args[0])
                 attr = self._fold_str(node.args[1])
@@ -758,15 +835,20 @@ class _Scanner(ast.NodeVisitor):
                 if name == "hashlib.file_digest"
                 else self._digest_provable(arg, _APPROVED_DIGESTS)
             )
-            if digest is None and not known:
-                # Round 6: a digest name the scanner cannot prove approved.
-                self.found["dynamic digest name"] += 1
+            exempt = name == "hashlib.new" and _security_flag_off(node)
+            if digest is None:
+                if not known:
+                    # Round 6: a digest name the scanner cannot prove approved.
+                    self.found["dynamic digest name"] += 1
             elif digest in _NON_FIPS_HASHES:
                 self.found[_NON_FIPS_HASHES[digest]] += 1
-            elif digest in _WEAK_HASHES and (
-                name != "hashlib.new" or not _security_flag_off(node)
-            ):
-                self.found[f"{digest} (security use)"] += 1
+            elif digest in _WEAK_HASHES:
+                if not exempt:
+                    self.found[f"{digest} (security use)"] += 1
+            elif digest not in _APPROVED_DIGESTS and not exempt:
+                # Round 7: any other literal ('ssl3-md5', 'ssl3-sha1', 'sm3'
+                # spellings, 'whirlpool', ...) must be on the approved list.
+                self.found[f"non-approved digest ({digest})"] += 1
             return
         if name in _HMAC_CALLS:
             arg = _arg(node, 2, "digestmod" if name != "hmac.digest" else "digest")
@@ -775,22 +857,27 @@ class _Scanner(ast.NodeVisitor):
             digest = self._digest_of(arg)
             if digest in _HMAC_FORBIDDEN:
                 self.found["hmac-md5"] += 1
+            elif digest in _NON_FIPS_HASHES:
+                self.found[_NON_FIPS_HASHES[digest]] += 1  # Round 7: HMAC-BLAKE2
+            elif self._string_digest(
+                arg
+            ) is not None and digest not in _APPROVED_DIGESTS | {"sha1"}:
+                self.found[f"non-approved digest ({digest})"] += 1  # Round 7
             elif arg is not None and not self._digest_known(arg):
                 self.found["dynamic digest name"] += 1
             return
-        if name.startswith("itsdangerous.") and name.rpartition(".")[2] in (
-            _ITSDANGEROUS_SERIALIZERS | _ITSDANGEROUS_SIGNERS
+        if name in _SPEC_CALLS:
+            self._spec_call(node, name)
+            return
+        if self._its_kind(name):
+            self._its_call(node, name)
+            return
+        if name.split(".")[0] == "jwt" and name.rpartition(".")[2] in (
+            "encode",
+            "decode",
+            "decode_complete",
         ):
-            # Round 6: itsdangerous defaults to SHA-1 ("django-concat" key
-            # derivation + HMAC-SHA1); a FIPS caller must pick the digest.
-            attr = name.rpartition(".")[2]
-            keyword = (
-                "signer_kwargs"
-                if attr in _ITSDANGEROUS_SERIALIZERS
-                else "digest_method"
-            )
-            if not any(kw.arg in (keyword, None) for kw in node.keywords):
-                self.found["sha1 (itsdangerous default)"] += 1
+            self._jwt_call(node, name.rpartition(".")[2])
             return
         if name.endswith("asymmetric.rsa.generate_private_key"):
             size = self.fold(_arg(node, 1, "key_size"))
@@ -806,6 +893,238 @@ class _Scanner(ast.NodeVisitor):
         ):
             return
         self._ref(node.func, name)
+
+    # --- Round 7: module lookups by name -------------------------------------
+
+    def _spec_call(self, node: ast.Call, name: str) -> None:
+        arg = _arg(node, 0, _SPEC_CALLS[name])
+        text = self._fold_str(arg)
+        if text is None:
+            if self._dynamic(arg):
+                self.found["dynamic crypto import"] += 1
+            return
+        module, _, attr = text.partition(":")
+        if name == "importlib.util.find_spec":
+            module = (
+                _resolve_relative(module, self._fold_str(_arg(node, 1, "package")))
+                or ""
+            )
+        if not module:
+            return
+        self._imported(module)
+        if attr:
+            self._ref(node, f"{module}.{attr}")
+        elif name == "pkgutil.resolve_name":
+            self._ref(node, module)
+
+    # --- Round 7: itsdangerous ------------------------------------------------
+
+    def _its_kind(self, name: str) -> str | None:
+        """'signer' / 'serializer' / 'algorithm' for itsdangerous classes and
+        local subclasses of them, else None."""
+        if name in self.its_classes:
+            return self.its_classes[name][0]
+        owner, _, attr = name.rpartition(".")
+        if owner.split(".")[0] != "itsdangerous":
+            return None
+        if attr in _ITSDANGEROUS_SIGNERS:
+            return "signer"
+        if attr in _ITSDANGEROUS_SERIALIZERS:
+            return "serializer"
+        if attr == "HMACAlgorithm":
+            return "algorithm"
+        return None
+
+    def _collect_its_classes(self, classes: list) -> None:
+        for cls in classes:
+            kinds = []
+            for base in cls.bases:
+                resolved = self.resolve(base)
+                kind = self._its_kind(_canon(resolved)) if resolved else None
+                if kind:
+                    inherited = (
+                        self.its_classes.get(resolved, (kind, False))[1]
+                        if resolved in self.its_classes
+                        else False
+                    )
+                    kinds.append((kind, inherited))
+            if not kinds:
+                continue
+            kind, approved = kinds[0]
+            attr = "default_signer" if kind == "serializer" else "default_digest_method"
+            value = self._class_attr(cls, attr)
+            if value is not None:
+                approved = (
+                    self._signer_class_approved(value)
+                    if kind == "serializer"
+                    else self._callable_provable(value)
+                )
+            self.its_classes[cls.name] = (kind, approved)
+
+    @staticmethod
+    def _class_attr(cls: ast.ClassDef, attr: str) -> ast.expr | None:
+        value = None
+        for stmt in cls.body:
+            if isinstance(stmt, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == attr for t in stmt.targets
+            ):
+                value = stmt.value
+            elif (
+                isinstance(stmt, ast.AnnAssign)
+                and isinstance(stmt.target, ast.Name)
+                and stmt.target.id == attr
+                and stmt.value is not None
+            ):
+                value = stmt.value
+        return value
+
+    def _signer_class_approved(self, node: ast.expr) -> bool:
+        if isinstance(node, ast.Name) and self.bindings[node.id] > 1:
+            return False
+        resolved = self.resolve(node)
+        entry = self.its_classes.get(resolved or "")
+        return bool(entry and entry[0] == "signer" and entry[1])
+
+    def _callable_provable(self, node: ast.expr | None, depth: int = 0) -> bool:
+        """True if ``node`` is provably an approved hashlib constructor:
+        ``hashlib.sha256``, ``staticmethod(...)`` / ``lambda`` around one, or
+        a name bound exactly once (import or assignment) to one."""
+        if node is None or depth > 5:
+            return False
+        if isinstance(node, ast.Call):
+            if self.resolve(node.func) == "staticmethod" and len(node.args) == 1:
+                return self._callable_provable(node.args[0], depth + 1)
+            return False
+        if isinstance(node, ast.Lambda):
+            body = node.body
+            return isinstance(body, ast.Call) and self._callable_provable(
+                body.func, depth + 1
+            )
+        base = self._base(node)
+        if base is None or self.bindings[base] > 1:
+            return False
+        if isinstance(node, ast.Name) and node.id in self.assigned:
+            return self._callable_provable(self.assigned[node.id][0], depth + 1)
+        owner, _, attr = _canon(self.resolve(node) or "").rpartition(".")
+        return owner == "hashlib" and _digest_name(attr) in _APPROVED_DIGESTS
+
+    def _judge_digest_method(self, node: ast.expr) -> None:
+        """Count an itsdangerous ``digest_method`` value that is not provably
+        approved (a known non-approved hashlib name is counted where it is
+        referenced instead)."""
+        if self._callable_provable(node):
+            return
+        resolved = _canon(self.resolve(node) or "")
+        if resolved.startswith("hashlib.") and _classify(resolved):
+            return
+        self.found["itsdangerous digest unproven"] += 1
+
+    def _kwargs_dict(self, node: ast.expr) -> dict | None:
+        """{key: value node} for a literal dict / dict(...) / a name bound once
+        to one; None when not provable (or it unpacks ``**``)."""
+        if isinstance(node, ast.Name):
+            if self.bindings[node.id] != 1 or node.id not in self.assigned:
+                return None
+            node = self.assigned[node.id][0]
+        if isinstance(node, ast.Dict):
+            out = {}
+            for key, value in zip(node.keys, node.values):
+                text = self._fold_str(key) if key is not None else None
+                if text is None:
+                    return None
+                out[text] = value
+            return out
+        if isinstance(node, ast.Call) and self.resolve(node.func) == "dict":
+            if node.args or any(kw.arg is None for kw in node.keywords):
+                return None
+            return {kw.arg: kw.value for kw in node.keywords}
+        return None
+
+    def _its_call(self, node: ast.Call, name: str) -> None:
+        """Round 6/7: itsdangerous defaults to SHA-1 (django-concat key
+        derivation + HMAC-SHA1); a FIPS caller must pick a provably approved
+        digest, as a keyword / signer_kwargs entry or a subclass default."""
+        kind = self._its_kind(name)
+        local = name in self.its_classes
+        star = any(kw.arg is None for kw in node.keywords)
+        if kind in ("signer", "algorithm"):
+            dm = (
+                _arg(node, _ITS_SIGNER_DIGEST_POS, "digest_method")
+                if kind == "signer"
+                else _arg(node, 0, "digest_method")
+            )
+            if dm is not None:
+                self._judge_digest_method(dm)
+            elif star:
+                self.found["itsdangerous digest unproven"] += 1
+            elif not local:
+                self.found["sha1 (itsdangerous default)"] += 1
+            # a local subclass without one is counted at its class statement
+            return
+        kwargs_node = _arg(node, _ITS_SERIALIZER_KWARGS_POS, "signer_kwargs")
+        signer_node = _arg(node, _ITS_SERIALIZER_SIGNER_POS, "signer")
+        if kwargs_node is not None:
+            kwargs = self._kwargs_dict(kwargs_node)
+            if kwargs is None:
+                self.found["itsdangerous digest unproven"] += 1
+                return
+            if "digest_method" in kwargs:
+                self._judge_digest_method(kwargs["digest_method"])
+                return
+        elif star:
+            self.found["itsdangerous digest unproven"] += 1
+            return
+        if signer_node is None:
+            if not local:
+                self.found["sha1 (itsdangerous default)"] += 1
+            return
+        if self._signer_class_approved(signer_node):
+            return
+        resolved = self.resolve(signer_node) or ""
+        if resolved in self.its_classes:
+            return  # unapproved local signer: counted at its class statement
+        if self._its_kind(_canon(resolved)) == "signer":
+            self.found["sha1 (itsdangerous default)"] += 1
+        else:
+            self.found["itsdangerous digest unproven"] += 1
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        entry = self.its_classes.get(node.name)
+        if entry and not entry[1]:
+            attr = (
+                "default_signer"
+                if entry[0] == "serializer"
+                else "default_digest_method"
+            )
+            value = self._class_attr(node, attr)
+            if value is None:
+                self.found["sha1 (itsdangerous default)"] += 1
+            elif entry[0] == "serializer":
+                self.found["itsdangerous digest unproven"] += 1
+            else:
+                self._judge_digest_method(value)
+        self.generic_visit(node)
+
+    # --- Round 7: PyJWT ---------------------------------------------------------
+
+    def _jwt_alg(self, node: ast.expr | None) -> None:
+        if isinstance(node, ast.Constant) and node.value is None:
+            self.found["jwt algorithm (none)"] += 1
+            return
+        text = self._fold_str(node)
+        if text is not None and text not in _JWT_APPROVED:
+            self.found[f"jwt algorithm ({text})"] += 1
+
+    def _jwt_call(self, node: ast.Call, leaf: str) -> None:
+        if leaf == "encode":
+            self._jwt_alg(_arg(node, 2, "algorithm"))
+            return
+        algs = _arg(node, 2, "algorithms")
+        if isinstance(algs, (ast.List, ast.Tuple, ast.Set)):
+            for elt in algs.elts:
+                self._jwt_alg(elt)
+        elif algs is not None:
+            self._jwt_alg(algs)  # algorithms='EdDSA'
 
     def _scan_string(self, source: str) -> None:
         try:
@@ -864,7 +1183,8 @@ _TS_PATTERNS = {
         rf"|hash\s*:\s*(?:\{{\s*name\s*:\s*)?{_Q}sha-?1{_Q}"
         rf"|(?:create(?:Sign|Verify)|\bsign|\bverify)\(\s*{_Q}(?:rsa-)?sha-?1"
         rf"(?:WithRSAEncryption)?{_Q}"
-        r"|\bCryptoJS\s*\.\s*SHA1\b",  # Round 6 (HmacSHA1 is approved)
+        r"|\bCryptoJS\s*\.\s*SHA1\b"  # Round 6 (HmacSHA1 is approved)
+        r"|\bsjcl\s*\.\s*hash\s*\.\s*sha1\b",  # Round 7
         re.I,
     ),
     "weak hash": re.compile(
@@ -881,11 +1201,9 @@ _TS_PATTERNS = {
         r"Blowfish)\b",
         re.I,
     ),
-    # Round 6: a digest picked at runtime (createHash(algo)) cannot be judged.
-    "dynamic digest name": re.compile(
-        r"(?:create(?:Hash|Hmac)|subtle\s*\.\s*digest)\(\s*(?![\'\"`{])"
-        r"[A-Za-z_$][\w$.]*\s*[,)]"
-    ),
+    # Round 6/7: digests / ciphers picked at runtime are counted by
+    # _ts_first_args (any non-literal first argument: identifier, template
+    # with ${}, ternary, call, ...).
     "foreign crypto lib": re.compile(
         r"(?:from\s+|require\(\s*|import\(\s*|import\s+)['\"](?:bcrypt|bcryptjs|"
         r"tweetnacl|libsodium[\w-]*|crypto-js|node-forge|js-sha1|js-md5|sha1|md5|"
@@ -894,6 +1212,8 @@ _TS_PATTERNS = {
         r"jsrsasign|elliptic|hash\.js|create-hash|sha\.js|md5\.js|ripemd160|"
         r"spark-md5|object-hash|browserify-cipher|crypto-browserify|pbkdf2|"
         r"bcrypt-ts|node-rsa|jsencrypt|openpgp|"
+        # Round 7: Stanford JS crypto library, WebAssembly hash library.
+        r"sjcl|hash-wasm|"
         r"@noble/(?:hashes|curves|ed25519|ciphers|secp256k1))(?:/[^'\"]*)?['\"]",
         re.I,
     ),
@@ -910,11 +1230,138 @@ def _fold_ts_strings(source: str) -> str:
         source = folded
 
 
+# Round 7: node:crypto functions whose first argument names the algorithm.
+_TS_CRYPTO_FUNCS = (
+    "createHash",
+    "createHmac",
+    "createCipheriv",
+    "createDecipheriv",
+    "createSign",
+    "createVerify",
+    "pbkdf2",
+    "pbkdf2Sync",
+    "hkdf",
+    "hkdfSync",
+    "scrypt",
+    "scryptSync",
+)
+_TS_FUNC_ALT = "|".join(sorted(_TS_CRYPTO_FUNCS, key=len, reverse=True))
+# const { createHash: h } = require('crypto') / = crypto
+_TS_DESTRUCTURE = re.compile(r"\{([^{}]*)\}\s*=")
+_TS_RENAME = re.compile(rf"\b({_TS_FUNC_ALT})\s*:\s*([A-Za-z_$][\w$]*)")
+# import { createHash as h } from 'node:crypto'
+_TS_IMPORT_NAMED = re.compile(r"import\s*(?:type\s*)?\{([^{}]*)\}\s*from")
+_TS_IMPORT_AS = re.compile(rf"\b({_TS_FUNC_ALT})\s+as\s+([A-Za-z_$][\w$]*)")
+# const h = crypto.createHash (not called) / = createHash.bind(crypto)
+_TS_ASSIGN = re.compile(
+    rf"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:[\w$]+\s*\.\s*)*"
+    rf"({_TS_FUNC_ALT})\b(?!\s*\()"
+)
+# crypto['createHash'](...) -> crypto.createHash(...)
+_TS_BRACKET = re.compile(rf"\[\s*['\"`]({_TS_FUNC_ALT}|digest)['\"`]\s*\]")
+_TS_SPACE_CALL = re.compile(rf"\b({_TS_FUNC_ALT}|digest)\s+\(")
+_TS_ALG_CALL = re.compile(
+    r"\b(createHash|createHmac|createCipheriv|createDecipheriv)\s*\("
+    r"|\bsubtle\s*\.\s*(digest)\s*\("
+)
+_TS_LITERAL = re.compile(r"^(?:'([^'\\]*)'|\"([^\"\\]*)\"|`([^`\\$]*)`)$")
+_TS_OBJ_NAME = re.compile(r"^\{\s*name\s*:\s*(.*?)\s*,?\s*\}$", re.S)
+# Digest literals counted by the md5 / sha1 / weak-hash patterns already.
+_TS_WEAK_LITERAL = re.compile(
+    r"^(?:md[45]|sha-?1|ripemd-?160|rmd160|blake2[bs]\d*)$", re.I
+)
+_TS_APPROVED_DIGESTS = frozenset(
+    {"sha224", "sha256", "sha384", "sha512", "sha512224", "sha512256"}
+    | {f"sha3{n}" for n in (224, 256, 384, 512)}
+    | {"shake128", "shake256"}
+)
+
+
+def _ts_canonical(source: str) -> str:
+    """Rewrite aliases of node:crypto functions to their names, so the
+    patterns see ``createHash(`` however it was bound (Round 7)."""
+    source = _TS_BRACKET.sub(lambda m: f".{m.group(1)}", source)
+    source = _TS_SPACE_CALL.sub(lambda m: f"{m.group(1)}(", source)
+    aliases: dict[str, str] = {}
+    for block in _TS_DESTRUCTURE.findall(source):
+        aliases.update({a: f for f, a in _TS_RENAME.findall(block)})
+    for block in _TS_IMPORT_NAMED.findall(source):
+        aliases.update({a: f for f, a in _TS_IMPORT_AS.findall(block)})
+    aliases.update({a: f for a, f in _TS_ASSIGN.findall(source)})
+    for alias, func in aliases.items():
+        if alias != func:
+            source = re.sub(rf"(?<![\w$.]){re.escape(alias)}\s*\(", f"{func}(", source)
+    return source
+
+
+def _ts_first_arg(source: str, start: int) -> str:
+    """Text of the call argument starting at ``start`` (balanced brackets,
+    strings skipped) up to the top-level ``,`` or ``)``."""
+    depth, i, quote = 0, start, None
+    while i < len(source):
+        ch = source[i]
+        if quote:
+            if ch == "\\":
+                i += 1
+            elif ch == quote:
+                quote = None
+        elif ch in "'\"`":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif ch == "," and depth == 0:
+            break
+        i += 1
+    return source[start:i].strip()
+
+
+def _ts_literal(arg: str) -> str | None:
+    match = _TS_LITERAL.match(arg)
+    if not match:
+        return None
+    return next(g for g in match.groups() if g is not None)
+
+
+def _ts_first_args(source: str) -> Counter:
+    """Round 7: judge the algorithm argument of createHash / createHmac /
+    subtle.digest / createCipheriv / createDecipheriv. A non-literal (name,
+    template with ${}, ternary, call, ...) is "dynamic digest name" /
+    "dynamic cipher name"; a literal digest outside the approved set that no
+    other pattern counts is "non-approved digest"."""
+    found: Counter = Counter()
+    for match in _TS_ALG_CALL.finditer(source):
+        func = match.group(1) or match.group(2)
+        arg = _ts_first_arg(source, match.end())
+        if not arg:
+            continue
+        cipher = func in ("createCipheriv", "createDecipheriv")
+        if func == "digest" and arg.startswith("{"):
+            obj = _TS_OBJ_NAME.match(arg)
+            arg = obj.group(1) if obj else ""
+        text = _ts_literal(arg)
+        if text is None:
+            found["dynamic cipher name" if cipher else "dynamic digest name"] += 1
+            continue
+        if cipher or func == "createHmac" and text.lower() in ("sha1", "sha-1"):
+            continue  # ciphers: "legacy cipher"; HMAC-SHA1 is approved
+        if _TS_WEAK_LITERAL.match(text):
+            continue
+        if re.sub(r"[-_/]", "", text.lower()) not in _TS_APPROVED_DIGESTS:
+            found["non-approved digest"] += 1
+    return found
+
+
 def scan_typescript(source: str) -> Counter:
-    source = _fold_ts_strings(source)
-    return Counter(
+    source = _ts_canonical(_fold_ts_strings(source))
+    found = Counter(
         {k: len(p.findall(source)) for k, p in _TS_PATTERNS.items() if p.search(source)}
     )
+    found.update(_ts_first_args(source))
+    return +found
 
 
 def _scanned_files():
@@ -1506,9 +1953,11 @@ def test_scanner_catches_round6(source, expected):
         "import pyotp",
         "import keyring",
         "from cryptography.fernet import Fernet",
-        "from itsdangerous import URLSafeTimedSerializer\n"
-        "URLSafeTimedSerializer(k, signer_kwargs={'digest_method': h})",
-        "from itsdangerous import TimestampSigner\nTimestampSigner(k, digest_method=h)",
+        # Round 7: the digest must be provable (an unknown ``h`` no longer is)
+        "import hashlib\nfrom itsdangerous import URLSafeTimedSerializer\n"
+        "URLSafeTimedSerializer(k, signer_kwargs={'digest_method': hashlib.sha256})",
+        "import hashlib\nfrom itsdangerous import TimestampSigner\n"
+        "TimestampSigner(k, digest_method=hashlib.sha256)",
         "from itsdangerous import BadSignature",
         # not crypto at all
         "import signal, dataclasses, unicodedata, shutil, json",
@@ -1659,3 +2108,324 @@ def test_every_top_level_source_dir_is_reached():
         )
         if has_source:
             assert top.name in scanned_tops, top.name
+
+
+# --- Round 7 ------------------------------------------------------------------
+
+_ITS = "import hashlib\nimport itsdangerous\nfrom itsdangerous import Signer, URLSafeSerializer\n"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        # 1. every literal digest name must be approved
+        ("import hashlib\nhashlib.new('ssl3-md5')", "non-approved digest (ssl3_md5)"),
+        ("import hashlib\nhashlib.new('ssl3-sha1')", "non-approved digest (ssl3_sha1)"),
+        (
+            "import hashlib\nhashlib.pbkdf2_hmac('ssl3-sha1', p, s, 1000)",
+            "non-approved digest (ssl3_sha1)",
+        ),
+        ("import hashlib\nhashlib.new('whirlpool')", "non-approved digest (whirlpool)"),
+        (
+            "import hashlib\nhashlib.file_digest(f, 'md5-sha1')",
+            "md5_sha1 (security use)",
+        ),
+        ("import hmac\nhmac.new(k, m, 'ssl3-md5')", "non-approved digest (ssl3_md5)"),
+        ("import hmac, hashlib\nhmac.new(k, m, hashlib.blake2b)", "blake2"),
+        # 2. itsdangerous: the digest value must be provably approved
+        (
+            _ITS + "itsdangerous.Signer(k, digest_method=d)",
+            "itsdangerous digest unproven",
+        ),
+        (
+            _ITS + "d = hashlib.sha256\ndef f(d):\n    Signer(k, digest_method=d)",
+            "itsdangerous digest unproven",
+        ),
+        (_ITS + "Signer(k, 'salt', '.', 'hmac', d)", "itsdangerous digest unproven"),
+        (_ITS + "Signer(k, **opts)", "itsdangerous digest unproven"),
+        (
+            _ITS + "URLSafeSerializer(k, signer_kwargs={'digest_method': h})",
+            "itsdangerous digest unproven",
+        ),
+        (
+            _ITS + "URLSafeSerializer(k, signer_kwargs=kw)",
+            "itsdangerous digest unproven",
+        ),
+        (
+            _ITS + "URLSafeSerializer(k, signer_kwargs={**base})",
+            "itsdangerous digest unproven",
+        ),
+        (_ITS + "URLSafeSerializer(k, **opts)", "itsdangerous digest unproven"),
+        (
+            _ITS + "URLSafeSerializer(k, signer_kwargs={'key_derivation': 'hmac'})",
+            "sha1 (itsdangerous default)",
+        ),
+        (
+            _ITS
+            + "URLSafeSerializer(k, signer_kwargs={'digest_method': hashlib.sha1})",
+            "sha1 (security use)",
+        ),
+        (_ITS + "URLSafeSerializer(k, signer=Signer)", "sha1 (itsdangerous default)"),
+        (_ITS + "URLSafeSerializer(k, signer=pick())", "itsdangerous digest unproven"),
+        (_ITS + "S = itsdangerous.Signer\nS(k)", "sha1 (itsdangerous default)"),
+        (_ITS + "itsdangerous.signer.HMACAlgorithm()", "sha1 (itsdangerous default)"),
+        # subclasses relying on the default
+        (_ITS + "class S(Signer):\n    pass\nS(k)", "sha1 (itsdangerous default)"),
+        (
+            _ITS + "class S(itsdangerous.TimestampSigner):\n    sep = b'~'",
+            "sha1 (itsdangerous default)",
+        ),
+        (
+            _ITS + "class A(Signer):\n    default_digest_method = staticmethod("
+            "hashlib.sha256)\nclass B(A):\n    default_digest_method = d",
+            "itsdangerous digest unproven",
+        ),
+        (
+            _ITS + "class Z(URLSafeSerializer):\n    pass",
+            "sha1 (itsdangerous default)",
+        ),
+        (
+            _ITS + "class S(Signer):\n    pass\nURLSafeSerializer(k, signer=S)",
+            "sha1 (itsdangerous default)",
+        ),
+        (
+            _ITS + "from hashlib import sha256 as d\ndef d(x):\n    pass\n"
+            "Signer(k, digest_method=d)",
+            "itsdangerous digest unproven",
+        ),
+        # 3. rebinding: import-as, def, class, match/case
+        (
+            "import hashlib\nN = 'sha256'\nfrom x import y as N\nhashlib.new(N)",
+            "dynamic digest name",
+        ),
+        (
+            "import hashlib\nN = 'sha256'\nimport n as N\nhashlib.new(N)",
+            "dynamic digest name",
+        ),
+        (
+            "import hashlib\nN = 'sha256'\ndef N():\n    pass\nhashlib.new(N)",
+            "dynamic digest name",
+        ),
+        (
+            "import hashlib\nN = 'sha256'\nasync def N():\n    pass\nhashlib.new(N)",
+            "dynamic digest name",
+        ),
+        (
+            "import hashlib\nN = 'sha256'\nclass N:\n    pass\nhashlib.new(N)",
+            "dynamic digest name",
+        ),
+        (
+            "import hashlib\nN = 'sha256'\nmatch x:\n    case N:\n        pass\n"
+            "hashlib.new(N)",
+            "dynamic digest name",
+        ),
+        (
+            "import hashlib\nN = 'sha256'\nmatch x:\n    case [*N]:\n        pass\n"
+            "hashlib.new(N)",
+            "dynamic digest name",
+        ),
+        (
+            "import hashlib\nN = 'sha256'\nmatch x:\n    case {**N}:\n        pass\n"
+            "hashlib.new(N)",
+            "dynamic digest name",
+        ),
+        (
+            "import hashlib\nN = 'sha256'\nmatch x:\n    case {'a': 1} as N:\n"
+            "        pass\nhashlib.new(N)",
+            "dynamic digest name",
+        ),
+        # 4. libraries the name regex misses; lookups by module name; PyJWT
+        ("import authlib", "authlib (jose)"),
+        ("from authlib.jose import JsonWebSignature", "authlib (jose)"),
+        ("from ntlm_auth.ntlm import NtlmContext", "ntlm (md4/rc4)"),
+        ("import requests_ntlm", "ntlm (md4/rc4)"),
+        ("import pyspx.shake_128f", "sphincs+ (pyspx)"),
+        ("import importlib.util\nimportlib.util.find_spec('Crypto')", "pycryptodome"),
+        (
+            "from importlib.util import find_spec\nfind_spec('ecdsa')",
+            "ecdsa (pure python)",
+        ),
+        ("import runpy\nrunpy.run_module('rsa')", "rsa (pure python)"),
+        (
+            "import pkgutil\npkgutil.resolve_name('hashlib:md5')(b'')",
+            "md5 (security use)",
+        ),
+        (
+            "import pkgutil\nh = pkgutil.resolve_name('hashlib')\nh.md5(b'')",
+            "md5 (security use)",
+        ),
+        ("import pkgutil\npkgutil.resolve_name('nacl.signing')", "pynacl"),
+        (
+            "import importlib.util\nimportlib.util.find_spec('Crypt' + suffix)",
+            "dynamic crypto import",
+        ),
+        ("import jwt\njwt.encode(p, k, algorithm='EdDSA')", "jwt algorithm (EdDSA)"),
+        ("import jwt\njwt.encode(p, k, 'HS1')", "jwt algorithm (HS1)"),
+        ("import jwt\njwt.encode(p, k, algorithm=None)", "jwt algorithm (none)"),
+        (
+            "import jwt\nA = 'ES256K'\njwt.encode(p, k, algorithm=A)",
+            "jwt algorithm (ES256K)",
+        ),
+        (
+            "from jwt import encode\nencode(p, k, algorithm='EdDSA')",
+            "jwt algorithm (EdDSA)",
+        ),
+        (
+            "import jwt\njwt.decode(t, k, algorithms=['HS256', 'EdDSA'])",
+            "jwt algorithm (EdDSA)",
+        ),
+        ("import jwt\njwt.decode(t, k, algorithms=['none'])", "jwt algorithm (none)"),
+        (
+            "import jwt\njwt.api_jws.decode_complete(t, k, algorithms=('HS1',))",
+            "jwt algorithm (HS1)",
+        ),
+    ],
+)
+def test_scanner_catches_round7(source, expected):
+    assert scan_python(source)[expected] >= 1, scan_python(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import hashlib\nhashlib.new('SHA-256')",
+        "import hashlib\nhashlib.new('sha3_512')",
+        "import hashlib\nhashlib.new('ssl3-md5', usedforsecurity=False)",
+        "import hashlib\nhashlib.pbkdf2_hmac('sha256', p, s, 600000)",
+        "import hmac\nhmac.new(k, m, 'SHA-1')",  # HMAC-SHA1 approved
+        "import hmac\nhmac.new(k, m, 'sha384')",
+        _ITS + "Signer(k, digest_method=hashlib.sha256)",
+        _ITS + "Signer(k, 'salt', '.', 'hmac', hashlib.sha512)",
+        _ITS + "d = hashlib.sha256\nSigner(k, digest_method=d)",
+        "import itsdangerous\nfrom hashlib import sha256 as d\n"
+        "itsdangerous.Signer(k, digest_method=d)",
+        "import itsdangerous\nimport hashlib\ndef f():\n    import hashlib\n"
+        "    return itsdangerous.Signer(k, digest_method=hashlib.sha256)",
+        _ITS + "Signer(k, digest_method=lambda d=b'': hashlib.sha256(d))",
+        _ITS + "URLSafeSerializer(k, signer_kwargs={'digest_method': hashlib.sha256,"
+        " 'key_derivation': 'hmac'})",
+        _ITS + "URLSafeSerializer(k, signer_kwargs=dict(digest_method=hashlib.sha384))",
+        _ITS + "KW = {'digest_method': hashlib.sha256}\n"
+        "URLSafeSerializer(k, signer_kwargs=KW)",
+        _ITS + "class S(Signer):\n"
+        "    default_digest_method = staticmethod(hashlib.sha256)\n"
+        "S(k)\nURLSafeSerializer(k, signer=S)",
+        _ITS + "class S(Signer):\n"
+        "    default_digest_method = staticmethod(hashlib.sha256)\n"
+        "class T(S):\n    sep = b'~'\nT(k)",
+        _ITS + "class S(Signer):\n"
+        "    default_digest_method = staticmethod(hashlib.sha256)\n"
+        "class Z(URLSafeSerializer):\n    default_signer = S\nZ(k)",
+        "import importlib.util\nimportlib.util.find_spec('json')",
+        "import pkgutil\npkgutil.resolve_name('hashlib:sha256')",
+        "import runpy\nrunpy.run_module(name)",
+        "import jwt\njwt.encode(p, k, algorithm='HS256')",
+        "import jwt\njwt.encode(p, k)",  # PyJWT default HS256
+        "import jwt\nA = 'HS256'\njwt.encode(p, k, algorithm=A)",
+        "import jwt\njwt.decode(t, k, algorithms=['RS256', 'ES256'])",
+        "import jwt\njwt.decode(t, k, algorithms=[alg])",  # checked at runtime
+    ],
+)
+def test_scanner_round7_approved_uses(source):
+    assert not scan_python(source), scan_python(source)
+
+
+def test_foreign_libs_have_no_duplicate_keys():
+    """Round 7: a repeated dict key silently drops the first entry."""
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "_FOREIGN_LIBS" for t in node.targets
+        ):
+            keys = [k.value for k in node.value.keys]
+            assert len(keys) == len(set(keys)), sorted(
+                k for k in keys if keys.count(k) > 1
+            )
+            return
+    raise AssertionError("_FOREIGN_LIBS not found")
+
+
+def test_known_crypto_libs_are_classified():
+    """Round 7: crypto libraries with ordinary names are in the deny or the
+    vetted list, never silently passing as non-crypto."""
+    for lib in ("authlib", "ntlm_auth", "pyspx", "jwt", "itsdangerous"):
+        assert lib in _FOREIGN_LIBS or lib in _VETTED_CRYPTO_LIBS, lib
+    assert "OIDC" in _VETTED_CRYPTO_LIBS["jwt"]
+
+
+def test_repo_jwt_algorithms_are_approved():
+    """The jwt vetted entry relies on these (RS256/ES256 via OIDC, HS256)."""
+    from core.auth import auth_service, oidc, tool_principal
+
+    assert set(oidc.ALLOWED_ALGORITHMS) <= _JWT_APPROVED
+    assert auth_service.JWT_ALGORITHM in _JWT_APPROVED
+    assert tool_principal._ALGORITHM in _JWT_APPROVED
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        # destructured / aliased / bracketed node:crypto functions
+        (
+            "const { createHash } = require('crypto');\ncreateHash('md5')",
+            "md5 (security use)",
+        ),
+        (
+            "const { createHash: h } = require('node:crypto');\nh('md5').update(x)",
+            "md5 (security use)",
+        ),
+        (
+            "import { createHash as mk } from 'node:crypto';\nmk('sha1')",
+            "sha1 (security use)",
+        ),
+        ("const mk = crypto.createHash;\nmk('md5')", "md5 (security use)"),
+        ("crypto['createHash']('md5')", "md5 (security use)"),
+        ("crypto.createHash ('md5')", "md5 (security use)"),
+        (
+            "const { createCipheriv: c } = crypto;\nc('des-ede3-cbc', k, iv)",
+            "legacy cipher",
+        ),
+        # non-literal algorithm arguments
+        ("crypto.createHash(`${alg}`)", "dynamic digest name"),
+        ("crypto.createHash(useMd5 ? 'md5' : 'sha256')", "dynamic digest name"),
+        ("crypto.createHash(pick())", "dynamic digest name"),
+        ("crypto.createHmac(cfg['alg'], k)", "dynamic digest name"),
+        ("const { createHash: h } = crypto;\nh(alg)", "dynamic digest name"),
+        ("await crypto.subtle.digest({ name: alg }, d)", "dynamic digest name"),
+        ("crypto.createCipheriv(algo, k, iv)", "dynamic cipher name"),
+        ("crypto.createDecipheriv(`aes-${bits}-cbc`, k, iv)", "dynamic cipher name"),
+        (
+            "crypto.createCipheriv(gcm ? 'aes-256-gcm' : 'rc4', k, iv)",
+            "dynamic cipher name",
+        ),
+        # literal digests outside the approved set
+        ("crypto.createHash('ssl3-md5')", "non-approved digest"),
+        ("crypto.createHash('whirlpool')", "non-approved digest"),
+        # more JS crypto libraries
+        ("import sjcl from 'sjcl';", "foreign crypto lib"),
+        ("const sjcl = require('sjcl');", "foreign crypto lib"),
+        ("import { md5 } from 'hash-wasm';", "foreign crypto lib"),
+        ("sjcl.hash.sha1.hash(x)", "sha1 (security use)"),
+    ],
+)
+def test_typescript_scanner_catches_round7(source, expected):
+    assert scan_typescript(source)[expected] >= 1, scan_typescript(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "const { createHash } = require('crypto');\ncreateHash('sha256')",
+        "import { createHash as mk } from 'node:crypto';\nmk('sha384')",
+        "crypto.createHash(`sha512`)",
+        "crypto.createHash('SHA3-256')",
+        "crypto.createHash('sha512-256')",
+        "crypto.createCipheriv('aes-256-gcm', k, iv)",
+        "crypto.createHmac('sha1', k)",
+        "await crypto.subtle.digest('SHA-384', data)",
+        "const h = crypto.createHash('sha256');\nh.update(x)",
+        "const { subtle } = globalThis.crypto;\nawait subtle.digest('SHA-256', d)",
+    ],
+)
+def test_typescript_scanner_round7_passes(source):
+    assert not scan_typescript(source), scan_typescript(source)
