@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, Sequence
 
-from core.lanes.alert_lanes import LaneDecision, log_decision
+from core.lanes.alert_lanes import DEFAULT_TENANT, LaneDecision, log_decision
 
 logger = logging.getLogger(__name__)
 
@@ -79,3 +79,75 @@ def record_decision(decision: LaneDecision) -> None:
         logger.warning(
             "alert lane decision for %s not written: %s", decision.finding_id, exc
         )
+
+
+# W0.15: the earliest decision per finding that settled it on its own (a rules
+# outcome, or a verdict run that was enqueued). Mirrors wants_llm_triage().
+_SETTLING = """
+SELECT DISTINCT ON (finding_id)
+       finding_id, tenant_id, lane, reason, risk, factors, rule_kind, rule_id,
+       outcome, deferred_verdict, degraded_from, verdict_run_id, model, decided_at
+FROM alert_lane_decisions
+WHERE tenant_id = :tenant
+  AND finding_id = ANY(:ids)
+  AND (lane = :rules OR (lane = :verdict AND verdict_run_id IS NOT NULL))
+ORDER BY finding_id, decided_at, id
+"""
+
+
+def settling_decisions(
+    finding_ids: Iterable[str], tenant: str = DEFAULT_TENANT
+) -> Dict[str, LaneDecision]:
+    """``{finding_id: decision}`` for the findings a recorded lane decision
+    already settled (``tenant``'s decisions: the daemon writes its own).
+    Raises when the database can't be read: the caller (the backfill sweep)
+    must then not route anything, never assume "unsettled".
+    """
+    ids = sorted({i for i in finding_ids if i})
+    if not ids:
+        return {}
+    with _session_scope() as session:
+        return query_settling(session, ids, tenant)
+
+
+def query_settling(conn: Any, ids: Sequence[str], tenant: str) -> Dict[str, LaneDecision]:
+    """``settling_decisions`` on an open connection or session."""
+    from sqlalchemy import text
+
+    from core.lanes.alert_lanes import LANE_RULES, LANE_VERDICT
+
+    rows = conn.execute(
+        text(_SETTLING),
+        {
+            "tenant": tenant,
+            "ids": list(ids),
+            "rules": LANE_RULES,
+            "verdict": LANE_VERDICT,
+        },
+    ).mappings()
+    out: Dict[str, LaneDecision] = {}
+    for r in rows:
+        rule = (
+            {"kind": r["rule_kind"], "id": r["rule_id"]}
+            if r["rule_kind"] or r["rule_id"]
+            else None
+        )
+        decided = r["decided_at"]
+        out[r["finding_id"]] = LaneDecision(
+            finding_id=r["finding_id"],
+            tenant_id=r["tenant_id"],
+            lane=r["lane"],
+            reason=r["reason"],
+            risk=float(r["risk"] or 0.0),
+            factors=tuple(r["factors"] or ()),
+            rule=rule,
+            outcome=r["outcome"],
+            deferred_verdict=bool(r["deferred_verdict"]),
+            degraded_from=r["degraded_from"],
+            verdict_run_id=r["verdict_run_id"],
+            model=r["model"],
+            decided_at=(
+                decided.isoformat() if hasattr(decided, "isoformat") else str(decided)
+            ),
+        )
+    return out

@@ -257,6 +257,7 @@ async def test_backfill_skips_findings_in_flight(monkeypatch):
         )
     )
     processor._data_service = _Sweep([{"finding_id": "busy"}, {"finding_id": "idle"}])
+    processor._settling_decisions = lambda ids, tenant: {}
     spawned: List[str] = []
     shutdown = asyncio.Event()
 

@@ -107,3 +107,56 @@ def test_init_sql_accepts_a_decision_and_refuses_a_bad_lane():
             sp.rollback()
         finally:
             tx.rollback()
+
+
+def test_settling_decisions_skips_the_query_for_no_ids(monkeypatch):
+    def boom():
+        raise AssertionError("no query for an empty batch")
+
+    monkeypatch.setattr(decision_store, "_session_scope", boom)
+    assert decision_store.settling_decisions([None, ""]) == {}
+
+
+@pytest.mark.external_service
+@pytest.mark.database
+def test_query_settling_reads_rules_and_enqueued_verdicts_only():
+    """W0.15: what the backfill treats as already settled."""
+    from pathlib import Path
+
+    from sqlalchemy import text
+
+    from core.storage.connection import get_db_manager
+
+    sql = (
+        Path(__file__).resolve().parents[3] / "infra" / "database" / "init" / "56_alert_lane_decisions.sql"
+    ).read_text(encoding="utf-8")
+    rows = [
+        _decision(finding_id="w15-r", tenant_id="default", lane=LANE_RULES, reason="suppression_rule",
+                  rule={"kind": "suppression", "id": "r-1", "name": "x"}, decided_at="2026-10-14T10:00:00+00:00"),
+        _decision(finding_id="w15-r", tenant_id="default", lane=LANE_RULES, reason="suppression_rule",
+                  decided_at="2026-10-14T10:05:00+00:00"),
+        _decision(finding_id="w15-v", tenant_id="default", lane=LANE_VERDICT, reason="high_risk",
+                  verdict_run_id="run-1"),
+        _decision(finding_id="w15-d", tenant_id="default", lane=LANE_VERDICT, reason="high_risk",
+                  deferred_verdict=True),
+        _decision(finding_id="w15-s", tenant_id="default"),
+        _decision(finding_id="w15-o", tenant_id="other", lane=LANE_RULES, reason="suppression_rule"),
+    ]
+    with get_db_manager().engine.connect() as conn:
+        tx = conn.begin()
+        try:
+            conn.execute(text(sql))
+            for d in rows:
+                conn.execute(text(decision_store._INSERT), decision_store.decision_row(d))
+            got = decision_store.query_settling(
+                conn, ["w15-r", "w15-v", "w15-d", "w15-s", "w15-o", "w15-none"], "default"
+            )
+            assert set(got) == {"w15-r", "w15-v"}
+            assert got["w15-r"].rule == {"kind": "suppression", "id": "r-1"}
+            from datetime import datetime, timezone
+
+            earliest = datetime.fromisoformat(got["w15-r"].decided_at)
+            assert earliest == datetime(2026, 10, 14, 10, 0, tzinfo=timezone.utc)
+            assert got["w15-v"].verdict_run_id == "run-1"
+        finally:
+            tx.rollback()

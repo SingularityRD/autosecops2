@@ -75,6 +75,7 @@ async def test_the_sweep_tags_what_it_spawns():
     processor._data_service = SimpleNamespace(
         get_findings_missing_enrichment=lambda **_: [{"finding_id": "f1"}]
     )
+    processor._settling_decisions = lambda ids, tenant: {}
     sources = []
 
     async def spawn(finding, source=None):

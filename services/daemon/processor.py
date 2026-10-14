@@ -30,12 +30,14 @@ from core.ingestion.handoff import envelope, put_or_shutdown
 from core.ingestion.spool import IngestSpool, SpoolEntry
 from core.ingestion.spool import count as spool_count
 from core.lanes.alert_lanes import (
+    DEFAULT_TENANT,
     ENRICHMENT_KEY,
     LaneDecision,
     LaneHook,
     lane_triage_target,
     wants_llm_triage,
 )
+from core.lanes.decision_store import settling_decisions
 from core.llm.local_lane import get_local_lane
 from core.llm.outage import report_outage, report_recovered
 from core.time import utcnow
@@ -53,6 +55,7 @@ logger = logging.getLogger(__name__)
 _GATEWAY_OUTAGE = "daemon-triage-gateway"
 _PROVIDER_OUTAGE = "daemon-triage-provider"
 _LOCAL_LANE_OUTAGE = "daemon-triage-local-lane"
+_SETTLED_LOOKUP_OUTAGE = "daemon-backfill-lane-decisions"
 # meta["lane"] when triage ran on the local model lane (W2.3).
 LOCAL_TRIAGE_LANE = "local"
 
@@ -486,6 +489,8 @@ class FindingProcessor:
         # Finding ids being stored or triaged right now (by count); the
         # backfill sweep skips them so a finding is not triaged twice.
         self._inflight: Counter = Counter()
+        # W0.15: reads alert_lane_decisions for the backfill (raises on error).
+        self._settling_decisions = settling_decisions
 
         # Caps concurrent background AI enrichment (not the ingest/store path).
         self._semaphore = asyncio.Semaphore(config.max_concurrent_tasks)
@@ -513,6 +518,8 @@ class FindingProcessor:
             "spool_quarantined": 0,
             "spool_replay_skipped": 0,
             "backfill_skipped_inflight": 0,
+            "backfill_skipped_settled": 0,
+            "backfill_settled_lookup_failed": 0,
         }
 
     def _sanitize_finding(self, finding: Dict[str, Any], source: Optional[str]) -> None:
@@ -1018,7 +1025,15 @@ class FindingProcessor:
         withheld = await withhold_response(finding_id)
 
         want_llm = self.config.auto_triage_enabled or self.config.auto_enrich_enabled
-        if want_llm and time.monotonic() >= self._enrich_paused_until:
+        paused = time.monotonic() < self._enrich_paused_until
+        # W0.15: a finding this run's lane decision settled (rules, enqueued
+        # verdict) needs no model, so an open breaker (e.g. a Redis outage
+        # failing every gateway call) must not leave it unwritten: an unrated
+        # row is the backfill's, and the backfill would route it a second
+        # time after its verdict. It is persisted as if the breaker were shut;
+        # the breaker itself is neither tripped nor reset by it.
+        settled_by_lane = not wants_llm_triage(lane)
+        if want_llm and (not paused or settled_by_lane):
             async with self._semaphore:
                 try:
                     triaged_ok = True
@@ -1051,7 +1066,7 @@ class FindingProcessor:
                     if self.config.auto_enrich_enabled and finding.get("enrichment"):
                         self.stats["enriched"] += 1
 
-                    if triaged_locally:
+                    if triaged_locally or paused:
                         pass
                     elif triaged_ok:
                         self._enrich_failures = 0
@@ -1061,7 +1076,8 @@ class FindingProcessor:
                     else:
                         self._note_enrich_failure(finding_id)
                 except Exception as e:
-                    self._note_enrich_failure(finding_id)
+                    if not paused:
+                        self._note_enrich_failure(finding_id)
                     logger.error(f"Background enrichment failed for {finding_id}: {e}")
                     self.stats["errors"] += 1
 
@@ -1155,6 +1171,10 @@ class FindingProcessor:
             if not batch:
                 continue
 
+            batch = await self._drop_settled(batch)
+            if not batch:
+                continue
+
             logger.info(
                 "Enrichment backfill: re-queuing %d finding(s) missing ai_enrichment",
                 len(batch),
@@ -1165,6 +1185,85 @@ class FindingProcessor:
                 if finding.get("finding_id") in self._inflight:
                     continue  # picked up meanwhile (the cap wait can be long)
                 await self._spawn_enrich(finding, BACKFILL_SOURCE)  # blocks on the cap
+
+    def _lane_tenant(self) -> str:
+        lanes = self.alert_lanes.lanes if isinstance(self.alert_lanes, LaneHook) else None
+        return str(getattr(lanes, "tenant", None) or DEFAULT_TENANT)
+
+    async def _drop_settled(
+        self, batch: List[Dict[str, Any]]
+    ) -> Optional[List[Dict[str, Any]]]:
+        """The sweep's rows minus the ones a recorded lane decision settled.
+
+        W0.15: ``alert_lane_decisions`` is the source of truth for a rules or
+        enqueued-verdict outcome. Such a row is unrated only because its
+        ai_enrichment write was missed (an open breaker, a failed update, a
+        crash in between); routing it again would decide and triage it a
+        second time after its verdict. It gets the recorded decision written
+        instead, which takes it out of the sweep. When the decisions cannot be
+        read the sweep routes nothing this tick (None): an unknown answer is
+        never taken as "not settled".
+        """
+        ids = [f.get("finding_id") for f in batch if f.get("finding_id")]
+        try:
+            settled = await asyncio.to_thread(
+                self._settling_decisions, ids, self._lane_tenant()
+            )
+        except Exception as e:  # noqa: BLE001 - fail closed, retried next tick
+            self.stats["backfill_settled_lookup_failed"] += 1
+            report_outage(
+                logger,
+                _SETTLED_LOOKUP_OUTAGE,
+                "Enrichment backfill paused: recorded lane decisions unreadable, "
+                "nothing is re-triaged until they are: %s",
+                e,
+            )
+            return None
+        report_recovered(
+            logger, _SETTLED_LOOKUP_OUTAGE, "Enrichment backfill: lane decisions readable"
+        )
+        if not settled:
+            return batch
+        rest = []
+        for row in batch:
+            decision = settled.get(row.get("finding_id"))
+            if decision is None:
+                rest.append(row)
+                continue
+            self.stats["backfill_skipped_settled"] += 1
+            await self._persist_settled(row, decision)
+        return rest
+
+    async def _persist_settled(
+        self, row: Dict[str, Any], decision: LaneDecision
+    ) -> None:
+        """Write a recorded settling decision onto a row the sweep found unrated."""
+        finding_id = row.get("finding_id")
+        stored = row.get("ai_enrichment")
+        ai_enrichment = dict(stored) if isinstance(stored, dict) else {}
+        ai_enrichment[ENRICHMENT_KEY] = decision.to_enrichment()
+        if "ai_triage" not in ai_enrichment:
+            # Settled without a model: an earlier attempt's error is moot, and
+            # left alone it would keep the row in the sweep's unrated set.
+            ai_enrichment.pop("ai_triage_error", None)
+        logger.warning(
+            "Enrichment backfill: %s was settled by its %s lane decision at %s; "
+            "recording it instead of routing it again",
+            finding_id,
+            decision.lane,
+            decision.decided_at,
+        )
+        try:
+            ok = await asyncio.to_thread(
+                self._data_service.update_finding,
+                finding_id,
+                ai_enrichment=_storable(ai_enrichment),
+            )
+        except Exception as e:  # noqa: BLE001
+            ok = False
+            logger.error("Recording settled decision for %s failed: %s", finding_id, e)
+        if not ok:
+            self.stats["errors"] += 1
 
     async def _store_with_retry(self, finding: Dict[str, Any]) -> bool:
         """True once the row is stored. A few attempts, then the caller gives up."""
