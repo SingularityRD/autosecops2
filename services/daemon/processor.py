@@ -47,6 +47,7 @@ from core.lanes.alert_lanes import (
 from core.lanes.decision_store import DecisionTableMissing, settling_decisions
 from core.llm.local_lane import get_local_lane
 from core.llm.outage import report_outage, report_recovered
+from core.storage.service import DAEMON_TRIAGE_KEYS
 from core.time import utcnow
 from services.daemon.config import (
     DEFAULT_TRIAGE_MAX_TOKENS,
@@ -138,19 +139,6 @@ _GROUP_HEADINGS = (
 # inconclusive "not a JSON verdict" (#2315). ProcessingConfig.triage_max_tokens
 # (DAEMON_TRIAGE_MAX_TOKENS) is what a triage call actually asks for.
 TRIAGE_MAX_TOKENS = DEFAULT_TRIAGE_MAX_TOKENS
-
-# Finding-dict keys that triage/enrich produce; cached together in the
-# ai_enrichment JSONB column (these dict keys don't map to columns 1:1).
-_AI_ANALYSIS_KEYS = (
-    "ai_triage",
-    "ai_triage_error",
-    "enrichment",
-    "enriched_at",
-    "triage_confidence",
-    "category",
-    "recommended_action",
-    "triage_reasoning",
-)
 
 
 # The queue the depth gauge reads; the gauge is registered once per process.
@@ -443,7 +431,7 @@ def drop_payload_analysis(finding: Dict[str, Any], source: Optional[str]) -> Non
     read back itself. ``triage_confidence`` / ``recommended_action`` /
     ``enrichment`` in a webhook or Kafka payload must not drive response,
     lane risk or the prompt's THIRD_PARTY group as if AutoSecOps wrote them."""
-    for key in _AI_ANALYSIS_KEYS:
+    for key in DAEMON_TRIAGE_KEYS:
         finding.pop(key, None)
     if source != BACKFILL_SOURCE:
         for key in _PRIOR_ANALYSIS_KEYS:
@@ -1440,10 +1428,13 @@ class FindingProcessor:
             decision.decided_at,
         )
         try:
+            # The daemon's keys only (#2316): a generated analysis on the row
+            # survives, and the lane decision is written, not filtered out.
             ok = await asyncio.to_thread(
-                self._data_service.update_finding,
+                self._data_service.write_ai_enrichment,
                 finding_id,
-                ai_enrichment=_storable(ai_enrichment),
+                _storable(ai_enrichment),
+                daemon=True,
             )
         except Exception as e:  # noqa: BLE001
             ok = False
@@ -1541,17 +1532,23 @@ class FindingProcessor:
             updates["severity"] = finding["severity"]
         if finding.get("status"):
             updates["status"] = finding["status"]
-        ai_enrichment = {k: finding[k] for k in _AI_ANALYSIS_KEYS if k in finding}
+        ai_enrichment = {k: finding[k] for k in DAEMON_TRIAGE_KEYS if k in finding}
         if lane is not None:  # W2.2: this run's lane decision, never the payload's
             ai_enrichment[ENRICHMENT_KEY] = lane.to_enrichment()
-        if ai_enrichment:
-            updates["ai_enrichment"] = ai_enrichment
-
-        if not updates:
-            return
         updates = _storable(updates)
-        # update_finding reports failure by returning False rather than raising.
-        if not self._data_service.update_finding(finding_id, **updates):
+
+        # Both report failure by returning False rather than raising.
+        if ai_enrichment:
+            # Replaces only the daemon's keys (triage + lane decision); a
+            # generated analysis survives.
+            ok = self._data_service.write_ai_enrichment(
+                finding_id, _storable(ai_enrichment), daemon=True, **updates
+            )
+        elif updates:
+            ok = self._data_service.update_finding(finding_id, **updates)
+        else:
+            return
+        if not ok:
             logger.error(
                 "Failed to persist triage result for %s; the enrichment backfill "
                 "will re-queue it",
@@ -1896,9 +1893,9 @@ Rules:
         if feed_hits:
             enrichment["threat_indicators"] = feed_hits
 
-        # enriched_at is always stamped as an "attempt" marker (it is one of
-        # _AI_ANALYSIS_KEYS): a clean finding with no hits must still leave the
-        # backfill's `ai_enrichment IS NULL` set, or it re-queues every sweep.
+        # enriched_at is always stamped as an "attempt" marker (one of
+        # DAEMON_TRIAGE_KEYS): a clean finding with no hits must still leave
+        # the backfill set, or it re-queues every sweep.
         finding["enriched_at"] = utcnow().isoformat()
         if enrichment:
             finding["enrichment"] = enrichment

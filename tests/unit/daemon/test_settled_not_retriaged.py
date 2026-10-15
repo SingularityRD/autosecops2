@@ -39,10 +39,17 @@ class _Data:
     def __init__(self, rows=()):
         self.rows = list(rows)
         self.updates: List[Dict[str, Any]] = []
+        self.writers: List[Any] = []
 
     def update_finding(self, finding_id, **updates):
         self.updates.append({"finding_id": finding_id, **updates})
         return True
+
+    def write_ai_enrichment(self, finding_id, ai_enrichment, *, daemon, **updates):
+        # W0.25 (#2316): the daemon writes only its own keys; recorded as an
+        # update so the assertions below read both paths alike.
+        self.writers.append((finding_id, daemon))
+        return self.update_finding(finding_id, ai_enrichment=ai_enrichment, **updates)
 
     def get_findings_missing_enrichment(self, limit, max_age_hours):
         return [dict(r) for r in self.rows]
@@ -190,6 +197,8 @@ async def test_backfill_records_instead_of_rerouting_a_settled_finding(monkeypat
     # Out of the unrated set: no error left without a triage.
     assert "ai_triage_error" not in by_id["verd"]
     assert processor.stats["backfill_skipped_settled"] == 2
+    # W0.25: as the daemon (its keys only), never a full replace.
+    assert sorted(processor._data_service.writers) == [("done", True), ("verd", True)]
 
 
 @pytest.mark.asyncio

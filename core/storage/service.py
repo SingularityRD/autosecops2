@@ -84,6 +84,56 @@ def _set_mitre_prediction_rows(finding: Finding, mitre_predictions: Any) -> None
         )
 
 
+# Keys daemon triage writes inside ``findings.ai_enrichment`` (the finding-dict
+# keys triage/enrich produce; they don't map to columns 1:1).
+DAEMON_TRIAGE_KEYS = (
+    "ai_triage",
+    "ai_triage_error",
+    "enrichment",
+    "enriched_at",
+    "triage_confidence",
+    "category",
+    "recommended_action",
+    "triage_reasoning",
+)
+
+# The W2.2 lane decision (``core.lanes.alert_lanes.ENRICHMENT_KEY``). The daemon
+# writes it with its triage, so the daemon owns it: an analysis write must not
+# delete it, and a daemon write must not filter it out.
+ALERT_LANE_KEY = "alert_lane"
+
+# Keys the daemon owns inside ``findings.ai_enrichment``; every other key
+# belongs to the on-demand AI analysis. Each writer replaces only its own keys
+# (``write_ai_enrichment``), so neither wipes the other (#2316).
+DAEMON_ENRICHMENT_KEYS = DAEMON_TRIAGE_KEYS + (ALERT_LANE_KEY,)
+
+# Daemon keys a daemon write keeps when it does not carry them: a recorded lane
+# decision is evidence, and a write without one (lanes off) does not undo it.
+_KEPT_UNLESS_REPLACED = frozenset({ALERT_LANE_KEY})
+
+
+def merge_ai_enrichment(
+    stored: Optional[Dict[str, Any]], new: Dict[str, Any], *, daemon: bool
+) -> Dict[str, Any]:
+    """The other writer's keys from ``stored``, plus this writer's from ``new``.
+
+    Not ``{**stored, **new}``: a writer's keys missing from ``new`` are dropped,
+    so a failed re-triage clears a stale ``ai_triage``. The lane decision is the
+    exception: a daemon write without one keeps the stored one.
+    """
+
+    def owned(key: str) -> bool:
+        return (key in DAEMON_ENRICHMENT_KEYS) == daemon
+
+    def kept(key: str) -> bool:
+        return not owned(key) or (
+            daemon and key in _KEPT_UNLESS_REPLACED and key not in new
+        )
+
+    stored_kept = {k: v for k, v in (stored or {}).items() if kept(k)}
+    return {**stored_kept, **{k: v for k, v in new.items() if owned(k)}}
+
+
 # ``Finding.cases`` is mapped ``lazy="selectin"``, so without an override every
 # Finding load also SELECTs each linked case row (all of its JSONB) and then
 # drops it: no read path or ``FindingSchema`` uses it (#1439). Read paths that
@@ -488,9 +538,11 @@ class DatabaseService:
     def get_findings_missing_enrichment(
         self, limit: int = 100, max_age_hours: Optional[int] = None
     ) -> List[Dict[str, Any]]:
-        """Findings stored but never enriched (ai_enrichment IS NULL) or whose
-        triage failed without a later success (ai_triage_error recorded, no
-        ai_triage — #965): live Findings before bulk imports, oldest stored first.
+        """Findings the daemon never triaged — ai_enrichment NULL, or holding
+        only an on-demand analysis (none of ai_triage, ai_triage_error,
+        enriched_at, alert_lane — #2316) — or whose triage failed without a
+        later success (ai_triage_error recorded, no ai_triage — #965):
+        ``UNRATED_WHERE``. Live Findings before bulk imports, oldest stored first.
         Returns dicts (FindingSchema.dump inside the session) so callers get
         detached-safe data. ``max_age_hours`` bounds the working set so ancient,
         un-enrichable findings aren't retried forever."""
@@ -647,6 +699,43 @@ class DatabaseService:
             finding.updated_at = utcnow()
             session.flush()
             logger.info(f"Updated finding: {finding_id}")
+            return True
+
+    @default_on_error(False)
+    def write_ai_enrichment(
+        self,
+        finding_id: str,
+        ai_enrichment: Dict[str, Any],
+        *,
+        daemon: bool,
+        **updates,
+    ) -> bool:
+        """Replace one writer's keys in ``ai_enrichment`` and keep the other's.
+
+        ``daemon`` picks the writer: triage owns ``DAEMON_ENRICHMENT_KEYS``, the
+        AI analysis owns the rest. Merges against the row locked ``FOR UPDATE``,
+        not the caller's (possibly stale) copy, so a concurrent triage and
+        Generate don't lose each other's write. ``updates`` are plain column
+        sets applied in the same transaction (the daemon's severity/status).
+        """
+        with self.db_manager.session_scope() as session:
+            finding = session.execute(
+                select(Finding)
+                .options(
+                    lazyload(Finding.mitre_prediction_rows), lazyload(Finding.cases)
+                )
+                .where(Finding.finding_id == finding_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if not finding:
+                logger.warning("Finding not found: %s", finding_id)
+                return False
+            finding.ai_enrichment = merge_ai_enrichment(
+                finding.ai_enrichment, ai_enrichment, daemon=daemon
+            )
+            for key, value in updates.items():
+                setattr(finding, key, value)
+            finding.updated_at = utcnow()
             return True
 
     @default_on_error(False)
