@@ -94,7 +94,10 @@ async def test_missing_finding_is_404(monkeypatch):
 
 
 async def test_existing_enrichment_is_returned_from_cache(monkeypatch):
-    cached = {"threat_summary": "already analysed"}
+    cached = {
+        "threat_summary": "already analysed",
+        "generated_at": "2026-10-01T00:00:00Z",
+    }
     monkeypatch.setattr(
         findings_api,
         "data_service",
@@ -110,6 +113,23 @@ async def test_existing_enrichment_is_returned_from_cache(monkeypatch):
         "enrichment": cached,
     }
     assert calls == [], "a cache hit must not call a provider"
+
+
+async def test_triage_only_enrichment_is_not_a_cached_analysis(monkeypatch):
+    # The daemon writes triage keys into ai_enrichment without generated_at.
+    triage = {"ai_triage": {"verdict": "benign"}, "enriched_at": "2026-10-01"}
+    monkeypatch.setattr(
+        findings_api,
+        "data_service",
+        _StubDataService({"finding_id": FINDING_ID, "ai_enrichment": triage}),
+    )
+    calls = _stub_enrich(monkeypatch, result={"threat_summary": "fresh"})
+
+    response = await findings_api.get_or_generate_enrichment(FINDING_ID, False)
+
+    assert response["cached"] is False
+    assert response["enrichment"] == {"threat_summary": "fresh"}
+    assert len(calls) == 1
 
 
 async def test_force_regenerate_bypasses_the_cache(monkeypatch):
@@ -370,3 +390,30 @@ def test_resolve_raises_no_provider_when_anthropic_has_no_api_key(monkeypatch):
 
     with pytest.raises(NoProviderConfigured):
         enrichment_service._resolve_provider("reporting")
+
+
+async def test_a_lane_decision_alone_is_not_a_cached_analysis(monkeypatch):
+    """W0.25: the daemon writes ``alert_lane`` (W2.x lanes) into ai_enrichment.
+
+    Before upstream c5f49d69 that alone counted as a cached analysis, so the
+    popup rendered "undefined" fields and Generate never ran.
+    """
+    lane_only = {
+        "alert_lane": {
+            "lane": "rules",
+            "reason": "suppressed by rule",
+            "decided_at": "2026-10-01T00:00:00+00:00",
+        }
+    }
+    monkeypatch.setattr(
+        findings_api,
+        "data_service",
+        _StubDataService({"finding_id": FINDING_ID, "ai_enrichment": lane_only}),
+    )
+    calls = _stub_enrich(monkeypatch, result={"threat_summary": "fresh"})
+
+    response = await findings_api.get_or_generate_enrichment(FINDING_ID, False)
+
+    assert response["cached"] is False
+    assert response["enrichment"] == {"threat_summary": "fresh"}
+    assert len(calls) == 1

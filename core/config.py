@@ -319,6 +319,8 @@ class Settings(BaseSettings):
     daemon_auto_triage: bool = True
     daemon_auto_enrich: bool = True
     daemon_triage_timeout: int = 60
+    # Output-token ceiling for one daemon triage reply (DAEMON_TRIAGE_MAX_TOKENS).
+    daemon_triage_max_tokens: int = Field(default=8192, ge=256, le=65536)
     daemon_enrich_max_inflight: int = 50
     daemon_handoff_queue_maxsize: int = 1000
     # W0.12 ingest spool: the webhook answers 200 only once a finding is

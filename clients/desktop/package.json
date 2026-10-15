@@ -1,20 +1,22 @@
 {
-  "name": "vigil-desktop",
+  "name": "autosecops-desktop",
   "productName": "AutoSecOps",
   "version": "2.0.0",
   "description": "AutoSecOps desktop shell — native launcher and window over the local stack.",
   "license": "Apache-2.0",
+  "author": "SingularityRD",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.js",
     "dev": "npm run build && electron .",
-    "dist": "npm run build && node scripts/prepare-standalone.js && electron-builder --config electron-builder.yml"
+    "dist": "npm run build && node scripts/prepare-standalone.js && electron-builder --config electron-builder.yml --publish never"
   },
   "devDependencies": {
-    "electron": "^41.10.6",
+    "@types/node": "^20.11.0",
+    "electron": "^44.7.0",
     "electron-builder": "^26.15.0",
-    "typescript": "^5.4.0",
-    "@types/node": "^20.11.0"
+    "typescript": "^5.4.0"
   },
   "overrides": {
     "@electron/get": "^5.1.0"

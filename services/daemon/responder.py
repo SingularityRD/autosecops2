@@ -61,7 +61,20 @@ class AutonomousResponder:
             "pending_approval": 0,
             "escalated": 0,
             "errors": 0,
+            "already_responded": 0,
         }
+
+    def _already_responded(self, finding_id: str) -> bool:
+        """True when an approval row already names the finding. A failed read
+        is not proof of one: the evaluation goes on as before (creating the
+        action needs the same database)."""
+        try:
+            return self._approval_service.has_action_for_finding(finding_id) is True
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Could not check earlier responses for %s: %s", finding_id, e
+            )
+            return False
 
     async def run(self, shutdown_event: asyncio.Event):
         """Run the response handler loop."""
@@ -180,6 +193,17 @@ class AutonomousResponder:
                 logger.debug(f"No response action needed for {finding_id}")
             return
         response_action, rule = decided
+
+        # A finding re-triaged by the backfill (W0.25: an upgrade re-queues
+        # analysis-only rows) may already have its response: re-triage is
+        # fine, a second proposal or escalation is not.
+        if await asyncio.to_thread(self._already_responded, finding_id):
+            self.stats["already_responded"] += 1
+            logger.info(
+                "Finding %s already has a response action; not proposing another",
+                finding_id,
+            )
+            return
 
         # Check if escalation is needed
         should_escalate = self._should_escalate(severity, confidence)

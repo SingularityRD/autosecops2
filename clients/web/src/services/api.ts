@@ -260,7 +260,7 @@ export const findingsApi = {
   delete: (id: string) => api.delete(`/findings/${id}`),
   
   getEnrichment: (id: string, force_regenerate: boolean = false) =>
-    // may restart a local Bifrost gateway, then wait on a local model
+    // may restart the Bifrost gateway, then wait on the configured model
     api.post(`/findings/${id}/enrich`, null, {
       params: { force_regenerate },
       timeout: LLM_TIMEOUT,
@@ -1464,6 +1464,21 @@ export const ssoApi = {
     api.delete<SsoAdminConfig>(`/auth/sso/admin/providers/${encodeURIComponent(providerId)}`),
   saveLoginPolicy: (policy: SsoLoginPolicy) =>
     api.put<SsoAdminConfig>('/auth/sso/admin/login-policy', policy),
+}
+
+// Public password reset. `request` answers the same whether or not the email
+// matches an account; its `delivery` says how a link reaches the person
+// (email, the server log in DEV_MODE, or an administrator when no mail is set
+// up). The link lands on /reset-password?token=…
+export type PasswordResetRequestReply = Schema<'PasswordResetRequestResponse'>
+
+export const authApi = {
+  requestPasswordReset: (email: string) =>
+    api.post<PasswordResetRequestReply>('/auth/password-reset/request', {
+      email,
+    } satisfies Schema<'PasswordResetRequest'>),
+  confirmPasswordReset: (payload: Schema<'PasswordResetConfirm'>) =>
+    api.post<{ message: string }>('/auth/password-reset/confirm', payload),
 }
 
 export default api

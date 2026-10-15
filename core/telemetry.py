@@ -552,6 +552,13 @@ def configure_logging(level: str | int = "INFO") -> None:
     console.setFormatter(formatter)
     root.addHandler(console)
 
+    # A reset token, OAuth code or API key in a query string must not reach
+    # the access log (W0.27). Covers every launcher: the image's CMD, Helm,
+    # start.sh -- all import the app, which calls this.
+    from core.platform.log_redaction import install_access_log_redaction
+
+    install_access_log_redaction()
+
     try:
         log_dir = vigil_path(write=True)
         file_handler = logging.FileHandler(log_dir / "vigil.log")

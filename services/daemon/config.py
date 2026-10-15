@@ -33,12 +33,20 @@ class PollingConfig:
     webhook_token: str = ""  # required bearer for /ingest; empty = fail closed
 
 
+# The triage reply is one JSON verdict, but thinking models (Gemini 2.5, OpenAI
+# reasoning) spend output tokens before it; the gateway's 2048 default cut the
+# verdict off mid-object (upstream #2315). Overridden by DAEMON_TRIAGE_MAX_TOKENS.
+DEFAULT_TRIAGE_MAX_TOKENS = 8192
+
+
 @dataclass
 class ProcessingConfig:
     auto_triage_enabled: bool = True
     auto_enrich_enabled: bool = True
     max_concurrent_tasks: int = 5
     triage_timeout: int = 60  # seconds
+    # Output-token ceiling for one triage reply (DAEMON_TRIAGE_MAX_TOKENS).
+    triage_max_tokens: int = DEFAULT_TRIAGE_MAX_TOKENS
     enrich_max_inflight: int = (
         50  # cap on pending background enrich tasks (backpressure)
     )
@@ -183,6 +191,7 @@ class DaemonConfig:
         config.processing.auto_triage_enabled = settings.daemon_auto_triage
         config.processing.auto_enrich_enabled = settings.daemon_auto_enrich
         config.processing.triage_timeout = settings.daemon_triage_timeout
+        config.processing.triage_max_tokens = settings.daemon_triage_max_tokens
         config.processing.enrich_max_inflight = settings.daemon_enrich_max_inflight
         config.processing.handoff_queue_maxsize = _handoff_maxsize(
             settings.daemon_handoff_queue_maxsize

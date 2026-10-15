@@ -1,9 +1,23 @@
-appId: ai.deeptempo.vigil
+# appId is the macOS bundle identifier and the Windows AppUserModelID.
+# Reverse-DNS of the vendor and product (SingularityRD / AutoSecOps), replacing
+# the upstream ai.deeptempo.vigil. Changing it only resets macOS privacy grants
+# (Full Disk Access) once; app data lives under the productName, not the appId
+# (docs/guide/yonetici-kilavuzu.md, "Masaüstü uygulaması").
+appId: com.singularityrd.autosecops
 productName: AutoSecOps
+copyright: Copyright © 2026 SingularityRD
+# autosecops-<version>-desktop-<os>-<arch>.<ext>: the release pipeline signs and
+# checksums these names (.github/workflows/release.yml, desktop jobs).
+artifactName: autosecops-${version}-desktop-${os}-${arch}.${ext}
+# Never upload anywhere and never write an update feed: the app has no
+# auto-updater (air-gapped installs must not phone home). The release pipeline
+# attaches the installers to the draft GitHub Release itself.
+publish: null
 directories:
   output: release
 files:
   - dist/**/*
+  - "!dist/**/*.map"
   - src/splash.html
   - build/**/*
 # Docker mounts these paths, and it cannot see inside app.asar — they must stay
@@ -11,22 +25,53 @@ files:
 extraResources:
   - from: standalone
     to: standalone
-  # The support-bundle script, run from a terminal (see "Support Bundle Command…").
+  # The support-bundle script, run from a terminal (Help / tray → "Support
+  # Bundle Command…"). Directory and file keep their internal name,
+  # vigil-support (tests/unit/_ratchets/test_desktop_version_tracks_release.py).
   - from: ../../scripts/vigil-support
     to: vigil-support
 # Two ways to run: against a checkout (live source, development) or against
 # published images (no source tree, Docker only) — see Mode in src/main.ts.
-# scripts/sign.js ad-hoc signs the mac bundle here. Without a valid signature
-# macOS can't identify the app, and TCC denies protected folders (Documents,
-# Desktop, …) silently — no permission prompt is ever shown.
-afterPack: scripts/sign.js
+# scripts/after-pack.js flips the Electron fuses and, without a Developer ID,
+# ad-hoc signs the mac bundle. Without a valid signature macOS can't identify
+# the app, and TCC denies protected folders (Documents, Desktop, …) silently —
+# no permission prompt is ever shown.
+afterPack: scripts/after-pack.js
 mac:
   target:
-    - dmg
+    - target: dmg
+      arch:
+        - arm64
+        - x64
   icon: build/icons/icon.icns
-  identity: null # no Developer ID cert; sign.js applies an ad-hoc signature
+  category: public.app-category.developer-tools
+  # Developer ID signing and notarization happen only when the release job is
+  # given CSC_LINK / CSC_KEY_PASSWORD and APPLE_API_KEY / APPLE_API_KEY_ID /
+  # APPLE_API_ISSUER (or APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID).
+  # Without them the build is ad-hoc signed (after-pack.js) and not notarized.
+  hardenedRuntime: true
 linux:
   target:
-    - AppImage
+    - target: AppImage
+      arch:
+        - x64
   icon: build/icons
+  executableName: autosecops
   category: Security
+  maintainer: SingularityRD
+  synopsis: AutoSecOps desktop app
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icons/256x256.png
+  # Authenticode signing only when WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD are set.
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  # Uninstall keeps %APPDATA%\AutoSecOps (secrets, logs) and the Docker volumes
+  # holding cases; docs/guide/yonetici-kilavuzu.md says how to remove them.
+  deleteAppDataOnUninstall: false
+  shortcutName: AutoSecOps

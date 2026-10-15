@@ -1111,13 +1111,14 @@ export interface paths {
         put?: never;
         /**
          * Password Reset Request
-         * @description Begin a password reset. Always returns 200 regardless of whether the
-         *     email maps to an account — otherwise the response shape leaks which
-         *     emails are registered.
+         * @description Begin a password reset. Always returns 200 with the same body whether
+         *     or not the email maps to an account — otherwise the response leaks which
+         *     emails are registered. The body depends only on the mail configuration.
          *
-         *     The actual email (with the signed reset token) is sent asynchronously
-         *     via the configured email backend. The default ConsoleBackend sends nothing;
-         *     with DEV_MODE on it logs the link.
+         *     The email (with the signed reset token) goes through the configured
+         *     email backend. The default ConsoleBackend sends nothing; with DEV_MODE
+         *     on it logs the link. Without mail an administrator issues a link with
+         *     ``scripts/reset_password.py``.
          */
         post: operations["post_api_auth_password-reset_request"];
         delete?: never;
@@ -11689,6 +11690,19 @@ export interface components {
             email: string;
         };
         /**
+         * PasswordResetRequestResponse
+         * @description What a reset request is told. Never depends on the account.
+         */
+        PasswordResetRequestResponse: {
+            /**
+             * Delivery
+             * @enum {string}
+             */
+            delivery: "email" | "server_log" | "administrator";
+            /** Message */
+            message: string;
+        };
+        /**
          * PendingActionResponse
          * @description Frozen shape of an approval action (mirrors ``_pending_to_dict``).
          *
@@ -15565,7 +15579,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["PasswordResetRequestResponse"];
                 };
             };
             /** @description Validation Error */

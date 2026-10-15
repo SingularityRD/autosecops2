@@ -88,7 +88,18 @@ release-please is not active in this repository, so the steps are manual:
    publishes `<VERSION>`, `<major>.<minor>` and `latest`, signs everything and
    creates a **draft** GitHub Release; the release manager reviews it and
    publishes it.
-5. **Never move or delete a pushed release tag.** A wrong release is fixed by a
+5. **Desktop installers.** The `desktop` jobs build the macOS dmg (arm64, x64),
+   the Linux AppImage and the Windows NSIS installer. OS code signing needs
+   repository secrets that a person provides; without them the installers are
+   built anyway, named `*-unsigned.*`, and covered only by the cosign
+   signature and `SHA256SUMS` like every other release file:
+   - macOS (Developer ID + notarization): `CSC_LINK` (base64 of the
+     "Developer ID Application" `.p12`), `CSC_KEY_PASSWORD`, `APPLE_ID`,
+     `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`. A certificate without the
+     three notarization secrets fails the job.
+   - Windows (Authenticode): `WIN_CSC_LINK` (base64 of the `.pfx`),
+     `WIN_CSC_KEY_PASSWORD`.
+6. **Never move or delete a pushed release tag.** A wrong release is fixed by a
    new patch version. Signatures stay in the public Sigstore log either way.
 
 The tag pipeline also refuses a tag whose commit is not an ancestor of `main`

@@ -26,7 +26,9 @@ export function rotateLog(file: string, keep = KEEP): void {
 }
 
 // Rotates once, then returns an appender that swallows every write error.
-export function openAppLog(dir: string, name = "vigil-desktop.log"): (line: string) => void {
+// Before the AutoSecOps rename the file was vigil-desktop.log; the support
+// bundle still collects both names.
+export function openAppLog(dir: string, name = "autosecops-desktop.log"): (line: string) => void {
   const file = path.join(dir, name);
   try {
     fs.mkdirSync(dir, { recursive: true });
@@ -106,7 +108,11 @@ export function captureToFile(
 
 const stamp = (d: Date) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
 
-// Save the stack's full container logs to <logsDir>/containers/vigil-<UTC>.log,
+// Snapshot names: autosecops-<UTC>.log, and vigil-<UTC>.log from before the
+// rename. Both count toward `keep`, ordered by their timestamp.
+const SNAPSHOT = /^(?:autosecops|vigil)-(\d{8}T\d{6}Z)\.log$/;
+
+// Save the stack's full container logs to <logsDir>/containers/autosecops-<UTC>.log,
 // keep the newest `keep`, and never throw. Returns the file written, if any.
 export async function snapshotContainerLogs(
   spawnFn: (args: string[]) => ChildProcess,
@@ -119,7 +125,7 @@ export async function snapshotContainerLogs(
   try {
     const dir = path.join(logsDir, "containers");
     fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, `vigil-${stamp(now)}.log`);
+    const file = path.join(dir, `autosecops-${stamp(now)}.log`);
     const r = await captureToFile(spawnFn, composeLogsArgs, file, timeoutMs);
     if (r.error || r.bytes === 0) {
       fs.rmSync(file, { force: true }); // nothing worth keeping
@@ -127,8 +133,8 @@ export async function snapshotContainerLogs(
     }
     const old = fs
       .readdirSync(dir)
-      .filter((f) => /^vigil-.*\.log$/.test(f))
-      .sort()
+      .filter((f) => SNAPSHOT.test(f))
+      .sort((a, b) => a.replace(SNAPSHOT, "$1").localeCompare(b.replace(SNAPSHOT, "$1")))
       .slice(0, -keep);
     for (const f of old) fs.rmSync(path.join(dir, f), { force: true });
     return file;

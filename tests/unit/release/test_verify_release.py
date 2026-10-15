@@ -211,3 +211,42 @@ def test_rejects_v_prefixed_version(tmp_path: Path, release: Path) -> None:
     proc, _ = _run(tmp_path, release, "--version", "v2.0.0")
     assert proc.returncode != 0
     assert "without the leading v" in proc.stderr
+
+
+def _add(rel: Path, name: str, body: str, listed: bool = True) -> None:
+    (rel / name).write_text(body)
+    (rel / f"{name}.sigstore.json").write_text("{}")
+    if listed:
+        digest = hashlib.sha256(body.encode()).hexdigest()
+        with (rel / "SHA256SUMS").open("a") as fh:
+            fh.write(f"{digest}  {name}\n")
+
+
+def test_desktop_installers_are_verified_when_present(
+    tmp_path: Path, release: Path
+) -> None:
+    """W0.24: the dmg / AppImage / exe of a release carry their own signature."""
+    names = (
+        f"autosecops-{V}-desktop-mac-arm64-unsigned.dmg",
+        f"autosecops-{V}-desktop-linux-x86_64.AppImage",
+        f"autosecops-{V}-desktop-win-x64-unsigned.exe",
+    )
+    for n in names:
+        _add(release, n, n)
+    proc, calls = _run(tmp_path, release, "--skip-images")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    signed = {c.rsplit(" ", 1)[1] for c in calls if c.startswith("verify-blob ")}
+    assert set(names) <= signed
+
+    proc, _ = _run(tmp_path, release, "--skip-images", fail_on=names[1])
+    assert proc.returncode != 0
+    assert "RESULT: VERIFIED" not in proc.stdout
+
+
+def test_desktop_installer_missing_from_sha256sums_fails(
+    tmp_path: Path, release: Path
+) -> None:
+    _add(release, f"autosecops-{V}-desktop-mac-x64.dmg", "dmg", listed=False)
+    proc, _ = _run(tmp_path, release, "--skip-images")
+    assert proc.returncode != 0
+    assert "not listed in SHA256SUMS" in proc.stderr

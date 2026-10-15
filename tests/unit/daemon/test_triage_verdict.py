@@ -420,11 +420,14 @@ class TestDownstreamFields:
     def test_update_persists_what_the_readers_look_up(self):
         processor = _processor()
         processor._data_service = Mock()
-        processor._data_service.update_finding.return_value = True
+        processor._data_service.write_ai_enrichment.return_value = True
         out = _apply(_doc())
         asyncio.run(processor._update_finding(out))
-        kwargs = processor._data_service.update_finding.call_args.kwargs
-        enrichment = kwargs["ai_enrichment"]
+        # W0.25 (#2316): the daemon replaces only its own ai_enrichment keys.
+        call = processor._data_service.write_ai_enrichment.call_args
+        assert call.kwargs.pop("daemon") is True
+        kwargs = call.kwargs
+        enrichment = call.args[1]
         # intent.py replays on these; responder and plan_generator read them
         # off the finding.
         assert enrichment["triage_confidence"] == 0.8
@@ -762,7 +765,7 @@ class TestStorableStrings:
     def test_update_strips_nul_from_every_persisted_value(self):
         proc = _processor()
         proc._data_service = Mock()
-        proc._data_service.update_finding.return_value = True
+        proc._data_service.write_ai_enrichment.return_value = True
         finding = {
             "finding_id": "f1",
             "status": "new\u0000",
@@ -771,7 +774,8 @@ class TestStorableStrings:
             "enrichment": {"k\u0000": ["v\u0000"]},
         }
         asyncio.run(proc._update_finding(finding))
-        kwargs = proc._data_service.update_finding.call_args.kwargs
+        call = proc._data_service.write_ai_enrichment.call_args
+        kwargs = {**call.kwargs, "ai_enrichment": call.args[1]}
         assert "\u0000" not in json.dumps(kwargs, ensure_ascii=False)
         assert kwargs["ai_enrichment"]["ai_triage_error"] == "xy"
         assert kwargs["ai_enrichment"]["enrichment"] == {"k": ["v"]}
