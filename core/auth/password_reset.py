@@ -114,7 +114,7 @@ def ttl_text(seconds: Optional[int] = None) -> str:
 #: Why an account may not get a reset link (``reset_refusal``).
 REFUSED_INACTIVE = "inactive"
 REFUSED_SSO_ONLY = "sso_only"
-REFUSED_SERVICE_ACCOUNT = "service_account"
+REFUSED_SERVICE_ACCOUNT = "service"
 
 
 def reset_refusal(user: Any) -> Optional[str]:
@@ -136,8 +136,9 @@ def reset_refusal(user: Any) -> Optional[str]:
         return REFUSED_INACTIVE
     if getattr(user, "password_hash", None) == SSO_ONLY_PASSWORD_HASH:
         return REFUSED_SSO_ONLY
-    # Same test as auth_service._is_service_account (the column is NOT NULL).
-    if getattr(user, "service_account", False) is True:
+    from core.auth.auth_service import _is_service_account
+
+    if _is_service_account(user):
         return REFUSED_SERVICE_ACCOUNT
     return None
 
