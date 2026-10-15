@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
+  connectorSupport,
+  EXPERIMENTAL_NOTE,
   EXPERIMENTAL_SERVERS,
   getIntegrationForServer,
+  isExperimentalIntegration,
   MCP_CATEGORIES,
   SERVER_TO_INTEGRATION,
   WIP_SERVERS,
@@ -45,4 +48,23 @@ describe('EXPERIMENTAL_SERVERS', () => {
       expect(WIP_SERVERS.has(server), server).toBe(false)
     }
   })
+
+  it('gives each server one status: WIP and Experimental never overlap', () => {
+    for (const server of EXPERIMENTAL_SERVERS) expect(connectorSupport(server)).toBe('experimental')
+    for (const server of WIP_SERVERS) expect(connectorSupport(server)).toBe('wip')
+    expect(connectorSupport('okta')).toBe('supported')
+  })
+
+  it('maps experimental servers to their catalog integration, but not the self-hosted Splunk form', () => {
+    expect(isExperimentalIntegration('crowdstrike')).toBe(true)
+    expect(isExperimentalIntegration('azure-sentinel')).toBe(true)
+    expect(isExperimentalIntegration('splunk')).toBe(false)
+    expect(isExperimentalIntegration('okta')).toBe(false)
+  })
+
+  it('points users at AutoSecOps support, not the upstream issue tracker', () => {
+    expect(EXPERIMENTAL_NOTE).toMatch(/AutoSecOps support/)
+    expect(EXPERIMENTAL_NOTE).not.toMatch(/vigil|open an issue|github/i)
+  })
 })
+

@@ -205,6 +205,34 @@ describe('Integrations: Connected table', () => {
   })
 })
 
+describe('Integrations: Connected table, experimental connectors', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ json: async () => ({}) })))
+    vi.mocked(configApi.getIntegrations).mockResolvedValue({
+      data: { enabled_integrations: ['crowdstrike', 'github'], integrations: {}, secrets_set: {}, last_test: {} },
+    } as never)
+    vi.mocked(mcpApi.listServers).mockResolvedValue({ data: { servers: ['crowdstrike', 'github'] } } as never)
+    vi.mocked(mcpApi.getStatuses).mockResolvedValue({
+      data: {
+        statuses: [
+          { name: 'crowdstrike', status: 'running', enabled: true },
+          { name: 'github', status: 'running', enabled: true },
+        ],
+      },
+    } as never)
+  })
+
+  it('keeps the Experimental chip on an enabled, healthy experimental connector', async () => {
+    renderSection()
+    await screen.findByRole('tab', { name: 'Connected 2' })
+    const chips = screen.getAllByText('Experimental')
+    expect(chips).toHaveLength(1)
+    expect(chips[0].closest('tr')).toHaveTextContent(/CrowdStrike/)
+    expect(chips[0]).toHaveAttribute('title', expect.stringContaining('AutoSecOps support'))
+    expect(row('Github').queryByText('Experimental')).toBeNull()
+  })
+})
+
 describe('Integrations: Custom tab', () => {
   const DRAFT = {
     success: true,

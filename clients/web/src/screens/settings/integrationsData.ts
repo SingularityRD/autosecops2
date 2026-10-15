@@ -15,22 +15,49 @@ export function getIntegrationForServer(serverName: string): IntegrationMetadata
   return getAllIntegrations().find((i) => i.id === id)
 }
 
-export const WIP_SERVERS = new Set([
-  'carbon-black', 'hybrid-analysis', 'anyrun',
-  'alienvault-otx', 'palo-alto',
-  'slack', 'misp', 'ip-geolocation', 'url-analysis',
-  'microsoft-defender', 'azure-ad', 'microsoft-teams',
-])
+/** How far AutoSecOps stands behind each catalogued MCP server. One map, so a
+ *  server has exactly one status; a server not listed here is supported.
+ *  - `wip`: not offered. Left out of Add integration; if it was already enabled
+ *    it stays in the Connected table with a WIP chip.
+ *  - `experimental`: offered, but never run against a live instance (no vendor
+ *    instance to test on), so only the client side is covered. Every screen that
+ *    enables one shows the Experimental chip, and the setup forms say why. A
+ *    server leaves this status when it gains a live test, not on request. */
+export type ConnectorSupport = 'supported' | 'experimental' | 'wip'
 
-/** Offered, but never run against a live instance: the vendor sells no free
- *  tier the project can test on, so only the client side is covered. A server
- *  leaves this set when it gains a live test, not on a user's say-so. */
-export const EXPERIMENTAL_SERVERS = new Set([
-  'crowdstrike', 'sentinelone', 'azure-sentinel', 'splunk',
-  'gcp-secops', 'gcp-threat-intel', 'joe-sandbox', 'vstrike',
-])
+const SERVER_SUPPORT: Record<string, Exclude<ConnectorSupport, 'supported'>> = {
+  'carbon-black': 'wip', 'hybrid-analysis': 'wip', 'anyrun': 'wip',
+  'alienvault-otx': 'wip', 'palo-alto': 'wip',
+  'slack': 'wip', 'misp': 'wip', 'ip-geolocation': 'wip', 'url-analysis': 'wip',
+  'microsoft-defender': 'wip', 'azure-ad': 'wip', 'microsoft-teams': 'wip',
 
-export const EXPERIMENTAL_NOTE = 'Not yet tested against a live instance. It may not work; please report what you find.'
+  'crowdstrike': 'experimental', 'sentinelone': 'experimental',
+  'azure-sentinel': 'experimental', 'splunk': 'experimental',
+  'gcp-secops': 'experimental', 'gcp-threat-intel': 'experimental',
+  'joe-sandbox': 'experimental', 'vstrike': 'experimental',
+}
+
+export function connectorSupport(server: string): ConnectorSupport {
+  return SERVER_SUPPORT[server] ?? 'supported'
+}
+
+const serversWith = (status: ConnectorSupport) =>
+  new Set(Object.keys(SERVER_SUPPORT).filter((s) => SERVER_SUPPORT[s] === status))
+
+export const WIP_SERVERS = serversWith('wip')
+export const EXPERIMENTAL_SERVERS = serversWith('experimental')
+
+/** True when a server behind this catalog integration is experimental. */
+export function isExperimentalIntegration(integrationId: string): boolean {
+  for (const server of EXPERIMENTAL_SERVERS) {
+    if (getIntegrationForServer(server)?.id === integrationId) return true
+  }
+  return false
+}
+
+export const EXPERIMENTAL_NOTE =
+  'Experimental: AutoSecOps has not run this connector against a live instance yet, so it may not work. ' +
+  'If you use it, tell AutoSecOps support whether it worked and attach a support bundle.'
 
 /** Card-title overrides for `prettyServerName`. Fix casing/branding here rather
  *  than renaming the server id, which is load-bearing (mcp-config.json, backend
