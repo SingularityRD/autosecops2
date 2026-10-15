@@ -245,7 +245,7 @@ npm run dist                                # installers for this OS into releas
 bash scripts/bundle-image.sh linux/arm64 && npm run dist
 ```
 
-Local builds are ad-hoc signed, not notarized, so macOS reports the app as "damaged". After checking where the file came from, clear the quarantine with `xattr -dr com.apple.quarantine /Applications/AutoSecOps.app`, or use **System Settings → Privacy & Security → Open Anyway**. The app has no auto-updater and makes no network calls of its own beyond pulling the images it runs.
+Local builds are ad-hoc signed, not notarized, so macOS reports the app as "damaged". After checking where the file came from, clear the quarantine with `xattr -dr com.apple.quarantine /Applications/AutoSecOps.app`, or use **System Settings → Privacy & Security → Open Anyway**. The app has no auto-updater; its only network traffic is Docker pulling the five images it runs (backend, agent, `postgres:16-alpine`, `redis:7-alpine`, `maximhq/bifrost:v2.2.1`) when they are not already loaded.
 
 ### Tests
 

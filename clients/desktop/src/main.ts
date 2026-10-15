@@ -18,7 +18,7 @@ import * as crypto from "crypto";
 import * as readline from "readline";
 import { openAppLog, captureToFile, snapshotContainerLogs } from "./logkeep";
 import { supportCommand } from "./supportcmd";
-import { BACKEND_URL, isAppUrl, isExternalAllowed, isPermissionAllowed } from "./navguard";
+import { BACKEND_URL, applyPermissionPolicy, hardenWebContents } from "./navguard";
 
 const HEALTH_URL = `${BACKEND_URL}/api/health`;
 const BACKEND_IMAGE = "ghcr.io/singularityrd/autosecops-backend";
@@ -845,53 +845,13 @@ function createTray(): void {
 
 /* ---------------- web content restrictions ---------------- */
 
-// A URL that came from web content: only https/mailto reach the OS, and only
-// through here. Fixed URLs the app itself owns (Docker download page, macOS
-// settings deep link, the console in a browser) call shell.openExternal directly.
-function openExternalFromContent(url: string): void {
-  if (isExternalAllowed(url)) void shell.openExternal(url);
-  else appLog(`blocked opening ${url.slice(0, 200)}`);
-}
-
-// Every window: no navigation away from the console (the splash never
-// navigates at all), new windows only for the console itself, external links
-// to the system browser, no <webview>.
-function hardenWebContents(contents: Electron.WebContents): void {
-  const guard = (event: Electron.Event, url: string) => {
-    if (isAppUrl(url)) return;
-    event.preventDefault();
-    openExternalFromContent(url);
-  };
-  contents.on("will-navigate", guard);
-  contents.on("will-redirect", guard);
-  contents.on("will-attach-webview", (event) => event.preventDefault());
-  contents.setWindowOpenHandler(({ url }) => {
-    if (isAppUrl(url)) {
-      return {
-        action: "allow",
-        overrideBrowserWindowOptions: {
-          webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
-        },
-      };
-    }
-    openExternalFromContent(url);
-    return { action: "deny" };
-  });
-}
-
-app.on("web-contents-created", (_event, contents) => hardenWebContents(contents));
-
-// Camera, microphone, geolocation and the rest are refused; the console gets
-// clipboard writes, notifications and fullscreen.
-function restrictPermissions(): void {
-  const ses = session.defaultSession;
-  ses.setPermissionRequestHandler((wc, permission, callback, details) => {
-    callback(isPermissionAllowed(permission, details.requestingUrl || wc.getURL()));
-  });
-  ses.setPermissionCheckHandler((_wc, permission, requestingOrigin) =>
-    isPermissionAllowed(permission, requestingOrigin),
-  );
-}
+// Policy and wiring live in navguard.ts (tested with fakes in test/). A URL
+// from web content reaches the OS only through hardenWebContents; fixed URLs
+// the app itself owns (Docker download page, macOS settings deep link, the
+// console in a browser) call shell.openExternal directly.
+app.on("web-contents-created", (_event, contents) =>
+  hardenWebContents(contents, (url) => void shell.openExternal(url), (line) => appLog(line)),
+);
 
 // Replaces Electron's default menu, whose Help entries link to electronjs.org.
 // Keeps the standard edit roles (copy/paste shortcuts need them on macOS).
@@ -932,7 +892,7 @@ ipcMain.handle("quit", () => app.quit());
 
 app.whenReady().then(async () => {
   appLog = openAppLog(app.getPath("logs"));
-  restrictPermissions();
+  applyPermissionPolicy(session.defaultSession);
   installAppMenu();
   // Order matters: the external apps we drive must exist, and we must know
   // where the source tree is, before any script can run.

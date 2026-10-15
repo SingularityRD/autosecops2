@@ -40,8 +40,18 @@ async function flipFuses(context) {
     [FuseV1Options.RunAsNode]: false,
     [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
     [FuseV1Options.EnableNodeCliInspectArguments]: false,
-    // Code is loaded from app.asar only, never from a loose app/ folder.
+    // Code is loaded from app.asar only, never from a loose app/ folder, and
+    // app.asar must match the integrity hash electron-builder embedded at
+    // pack time (Info.plist on macOS, a resource of the .exe on Windows), so a
+    // user-level process cannot swap app.asar under the signed app's
+    // identity. Electron enforces the check on macOS and Windows; on Linux
+    // the fuse is set but has no effect (no embedded hash; the AppImage is a
+    // read-only squashfs anyway).
     [FuseV1Options.OnlyLoadAppFromAsar]: true,
+    [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,
+    // Cookies (the console's session tokens) encrypted at rest with the OS
+    // keychain / DPAPI / libsecret. One-way: never switch it off again.
+    [FuseV1Options.EnableCookieEncryption]: true,
   });
 }
 

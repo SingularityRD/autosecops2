@@ -1238,10 +1238,14 @@ jobs:
           test -f resources/vigil-support/vigil-support.sh
           fuses=$(npx --no-install electron-fuses read --app autosecops | sed 's/\x1b\[[0-9;]*m//g')
           printf '%s\n' "$fuses"
-          for f in RunAsNode EnableNodeOptionsEnvironmentVariable EnableNodeCliInspectArguments; do
-            printf '%s\n' "$fuses" | grep -q "$f is Disabled" || { echo "::error::fuse $f not disabled"; exit 1; }
+          # Every fuse the app depends on, with its required state. A fuse
+          # missing from the output fails like a wrong state does.
+          for want in RunAsNode:Disabled EnableNodeOptionsEnvironmentVariable:Disabled \
+            EnableNodeCliInspectArguments:Disabled EnableEmbeddedAsarIntegrityValidation:Enabled \
+            OnlyLoadAppFromAsar:Enabled EnableCookieEncryption:Enabled; do
+            line="  ${want%%:*} is ${want#*:}"
+            printf '%s\n' "$fuses" | grep -qxF "$line" || { echo "::error::fuse ${want%%:*} is not ${want#*:}"; exit 1; }
           done
-          printf '%s\n' "$fuses" | grep -q "OnlyLoadAppFromAsar is Enabled" || { echo "::error::OnlyLoadAppFromAsar not enabled"; exit 1; }
 
   # ============================================================================
   # Deploy to Staging (DISABLED - Only testing enabled)

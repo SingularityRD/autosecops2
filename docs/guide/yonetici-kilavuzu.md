@@ -861,11 +861,19 @@ taşımaz; cosign imzası ve `SHA256SUMS` yine de vardır.
    Docker kurulu ama çalışmıyorsa başlatmayı dener ve en çok üç dakika bekler.
 2. Compose dosyasını ve şema SQL'ini uygulama veri dizinine kopyalar (her yeni
    sürümde bir kez).
-3. Backend ve ajan imajlarını (`ghcr.io/singularityrd/autosecops-backend:<V>`,
-   `ghcr.io/singularityrd/autosecops-agent:<V>`) yerelde arar; yoksa indirir. Bu
-   adım ilk açılışta birkaç dakika sürer. Kayıt defterine erişimi olmayan bir
-   makinede imajları önceden `docker load` ile yükleyin; ikisi de yerelde varsa
-   uygulama ağa çıkmaz.
+3. Yığının beş imajını kullanır; yerelde olmayanı ilk açılışta indirir (birkaç
+   dakika sürer):
+   - `ghcr.io/singularityrd/autosecops-backend:<V>`
+   - `ghcr.io/singularityrd/autosecops-agent:<V>`
+   - `postgres:16-alpine`
+   - `redis:7-alpine`
+   - `maximhq/bifrost:v2.2.1`
+
+   Kayıt defterlerine erişimi olmayan bir makinede beşini de önceden
+   `docker load` ile yükleyin (imaj arşivleri için bkz.
+   [internetsiz kurulum kılavuzu](kurulum-internetsiz.md)). Beşi de yerelde
+   varsa uygulama ağa çıkmaz; biri eksikse Docker onu indirmeyi dener ve
+   internetsiz makinede açılış başarısız olur.
 4. PostgreSQL'i başlatır, şemayı uygular, servisleri ayağa kaldırır ve konsolu
    açar. Kurulumda hazır bir hesap yoktur: ilk açılışta yönetici hesabını siz
    oluşturursunuz (kullanıcı adı ve parola sizin seçiminizdir).
@@ -977,7 +985,10 @@ cosign verify-blob \
   engellenir. Kamera, mikrofon, konum gibi izinler reddedilir.
 - Kurulu uygulamada geliştirici araçları kapalıdır. Electron sigortaları
   (fuses) ile uygulamanın düz Node olarak çalıştırılması, `NODE_OPTIONS` ve
-  `--inspect` bayrakları kapatılmıştır; kod yalnızca `app.asar`'dan yüklenir.
+  `--inspect` bayrakları kapatılmıştır; kod yalnızca `app.asar`'dan yüklenir ve
+  macOS ile Windows'ta `app.asar` paketleme sırasında gömülen bütünlük özetiyle
+  karşılaştırılır (değiştirilmiş bir `app.asar` ile uygulama açılmaz). Konsol
+  oturum çerezleri diskte işletim sisteminin anahtar deposuyla şifrelenir.
 - OIDC tek oturum açma, masaüstü penceresinde desteklenmez: kimlik sağlayıcının
   sayfası sistem tarayıcısında açılır ve oturum orada kalır. Masaüstü
   uygulamasında yerel hesap kullanın.

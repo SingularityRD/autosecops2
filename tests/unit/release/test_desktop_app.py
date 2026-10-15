@@ -22,6 +22,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -178,23 +180,50 @@ def test_never_published_and_no_auto_updater(builder: dict) -> None:
         assert "autoUpdater" not in ts.read_text(encoding="utf-8"), ts.name
 
 
+# Every fuse the app depends on and its required state; after-pack.js sets
+# them and the CI job reads them back from a real build.
+REQUIRED_FUSES = {
+    "RunAsNode": False,
+    "EnableNodeOptionsEnvironmentVariable": False,
+    "EnableNodeCliInspectArguments": False,
+    "EnableEmbeddedAsarIntegrityValidation": True,
+    "OnlyLoadAppFromAsar": True,
+    "EnableCookieEncryption": True,
+}
+
+
 def test_after_pack_flips_fuses_and_signs_only_without_developer_id(
     builder: dict,
 ) -> None:
     hook = DESKTOP / builder["afterPack"]
     assert hook.is_file()
     js = hook.read_text(encoding="utf-8")
-    for fuse, value in (
-        ("RunAsNode", "false"),
-        ("EnableNodeOptionsEnvironmentVariable", "false"),
-        ("EnableNodeCliInspectArguments", "false"),
-        ("OnlyLoadAppFromAsar", "true"),
-    ):
-        assert f"[FuseV1Options.{fuse}]: {value}" in js, fuse
+    set_fuses = dict(re.findall(r"\[FuseV1Options\.(\w+)\]:\s*(true|false)", js))
+    assert set_fuses == {k: str(v).lower() for k, v in REQUIRED_FUSES.items()}
     assert (
         "electronFuses" not in builder
     ), "electron-builder would flip them after the ad-hoc signature"
+    assert "disableAsarIntegrity" not in builder, "the integrity fuse needs the hash"
+    assert builder.get("asar", True) is not False
     assert "hasDeveloperId()" in js and "CSC_LINK" in js
+
+
+def test_ci_reads_back_every_required_fuse(ci: dict) -> None:
+    step = next(
+        s
+        for s in ci["jobs"]["build-desktop"]["steps"]
+        if "electron-fuses read" in s.get("run", "")
+    )
+    run = step["run"]
+    m = re.search(r"for want in (.*?); do", run, re.S)
+    assert m, "fuse loop"
+    wanted = dict(w.split(":") for w in m.group(1).replace("\\", " ").split())
+    assert wanted == {
+        k: ("Enabled" if v else "Disabled") for k, v in REQUIRED_FUSES.items()
+    }
+    # Exact whole-line match, and a miss fails the step.
+    assert 'grep -qxF "$line" || {' in run and "exit 1" in run
+    assert "set -eu" in run
 
 
 def test_electron_is_a_supported_major() -> None:
@@ -206,44 +235,63 @@ def test_electron_is_a_supported_major() -> None:
 # --------------------------------------------------------------------- hardening
 
 
+ISOLATION = ("contextIsolation", "nodeIntegration", "sandbox", "webSecurity")
+
+
+def _prefs_ok(p: str) -> None:
+    assert re.search(r"contextIsolation:\s*true", p), p
+    assert re.search(r"nodeIntegration:\s*false", p), p
+    assert re.search(r"sandbox:\s*true", p), p
+    assert re.search(r"webSecurity:\s*true", p), p
+
+
 def test_every_window_is_isolated_and_sandboxed(main_ts: str) -> None:
     prefs = re.findall(r"webPreferences:\s*\{(.*?)\}", main_ts, flags=re.S)
-    assert len(prefs) >= 3, "splash, main window and child windows"
+    assert len(prefs) == 2, "splash and main window"
     for p in prefs:
-        assert re.search(r"contextIsolation:\s*true", p), p
-        assert re.search(r"nodeIntegration:\s*false", p), p
-        assert re.search(r"sandbox:\s*true", p), p
-        assert re.search(r"webSecurity:\s*true", p), p
-    for bad in (
-        "webSecurity: false",
-        "allowRunningInsecureContent",
-        "nodeIntegrationInSubFrames",
-        "webviewTag: true",
-    ):
-        assert bad not in main_ts, bad
+        _prefs_ok(p)
+    guard = (SRC / "navguard.ts").read_text(encoding="utf-8")
+    m = re.search(r"const CHILD_WINDOW_PREFS = \{(.*?)\};", guard)
+    assert m, "child windows opened by the console"
+    _prefs_ok(m.group(1))
+    for text in (main_ts, guard):
+        for bad in (
+            "webSecurity: false",
+            "allowRunningInsecureContent",
+            "nodeIntegrationInSubFrames",
+            "webviewTag: true",
+        ):
+            assert bad not in text, bad
 
 
 def test_navigation_windows_and_webviews_are_guarded(main_ts: str) -> None:
+    """main.ts wires navguard's tested functions into every webContents and
+    the default session, and installs no handler of its own."""
     code = _strip_comments(main_ts)
-    assert (
-        'app.on("web-contents-created", (_event, contents) => hardenWebContents(contents))'
-        in code
+    assert re.search(
+        r'app\.on\("web-contents-created", \(_event, contents\) =>\s*'
+        r"hardenWebContents\(contents, \(url\) => void shell\.openExternal\(url\)",
+        code,
     )
-    m = re.search(r"function hardenWebContents\(.*?\n\}\n", code, flags=re.S)
-    assert m
-    body = m.group(0)
+    assert "applyPermissionPolicy(session.defaultSession);" in code
+    for own in (
+        "setPermissionRequestHandler",
+        "setPermissionCheckHandler",
+        "setWindowOpenHandler",
+        '"will-navigate"',
+        "startsWith(BACKEND_URL)",
+    ):
+        assert own not in code, f"main.ts must leave {own} to navguard.ts"
+    guard = _strip_comments((SRC / "navguard.ts").read_text(encoding="utf-8"))
     for needle in (
         '"will-navigate"',
         '"will-redirect"',
         '"will-attach-webview"',
         "setWindowOpenHandler",
-        "isAppUrl(url)",
+        "setPermissionRequestHandler",
+        "setPermissionCheckHandler",
     ):
-        assert needle in body, needle
-    assert (
-        "startsWith(BACKEND_URL)" not in code
-    ), "prefix match accepts 127.0.0.1:6987.evil"
-    assert "setPermissionRequestHandler" in code and "setPermissionCheckHandler" in code
+        assert needle in guard, needle
 
 
 def test_open_external_only_for_fixed_urls_or_the_allow_list(main_ts: str) -> None:
@@ -257,16 +305,27 @@ def test_open_external_only_for_fixed_urls_or_the_allow_list(main_ts: str) -> No
             "BACKEND_URL",
             "url",
         }, arg
-    m = re.search(
-        r"function openExternalFromContent\(url: string\): void \{(.*?)\n\}", code, re.S
-    )
-    assert m and "if (isExternalAllowed(url)) void shell.openExternal(url);" in m.group(
-        1
-    )
-    # `url` is passed to the OS only inside openExternalFromContent.
+    # `url` (from web content) reaches the OS only through hardenWebContents,
+    # which passes it through externalUrl first.
     assert code.count("shell.openExternal(url)") == 1
     guard = (SRC / "navguard.ts").read_text(encoding="utf-8")
     assert 'new Set(["https:", "mailto:"])' in guard
+    assert "const safe = externalUrl(url);" in guard
+
+
+def test_node_unit_tests_pass_when_dependencies_are_installed() -> None:
+    """The fakes-based tests of the wiring (test/navguard.test.js); CI and the
+    release job run them too. Skipped where clients/desktop has no node_modules."""
+    if not (DESKTOP / "node_modules" / "typescript").is_dir():
+        pytest.skip("clients/desktop/node_modules not installed (npm ci)")
+    npm = shutil.which("npm")
+    if not npm:
+        pytest.skip("npm not installed")
+    proc = subprocess.run(
+        [npm, "test"], cwd=DESKTOP, capture_output=True, text=True, timeout=300
+    )
+    assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-2000:]
+    assert re.search(r"^# fail 0$", proc.stdout, re.M), proc.stdout[-2000:]
 
 
 def test_splash_never_renders_markup_from_messages() -> None:
@@ -465,3 +524,74 @@ def test_ci_builds_the_desktop_app_without_secrets_or_publishing(ci: dict) -> No
         uses = step.get("uses")
         if uses:
             assert SHA_PIN.match(uses) and uses in release_refs, uses
+
+
+# --------------------------------------------------------------------- signing probe
+
+
+def _probe(release: dict) -> dict:
+    return next(
+        s
+        for s in release["jobs"]["desktop"]["steps"]
+        if s.get("name") == "Which signing material is configured"
+    )
+
+
+@pytest.mark.parametrize(
+    "platform,mac,notary,win,code,signed",
+    [
+        ("mac", "true", "true", "false", 0, "true"),
+        ("mac", "false", "false", "false", 0, "false"),
+        ("mac", "false", "true", "false", 0, "false"),
+        # A certificate without the notarization secrets must stop the job.
+        ("mac", "true", "false", "false", 1, None),
+        ("win", "false", "false", "true", 0, "true"),
+        ("win", "true", "true", "false", 0, "false"),
+        ("linux", "true", "true", "true", 0, "false"),
+    ],
+)
+def test_signing_probe_decides_and_refuses_unnotarized(
+    release: dict, tmp_path: Path, platform, mac, notary, win, code, signed
+) -> None:
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash not installed")
+    step = _probe(release)
+    out = tmp_path / "github_output"
+    out.write_text("")
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "GITHUB_OUTPUT": str(out),
+        "PLATFORM": platform,
+        "HAS_MAC_CERT": mac,
+        "HAS_NOTARY": notary,
+        "HAS_WIN_CERT": win,
+    }
+    proc = subprocess.run(
+        [bash, "-c", step["run"]], env=env, capture_output=True, text=True, timeout=30
+    )
+    assert proc.returncode == code, proc.stdout + proc.stderr
+    if code:
+        assert "::error::" in proc.stdout
+        assert "signed=" not in out.read_text()
+    else:
+        assert out.read_text() == f"signed={signed}\n"
+
+
+def test_no_step_can_print_a_signing_secret(release: dict) -> None:
+    """No run script names a signing variable, so none can echo, printenv or
+    `set -x` it; the probe sees only booleans."""
+    names = "|".join(sorted(SIGNING_SECRETS))
+    ref = re.compile(rf"\$\{{?(?:{names})\b")
+    for name, job in release["jobs"].items():
+        for step in job.get("steps", []):
+            run = step.get("run", "")
+            assert not ref.search(run), f"{name}/{step.get('name')}: reads a secret"
+            for bad in ("printenv", "set -x", "env |", "export -p"):
+                assert bad not in run, f"{name}/{step.get('name')}: {bad}"
+    probe = _probe(release)
+    for key, value in probe["env"].items():
+        if "secrets." in str(value):
+            assert key.startswith("HAS_") and re.fullmatch(
+                r"\$\{\{ (secrets\.\w+ != '' ?(&& )?)+\}\}", str(value)
+            ), (key, value)
