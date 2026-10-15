@@ -45,7 +45,7 @@ export default function AuthLayout({ screenLabel, title, subtitle, message, chil
           <div className="brand-body">
             <h1>Vigilant, Open, Trustworthy.</h1>
             <p>
-              Open source and community built, Vigil stands watch beside
+              Open source and community built, AutoSecOps stands watch beside
               your analysts on the journey toward greater autonomy.
             </p>
           </div>

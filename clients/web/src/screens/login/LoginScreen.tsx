@@ -5,6 +5,7 @@ import { authApi, bootstrapApi, ssoApi, type SsoProviders } from '../../services
 import { Icon } from '../../shared/icons'
 import AuthLayout from './AuthLayout'
 import { requestErrorMessage } from './requestErrorMessage'
+import { RESET_ASK_ADMIN, RESET_SSO_NOTE } from './resetMessages'
 
 // The callback redirects here with ?sso_error=<code>; the detail stays in the
 // server log and audit record, the person gets what they can act on.
@@ -143,14 +144,15 @@ export default function LoginScreen() {
   }
 
   // The server answers identically whether or not the account exists, so
-  // show its message verbatim and claim nothing more.
+  // show its message and claim nothing more. Its `delivery` comes from the
+  // mail configuration alone.
   const handleResetRequest = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
     setLoading(true)
     try {
       const res = await authApi.requestPasswordReset(email.trim())
-      setNotice(res.data.message)
+      setNotice(res.data.delivery === 'administrator' ? RESET_ASK_ADMIN : res.data.message)
       setResetSent(true)
     } catch (err: any) {
       setError(requestErrorMessage(err, 'Could not request a reset. Check the email and try again.'))
@@ -299,6 +301,7 @@ export default function LoginScreen() {
               </button>
             </>
           )}
+          {sso && sso.providers.length > 0 && <p className="sso-note">{RESET_SSO_NOTE}</p>}
           <div className="mfa-back">
             <button type="button" className="link" onClick={closeForgot}>
               ← Back to sign in

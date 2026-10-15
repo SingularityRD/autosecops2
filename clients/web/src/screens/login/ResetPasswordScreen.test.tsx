@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { ColorSchemeProvider } from '../../contexts/ColorSchemeContext'
 import ResetPasswordScreen from './ResetPasswordScreen'
 
@@ -20,11 +20,17 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useNavigate: () => navigate }
 })
 
+function LocationProbe() {
+  const location = useLocation()
+  return <output data-testid="location">{location.pathname + location.search}</output>
+}
+
 function renderAt(url: string) {
   return render(
     <ColorSchemeProvider>
       <MemoryRouter initialEntries={[url]}>
         <ResetPasswordScreen />
+        <LocationProbe />
       </MemoryRouter>
     </ColorSchemeProvider>,
   )
@@ -76,8 +82,48 @@ describe('ResetPasswordScreen', () => {
     confirmPasswordReset.mockRejectedValueOnce(new Error('Network Error'))
     renderAt('/reset-password?token=tok123')
     submit('a-long-new-passphrase')
-    expect(await screen.findByRole('alert')).toHaveTextContent("Can't reach the Vigil API")
+    expect(await screen.findByRole('alert')).toHaveTextContent("Can't reach the AutoSecOps API")
     expect(screen.getByLabelText('New password')).toBeInTheDocument()
+  })
+
+  it('takes the token out of the URL once read, and still confirms with it', async () => {
+    confirmPasswordReset.mockResolvedValueOnce({ data: { message: 'ok' } })
+    renderAt('/reset-password?token=tok123&lang=en')
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent(/^\/reset-password\?lang=en$/),
+    )
+    expect(screen.getByTestId('location').textContent).not.toContain('tok123')
+    submit('a-long-new-passphrase')
+    await waitFor(() =>
+      expect(confirmPasswordReset).toHaveBeenCalledWith({
+        token: 'tok123',
+        new_password: 'a-long-new-passphrase',
+      }),
+    )
+  })
+
+  it('asks the browser for no referrer while the page is open', () => {
+    const { unmount } = renderAt('/reset-password?token=tok123')
+    const meta = document.head.querySelector('meta[name="referrer"]')
+    expect(meta).toHaveAttribute('content', 'no-referrer')
+    unmount()
+    expect(document.head.querySelector('meta[name="referrer"]')).toBeNull()
+  })
+
+  it('explains that a single-sign-on account has no password to reset', async () => {
+    confirmPasswordReset.mockRejectedValueOnce({
+      response: {
+        status: 400,
+        data: {
+          detail:
+            'This account signs in with single sign-on and has no AutoSecOps password to reset. Reset your password at your identity provider.',
+        },
+      },
+    })
+    renderAt('/reset-password?token=tok123')
+    submit('a-long-new-passphrase')
+    expect(await screen.findByRole('alert')).toHaveTextContent('single sign-on')
+    expect(screen.getByRole('alert')).toHaveTextContent('identity provider')
   })
 
   it('has its own state when the token is missing', () => {

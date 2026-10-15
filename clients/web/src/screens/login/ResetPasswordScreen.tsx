@@ -1,17 +1,39 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { authApi } from '../../services/api'
 import { Icon } from '../../shared/icons'
 import AuthLayout from './AuthLayout'
 import { requestErrorMessage } from './requestErrorMessage'
 
-// Landing page for the emailed /reset-password?token=… link. Public: the
-// signed token is the credential. AuthProvider's /auth/me GET on mount seeds
-// the csrf_token cookie the confirm POST needs in a fresh browser.
+// Landing page for the emailed (or administrator-issued) /reset-password?token=…
+// link. Public: the signed token is the credential. AuthProvider's /auth/me GET
+// on mount seeds the csrf_token cookie the confirm POST needs in a fresh browser.
 export default function ResetPasswordScreen() {
   const navigate = useNavigate()
-  const [params] = useSearchParams()
-  const token = params.get('token') ?? ''
+  const [params, setParams] = useSearchParams()
+  // Read once, then kept in memory only: the address bar, history entry and
+  // any Referer stop carrying it (see the effect below).
+  const [token] = useState(() => params.get('token') ?? '')
+
+  useEffect(() => {
+    // Take the token out of the URL as soon as it is read. A replace (the
+    // router's history.replaceState), so Back can't bring it back either.
+    if (params.has('token')) {
+      const rest = new URLSearchParams(params)
+      rest.delete('token')
+      setParams(rest, { replace: true })
+    }
+    // Belt and braces with the server's Referrer-Policy: no-referrer on this
+    // page, for a dev server or proxy that doesn't send it.
+    const meta = document.createElement('meta')
+    meta.name = 'referrer'
+    meta.content = 'no-referrer'
+    document.head.appendChild(meta)
+    return () => {
+      meta.remove()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)

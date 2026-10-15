@@ -1467,10 +1467,14 @@ export const ssoApi = {
 }
 
 // Public password reset. `request` answers the same whether or not the email
-// matches an account; the emailed link lands on /reset-password?token=…
+// matches an account; its `delivery` says how a link reaches the person
+// (email, the server log in DEV_MODE, or an administrator when no mail is set
+// up). The link lands on /reset-password?token=…
+export type PasswordResetRequestReply = Schema<'PasswordResetRequestResponse'>
+
 export const authApi = {
   requestPasswordReset: (email: string) =>
-    api.post<{ message: string }>('/auth/password-reset/request', {
+    api.post<PasswordResetRequestReply>('/auth/password-reset/request', {
       email,
     } satisfies Schema<'PasswordResetRequest'>),
   confirmPasswordReset: (payload: Schema<'PasswordResetConfirm'>) =>

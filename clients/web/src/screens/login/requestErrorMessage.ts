@@ -1,4 +1,4 @@
-const UNREACHABLE_MSG = "Can't reach the Vigil API. Is the backend running?"
+const UNREACHABLE_MSG = "Can't reach the AutoSecOps API. Is the backend running?"
 
 // No response, or a 5xx without a server `detail` (e.g. Vite's proxy answering
 // ECONNREFUSED with a 500), means the API never saw the request.
