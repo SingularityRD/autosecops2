@@ -52,8 +52,6 @@ OTHER_CONSUMERS = {
     "AWS_REGION": "AWS SDKs",
     "OTEL_TRACES_SAMPLER": "OpenTelemetry SDK",
     "PYTHONUNBUFFERED": "CPython",
-    # Interpolated into mcp-config.json for the VStrike MCP server.
-    "VSTRIKE_BASE_URL": "vstrike MCP server",
     # TypeScript agent processes (services/agent).
     "AUTOSECOPS_GUARDS": "agent layer",
     "VIGIL_OTEL_CAPTURE_CONTENT": "agent layer",
