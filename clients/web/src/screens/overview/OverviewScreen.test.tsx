@@ -139,7 +139,7 @@ describe('OverviewScreen', () => {
     const flow = await screen.findByRole('region', { name: 'How alerts flow through AutoSecOps' })
     expect(within(flow).getByText(/Nothing is connected yet\. Connect a source on the left/)).toBeInTheDocument()
     expect(within(flow).getByText('Waiting for data')).toBeInTheDocument()
-    for (const name of ['Connect a SIEM', 'Connect an EDR', 'Connect identity', 'Connect the LogLM pipeline']) {
+    for (const name of ['Connect a SIEM', 'Connect an EDR', 'Connect identity', 'Connect network data']) {
       expect(within(flow).getByRole('link', { name: new RegExp(name) })).toHaveAttribute('href', '/settings?section=data')
     }
     for (const label of ['Resolved automatically', 'Closed by a person', 'Still working', 'Needs you', 'Not in a case']) {

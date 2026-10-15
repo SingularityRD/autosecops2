@@ -281,7 +281,6 @@ class Settings(BaseSettings):
     prompt_injection_block: bool = False
     mcp_auto_connect_on_startup: Optional[bool] = None
     llm_budget_unlimited: bool = False
-    extension_connector_allowlist: Annotated[List[str], NoDecode] = []
 
     # Email
     smtp_host: str = ""
@@ -469,7 +468,6 @@ class Settings(BaseSettings):
     anyrun_enabled: bool = False
 
     @field_validator(
-        "extension_connector_allowlist",
         "daemon_escalate_severities",
         "kafka_topics",
         mode="before",

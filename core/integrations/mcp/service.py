@@ -199,8 +199,8 @@ class MCPService:
         collapsed to an empty string.
 
         Only the template is expanded. A resolved value is spliced in as plain
-        text, so a stored value that itself contains ``${...}`` (a saved
-        connector URL, say) cannot name another variable or secret to read.
+        text, so a stored value that itself contains ``${...}`` cannot name
+        another variable or secret to read.
         """
         source: Mapping[str, str] = os.environ if env is None else env  # noqa: ENV001
         pattern = r"\$\{([^}:]+)(?::-((?:\$\{[^}]+\}|[^{}])*))?\}"
@@ -229,7 +229,7 @@ class MCPService:
         return value.replace(_LITERAL_DOLLAR, "$")
 
     def reload_server_configs(self) -> None:
-        """Rebuild server configs so a connectorUrl saved after startup is
+        """Rebuild server configs so a value saved after startup is
         re-substituted into the init-time-cached spawn args."""
         self._initialize_servers()
 
@@ -243,13 +243,6 @@ class MCPService:
         """
         python_exe_str = str(self.python_exe)
         project_path_str = str(self.project_root)
-
-        # Resolve ${<ID>_MCP_URL} placeholders from integration connectorUrls
-        # (see derive_remote_mcp_env). Best-effort.
-        try:
-            self._integration_bridge.derive_remote_mcp_env()
-        except Exception as e:  # pragma: no cover - defensive
-            logger.debug("remote MCP env derivation skipped: %s", e)
 
         # Load servers from mcp-config.json
         mcp_config_path = self.project_root / "mcp-config.json"

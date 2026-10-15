@@ -62,9 +62,6 @@ def default_env_var(integration_id: str, field_name: str) -> str:
 # plaintext to the DB / JSON file.
 _CATALOG_ONLY_SECRET_FIELDS: Mapping[str, tuple[str, ...]] = {
     "github": ("token",),
-    # mint_secret: HMAC for minting session tokens (services/api/routers/extensions.py).
-    # mcp_token: static bearer the LogLM MCP tools present to the connector.
-    "loglm": ("mint_secret", "mcp_token"),
     "gcp-threat-intel": ("api_key",),
     "firecrawl": ("api_key",),
     "cribl-stream": ("password",),

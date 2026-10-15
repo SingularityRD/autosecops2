@@ -492,7 +492,7 @@ export default function HomeScreen({ openCase, startTour, fillCommand }: Console
                 </span>
                 <h3>No alerts yet</h3>
                 <p>
-                  Connect a SIEM, EDR or the LogLM pipeline and alerts start arriving within minutes. Decisions
+                  Connect a SIEM, an EDR or network data and alerts start arriving within minutes. Decisions
                   that need you will show up here.
                 </p>
                 <Link className="btn primary" to="/settings?section=data">

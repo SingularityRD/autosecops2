@@ -1,5 +1,5 @@
 """The dashboard's summary and timeline over findings a source sent without a
-severity or a timestamp. Both are nullable (LogLM parquet ingest leaves severity
+severity or a timestamp. Both are nullable (sequence parquet ingest leaves severity
 unset, and a row without event_start_time has no timestamp); each used to fail
 the whole endpoint with a 500.
 
@@ -40,7 +40,7 @@ def _create(finding_id, *, timestamp=None, severity=None):
         mitre_predictions={},
         anomaly_score=None,
         timestamp=timestamp,
-        data_source="loglm",
+        data_source="flow",
         severity=severity,
         entity_context={"src_ip": "192.0.2.77"},
     )

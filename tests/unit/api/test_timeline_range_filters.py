@@ -131,9 +131,9 @@ def test_data_source_is_filtered_before_the_limit(client):
             _finding(f"tlr-splunk-{i:02d}", T0 + timedelta(minutes=30 + i))
             for i in range(LIMIT * 2)
         ),
-        _finding("tlr-loglm", T0 + timedelta(minutes=1), data_source="loglm"),
+        _finding("tlr-flow", T0 + timedelta(minutes=1), data_source="flow"),
     )
 
-    r = client.get("/api/timeline/range", params=_window(data_source="loglm"))
+    r = client.get("/api/timeline/range", params=_window(data_source="flow"))
 
-    assert _ids(r) == ["tlr-loglm"]
+    assert _ids(r) == ["tlr-flow"]

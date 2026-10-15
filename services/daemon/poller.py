@@ -3,7 +3,7 @@
 * **Federation runner** (:class:`core.federation.runner.FederationRunner`) —
   the only path that polls a source, one task per adapter, each on its
   ``federation_sources`` row's interval.
-* **Webhook** — pushed findings (the LogLM connector, generic senders). A 200
+* **Webhook** — pushed findings (generic senders). A 200
   means every finding of the request is durable (W0.12): fsync'd into the
   ingest spool (core/ingestion/spool.py), which the processor drains and a
   restarted daemon replays. When the spool is full or cannot be written the

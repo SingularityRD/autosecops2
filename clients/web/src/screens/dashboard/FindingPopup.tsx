@@ -460,7 +460,7 @@ export default function FindingPopup({
               </ul>
               {excludeError && <div className="field-hint err" role="alert">{excludeError}</div>}
               <p className="fp-ip-note muted">
-                Excluding hides this address’s findings from every analyst’s queue. LogLM keeps scoring them,
+                Excluding hides this address’s findings from every analyst’s queue. Ingest keeps scoring them,
                 and removing the exclusion (Dashboard → Excluded IPs) brings them back unchanged.
               </p>
             </div>

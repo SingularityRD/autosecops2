@@ -46,7 +46,7 @@ def normalize_timestamp(timestamp_str: str) -> datetime:
 def _dated(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """The findings that have a timestamp, and so a place on a timeline.
 
-    ``findings.timestamp`` is nullable: LogLM rows can arrive with no event time.
+    ``findings.timestamp`` is nullable: ingested rows can arrive with no event time.
     An undated finding is left off rather than failing the whole response.
     """
     return [f for f in findings if f.get("timestamp")]

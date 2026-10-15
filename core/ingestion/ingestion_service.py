@@ -5,7 +5,7 @@ Handles ingestion of findings and cases from various formats:
 - JSON files
 - CSV files
 - JSONL (JSON Lines) files
-- Parquet files (DeepTempo LogLM embeddings)
+- Parquet files (scored-sequence exports, or any other column layout)
 - Direct JSON data
 """
 
@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from core.findings.source_evidence import (
     normalize_finding_source_evidence,
-    source_evidence_from_loglm_row,
+    source_evidence_from_sequence_row,
 )
 from core.storage.external_id import normalize_external_id
 from core.time import utcnow
@@ -989,7 +989,7 @@ class IngestionService:
     def ingest_parquet_file(
         self, file_path: Union[str, Path], data_source: str = "flow"
     ) -> Dict[str, Any]:
-        """LogLM embedding exports route through _parquet_row_to_finding; anything
+        """Scored-sequence exports route through _parquet_row_to_finding; anything
         else ingests generically via _generic_row_to_finding."""
         self.reset_stats()
         file_path = Path(file_path)
@@ -1032,7 +1032,7 @@ class IngestionService:
                             }
                             logger.info(f"Parquet sample row (types+values): {sample}")
                             sampled_first_row = True
-                        if schema_kind == "loglm":
+                        if schema_kind == "sequence":
                             finding_batch.append(
                                 self._parquet_row_to_finding(row, data_source)
                             )
@@ -1061,7 +1061,7 @@ class IngestionService:
         self, row: Dict[str, Any], data_source: str = "flow"
     ) -> Dict[str, Any]:
         """
-        Transform a row from a DeepTempo LogLM parquet file into a finding dict.
+        Transform a row from a scored-sequence parquet file into a finding dict.
 
         Args:
             row: Dictionary of column values for one row
@@ -1123,7 +1123,7 @@ class IngestionService:
         if row.get("incident_pred") is not None:
             entity_context["incident_pred"] = int(row["incident_pred"])
 
-        source_evidence = source_evidence_from_loglm_row(row)
+        source_evidence = source_evidence_from_sequence_row(row)
         if source_evidence is not None:
             entity_context["source_evidence"] = source_evidence
 
@@ -1145,9 +1145,10 @@ class IngestionService:
         }
 
     def _detect_parquet_schema(self, col_names: set) -> str:
-        """'loglm' for DeepTempo embedding exports, else 'generic'."""
+        """'sequence' for a scored-sequence export (sequence_id / embedding
+        columns), else 'generic'."""
         if "embedding" in col_names or "sequence_id" in col_names:
-            return "loglm"
+            return "sequence"
         return "generic"
 
     def _generic_row_to_finding(

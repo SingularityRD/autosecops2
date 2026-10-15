@@ -5,7 +5,6 @@ import { InfoTip } from '../../shared/InfoTip'
 import { PageHead } from '../../shared/PageHead'
 import { LevelBadge } from '../../shared/LevelBadge'
 import { EmptyState, Toggle } from '../../shared/ui'
-import { useExtensions } from '../../extensions/ExtensionProvider'
 import { basePath } from '../../config/basePath'
 import { getAllIntegrations } from '../../config/integrations'
 import {
@@ -41,13 +40,12 @@ export default function IntegrationsSection({ notify }: SectionProps) {
   const requested = tabFromQuery(searchParams.get('tab'))
   const [tab, setTab] = useState<IntegrationsTab>(requested)
   const { mcp, int, phase, rows, attention } = useIntegrationsState()
-  const { reload: reloadExtensions } = useExtensions()
   const [busy, setBusy] = useState<string | null>(null)
   // saved custom integrations, from GET /api/custom-integrations/list; null until known or when it fails (non-admin)
   const [customCount, setCustomCount] = useState<number | null>(null)
   const [wizardFor, setWizardFor] = useState<IntegrationMetadata | null>(null)
   const { error, reload: reloadMcp, setServerEnabled } = mcp
-  const { config: intCfg, reload: reloadInt, saveIntegration, setIntegrationEnabled } = int
+  const { config: intCfg, reload: reloadInt, saveIntegration } = int
 
   // state lives above the section, so a visit does not refetch: Refresh does
   const reload = () => {
@@ -86,25 +84,10 @@ export default function IntegrationsSection({ notify }: SectionProps) {
   const available = entries.filter((e) => !e.connected).length
   const healthy = connected.filter((r) => r.level === 'good').length
 
-  // gate M: MCP server on/off (agent tools)
+  // MCP server on/off (agent tools)
   const onToggleMcp = async (name: string, want: boolean) => {
     setBusy(name)
     const res = await setServerEnabled(name, want)
-    setBusy(null)
-    if (res.ok) notify('ok', `${prettyServerName(name)} ${want ? 'enabled' : 'disabled'}.`)
-    else notify('err', `Could not start ${prettyServerName(name)}${res.error ? `: ${res.error}` : ''}.`)
-  }
-
-  // master: one switch over both gates
-  const onToggleMaster = async (name: string, id: string, want: boolean) => {
-    setBusy(name)
-    const res = await setServerEnabled(name, want)
-    try {
-      await setIntegrationEnabled(id, want)
-      reloadExtensions()
-    } catch {
-      notify('err', `Could not ${want ? 'enable' : 'disable'} the ${id} panel.`)
-    }
     setBusy(null)
     if (res.ok) notify('ok', `${prettyServerName(name)} ${want ? 'enabled' : 'disabled'}.`)
     else notify('err', `Could not start ${prettyServerName(name)}${res.error ? `: ${res.error}` : ''}.`)
@@ -251,7 +234,7 @@ export default function IntegrationsSection({ notify }: SectionProps) {
                 </td>
                 <td><Clamp text={SERVER_DESCRIPTIONS.get(r.name) || r.integration?.description || 'Custom MCP integration.'} /></td>
                 <td className={r.level === 'poor' ? 'int-note poor' : 'int-note'}><Clamp text={r.note} /></td>
-                <td><RowToggle row={r} busy={busy} onMcp={onToggleMcp} onMaster={onToggleMaster} /></td>
+                <td><RowToggle row={r} busy={busy} onMcp={onToggleMcp} /></td>
                 <td>
                   {canConfigure(r) && (
                     <button className={`btn int-act${r.level === 'poor' ? ' primary' : ''}`} onClick={() => setWizardFor(r.integration!)}>
@@ -301,15 +284,7 @@ export default function IntegrationsSection({ notify }: SectionProps) {
           onClose={() => setWizardFor(null)}
           onSave={async (id, cfg) => {
             await saveIntegration(id, cfg)
-            // refresh the registry so a URL edit re-reads; saving alone doesn't enable
-            const isExtension = wizardFor.fields?.some((f) => f.name === 'connectorUrl')
-            if (isExtension) reloadExtensions()
-            notify(
-              'ok',
-              isExtension
-                ? `${wizardFor.name} connected. Turn it on with the toggle to enable it.`
-                : `${wizardFor.name} configured. Enable it with the toggle if it isn’t already.`,
-            )
+            notify('ok', `${wizardFor.name} configured. Enable it with the toggle if it isn’t already.`)
           }}
         />
       )}
@@ -323,32 +298,12 @@ function Clamp({ text }: { text: string }) {
   return text ? <span className="int-clamp" title={text}>{text}</span> : null
 }
 
-/** On/off. A connector-backed integration is one master switch over two gates:
- * the extension (gate D) and the MCP server / agent tools (gate M). */
-function RowToggle({ row, busy, onMcp, onMaster }: {
+/** On/off: the MCP server / agent tools. */
+function RowToggle({ row, busy, onMcp }: {
   row: ServerRow
   busy: string | null
   onMcp: (name: string, want: boolean) => void
-  onMaster: (name: string, id: string, want: boolean) => void
 }) {
-  const { name, integration, isEnabled, masterOn, masterMixed, extConfigured } = row
-  if (row.isExtension && integration) {
-    return (
-      <Toggle
-        checked={masterOn}
-        mixed={masterMixed}
-        label={`Toggle ${name}`}
-        title={
-          !extConfigured
-            ? 'Configure the connector first'
-            : masterMixed
-              ? 'Partially enabled — toggle again to retry'
-              : undefined
-        }
-        disabled={busy === name || !extConfigured}
-        onChange={(v) => onMaster(name, integration.id, v)}
-      />
-    )
-  }
+  const { name, isEnabled } = row
   return <Toggle checked={isEnabled} label={`Toggle ${name}`} disabled={busy === name} onChange={(v) => onMcp(name, v)} />
 }

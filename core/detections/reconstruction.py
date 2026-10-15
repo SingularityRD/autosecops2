@@ -2,8 +2,9 @@
 
 Each step is joined on host / entity / time fields that are actually present
 on the Finding. Technique ids and other unknown keys on a step are ignored.
-Verdicts: rule | loglm | both | missed. LogLM-origin is ``data_source ==
-"loglm"``; any other correlated Finding is rule-origin.
+Verdicts: rule | anomaly | both | missed. A Finding is anomaly-origin (scored
+by a model, not matched by a rule) when its ``data_source`` is in
+``ANOMALY_SOURCES``; any other correlated Finding is rule-origin.
 """
 
 from __future__ import annotations
@@ -12,9 +13,12 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Any, Deque, Dict, Iterable, List, Literal, Optional, Set, Tuple
 
-Verdict = Literal["rule", "loglm", "both", "missed"]
+Verdict = Literal["rule", "anomaly", "both", "missed"]
 
-_LOG_LM = "loglm"
+# The one stored value is the third-party anomaly connector removed in W0.29
+# (see FORK.md). Nothing ingests it any more, but findings stored before then
+# keep it, and a historical run must reconstruct to the same verdicts.
+ANOMALY_SOURCES = frozenset({"loglm"})
 
 _START_KEYS = ("started_at", "start", "start_time", "timestamp")
 _END_KEYS = ("ended_at", "end", "end_time")
@@ -101,17 +105,17 @@ def _correlates(
 
 
 def _verdict(hits: List[Dict[str, Any]]) -> Verdict:
-    has_loglm = False
+    has_anomaly = False
     has_rule = False
     for finding in hits:
-        if finding.get("data_source") == _LOG_LM:
-            has_loglm = True
+        if finding.get("data_source") in ANOMALY_SOURCES:
+            has_anomaly = True
         else:
             has_rule = True
-    if has_loglm and has_rule:
+    if has_anomaly and has_rule:
         return "both"
-    if has_loglm:
-        return "loglm"
+    if has_anomaly:
+        return "anomaly"
     if has_rule:
         return "rule"
     return "missed"
@@ -372,15 +376,15 @@ def _joined_record(
 
 def _layer_verdict(verdicts: List[Any]) -> Verdict:
     has_rule = False
-    has_loglm = False
+    has_anomaly = False
     for verdict in verdicts:
-        rule, loglm = _step_layers(verdict)
+        rule, anomaly = _step_layers(verdict)
         has_rule = has_rule or rule
-        has_loglm = has_loglm or loglm
-    if has_rule and has_loglm:
+        has_anomaly = has_anomaly or anomaly
+    if has_rule and has_anomaly:
         return "both"
-    if has_loglm:
-        return "loglm"
+    if has_anomaly:
+        return "anomaly"
     if has_rule:
         return "rule"
     return "missed"
@@ -389,7 +393,7 @@ def _layer_verdict(verdicts: List[Any]) -> Verdict:
 def _step_layers(verdict: Any) -> Tuple[bool, bool]:
     if verdict == "rule":
         return True, False
-    if verdict == "loglm":
+    if verdict == "anomaly":
         return False, True
     if verdict == "both":
         return True, True

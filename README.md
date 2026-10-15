@@ -2,7 +2,7 @@
 
 Vigil is an open source, agentic AI SOC released under Apache 2.0. Your playbooks are plain-text Markdown files, your agent logic is readable code, and your integrations use an open standard ([MCP](https://modelcontextprotocol.io/)). It is a capability you own, not a black box you rent.
 
-Vigil runs on its own: a local clone, Docker, and any supported LLM provider (a local Ollama model works). [LogLM](https://www.deeptempo.ai/platform), DeepTempo's cybersecurity foundation model for [behavioral anomaly detection](https://www.deeptempo.ai/learning-center/behavioral-anomaly-detection), is an optional MCP integration you enable in Settings, not a prerequisite. Docs and community: [vigilsoc.org](https://vigilsoc.org).
+Vigil runs on its own: a local clone, Docker, and any supported LLM provider (a local Ollama model works). Docs and community: [vigilsoc.org](https://vigilsoc.org).
 
 **Vigil 1.0 is coming.** We believe it will be the first AI SOC built for a human *on* the loop rather than *in* it. Join the upcoming office hours for a preview.
 
@@ -119,7 +119,7 @@ cp env.example .env   # set AGENT_INTERNAL_TOKEN (see below)
 
 Then open http://localhost:6988 and create the admin account on the bootstrap screen.
 
-`start.sh` provisions the pinned Python with [uv](https://docs.astral.sh/uv/), installs dependencies, starts PostgreSQL, Redis, and the Bifrost LLM gateway in Docker, starts a host Ollama if one is installed (optional), initializes the schema and reference data, and launches the API, the agent layer, and the frontend. No LogLM or cloud API key is needed to reach a running UI.
+`start.sh` provisions the pinned Python with [uv](https://docs.astral.sh/uv/), installs dependencies, starts PostgreSQL, Redis, and the Bifrost LLM gateway in Docker, starts a host Ollama if one is installed (optional), initializes the schema and reference data, and launches the API, the agent layer, and the frontend. No cloud API key is needed to reach a running UI.
 
 - **`AGENT_INTERNAL_TOKEN`** lets the agent layer talk to the API. Generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Without it the stack still starts, but workflow runs stay queued.
 - **Authentication is on by default.** No account or default password ships; the first visit creates the admin. `start.sh` creates the JWT signing secret at `~/.vigil/jwt_secret`. For an unauthenticated instance on your own machine, set `DEV_MODE=true` in `.env`; the backend announces the bypass on every startup, naming each gate it opens, and says so separately when it is bound to anything but loopback (`BIND_HOST`). `scripts/reset-setup.sh` and `scripts/generate_sample_data.py --api` sign in with `VIGIL_TOKEN`, or `VIGIL_USERNAME` and `VIGIL_PASSWORD`.
@@ -355,6 +355,6 @@ Apache 2.0. See [LICENSE](LICENSE).
 ## References
 
 - [Vigil](https://vigilsoc.org/): project homepage
-- [DeepTempo](https://deeptempo.ai): Vigil sponsor; LogLM connects via MCP as an optional detection layer
+- [DeepTempo](https://deeptempo.ai): sponsor of the upstream Vigil project
 - [Model Context Protocol](https://modelcontextprotocol.io/): MCP specification
 - [SOCBench](https://socbench.org): open benchmark for AI in cybersecurity operations

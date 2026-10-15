@@ -36,7 +36,7 @@ UNRATED_WHERE = (
 
 
 class Finding(Base):
-    """Finding model - represents a security finding from DeepTempo LogLM."""
+    """Finding model - one security finding, from any ingest source."""
 
     __tablename__ = "findings"
 

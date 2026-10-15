@@ -713,15 +713,6 @@ export interface PlatformDatabaseProxyConfig {
   has_ssh_key_passphrase: boolean
 }
 
-// the backend calls the connector BFF server-to-server, so the mint secret
-// never reaches the browser
-export const extensionsApi = {
-  getSessionToken: (integrationId: string) =>
-    api.get<{ token: string | null; expires_in: number | null; user: string }>(
-      `/integrations/${integrationId}/session-token`,
-    ),
-}
-
 export interface LLMProvider {
   provider_id: string
   provider_type: 'anthropic' | 'openai' | 'ollama' | 'vertex' | 'openrouter'

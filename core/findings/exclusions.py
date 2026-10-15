@@ -1,7 +1,7 @@
 """Analyst IP exclusions: which findings the console queue hides, and which a
 hunt or investigation may not start from.
 
-An exclusion never touches a finding. Ingest does not read the table, so LogLM
+An exclusion never touches a finding. Ingest does not read the table, so ingest
 keeps scoring and storing findings for an excluded address with their original
 severity and status; removing the exclusion shows them again unchanged.
 Exclusions are org-wide: a Vigil deployment is one organisation, and every

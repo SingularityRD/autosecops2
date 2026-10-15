@@ -93,20 +93,14 @@ PDF/report generation; the agentic chat loop + durable conversations.
 **Auth** (`auth`):
 User identity — who the human is and what they may do: authentication, password
 policy, cookies, and session/token revocation.
-_Avoid_: connector trust (that's **Connector Trust**), permissions
-
-**Connector Trust** (`integrations/extension`):
-Which page-extension connector origins Vigil admits into its own page (CSP
-`script-src`/`connect-src`, the SSRF guard) and the short-lived tokens minted to
-them. A supply-chain trust decision about a third party, not a user login.
-_Avoid_: auth, extension auth
+_Avoid_: permissions
 
 **Integration** (`integrations`):
 A third-party security product Vigil is configured to talk to. Splits by whether
 Vigil carries code for it: a **Catalog Entry** has only a credential form; a
 **Vendor Slice** has code. Both are "integrations" to a user; only the second is
 one to the codebase.
-_Avoid_: connector (that's the page extension), tool, plugin
+_Avoid_: tool, plugin
 
 **Catalog Entry**:
 A vendor listed in the Settings UI with a credential form and no Vigil code —
@@ -249,7 +243,7 @@ What a source *is*: `telemetry` observed our own estate, `feed` asserts about th
 world, `not_evidence` is neither. Distinct from **Trust**, which is who
 concluded — `analyst` or `agent`. Both sit on a **Verdict**'s sources, and one
 does not imply the other: a feed can be cited by an analyst.
-_Avoid_: connector trust, confidence, severity
+_Avoid_: confidence, severity
 
 **Stance**:
 How one source bore on a **Verdict**: `supports`, `weakens` or `neither`. Replaces
@@ -264,8 +258,7 @@ program did. A program holding a credential minted by a person is still a
 program: it acts with that person's standing, `closed_by` records whose, and
 `analyst` is the one record this system will not let an agent claim on its own
 behalf. The other axis on a **Verdict**'s sources, alongside **Source Tier**.
-Unrelated to **Connector Trust**, which is about admitting a third-party origin.
-_Avoid_: connector trust, source tier, confidence
+_Avoid_: source tier, confidence
 
 **Verdict**:
 What one investigation concluded about one hypothesis, naming its subjects
@@ -435,8 +428,6 @@ _Avoid_: page, tab, view
 - **Source Tier** is stamped at write time, never joined at read time, so
   recategorising an **Integration** later cannot change how a past **Verdict**
   was corroborated
-- **Trust** is unrelated to **Connector Trust**, which is about admitting a
-  third-party origin rather than weighing a conclusion
 - A **Recall** returns **Sightings**, **Verdicts** and **Declared Gaps** in one
   shape, carried two ways: journaled verbatim as the **Recall Event** at run
   start, and returned as the single row of a `recall_entity` tool result mid-run.

@@ -67,7 +67,6 @@ BUILTIN_ROLES = (
 # ``roles`` without being listed (and parsed) here.
 ROLE_GRANT_FILES = (
     "06_auth_tables.sql",
-    "17_loglm_setup.sql",
     "43_medic_permissions.sql",
 )
 
@@ -91,22 +90,6 @@ def load_role_grants(init_dir: Path = INIT_SQL) -> Dict[str, Dict[str, bool]]:
         r"\('(role-[\w-]+)',\s*'[^']*',\s*'[^']*',\s*'(\{.*?\})'", seed, re.S
     ):
         grants[role_id] = _json_obj(perms)
-
-    # 17: UPDATE roles SET permissions = permissions || '{...}' WHERE role_id IN (...)
-    loglm = (init_dir / "17_loglm_setup.sql").read_text()
-    m = re.search(
-        r"permissions\s*\|\|\s*'(\{.*?\})'::jsonb.*?role_id IN \(([^)]*)\)",
-        loglm,
-        re.S,
-    )
-    if not m:
-        raise AssertionError("17_loglm_setup.sql no longer matches the parser")
-    add = _json_obj(m.group(1))
-    for role_id in re.findall(r"'(role-[\w-]+)'", m.group(2)):
-        # The file only grants when the key is absent or false.
-        for k, v in add.items():
-            if not grants[role_id].get(k):
-                grants[role_id][k] = v
 
     # 43: grants || permissions — an existing key wins.
     medic = (init_dir / "43_medic_permissions.sql").read_text()
@@ -385,11 +368,8 @@ def route_key(route, method: str) -> str:
     return f"{method} {getattr(route, 'path_format', None) or route.path}"
 
 
-DYNAMIC_NOTES = {
-    "required": "Permission is '<integration_id>.view', computed from the path: "
-    "only a role holding that extension's view grant (loglm.view: Analyst and up) "
-    "may mint a session token.",
-}
+# Per-variable notes for a permission computed from the request; none today.
+DYNAMIC_NOTES: Dict[str, str] = {}
 
 
 def _strip_context(path: str, context_path: str) -> str:

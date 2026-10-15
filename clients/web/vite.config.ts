@@ -32,11 +32,6 @@ export default defineConfig(({ mode }) => {
   const isDev = mode === 'development'
   const base = isDev && contextPath ? `${contextPath}/` : './'
 
-  // Injected as a runtime <meta> so the dev SPA's trust gate reads the same
-  // origins the backend uses for the CSP + SSRF guard (mirrors base-path).
-  const extensionAllowlist =
-    process.env.EXTENSION_CONNECTOR_ALLOWLIST || env.EXTENSION_CONNECTOR_ALLOWLIST || ''
-
   return {
     base,
     plugins: [
@@ -46,10 +41,6 @@ export default defineConfig(({ mode }) => {
           const tags: string[] = []
           if (contextPath)
             tags.push(`<meta name="vigil-base-path" content="${contextPath}">`)
-          if (extensionAllowlist)
-            tags.push(
-              `<meta name="vigil-extension-allowlist" content="${extensionAllowlist}">`,
-            )
           if (!tags.length) return html
           return html.replace('<head>', `<head>\n    ${tags.join('\n    ')}`)
         },

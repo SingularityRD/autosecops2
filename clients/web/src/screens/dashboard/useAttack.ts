@@ -5,7 +5,8 @@ import { attackApi } from '../../services/api'
 import { techniqueName, techniqueTactic } from '../../data/mitre'
 import type { Phase } from '../cases/useCases'
 
-export type LayerVerdict = 'rule' | 'loglm' | 'both' | 'missed'
+/** `anomaly`: only a model-scored (anomaly-layer) finding matched the step */
+export type LayerVerdict = 'rule' | 'anomaly' | 'both' | 'missed'
 
 interface CoverageCitation {
   finding_id: string
@@ -56,7 +57,7 @@ interface AttackData {
 }
 
 function isLayerVerdict(value: unknown): value is LayerVerdict {
-  return value === 'rule' || value === 'loglm' || value === 'both' || value === 'missed'
+  return value === 'rule' || value === 'anomaly' || value === 'both' || value === 'missed'
 }
 
 export function useAttack(minConfidence: number, timeRange: string, runId: string) {

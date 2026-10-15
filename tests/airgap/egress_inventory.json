@@ -266,17 +266,6 @@
       "note": "Vendor connector; runs only when the 'elastic' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
     },
     {
-      "site": "core/integrations/extension/session_service.py",
-      "category": "gated",
-      "kinds": {
-        "httpx": 2
-      },
-      "gates": [
-        "integration:extension-connector"
-      ],
-      "note": "Browser-extension connector session; refuses unless the connector integration is enabled and its URL is trusted."
-    },
-    {
       "site": "core/integrations/hybrid_analysis/tool.py",
       "category": "gated",
       "kinds": {
@@ -845,21 +834,6 @@
       },
       "gates": [
         "mcp-server:joe-sandbox"
-      ],
-      "note": "Catalogue MCP server, disabled until an operator enables it."
-    },
-    {
-      "site": "mcp-config.json#loglm",
-      "category": "gated",
-      "kinds": {
-        "exec:npx": 1,
-        "mcp-remote": 1
-      },
-      "switches": {
-        "NPM_CONFIG_OFFLINE": "on"
-      },
-      "gates": [
-        "mcp-server:loglm"
       ],
       "note": "Catalogue MCP server, disabled until an operator enables it."
     },

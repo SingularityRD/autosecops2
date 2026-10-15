@@ -51,7 +51,7 @@ async def test_a_swept_import_is_rated_but_not_responded_to():
 
 
 async def test_a_swept_live_finding_with_no_event_time_is_responded_to():
-    # LogLM rows can carry no event time; one re-rated after an outage still acts.
+    # Sequence rows can carry no event time; one re-rated after an outage still acts.
     processor = _processor()
 
     await processor._enrich_in_background(

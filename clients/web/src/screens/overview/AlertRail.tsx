@@ -163,7 +163,7 @@ export default function AlertRail({ data, paused, onTogglePause, onOpen, openCas
             <div className="ov-empty-panel">
               <span className="ov-tile accent"><Icon name="alert" size={18} /></span>
               <b>No alerts yet</b>
-              <span>Connect a SIEM, an EDR or the LogLM pipeline and alerts start arriving within minutes.</span>
+              <span>Connect a SIEM, an EDR or network data and alerts start arriving within minutes.</span>
               <Link className="btn primary no-underline" to={CONNECT_DATA}>Connect data</Link>
             </div>
           </div>

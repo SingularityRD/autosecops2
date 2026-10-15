@@ -9,8 +9,6 @@ import { Icon, type IconName } from '../shared/icons'
 import { InfoTip } from '../shared/InfoTip'
 import { PageHead } from '../shared/PageHead'
 import { NAV, TITLES, type ConsoleScreenKey, type NavGate } from '../data/data'
-import { ExtensionProvider, useExtensions } from '../extensions/ExtensionProvider'
-import ExtensionHost from '../extensions/ExtensionHost'
 import { useColorScheme } from '../contexts/ColorSchemeContext'
 import CaseDrawer from './CaseDrawer'
 import Chat from './Chat'
@@ -87,58 +85,22 @@ const CHAT_WIDTH = 400
 const setupTip = (left: number) =>
   `Finish setting up AutoSecOps: ${left === 1 ? '1 step is' : `${left} steps are`} left. Opens the setup guide.`
 
-export default function SocConsole() {
-  return (
-    <ExtensionProvider>
-      <SocConsoleInner />
-    </ExtensionProvider>
-  )
-}
-
-/** key is a plain string, so extension screens can join the nav row */
 type NavItem = [IconName, string, string | null, NavGate?]
 
-function SocConsoleInner() {
+export default function SocConsole() {
   const navigate = useNavigate()
   const { hasPermission } = useAuth()
   const { screen } = useParams<{ screen?: string }>()
   const location = useLocation()
-  const { mountPoints, enabledIntegrations, loading: extLoading } = useExtensions()
+  const screens: Record<string, (p: ConsoleScreenProps) => JSX.Element> = SCREENS
+  const titles: Record<string, [string, string]> = TITLES
+  const screenPerms: Record<string, string | undefined> = SCREEN_PERMS
+  const navItems = NAV as NavItem[]
 
-  // built-ins win, so an extension can't shadow a core screen
-  const { screens, navItems, titles, screenPerms } = useMemo(() => {
-    const screens: Record<string, (p: ConsoleScreenProps) => JSX.Element> = { ...SCREENS }
-    const titles: Record<string, [string, string]> = { ...TITLES }
-    const screenPerms: Record<string, string | undefined> = { ...SCREEN_PERMS }
-    const navItems: NavItem[] = [...(NAV as NavItem[])]
-    const extNav: NavItem[] = []
-    for (const { ext, mount } of mountPoints) {
-      if (screens[mount.key]) continue
-      screens[mount.key] = (p: ConsoleScreenProps) => (
-        <ExtensionHost {...p} ext={ext} mount={mount} />
-      )
-      titles[mount.key] = [mount.title, mount.subtitle ?? '']
-      if (mount.permission) screenPerms[mount.key] = mount.permission
-      extNav.push([
-        (mount.icon || 'brain') as IconName,
-        mount.navLabel,
-        mount.key,
-        mount.gate?.integration ? { integration: mount.gate.integration } : undefined,
-      ])
-    }
-    // extension tabs slot above the pinned Settings entry
-    const settingsIdx = navItems.findIndex(([, , key]) => key === 'settings')
-    navItems.splice(settingsIdx === -1 ? navItems.length : settingsIdx, 0, ...extNav)
-    return { screens, navItems, titles, screenPerms }
-  }, [mountPoints])
-
-  // while manifests load, a deep-linked extension tab shows loading rather than
-  // flashing 404
   const valid = screen !== undefined && screen in screens
   const landing = landingScreen(hasPermission)
   const landingLabel = landing === 'home' ? 'Home' : 'Overview'
   const current: string = valid ? (screen as string) : landing
-  const resolvingExtension = !valid && screen !== undefined && extLoading
   const currentPerm = valid ? screenPerms[current] : undefined
   const allowed = !currentPerm || hasPermission(currentPerm)
 
@@ -168,8 +130,6 @@ function SocConsoleInner() {
   )
   const [tourOn, setTourOn] = useState(() => !readConsoleTourSeen())
   const [tourIndex, setTourIndex] = useState(0)
-  // from ExtensionProvider, so a connector configured in Settings reaches the
-  // nav row without a refresh
   const [orchestratorEnabled, setOrchestratorEnabled] = useState(false)
   const [demoOn, setDemoOn] = useState(false)
 
@@ -400,7 +360,6 @@ function SocConsoleInner() {
   const visibleNav = navItems.filter(([, , key, gate]) => {
     const perm = key ? screenPerms[key] : undefined
     if (perm && !hasPermission(perm)) return false
-    if (gate?.integration && !enabledIntegrations.includes(gate.integration)) return false
     if (gate?.orchestrator && !orchestratorEnabled) return false
     return Boolean(key)
   })
@@ -583,14 +542,7 @@ function SocConsoleInner() {
               )}
               <ErrorBoundary resetKey={valid ? current : 'notfound'}>
                 {!valid ? (
-                  resolvingExtension ? (
-                    <div className="extension-host-status">
-                      <Icon name="refresh" size={22} />
-                      <p>Loading…</p>
-                    </div>
-                  ) : (
-                    <NotFoundScreen path={screen} homeLabel={landingLabel} onHome={() => go(landing)} />
-                  )
+                  <NotFoundScreen path={screen} homeLabel={landingLabel} onHome={() => go(landing)} />
                 ) : !allowed ? (
                   <div className="access-denied">
                     <Icon name="lock" size={26} />

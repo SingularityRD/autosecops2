@@ -24,7 +24,6 @@ from core.deps import (
 from core.detections.detection_rules_service import DetectionRulesService
 from core.integrations._base.descriptor import iter_descriptors
 from core.integrations.credential_check import check_credentials
-from core.integrations.extension import session_service as extension_sessions
 from core.integrations.integration_bridge_service import IntegrationBridgeService
 from core.integrations.integration_secrets import (
     credentials_to_resupply,
@@ -906,14 +905,6 @@ def set_integrations_config(
         },
     )
 
-    # Derive <ID>_MCP_URL env vars (e.g. LOGLM_MCP_URL) from any
-    # connectorUrl just saved, so static mcp-config.json remote-MCP
-    # entries resolve without a separately-set env var. Best-effort.
-    try:
-        bridge.derive_remote_mcp_env()
-    except Exception as e:
-        logger.warning(f"Could not derive remote MCP env vars: {e}")
-
     return {"success": True, "message": "Integrations configuration saved"}
 
 
@@ -981,24 +972,6 @@ def _probe_error_summary(servers: List[Dict[str, Any]]) -> Optional[str]:
     return "; ".join(parts) or None
 
 
-async def _probe_connector_integration(
-    integration_id: str, status: dict, current_user: User
-) -> dict:
-    username = getattr(current_user, "username", None) or "unknown"
-    try:
-        message = await extension_sessions.probe_connector(integration_id, username)
-        success, error = True, None
-    except extension_sessions.ExtensionSessionError as exc:
-        success, message, error = False, str(exc), str(exc)
-
-    recorded = get_config_service(user_id=current_user.user_id).record_integration_test(
-        integration_id, success=success, error=error, tested_at=utcnow()
-    )
-    if not recorded:
-        logger.warning("Integration '%s' test result was not saved", integration_id)
-    return {"success": success, "message": message, "status": status}
-
-
 @router.post("/integrations/{integration_id}/test")
 async def test_integration(
     integration_id: str,
@@ -1006,11 +979,9 @@ async def test_integration(
     bridge: IntegrationBridgeService = Depends(provide_integration_bridge),
     mcp_client=Depends(provide_mcp_client),
 ):
-    """Probe the MCP servers behind an integration, or its connector URL.
+    """Probe the MCP servers behind an integration.
 
-    A UI-extension connector (stored ``connectorUrl``, no MCP server) is probed
-    over HTTP instead. Other catalog entries have no descriptor, so they are not
-    testable. A stored
+    Catalog entries with no descriptor are not testable. A stored
     config of ``{}`` is still configured — secret-only rows keep the secret
     outside this dict. The integration's enabled flag does not block the
     probe: enabled MCP servers are contacted, and if none are enabled every
@@ -1022,10 +993,6 @@ async def test_integration(
 
     server_names = list(bridge.server_names_for(integration_id))
     status = bridge.get_integration_status(integration_id)
-    # A UI-extension connector has no MCP server of its own: probe its URL.
-    stored = bridge.get_integration_config(integration_id) or {}
-    if not server_names and stored.get("connectorUrl"):
-        return await _probe_connector_integration(integration_id, status, current_user)
     if not server_names:
         return {
             "success": False,
