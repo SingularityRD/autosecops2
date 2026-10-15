@@ -35,6 +35,9 @@ const SERVER_SUPPORT: Record<string, Exclude<ConnectorSupport, 'supported'>> = {
   'azure-sentinel': 'experimental', 'splunk': 'experimental',
   'gcp-secops': 'experimental', 'gcp-threat-intel': 'experimental',
   'joe-sandbox': 'experimental', 'vstrike': 'experimental',
+  // no read-only call to probe (Atomic Red Team runs the operator's own runner);
+  // CAPE needs a KVM host with analysis VMs
+  'atomic-red-team': 'experimental', 'cape-sandbox': 'experimental',
 }
 
 export function connectorSupport(server: string): ConnectorSupport {
