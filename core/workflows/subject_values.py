@@ -101,27 +101,44 @@ def for_model(text: Any) -> Any:
     return _VALUE_LINE.sub("", _BLOCK.sub("", text))
 
 
-def _rows_in(value: Any, into: dict) -> None:
-    """Every ``subject_values`` row anywhere in ``value``: ref -> raw value."""
-    if isinstance(value, dict):
-        for k, v in value.items():
-            if k == "subject_values" and isinstance(v, list):
-                for row in v:
-                    if isinstance(row, dict) and isinstance(row.get("value"), str):
-                        into.setdefault(row.get("ref"), row["value"])
-            else:
-                _rows_in(v, into)
-    elif isinstance(value, (list, tuple)):
-        for v in value:
-            _rows_in(v, into)
+def _own_rows(value: dict) -> List[tuple]:
+    """The subject_values rows that scope ``value``: its own, or those of a
+    direct child (an approval row keeps them in ``parameters``)."""
+    holders = [value] + [v for v in value.values() if isinstance(v, dict)]
+    rows: dict = {}
+    for holder in holders:
+        for row in holder.get("subject_values") or []:
+            if (
+                isinstance(row, dict)
+                and isinstance(row.get("value"), str)
+                and row["value"]
+            ):
+                rows.setdefault(row.get("ref"), row["value"])
+    # Longest first, so a value inside another is not split.
+    return sorted(rows.items(), key=lambda pair: -len(pair[1]))
+
+
+# Long values are masked wherever they occur; short ones only as a whole token, so a
+# value "WS0" never turns "WS01" into "[subject value 1]1" (round 10).
+_SUBSTRING_MIN = 8
+_TOKEN_EDGE = r"A-Za-z0-9_.\-"
 
 
 def _mask(text: str, known: List[tuple]) -> str:
     for ref, raw in known:
         marker = f"[subject value {ref}]" if isinstance(ref, int) else WITHHELD
-        for spelled in (raw, json.dumps(raw, ensure_ascii=False)[1:-1]):
-            if spelled and spelled in text:
+        if text == raw:
+            return marker
+        for spelled in dict.fromkeys((raw, json.dumps(raw, ensure_ascii=False)[1:-1])):
+            if not spelled or spelled not in text:
+                continue
+            if len(spelled) >= _SUBSTRING_MIN:
                 text = text.replace(spelled, marker)
+            else:
+                pattern = (
+                    rf"(?<![{_TOKEN_EDGE}]){re.escape(spelled)}(?![{_TOKEN_EDGE}])"
+                )
+                text = re.sub(pattern, marker, text)
     return text
 
 
@@ -138,25 +155,21 @@ def _deep(value: Any, known: List[tuple], key: Any = None) -> Any:
     if isinstance(value, tuple):
         return tuple(_deep(v, known) for v in value)
     if isinstance(value, dict):
-        return {k: _deep(v, known, k) for k, v in value.items()}
+        # A dict that carries its own rows is its own scope (round 10): one
+        # approval's refs never mask another's text, whatever their numbers.
+        scoped = _own_rows(value) or known
+        return {k: _deep(v, scoped, k) for k, v in value.items()}
     return value
 
 
 def for_model_deep(value: Any) -> Any:
     """:func:`for_model` over every string in a JSON-shaped value, for a model.
 
-    Round 9: an approval row hands a model its ``subject_values`` and, inside a
-    gated call's ``args_canonical`` / ``parameters`` / ``dispatched_arguments``,
-    the subject's text resolved. Every row's value becomes the withheld marker
-    (ref and field kept), and every string that contains a known value has it
-    replaced by its ``[subject value N]`` marker. A new object: what is stored,
-    and the digest the approval binds, are untouched."""
-    found: dict = {}
-    _rows_in(value, found)
-    # Longest first, so a value inside another is not split; short ones (a lone
-    # letter) would mask unrelated text, and say nothing a model could act on.
-    known = sorted(
-        ((ref, raw) for ref, raw in found.items() if len(raw) >= 3),
-        key=lambda pair: -len(pair[1]),
-    )
-    return _deep(value, known)
+    An approval row hands a model its ``subject_values`` and, inside a gated
+    call's ``args_canonical`` / ``parameters`` / ``dispatched_arguments``, the
+    subject's text resolved. Every row's value becomes the withheld marker (ref
+    and field kept), and every string under the object that owns those rows has
+    each of them replaced by its ``[subject value N]`` marker -- scoped per
+    object, so a list of approvals masks each with its own. A new object: what
+    is stored, and the digest the approval binds, are untouched."""
+    return _deep(value, [])

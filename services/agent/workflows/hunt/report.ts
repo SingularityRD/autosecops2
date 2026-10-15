@@ -1,4 +1,3 @@
-import { displaySafe } from "../../core/guards.js";
 import { resolutionOf, type Checkpoint, type Resolution } from "./checkpoints.js";
 import { suppressedEntities } from "./digest.js";
 import type { Projection } from "./ledger.js";
@@ -441,12 +440,6 @@ function restsOnLine(record: EvidenceRecord): string[] {
   return [`_Rests on: ${named}._`];
 }
 
-// Subject-written text inside an inline code span (W0.30 round 4): escaped, and a
-// backtick written \u0060, so it cannot close the span and add markdown of its own.
-function inlineCode(text: string): string {
-  return displaySafe(text).replace(/`/g, "\\u0060");
-}
-
 // What a responder has to re-run: the payload is the answer, this is the question.
 // An enriched record has no dispatch, and a chain is not a query anyone chose.
 function queriesBehind(projection: Projection, record: EvidenceRecord): string[] {
@@ -455,12 +448,15 @@ function queriesBehind(projection: Projection, record: EvidenceRecord): string[]
   return [
     "Queries behind it:",
     "",
-    // Guards (W0.30): a person re-runs what was dispatched, handles filled in, and is
-    // told the filled values are text the subject wrote.
+    // Guards (W0.30 round 10): the arguments as the decider wrote them, handles and
+    // all, never the resolved ones -- the case file is prose, and a subject's value
+    // in it would reach a person as markdown and a model as text. Where the case file
+    // leaves the agent layer each handle becomes a "[subject value N]" marker and its
+    // value travels in the document's subject_values / subject block.
     ...dispatch.calls.map((call) =>
       call.dispatched_arguments === undefined
         ? `- \`${call.tool}\` — \`${call.arguments}\``
-        : `- \`${call.tool}\` — \`${inlineCode(call.dispatched_arguments)}\` (some values written by the subject)`,
+        : `- \`${call.tool}\` — \`${call.arguments}\` (some values written by the subject)`,
     ),
     "",
   ];

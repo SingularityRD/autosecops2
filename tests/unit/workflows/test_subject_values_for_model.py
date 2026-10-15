@@ -157,3 +157,57 @@ def test_a_header_split_across_fields_leaves_no_value():
 def test_legitimate_bracketed_prose_is_kept():
     text = "Runbook:\n[3] step three of runbook\n[4] host = WS01 (no quotes)"
     assert for_model(text) == text
+
+
+# Round 10: a guarded hunt's case file, as the agent layer posts it (fixture kept
+# current by services/agent/tests/hunt/guarded-casefile.test.ts), filed as the
+# backend files it, then read by every model-bound reader of a case.
+def _filed_case_file():
+    import json
+    from pathlib import Path
+
+    posted = json.loads(
+        (Path(__file__).parent / "fixtures" / "guarded_casefile.json").read_text()
+    )
+    handoff = bridge.TerminalHandoff.model_validate(posted)
+    stored = handoff.model_copy(
+        update={
+            "markdown": with_markdown_block(handoff.markdown, handoff.subject_values)
+        }
+    )
+    return handoff, stored, posted["subject_values"][0]["value"]
+
+
+async def test_a_guarded_case_file_reaches_no_model_with_its_value(monkeypatch):
+    from core.integrations.mcp import in_process
+    from tools.mcp import vigil
+
+    handoff, stored, value = _filed_case_file()
+    assert value == VALUE
+    # The people's copy holds the value (in the block), so the sweep means something.
+    assert value in stored.markdown
+
+    case = {"case_id": "case-1", "title": handoff.title, "description": stored.markdown}
+    data = MagicMock()
+    data.get_case.return_value = case
+    data.get_cases.return_value = [case]
+    monkeypatch.setattr(tool_registry, "_data", lambda: data)
+
+    readers = {
+        "backend get_case": (
+            await tool_registry.execute_backend_tool("get_case", {"case_id": "case-1"})
+        )[0],
+        "backend list_cases": (
+            await tool_registry.execute_backend_tool("list_cases", {})
+        )[0],
+        "/mcp get_case": vigil.get_case(case_id="case-1"),
+        "in-process get_case": await in_process.call_tool(
+            "get_case", {"case_id": "case-1"}
+        ),
+        "_rca_finding": bridge._rca_finding(stored),
+        "_rca_context": bridge._rca_context(stored),
+    }
+    for where, out in readers.items():
+        text = out if isinstance(out, str) else str(out)
+        assert value not in text, where
+        assert "[subject value 1]" in text, where
