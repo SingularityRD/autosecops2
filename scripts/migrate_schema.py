@@ -322,7 +322,7 @@ def add_workflow_run_outcome(conn):
 
 
 # How far a hunt has got, for the case list (#2202). Same arrangement as the step
-# above: 41_workflow_runs_progress.sql builds the columns on Helm, this covers a
+# above: 62_workflow_runs_progress.sql builds the columns on Helm, this covers a
 # database that init SQL never reached. No backfill: runs before this stay null.
 @migration("Add iteration_count and max_cost_usd to workflow_runs")
 def add_workflow_run_progress(conn):
