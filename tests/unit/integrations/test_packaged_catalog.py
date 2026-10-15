@@ -11,6 +11,8 @@ from core.integrations.mcp import packaged
 from core.integrations.mcp.service import MCPService
 from core.integrations.mcp.verify_catalog import check_catalog
 
+OKTA_SHA = "e070a67aae706e2e6f71e44b380f494f6171b852"
+
 
 def test_catalog_loads_without_a_project_virtualenv(tmp_path):
     (tmp_path / "mcp-config.json").write_text(
@@ -22,10 +24,7 @@ def test_catalog_loads_without_a_project_virtualenv(tmp_path):
             }
         )
     )
-    assert check_catalog(tmp_path) == {
-        "catalog_entries": 1,
-        "missing_runtime_prerequisites": [],
-    }
+    assert check_catalog(tmp_path) == {"catalog_entries": 1}
     service = MCPService(
         project_root=tmp_path,
         integration_bridge=SimpleNamespace(),
@@ -90,6 +89,30 @@ def test_baked_pins_launch_the_installed_copy(tmp_path, monkeypatch):
         ("uvx", ["--from", "other==1.0", "falcon-mcp"]),
     ]:
         assert launch(command, args) == (command, args)
+
+
+def test_git_tool_with_python_exe_launches_its_venv(tmp_path, monkeypatch):
+    """Okta's shape: ``--from git+…@ref python -m mod`` runs the tool venv's python."""
+    _baked(tmp_path, monkeypatch)
+    url = "https://github.com/fctr-id/okta-mcp-server"
+    venv = tmp_path / "tools" / "okta-mcp-server"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").touch()
+    info = venv / "lib" / "python3.12" / "site-packages" / "okta_mcp-0.1.dist-info"
+    info.mkdir(parents=True)
+    (info / "METADATA").write_text("Name: okta-mcp\nVersion: 0.1\n")
+    (info / "direct_url.json").write_text(
+        json.dumps(
+            {"url": f"{url}.git", "vcs_info": {"requested_revision": OKTA_SHA}}
+        )
+    )
+    args = ["--from", f"git+{url}.git@{OKTA_SHA}", "python", "-m", "okta_mcp.server"]
+    assert packaged.installed_launch("uvx", args) == (
+        str(venv / "bin" / "python"),
+        ["-m", "okta_mcp.server"],
+    )
+    other = ["--from", f"git+{url}.git@0.1.1-beta", "python", "-m", "okta_mcp.server"]
+    assert packaged.installed_launch("uvx", other) == ("uvx", other)
 
 
 def test_bump_without_image_list_fails_verify_catalog(tmp_path, monkeypatch):

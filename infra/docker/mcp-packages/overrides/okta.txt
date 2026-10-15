@@ -1,0 +1,12 @@
+# uv --overrides for the Okta MCP tool (uv-tools.txt). okta-mcp-server pins
+# fastmcp==2.13.3 and python-dotenv==1.2.1, which carry fixable advisories
+# (pip-audit, 15 Oct 2026: mcp 1.22.0, fastmcp 2.13.3, starlette 0.52.1,
+# python-dotenv 1.2.1, and diskcache 5.6.3 through fastmcp 2.x).
+# tests/unit/_ratchets/test_mcp_runtime_pins.py keeps every pin here at or
+# above its fixed version. starlette, fastapi and python-dotenv follow
+# requirements.lock; mcp follows the other baked tools' --with pin.
+fastmcp==3.2.4
+mcp==1.29.1
+starlette==1.6.0
+fastapi==0.141.1
+python-dotenv==1.2.3

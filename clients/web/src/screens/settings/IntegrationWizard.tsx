@@ -6,6 +6,8 @@ import { configApi, type IntegrationTestResult } from '../../services/api'
 import { Field, NumberInput, PasswordInput, Popup, Select, TextInput, ToggleRow } from '../../shared/ui'
 import { Banner, extractApiError } from '../../shared/formKit'
 import { relativeTime, type LastTest } from './integrationHealth'
+import { isExperimentalIntegration } from './integrationsData'
+import { ExperimentalChip, ExperimentalNote } from './ExperimentalLabel'
 import {
   PROXY_FIELDS,
   SECTION_LABELS,
@@ -203,8 +205,10 @@ export default function IntegrationWizard({
       ))}
     </>
   )
+  const experimental = isExperimentalIntegration(integration.id)
   const intro = (
     <>
+      {experimental && <ExperimentalNote />}
       <p className="text-sm text-tx-3 leading-relaxed">{integration.description}</p>
       {integration.docs_url && (
         <a className="text-xs text-accent-2 inline-flex items-center gap-1 -mt-1" href={integration.docs_url} target="_blank" rel="noreferrer">
@@ -248,6 +252,7 @@ export default function IntegrationWizard({
           <span className="flex flex-col gap-[3px] grow min-w-0">
             <span className="int-drawer-title">
               {integration.name}
+              {experimental && <ExperimentalChip />}
               <LevelBadge level={level} variant="pill" />
             </span>
             <span className="vg-side-hint">{[category, lastRead].filter(Boolean).join(' · ')}</span>

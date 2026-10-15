@@ -8,6 +8,7 @@ import { EmptyState, Toggle } from '../../shared/ui'
 import { basePath } from '../../config/basePath'
 import { getAllIntegrations } from '../../config/integrations'
 import {
+  EXPERIMENTAL_SERVERS,
   MCP_CATEGORIES,
   SERVER_DESCRIPTIONS,
   SERVER_DISPLAY_NAMES,
@@ -23,6 +24,7 @@ import AddIntegrationTab from './AddIntegrationTab'
 import { buildCatalog } from './integrationCatalog'
 import CustomIntegrationBuilder from './CustomIntegrationBuilder'
 import IntegrationWizard from './IntegrationWizard'
+import { ExperimentalChip } from './ExperimentalLabel'
 import McpSurfacePanel from './McpSurfacePanel'
 import type { IntegrationMetadata } from '../../config/integrationSchema'
 import type { SectionProps } from './types'
@@ -223,6 +225,7 @@ export default function IntegrationsSection({ notify }: SectionProps) {
                   <span className="int-name">
                     {displayName(r.name)}
                     {WIP_SERVERS.has(r.name) && <span className="chip int-wip">WIP</span>}
+                    {EXPERIMENTAL_SERVERS.has(r.name) && <ExperimentalChip />}
                   </span>
                   <span className="int-sub">{categoryOf(r.name)}</span>
                 </td>

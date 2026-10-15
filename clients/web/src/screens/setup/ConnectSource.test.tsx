@@ -47,4 +47,14 @@ describe('ConnectSource', () => {
     fireEvent.click(screen.getByRole('switch'))
     expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'false')
   })
+
+  it('says an experimental source is experimental before asking for credentials', () => {
+    renderCard(integration({ id: 'azure-sentinel', name: 'Microsoft Sentinel' }))
+    expect(screen.getByRole('note')).toHaveTextContent(/Experimental: AutoSecOps has not run this connector/)
+  })
+
+  it('has no note for a tested source', () => {
+    renderCard(integration({ id: 'splunk', name: 'Splunk' }))
+    expect(screen.queryByRole('note')).toBeNull()
+  })
 })

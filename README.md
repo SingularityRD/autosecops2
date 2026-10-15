@@ -100,6 +100,8 @@ An integration is one of two things:
 
 What an integration can do depends on its server: some are read-only lookups, others can act (for example, Microsoft Defender isolation or Carbon Black quarantine). The integrations docs list each one's tools.
 
+Some integrations are marked **Experimental** in Settings: CrowdStrike Falcon, SentinelOne, Microsoft Sentinel, the official Splunk MCP server, Google SecOps, Google Threat Intelligence, Joe Sandbox, vStrike, Atomic Red Team and CAPE Sandbox. AutoSecOps has not run these against a live instance of the product (Atomic Red Team runs an operator's own runner; CAPE needs a KVM host), so they may not work. The label shows on every screen that turns one on and cannot be dismissed; a connector loses it only when it gains a live test. If you run one, tell AutoSecOps support whether it worked and attach a [support bundle](#getting-help-the-support-bundle).
+
 Enable and configure integrations under **Settings → Integrations**, or generate one from API docs with the **Custom Integration Builder**. If you build an integration you find useful, someone else will too. Please contribute it.
 
 **Vigil's own MCP server.** Vigil serves its SOC operations (findings, cases, approvals, hunts) at `/mcp`, the same tools its agents use. The finding, case, and approval tools that mirror frozen `/api/v1` operations are frozen: their names and input schemas are pinned in [`tools/mcp/frozen_tools.snapshot.json`](tools/mcp/frozen_tools.snapshot.json). The rest are served under the `0.x` terms in [`SECURITY.md`](SECURITY.md#supported-versions).

@@ -417,6 +417,23 @@ describe('SetupScreen', () => {
         expect(tiles()[0]).toHaveAttribute('aria-pressed', 'true')
       })
 
+      it('carry the Experimental chip on experimental sources only, in the tile and the search', async () => {
+        await openStep(SERVERS)
+        const chipOf = (title: string) => {
+          const tile = tiles().find((t) => t.querySelector('.su-choice-t')?.textContent === title)
+          if (!tile) throw new Error(`no tile ${title}`)
+          return within(tile).queryByText('Experimental')
+        }
+        expect(chipOf('CrowdStrike Falcon')).toBeInTheDocument()
+        expect(chipOf('SentinelOne')).toBeInTheDocument()
+        expect(chipOf('Splunk')).toBeNull()
+        expect(chipOf('Elastic Security (SIEM)')).toBeNull()
+        fireEvent.click(screen.getByRole('button', { name: 'More sources' }))
+        fireEvent.change(screen.getByLabelText('Search data sources'), { target: { value: 'sentinelone' } })
+        const found = screen.getAllByRole('button', { name: /SentinelOne/ })
+        expect(found.every((b) => within(b).queryByText('Experimental'))).toBe(true)
+      })
+
       it('leave a source out when its server is absent', async () => {
         await openStep(['crowdstrike', 'splunk-selfhosted'])
         expect(screen.queryByText('SentinelOne')).not.toBeInTheDocument()
@@ -451,6 +468,17 @@ describe('SetupScreen', () => {
     })
 
     describe('the connect card', () => {
+      it('says an experimental source is experimental above its fields', async () => {
+        await openStep()
+        expect(screen.getByRole('note')).toHaveTextContent(/Experimental: AutoSecOps has not run this connector/)
+      })
+
+      it('has no experimental note for a tested source', async () => {
+        await openStep(['splunk-selfhosted'])
+        expect(screen.getByText('Connect Splunk')).toBeInTheDocument()
+        expect(screen.queryByRole('note')).toBeNull()
+      })
+
       it('has no outer step card, and shows the sub-line, docs link and secrets note', async () => {
         await openStep()
         expect(screen.queryByText('Connect data')).not.toBeInTheDocument()
