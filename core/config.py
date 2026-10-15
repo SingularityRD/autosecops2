@@ -435,6 +435,12 @@ class Settings(BaseSettings):
     verdict_run_max_cost_usd: float = 1.0
     verdict_run_max_wall_ms: int = 300_000
 
+    # W0.30: withhold ADVERSARY-INFLUENCEABLE values that steer the reviewer
+    # ("approved", "close as benign", "ignore previous ...") from the triage
+    # prompt (core/llm/subject_guards.py). Off until a live-model eval shows it
+    # does not cost more accuracy than it buys.
+    triage_subject_guards: bool = False
+
     # Kafka ingestion. Credentials go through the secrets store, not here.
     kafka_enabled: bool = False
     kafka_bootstrap_servers: str = "localhost:9092"

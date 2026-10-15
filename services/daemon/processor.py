@@ -47,6 +47,7 @@ from core.lanes.alert_lanes import (
 from core.lanes.decision_store import DecisionTableMissing, settling_decisions
 from core.llm.local_lane import get_local_lane
 from core.llm.outage import report_outage, report_recovered
+from core.llm.subject_guards import guard_groups
 from core.time import utcnow
 from services.daemon.config import ProcessingConfig, ResponseConfig
 from services.daemon.probes import ACTIONS as TRIAGE_ACTIONS
@@ -1592,6 +1593,19 @@ class FindingProcessor:
             return PROBE_PROVENANCE
         return provenance_for(finding.get("data_source"))
 
+    def _subject_guards_on(self) -> bool:
+        """``triage_subject_guards`` (default off), or the value evalkit set on
+        this instance to measure both sides (``--subject-guards``)."""
+        forced = getattr(self, "_subject_guards", None)
+        if forced is not None:
+            return bool(forced)
+        try:
+            from core.config import get_settings
+
+            return bool(get_settings().triage_subject_guards)
+        except Exception:  # noqa: BLE001 — no settings is the default: off
+            return False
+
     def _build_triage_prompt(self, finding: Dict[str, Any]) -> str:
         """The triage prompt: the finding's fields grouped by who wrote them.
 
@@ -1605,6 +1619,10 @@ class FindingProcessor:
         removed like a plain one.
         """
         groups, omitted = group_fields(finding, self._provenance(finding))
+        if self._subject_guards_on():
+            # W0.30: an ADVERSARY-INFLUENCEABLE value that steers the reviewer
+            # is withheld whole (core/llm/subject_guards.py).
+            groups, _withheld = guard_groups(groups)
 
         def data(value: Any) -> str:
             text = str(value)

@@ -55,7 +55,16 @@ def processor():
     # Imported lazily: the daemon module pulls in settings and telemetry.
     from services.daemon.processor import FindingProcessor
 
-    return FindingProcessor.__new__(FindingProcessor)
+    proc = FindingProcessor.__new__(FindingProcessor)
+    # Pinned, not read from the environment: the prompt (and so the cassette key)
+    # is a function of evalkit's own arguments (W0.30 --subject-guards).
+    proc._subject_guards = False
+    return proc
+
+
+def set_subject_guards(on: bool) -> None:
+    """Build prompts with the triage subject guards on or off (W0.30)."""
+    processor()._subject_guards = bool(on)
 
 
 def build_prompt(alert: Dict[str, Any]) -> str:
