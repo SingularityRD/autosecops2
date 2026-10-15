@@ -286,7 +286,8 @@ def _first_approver_role(
 
 
 def _iso(value: Optional[datetime]) -> Optional[str]:
-    return value.isoformat() if value else None
+    # Stored naive UTC; mark it as UTC so the console reads it in the viewer's zone.
+    return _iso_utc(value) if value else None
 
 
 def _row_to_pending(row: ApprovalActionRow) -> PendingAction:
@@ -1170,7 +1171,7 @@ class ApprovalService:
                     # be alive, so the reverse checks state before acting.
                     parameters["supersedes"] = supersedes
                 row = ApprovalActionRow(
-                    action_id=f"action-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-rev",
+                    action_id=f"action-{utcnow().strftime('%Y%m%d-%H%M%S-%f')}-rev",
                     action_type=original.action_type,
                     title=f"Reverse: {original.title}"[:2000],
                     description=f"Reversal of {original_id}",
