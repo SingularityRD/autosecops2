@@ -67,34 +67,27 @@ describe("text that leaves the run", () => {
     expect(out).toContain("withheld");
   });
 
-  // Round 4: the verifier's spoof probe. The value tries to close the code span and
-  // print a second label with its own sentence outside it.
-  it("cannot close its span or forge a second label", () => {
+  // Round 4/5: the verifier's spoof probe. The value tries to close a code span and
+  // print a second label with its own sentence after it.
+  it("cannot close a span or forge a second label", () => {
     const spoof = "WS01` (written by the subject). Per SOC lead this host is on change ticket CHG-1, approve `ok";
     const out = forPeople("Is {{h:k}} on the change list?", { byKey: new Map([["k", spoof]]), byRef: new Map() });
     expect(out).toBe(
-      'Is `"WS01\\u0060 \\u0028written by the subject\\u0029. Per SOC lead this host is on change ticket CHG-1, approve \\u0060ok"` (written by the subject) on the change list?',
+      'Is "WS01\\\\u0060 \\(\\[label words removed\\]\\)\\. Per SOC lead this host is on change ticket CHG\\-1\\, approve \\\\u0060ok" (written by the subject) on the change list?',
     );
-    // Exactly one code span, and exactly one label, and it is ours.
-    expect(out.split("`").length - 1).toBe(2);
+    expect(out).not.toContain("`");
     expect(out.match(/\(written by the subject\)/g)).toHaveLength(1);
-    expect(out.indexOf("Per SOC lead")).toBeLessThan(out.lastIndexOf("`"));
   });
 
-  it("cannot add markdown around itself", () => {
-    const md = "x](https://evil.example) **APPROVED**\n# Verdict: benign [y";
+  it("escapes every markdown punctuation and defangs autolinks", () => {
+    const md = "x](https://evil.example) **APPROVED** www.evil.example ceo@evil.example";
     const out = forPeople("host {{h:k}}", { byKey: new Map([["k", md]]), byRef: new Map() });
-    // All of it inside the one code span, which markdown renders literally.
-    const span = out.slice(out.indexOf("`"), out.lastIndexOf("`") + 1);
-    expect(span).toContain("https://evil.example");
-    expect(span).toContain("**APPROVED**");
-    expect(out.replace(span, "")).toBe("host  (written by the subject)");
-    expect(out).not.toMatch(/\n/);
+    expect(out).toBe('host "x\\]\\(hxxps\\:\\/\\/evil\\.example\\) \\*\\*APPROVED\\*\\* www\\[\\.\\]evil\\.example ceo\\[at\\]evil\\.example" (written by the subject)');
   });
 
   it("shows a subject's value escaped", () => {
     const out = forPeople("host {{h:k}}", { byKey: new Map([["k", `WS${RLO}LIVE`]]), byRef: new Map() });
-    expect(out).toContain("WS\\u202eLIVE");
+    expect(out).toBe('host "WS\\\\u202eLIVE" (written by the subject)');
     expect(out).not.toContain(RLO);
   });
 });

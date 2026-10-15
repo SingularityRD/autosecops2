@@ -16,6 +16,7 @@ import { huntProjection } from "../../workflows/hunt/projection.js";
 import { subjectValue } from "../../core/guards.js";
 import type { AddressInfo } from "node:net";
 import { chatServer } from "../../serve.js";
+import type { HarnessFactory } from "../../harness.js";
 import { runHunt } from "../../workflows/hunt/workflow.js";
 import { recallHuntSpec } from "../support/recall-hunt.js";
 
@@ -148,7 +149,7 @@ describe("a guarded hunt links the alerts it cites", () => {
     expect(served).not.toContain("{{h:");
     // The real value, not a marker: a person reads the id the worker cited.
     expect(served).toContain(JSON.stringify(subjectValue(LEGACY_ID)).slice(1, -1));
-    expect(subjectValue(LEGACY_ID)).toBe(`\`"${LEGACY_ID}"\` (written by the subject)`);
+    expect(subjectValue(LEGACY_ID)).toBe('"demo2\\-ts\\-009" (written by the subject)');
 
     // Round 4: every serve.ts route that returns ledger content -- what the case
     // record, the console and replay read -- answers through the same conversion.
@@ -168,6 +169,37 @@ describe("a guarded hunt links the alerts it cites", () => {
     } finally {
       server.close();
     }
+    // Round 5: the narrate route answers through the conversion too. The narrator
+    // writes a handle into its account; the response carries the value.
+    const [key, value] = [...(fold(await state.read(RUN)).dispatches.values())].flatMap((one) => Object.entries(one.handles ?? {}))[0]!;
+    const narrator: HarnessFactory = (_kind, spec, ledgerState, memory = nullMemory, seed = FRESH) => ({
+      provider: {
+        model: "scripted/model",
+        provider_type: "scripted",
+        stream: async function* (request: TurnRequest): AsyncGenerator<ProviderEvent> {
+          if (request.emit !== undefined) yield { type: "text_delta", text: JSON.stringify({ summary: `alert {{h:${key}}} fired`, what_happened: "x", next_steps: [] }) };
+          yield { type: "usage", tokens: ZERO_TOKENS };
+        },
+      },
+      registry: registryOf([], {}),
+      dispatch,
+      budget: budgetOf({ ...spec.budgets, max_calls: 10 }, unmeteredQuota, Date.now, seed),
+      memory,
+      state: ledgerState,
+    });
+    const writer = chatServer(state as never, async () => true, narrator);
+    await new Promise<void>((ready) => writer.listen(0, "127.0.0.1", ready));
+    try {
+      const at = `http://127.0.0.1:${(writer.address() as AddressInfo).port}`;
+      const response = await fetch(`${at}/runs/${RUN}/narrate`, { method: "POST", headers: { authorization: "Bearer t" } });
+      const body = await response.text();
+      expect(response.status, body).toBe(200);
+      expect(body).not.toContain("{{h:");
+      expect(body).toContain(JSON.stringify(subjectValue(value)).slice(1, -1));
+    } finally {
+      writer.close();
+    }
+
     // The stored ledger is untouched, so it stays replayable.
     expect(JSON.stringify(await state.read(RUN))).toContain("{{h:");
   });

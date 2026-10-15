@@ -340,19 +340,38 @@ function plain(value: string): string {
   return flat.length <= PEOPLE_CAP ? flat : `${flat.slice(0, PEOPLE_CAP)}…`;
 }
 
-// A subject's value as a person reads it (W0.30 round 4): a JSON string literal, so
-// its own quotes cannot end it, with every control, bidi and zero-width character
-// escaped (displaySafe); inside an inline code span
-// that it cannot close, because a backtick is written \u0060; and with parentheses
-// written \u0028/\u0029, so a value carrying "(written by the subject)" cannot
-// print a second label that reads as ours. Markdown renders a code span literally, so
-// the value cannot add a link, a heading or emphasis around itself.
+// A subject's value as a person reads it (W0.30 round 5). The text it lands in may be
+// markdown -- a report, a case file, a lead's rationale that already wraps the handle
+// in backticks -- so the value is made inert in every markdown context, inside a code
+// span or a fence or outside any:
+//   - it never contains a backtick (written \u0060), so it can neither close an
+//     outer span nor open one of its own, and it is not wrapped in ours;
+//   - every CommonMark ASCII punctuation character is backslash-escaped, so outside
+//     a span it renders as the literal characters (no emphasis, link, heading, HTML);
+//   - GFM autolinks are defanged (hxxp://, www[.], [at]);
+//   - newlines and controls are gone (plain) and bidi/zero-width characters escaped
+//     (displaySafe);
+//   - a value carrying the label's words cannot print a second label: the phrase is
+//     replaced, also when written with look-alike characters.
+// The label goes after the closing quote, once. Inside an outer code span the whole
+// thing renders literally; outside, as escaped text.
+const LABEL_WORDS = /written\s*by\s*the\s*subject/gi;
+const AUTOLINK: readonly [RegExp, string][] = [
+  [/\b(h)(tt)(ps?|p):\/\//gi, "$1xx$3://"],
+  [/\b(ftp|mailto|xmpp):/gi, "$1[:]"],
+  [/\bwww\./gi, "www[.]"],
+  [/@/g, "[at]"],
+];
+const MARKDOWN_PUNCTUATION = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/g;
+
 export function subjectValue(value: string): string {
-  const literal = displaySafe(JSON.stringify(plain(value)))
-    .replace(/`/g, "\\u0060")
-    .replace(/\(/g, "\\u0028")
-    .replace(/\)/g, "\\u0029");
-  return `\`${literal}\` (written by the subject)`;
+  let text = displaySafe(plain(value));
+  const folded = text.normalize("NFKC");
+  if (folded.match(LABEL_WORDS)) text = folded.replace(LABEL_WORDS, "[label words removed]");
+  for (const [pattern, replacement] of AUTOLINK) text = text.replace(pattern, replacement);
+  text = text.replace(/`/g, "\\u0060");
+  const escaped = text.replace(MARKDOWN_PUNCTUATION, (ch) => `\\${ch}`);
+  return `"${escaped}" (written by the subject)`;
 }
 
 // The decider-facing hint that follows a handle in a guarded view: meaningless to a
