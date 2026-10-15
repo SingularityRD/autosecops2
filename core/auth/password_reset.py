@@ -94,6 +94,11 @@ def token_matches_email(token: str, email: Optional[str]) -> bool:
     return isinstance(bound, str) and bound == _email_binding(email)
 
 
+def reset_link(base_url: str, token: str) -> str:
+    """Console URL that opens the reset screen for ``token``."""
+    return f"{base_url.rstrip('/')}/reset-password?token={token}"
+
+
 async def verify_reset_token(token: str) -> Optional[str]:
     """
     Return the user_id the token was issued for, or None if the token is
