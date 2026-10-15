@@ -240,6 +240,19 @@ describe('FindingPopup stored AI enrichment', () => {
     expect(screen.queryByRole('button', { name: /Regenerate/ })).not.toBeInTheDocument()
   })
 
+  it('offers generation when ai_enrichment holds only the lane decision (alert_lane)', async () => {
+    vi.mocked(findingsApi.getById).mockResolvedValueOnce({
+      data: {
+        ...baseFinding,
+        ai_enrichment: { alert_lane: { lane: 'rules', reason: 'suppressed by rule', decided_at: '2026-10-01T00:00:00Z' } },
+      },
+    } as never)
+    render(<FindingPopup id="f-source-1" onClose={vi.fn()} />)
+
+    expect(await screen.findByRole('button', { name: 'Generate AI analysis' })).toBeInTheDocument()
+    expect(screen.queryByText(/undefined/)).not.toBeInTheDocument()
+  })
+
   it('shows a generated analysis with Regenerate', async () => {
     vi.mocked(findingsApi.getById).mockResolvedValueOnce({
       data: {
