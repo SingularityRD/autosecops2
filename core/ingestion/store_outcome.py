@@ -93,11 +93,17 @@ class StoreOutcome:
         return self.status in (CREATED, EXISTS)
 
 
+# The keys whose presence ``UNRATED_WHERE`` reads as "the daemon got here".
+TRIAGED_MARKERS = ("ai_triage", "ai_triage_error", "enriched_at", "alert_lane")
+
+
 def has_triage(ai_enrichment: Any) -> bool:
     """The negation of ``UNRATED_WHERE`` (core/storage/models/finding.py)."""
     if ai_enrichment is None:
         return False
     if isinstance(ai_enrichment, Mapping):
+        if not any(key in ai_enrichment for key in TRIAGED_MARKERS):
+            return False
         return not (
             "ai_triage_error" in ai_enrichment and "ai_triage" not in ai_enrichment
         )

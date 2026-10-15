@@ -36,6 +36,13 @@ class _Data:
         self.updates.append({"finding_id": finding_id, **updates})
         return True
 
+    def write_ai_enrichment(
+        self, finding_id, ai_enrichment, *, daemon, patch=False, **updates
+    ):
+        # W0.25 (#2316): the daemon writes its own keys (lane decision included).
+        assert daemon is True and patch is False
+        return self.update_finding(finding_id, ai_enrichment=ai_enrichment, **updates)
+
 
 def _processor(monkeypatch, *, enabled: bool, lanes: AlertLanes = None):
     processor = FindingProcessor(

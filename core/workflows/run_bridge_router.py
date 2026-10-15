@@ -24,6 +24,7 @@ from core.response.checkpoints import (
     withdraw_for_run,
 )
 from core.routing import Auth, RouterMeta
+from core.storage.schemas.base import _iso_utc
 from core.time import utcnow
 from core.workflows.workflow_run_service import WorkflowRunService
 
@@ -704,7 +705,7 @@ def list_decisions(
                     actor=action.approved_by or "analyst",
                     answer=answer,
                     text=action.rejection_reason or "",
-                    resolved_at=action.approved_at or utcnow().isoformat(),
+                    resolved_at=action.approved_at or _iso_utc(utcnow()),
                 )
             )
     return Decisions(decisions=decided)
