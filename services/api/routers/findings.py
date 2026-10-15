@@ -21,6 +21,7 @@ from core.findings.enrichment import (
     NoProviderConfigured,
     ProviderUnavailable,
     enrich,
+    is_generated_analysis,
 )
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
 from core.storage.canary_exclusion import is_canary_finding
@@ -92,9 +93,9 @@ async def get_or_generate_enrichment(
 
     # Caching is HTTP policy — the shared enrich() seam deliberately doesn't do
     # this check, since force_regenerate is a query param and the daemon has its
-    # own freshness rules.
+    # own freshness rules. Triage-only keys don't count as a cached analysis.
     existing_enrichment = finding.get("ai_enrichment")
-    if existing_enrichment and not force_regenerate:
+    if is_generated_analysis(existing_enrichment) and not force_regenerate:
         logger.info(f"Returning cached enrichment for {finding_id}")
         return {
             "finding_id": finding_id,
