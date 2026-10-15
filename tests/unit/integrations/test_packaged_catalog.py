@@ -11,6 +11,8 @@ from core.integrations.mcp import packaged
 from core.integrations.mcp.service import MCPService
 from core.integrations.mcp.verify_catalog import check_catalog
 
+OKTA_SHA = "e070a67aae706e2e6f71e44b380f494f6171b852"
+
 
 def test_catalog_loads_without_a_project_virtualenv(tmp_path):
     (tmp_path / "mcp-config.json").write_text(
@@ -101,10 +103,10 @@ def test_git_tool_with_python_exe_launches_its_venv(tmp_path, monkeypatch):
     (info / "METADATA").write_text("Name: okta-mcp\nVersion: 0.1\n")
     (info / "direct_url.json").write_text(
         json.dumps(
-            {"url": f"{url}.git", "vcs_info": {"requested_revision": "02.0-beta"}}
+            {"url": f"{url}.git", "vcs_info": {"requested_revision": OKTA_SHA}}
         )
     )
-    args = ["--from", f"git+{url}.git@02.0-beta", "python", "-m", "okta_mcp.server"]
+    args = ["--from", f"git+{url}.git@{OKTA_SHA}", "python", "-m", "okta_mcp.server"]
     assert packaged.installed_launch("uvx", args) == (
         str(venv / "bin" / "python"),
         ["-m", "okta_mcp.server"],

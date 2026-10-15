@@ -105,11 +105,11 @@
 
     "okta": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/fctr-id/okta-mcp-server.git@02.0-beta", "python", "-m", "okta_mcp.server"],
+      "args": ["--from", "git+https://github.com/fctr-id/okta-mcp-server.git@e070a67aae706e2e6f71e44b380f494f6171b852", "python", "-m", "okta_mcp.server"],
       "env": {
         "OKTA_CLIENT_ORGURL": "https://${OKTA_DOMAIN}",
         "OKTA_API_TOKEN": "${OKTA_API_TOKEN}",
-        "_setup_note": "Upstream's console script points at a module that does not exist, so this runs okta_mcp.server under the tool's python. The server reads OKTA_CLIENT_ORGURL, a full URL; Settings stores the bare domain."
+        "_setup_note": "Pinned to the commit the upstream tag 02.0-beta named on 2026-10-15 (a tag can move; a commit cannot) and baked into the backend image from infra/docker/mcp-packages/uv-tools.txt, so it starts offline. Upstream's console script points at a module that does not exist, so this runs okta_mcp.server under the tool's python. The server reads OKTA_CLIENT_ORGURL, a full URL; Settings stores the bare domain."
       }
     },
 

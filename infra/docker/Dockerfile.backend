@@ -78,7 +78,7 @@ ARG TARGETARCH
 LABEL org.opencontainers.image.version="${VIGIL_VERSION}"
 
 # Runtime system deps only. git: detection rule sources are cloned at runtime,
-# and SentinelOne's uv tool installs from its git tag below.
+# and the SentinelOne (git tag) and Okta (git commit) uv tools install from git below.
 # restic 0.19.1 is the CI pin. postgresql-client-16 lands in
 # /usr/lib/postgresql/16/bin, which is not on PATH; core.backup selects a
 # client whose major is at least 16 from there.

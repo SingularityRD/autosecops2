@@ -841,12 +841,17 @@
       "site": "mcp-config.json#okta",
       "category": "gated",
       "kinds": {
-        "exec:docker": 1
+        "exec:uvx": 1,
+        "exec:git": 1,
+        "host:github.com": 1
+      },
+      "switches": {
+        "UV_OFFLINE": "on"
       },
       "gates": [
         "mcp-server:okta"
       ],
-      "note": "Catalogue MCP server, disabled until an operator enables it."
+      "note": "Catalogue MCP server, disabled until an operator enables it. The pinned commit is baked into the backend image (uv-tools.txt), so MCPService launches the tool venv's python and never runs uvx or git; UV_OFFLINE stops a fetch if the baked copy is missing. Once enabled it calls the operator's own Okta org."
     },
     {
       "site": "mcp-config.json#pagerduty",

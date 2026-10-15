@@ -228,3 +228,20 @@ def test_image_uv_tool_list_matches_uvx_pins():
         f"only in mcp-config.json: {sorted(config - image, key=str)}; "
         f"only in infra/docker/mcp-packages/uv-tools.txt: {sorted(image - config, key=str)}"
     )
+
+
+# Entries pinned to a git commit because the upstream ref is a pre-release
+# tag that can be moved (W0.28: Okta's 02.0-beta).
+_COMMIT_PINNED = {"okta"}
+_COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+@pytest.mark.unit
+def test_pre_release_git_pins_name_a_commit():
+    servers = _servers()
+    for name in sorted(_COMMIT_PINNED):
+        spec, _, _, _ = uvx_specs(servers[name].get("args") or [])
+        match = _GIT_REF.search(spec or "")
+        assert match and _COMMIT_SHA.fullmatch(match.group(1)), (
+            f"{name} must pin a full commit SHA, not a movable tag: {spec}"
+        )
