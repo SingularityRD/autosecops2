@@ -175,7 +175,7 @@ ve bir SBOM eşlik etmez (Planlı — `wp/w4.7-release`, bu sürümde yok).
 | `secrets.agentInternalToken` | Ajan katmanının `/internal` uçlarına tek kimlik doğrulaması; boşsa iş akışları 503 alır |
 | `secrets.postgresPassword` | Varsayılan değer (`change-me-before-production`) üretimde kullanılmamalı |
 | `stateDirectory.volume` | Varsayılan `emptyDir`'dir; konsoldan girilen sırlar (`secrets.enc`) ve `master.key` pod yeniden başlayınca kaybolur. Kalıcı ReadWriteMany birim verin ya da tüm kimlik bilgilerini Secret ile sağlayın |
-| `evidence.persistence` | Vaka kanıt dosyalarının kalıcı birimi. `values-airgap.yaml` `ReadWriteOnce` seçer (local-path birimi bağlayan pod'ları tek düğüme yerleştirir). Birden çok düğüme yayılacaksanız `storageClassName` ile ReadWriteMany sınıfı ya da `existingClaim` verin; aksi halde PVC `Pending` kalır ve backend başlamaz (bkz. [yönetici kılavuzu](yonetici-kilavuzu.md#kubernetes)) |
+| `evidence.persistence` | Vaka kanıt dosyalarının kalıcı birimi; `values-airgap.yaml`'da **kapalıdır**, bu durumda kanıt dosyaları pod yeniden başlayınca kaybolur. Kümede ReadWriteMany sağlayan bir StorageClass varsa `enabled: true`, `accessModes: [ReadWriteMany]`, `storageClassName: <sınıf>` verin. `ReadWriteOnce` birden çok pod bağladığı için reddedilir (bkz. [yönetici kılavuzu](yonetici-kilavuzu.md#kubernetes)) |
 | `networkPolicies.egress.extraCIDRs` | Kümenin dışındaki şirket içi hedefler (SIEM, EDR, güvenlik duvarı yönetim arayüzü, NodeLocal DNS `169.254.20.10/32`) |
 | `networkPolicies.daemon.webhookAllowFrom` | Daemon'un webhook portuna alarm itebilecek kaynak CIDR'leri; boşsa yalnız küme içi |
 | `caBundle.existingSecret` | TLS denetleyen bir vekil sunucu ya da kurum içi CA varsa |

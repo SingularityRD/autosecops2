@@ -501,7 +501,8 @@ backup:
   activeDeadlineSeconds: 3600
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
-  # Also archive the case evidence store (evidence.persistence) on every run:
+  # Also archive the case evidence store on every run, when evidence.persistence
+  # is enabled (nothing to archive otherwise):
   # evidence-<stamp>.tar.gz beside the dump, same retention, uploaded with it.
   # Restored case_evidence rows point at these files. false: the database only,
   # and backing up the evidence claim is the operator's job.
@@ -595,40 +596,36 @@ stateDirectory:
 # Case evidence store
 # -----------------------------------------------------------------------------
 # Files attached to cases (the /hunt document and other evidence) are written to
-# <stateDirectory.mountPath>/evidence. The State Directory above is an emptyDir
-# by default, which would lose them on every pod restart, so the store gets a
-# persistent volume of its own, mounted at that path in the backend, daemon
-# (retention) and llm-worker pods. podSecurityContext.fsGroup (1000) makes it
-# writable by the app's uid. The backup CronJob archives it with each dump
-# (backup.includeEvidence).
+# <stateDirectory.mountPath>/evidence.
 #
-# Access mode. Left empty, it follows how many pods mount the claim:
-#   - ReadWriteOnce when only one does: backend.replicaCount 1 (no HPA),
-#     daemon.leaderElection.enabled false and at most one llm-worker;
-#   - ReadWriteMany otherwise -- the defaults here (two backend replicas,
-#     daemon hot standby) are in that case.
-# IMPORTANT: ReadWriteMany needs a StorageClass that provides it (NFS, CephFS,
-# Longhorn RWX, EFS/Azure Files/Filestore ...). Most default classes do not;
-# the claim then stays Pending and the backend, daemon and llm-worker never
-# start. Set storageClassName to an RWX class, or existingClaim to a claim you
-# provision, or run one backend replica with daemon.leaderElection.enabled=false
-# (ReadWriteOnce), or set accessModes [ReadWriteOnce] yourself on a single node
-# or on local-path storage, whose node affinity schedules every pod that mounts
-# the claim onto the node that holds it (infra/airgap/values-airgap.yaml does).
-# helm install prints a warning when it creates an RWX claim on the default class.
+# WARNING: OFF by default, and then evidence is NOT persistent. It lives in the
+# State Directory volume, an emptyDir by default, and is lost whenever a pod is
+# restarted or rescheduled; it is also per pod, so with two backend replicas an
+# attachment exists only on the replica that took it. The case_evidence rows in
+# Postgres survive and point at files that are gone. Turn it on for any install
+# that keeps evidence.
 #
-# enabled: false drops the mount and evidence falls back to the State Directory
-# volume (lost on restart while that is an emptyDir).
+# enabled: true mounts a persistent claim at that path in the backend, daemon
+# (retention) and llm-worker pods (and the backup job, backup.includeEvidence).
+# podSecurityContext.fsGroup (1000) makes it writable by the app. Every one of
+# those pods mounts it and they may run on different nodes, so it must be
+# ReadWriteMany: set accessModes [ReadWriteMany] and a storageClassName that
+# provides it (NFS, CephFS, Longhorn RWX, EFS / Azure Files / Filestore ...), or
+# an existingClaim. accessModes is required; ReadWriteOnce is refused at
+# template time whenever more than one pod mounts the claim.
 #
 # The chart-created claim carries helm.sh/resource-policy: keep, so
 # `helm uninstall` leaves the evidence in place.
+#
+# Deferred: keep evidence in Postgres or the object store instead of a shared
+# filesystem (docs/wp/w0.26.md, option d).
 evidence:
   persistence:
-    enabled: true
+    enabled: false
     existingClaim: ""
     size: 20Gi
     storageClassName: ""
-    # Empty: derived (see above). Set it to override.
+    # Required when enabled, e.g. [ReadWriteMany].
     accessModes: []
 
 # -----------------------------------------------------------------------------

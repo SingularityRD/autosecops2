@@ -798,28 +798,37 @@ deposunu yedekler (aşağıya bakın); durum dizinini yedeklemez. Kimlik bilgile
 Secret/ExternalSecrets ile verdiyseniz durum dizini yeniden üretilebilir.
 
 **Vaka kanıt deposu.** Vakaya eklenen dosyalar (ör. /hunt belgesi)
-`<stateDirectory.mountPath>/evidence` altına yazılır. Grafik burada kendi kalıcı
-birimini (`evidence.persistence`, varsayılan açık, 20Gi, `helm uninstall` sonrası
-korunur) backend, daemon ve llm-worker pod'larına bağlar.
+`<stateDirectory.mountPath>/evidence` altına yazılır.
 
-> **Önemli: erişim kipi.** `evidence.persistence.accessModes` boş bırakılırsa
-> birimi kaç pod'un bağladığına göre seçilir: yalnız bir pod bağlıyorsa
-> (`backend.replicaCount: 1`, HPA yok, `daemon.leaderElection.enabled: false`, en
-> fazla bir llm-worker) `ReadWriteOnce`, aksi halde `ReadWriteMany`. Varsayılan
-> değerler (iki backend kopyası, daemon sıcak yedeği) `ReadWriteMany` ister.
-> Varsayılan StorageClass `ReadWriteMany` sağlamıyorsa (çoğu blok depolama,
-> local-path, hostPath) PVC `Pending` kalır ve backend, daemon ve llm-worker hiç
-> başlamaz; kurulum çıktısı (NOTES) bu durumda uyarır. Çözüm:
-> `evidence.persistence.storageClassName` ile RWX sınıfı (NFS, CephFS, Longhorn
-> RWX, EFS ...), `evidence.persistence.existingClaim` ile kendi PVC'niz, ya da tek
-> düğümde / local-path'te `accessModes: [ReadWriteOnce]` (local-path birimi
-> bağlayan tüm pod'ları o düğüme yerleştirir; `infra/airgap/values-airgap.yaml`
-> bunu seçer).
+> **UYARI: Helm'de kanıt dosyaları varsayılan olarak kalıcı değildir.**
+> `evidence.persistence.enabled` varsayılan olarak `false`'tur; dosyalar durum
+> dizini birimine (varsayılan `emptyDir`) yazılır, pod yeniden başlayınca ya da
+> taşınınca kaybolur ve iki backend kopyasında yalnızca dosyayı alan kopyada
+> bulunur. Veritabanındaki `case_evidence` satırları kalır ve artık olmayan
+> dosyaları gösterir. Kanıt saklayan her kurulumda açın:
+>
+> ```yaml
+> evidence:
+>   persistence:
+>     enabled: true
+>     storageClassName: <RWX sınıfı>   # NFS, CephFS, Longhorn RWX, EFS ...
+>     accessModes: [ReadWriteMany]     # zorunlu
+>     # ya da existingClaim: <PVC>
+> ```
+>
+> `accessModes` açıkken zorunludur. Birimi backend, daemon ve llm-worker (ve
+> yedek işi) birlikte bağladığından ve bunlar farklı düğümlerde çalışabildiğinden,
+> birden çok pod bağlıyorsa `ReadWriteOnce` şablon aşamasında reddedilir. RWX
+> sınıfı varsayılan sınıfa bırakılırsa kurulum çıktısı (NOTES) uyarır: o sınıf
+> RWX sağlamıyorsa PVC `Pending` kalır ve pod'lar başlamaz. İnternetsiz profil
+> (`infra/airgap/values-airgap.yaml`) birimi kapalı bırakır. Kanıtın PostgreSQL'e
+> ya da nesne deposuna taşınması ertelenmiş bir iştir.
 
-`backup.includeEvidence: true` (varsayılan) iken yedek CronJob'u her dökümün
+Birim açıksa ve `backup.includeEvidence: true` (varsayılan) iken yedek CronJob'u her dökümün
 yanına aynı zaman damgalı `evidence-<damga>.tar.gz` (ve `.sha256`,
-`LATEST_EVIDENCE`) yazar, aynı saklama kurallarını uygular ve nesne deposuna
-yükler. Geri yüklemede dökümü ve aynı damgalı arşivi birlikte kullanın: arşivi
+`LATEST_EVIDENCE`) yazar (dosyalar 0600), aynı saklama kurallarını uygular ve
+nesne deposuna yükler; geri yükleme artıkları (`.vigil-pre-restore-*`) arşive
+girmez. Birim kapalıyken yedekte kanıt dosyası yoktur. Geri yüklemede dökümü ve aynı damgalı arşivi birlikte kullanın: arşivi
 kanıt biriminin köküne açın (`tar -xzf evidence-<damga>.tar.gz -C <birim>`).
 `backup.includeEvidence: false` ise kanıt biriminin yedeği operatörün
 sorumluluğundadır. `python -m core.backup restore` durum dizinindeki bağlama

@@ -68,10 +68,3 @@ redis:
 
 secrets:
   postgresPassword: "dev_password_change_me"
-
-# A dev cluster is one node with one backend replica: ReadWriteOnce is fine
-# even with the daemon's standby, since RWO is per node.
-evidence:
-  persistence:
-    accessModes:
-      - ReadWriteOnce

@@ -99,39 +99,50 @@ def test_images_precreate_the_store_owned_by_the_app(dockerfile):
     assert "/home/vigil" in run.group(2).split()
 
 
-def test_helm_mounts_a_persistent_evidence_claim_by_default():
+# Main before W0.26: the default chart's pods must render exactly as they did.
+BASE = "fa6e7229"
+PODS = (
+    "backend-deployment.yaml",
+    "daemon-statefulset.yaml",
+    "llm-worker-deployment.yaml",
+)
+
+
+def test_helm_evidence_claim_is_off_by_default_and_warned_about():
     values = yaml.safe_load((HELM / "values.yaml").read_text(encoding="utf-8"))
     persistence = values["evidence"]["persistence"]
-    assert persistence["enabled"] is True
-    # Empty: derived from how many pods mount it (see vigil.evidence.accessModes).
-    assert persistence["accessModes"] == []
-    # fsGroup gives the mounted claim to the app's group.
+    assert persistence["enabled"] is False
+    assert persistence["accessModes"] == []  # required when enabled
+    assert "NOT persistent" in (HELM / "values.yaml").read_text(encoding="utf-8")
+    # fsGroup gives a mounted claim to the app's group.
     assert values["podSecurityContext"]["fsGroup"] == 1000
-    assert values["backup"]["includeEvidence"] is True
 
     env = (HELM / "templates" / "_env.tpl").read_text(encoding="utf-8")
     assert (
         'mountPath: {{ printf "%s/evidence" (trimSuffix "/" '
         ".Values.stateDirectory.mountPath) }}" in env
     )
-
     for name in WRITERS_HELM:
         text = (HELM / "templates" / name).read_text(encoding="utf-8")
         assert 'include "vigil.evidenceVolumeMount"' in text, name
         assert 'include "vigil.evidenceVolume"' in text, name
 
     pvc = (HELM / "templates" / "evidence-pvc.yaml").read_text(encoding="utf-8")
-    assert "kind: PersistentVolumeClaim" in pvc
+    assert 'include "vigil.evidence.validate"' in pvc
     assert "helm.sh/resource-policy: keep" in pvc
-    assert "not .Values.evidence.persistence.existingClaim" in pvc
-    assert 'include "vigil.evidence.accessModes"' in pvc
+    notes = (HELM / "templates" / "NOTES.txt").read_text(encoding="utf-8")
+    assert "EVIDENCE IS NOT PERSISTENT" in notes
+    guide = (REPO / "docs" / "guide" / "yonetici-kilavuzu.md").read_text(
+        encoding="utf-8"
+    )
+    assert "kalıcı değildir" in guide
 
 
-def test_airgap_values_choose_the_access_mode_explicitly():
+def test_airgap_profile_leaves_the_claim_off():
     airgap = yaml.safe_load(
         (REPO / "infra" / "airgap" / "values-airgap.yaml").read_text(encoding="utf-8")
     )
-    assert airgap["evidence"]["persistence"]["accessModes"] == ["ReadWriteOnce"]
+    assert airgap["evidence"]["persistence"]["enabled"] is False
 
 
 # --- rendered with helm, where a helm binary is available ----------------------
@@ -141,16 +152,21 @@ def _helm() -> str | None:
     return os.environ.get("VIGIL_TEST_HELM") or shutil.which("helm")
 
 
+def _strip_dependencies(dest: Path) -> None:
+    """Subchart dependencies need a network fetch; nothing here uses them."""
+    meta = yaml.safe_load((dest / "Chart.yaml").read_text(encoding="utf-8"))
+    meta.pop("dependencies", None)
+    (dest / "Chart.yaml").write_text(yaml.safe_dump(meta), encoding="utf-8")
+    (dest / "Chart.lock").unlink(missing_ok=True)
+
+
 @pytest.fixture(scope="module")
 def chart(tmp_path_factory):
-    """The chart without its subchart dependencies, which need a network fetch."""
     if not _helm():
         pytest.skip("no helm binary (set VIGIL_TEST_HELM to run)")
     dest = tmp_path_factory.mktemp("chart") / "vigil"
     shutil.copytree(HELM, dest, ignore=shutil.ignore_patterns("charts", "Chart.lock"))
-    meta = yaml.safe_load((dest / "Chart.yaml").read_text(encoding="utf-8"))
-    meta.pop("dependencies", None)
-    (dest / "Chart.yaml").write_text(yaml.safe_dump(meta), encoding="utf-8")
+    _strip_dependencies(dest)
     # NOTES.txt is not rendered by `helm template`: render it through tpl.
     shutil.copy(dest / "templates" / "NOTES.txt", dest / "files" / "zz-notes.txt")
     (dest / "templates" / "zz-notes.yaml").write_text(
@@ -160,8 +176,8 @@ def chart(tmp_path_factory):
     return dest
 
 
-def _render(chart: Path, template: str, *args: str) -> str:
-    out = subprocess.run(
+def _helm_template(chart: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
         [
             _helm(),
             "template",
@@ -169,74 +185,128 @@ def _render(chart: Path, template: str, *args: str) -> str:
             str(chart),
             "--set",
             "secrets.postgresPassword=x",
-            "--show-only",
-            f"templates/{template}",
             *args,
         ],
         capture_output=True,
         text=True,
-        check=True,
     )
+
+
+def _render(chart: Path, template: str, *args: str) -> str:
+    out = _helm_template(chart, "--show-only", f"templates/{template}", *args)
+    assert out.returncode == 0, out.stderr
     return out.stdout
 
 
-def _modes(chart: Path, *args: str) -> list:
-    pvc = yaml.safe_load(_render(chart, "evidence-pvc.yaml", *args))
-    return pvc["spec"]["accessModes"]
+ON = ("--set", "evidence.persistence.enabled=true")
+RWX = ON + ("--set", "evidence.persistence.accessModes={ReadWriteMany}")
+RWO = ON + ("--set", "evidence.persistence.accessModes={ReadWriteOnce}")
+AIRGAP = ("-f", str(REPO / "infra" / "airgap" / "values-airgap.yaml"))
 
 
-SINGLE = (
-    "--set",
-    "backend.replicaCount=1",
-    "--set",
-    "daemon.leaderElection.enabled=false",
-    "--set",
-    "llmWorker.replicaCount=1",
-)
+def test_default_chart_renders_no_evidence_claim_or_mount(chart):
+    out = _helm_template(chart)
+    assert out.returncode == 0, out.stderr
+    assert "vigil-evidence" not in out.stdout
+    assert "component: evidence" not in out.stdout
+
+
+def test_default_pods_match_main_before_w026(chart, tmp_path):
+    has_base = subprocess.run(
+        ["git", "-C", str(REPO), "cat-file", "-e", f"{BASE}^{{commit}}"],
+        capture_output=True,
+    )
+    if has_base.returncode != 0:
+        pytest.skip(f"{BASE} is not in this clone")
+    archive = subprocess.run(
+        ["git", "-C", str(REPO), "archive", BASE, "infra/helm/vigil"],
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(["tar", "-x", "-C", str(tmp_path)], input=archive.stdout, check=True)
+    base = tmp_path / "infra" / "helm" / "vigil"
+    _strip_dependencies(base)
+    for name in PODS:
+        for extra in ((), ("--set", "backup.enabled=true")):
+            assert _render(chart, name, *extra) == _render(base, name, *extra), name
+
+
+def test_enabled_rwx_renders_an_rwx_claim_and_mounts_it(chart):
+    pvc = yaml.safe_load(_render(chart, "evidence-pvc.yaml", *RWX))
+    assert pvc["spec"]["accessModes"] == ["ReadWriteMany"]
+    for name in PODS:
+        assert "claimName: rc-vigil-evidence" in _render(chart, name, *RWX), name
+    notes = _render(chart, "zz-notes.yaml", *RWX)
+    assert "DEFAULT" in notes and "NOT PERSISTENT" not in notes
+    quiet = _render(
+        chart,
+        "zz-notes.yaml",
+        *RWX,
+        "--set",
+        "evidence.persistence.storageClassName=nfs",
+    )
+    assert "EVIDENCE" not in quiet
+
+
+def test_enabled_without_access_modes_fails(chart):
+    out = _helm_template(chart, *ON)
+    assert out.returncode != 0
+    assert "needs an explicit evidence.persistence.accessModes" in out.stderr
 
 
 @pytest.mark.parametrize(
-    ("args", "expected"),
+    "extra",
     [
-        ((), ["ReadWriteMany"]),  # two backend replicas, daemon standby
-        (SINGLE, ["ReadWriteOnce"]),  # one pod mounts it
-        (("--set", "backend.replicaCount=1"), ["ReadWriteMany"]),  # daemon standby
-        (SINGLE + ("--set", "backend.autoscaling.enabled=true"), ["ReadWriteMany"]),
-        (SINGLE + ("--set", "llmWorker.replicaCount=2"), ["ReadWriteMany"]),
-        (
-            ("--set", "evidence.persistence.accessModes={ReadWriteOnce}"),
-            ["ReadWriteOnce"],
-        ),
-        (
-            ("-f", str(REPO / "infra" / "airgap" / "values-airgap.yaml")),
-            ["ReadWriteOnce"],
-        ),
+        (),  # defaults: two backends, daemon standby, two llm-workers
+        ("--set", "backend.replicaCount=1"),
+        ("--set", "evidence.persistence.existingClaim=mine"),
     ],
 )
-def test_the_access_mode_follows_how_many_pods_mount_the_claim(chart, args, expected):
-    assert _modes(chart, *args) == expected
+def test_enabled_rwo_with_several_mounters_fails(chart, extra):
+    out = _helm_template(chart, *RWO, *extra)
+    assert out.returncode != 0
+    assert (
+        "ReadWriteOnce but" in out.stderr
+        and "pods mount the evidence claim" in out.stderr
+    )
 
 
-@pytest.mark.parametrize(
-    ("args", "warned"),
-    [
-        ((), True),
-        (("--set", "evidence.persistence.storageClassName=nfs"), False),
-        (("--set", "evidence.persistence.existingClaim=mine"), False),
-        (SINGLE, False),
-        (("-f", str(REPO / "infra" / "airgap" / "values-airgap.yaml")), False),
-        (("--set", "evidence.persistence.enabled=false"), False),
-    ],
-)
-def test_notes_warn_about_rwx_on_the_default_class(chart, args, warned):
-    notes = _render(chart, "zz-notes.yaml", *args)
-    assert ("EVIDENCE STORE" in notes) is warned
+def test_enabled_rwo_with_a_single_mounter_renders(chart):
+    single = (
+        "--set",
+        "backend.replicaCount=1",
+        "--set",
+        "daemon.enabled=false",
+        "--set",
+        "llmWorker.enabled=false",
+    )
+    pvc = yaml.safe_load(_render(chart, "evidence-pvc.yaml", *RWO, *single))
+    assert pvc["spec"]["accessModes"] == ["ReadWriteOnce"]
+    # The backup job is one more node-independent mounter.
+    out = _helm_template(chart, *RWO, *single, "--set", "backup.enabled=true")
+    assert out.returncode != 0
 
 
-def test_the_backup_job_archives_the_evidence_claim(chart):
+def test_airgap_profile_is_consistent(chart):
+    out = _helm_template(chart, *AIRGAP)
+    assert out.returncode == 0, out.stderr
+    assert "vigil-evidence" not in out.stdout
+    assert "EVIDENCE IS NOT PERSISTENT" in _render(chart, "zz-notes.yaml", *AIRGAP)
+
+
+def test_default_notes_say_evidence_is_not_persistent(chart):
+    assert "EVIDENCE IS NOT PERSISTENT" in _render(chart, "zz-notes.yaml")
+
+
+def test_the_backup_job_archives_the_claim_only_when_enabled(chart):
     on = ("--set", "backup.enabled=true")
-    job = yaml.safe_load_all(_render(chart, "backup-cronjob.yaml", *on))
-    cron = next(d for d in job if d and d["kind"] == "CronJob")
+    off = _render(chart, "backup-cronjob.yaml", *on)
+    assert "vigil-evidence" not in off and "value: /evidence" not in off
+    cron = next(
+        d
+        for d in yaml.safe_load_all(_render(chart, "backup-cronjob.yaml", *on, *RWX))
+        if d and d["kind"] == "CronJob"
+    )
     pod = cron["spec"]["jobTemplate"]["spec"]["template"]["spec"]
     claims = {v["name"]: v.get("persistentVolumeClaim", {}) for v in pod["volumes"]}
     assert claims["vigil-evidence"] == {
@@ -251,10 +321,8 @@ def test_the_backup_job_archives_the_evidence_claim(chart):
         "mountPath": "/evidence",
         "readOnly": True,
     }
-    # The app's group, so uid 70 reads the evidence without a re-grouping.
     assert pod["securityContext"]["fsGroup"] == 1000
-
-    off = _render(
-        chart, "backup-cronjob.yaml", *on, "--set", "backup.includeEvidence=false"
+    excluded = _render(
+        chart, "backup-cronjob.yaml", *on, *RWX, "--set", "backup.includeEvidence=false"
     )
-    assert "vigil-evidence" not in off
+    assert "claimName: rc-vigil-evidence" not in excluded

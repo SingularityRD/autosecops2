@@ -2,6 +2,7 @@
 Case evidence store (see evidence: in values.yaml). Created only when the chart
 owns the claim; kept on uninstall, since what is on it is case evidence.
 */ -}}
+{{- include "vigil.evidence.validate" . }}
 {{- if and .Values.evidence.persistence.enabled (not .Values.evidence.persistence.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -14,7 +15,7 @@ metadata:
     helm.sh/resource-policy: keep
 spec:
   accessModes:
-    {{- include "vigil.evidence.accessModes" . | nindent 4 }}
+    {{- toYaml .Values.evidence.persistence.accessModes | nindent 4 }}
   {{- with .Values.evidence.persistence.storageClassName }}
   storageClassName: {{ . | quote }}
   {{- end }}

@@ -49,33 +49,42 @@ write. Include all three together, or none.
 Case evidence store: a persistent volume at <State Directory>/evidence, where
 CaseEvidenceService writes (vigil_path("evidence")). Mounted over the State
 Directory volume so no extra setting is needed. Include the mount and the
-volume together, or neither; both render nothing when persistence is off.
+volume together, or neither, and only when evidence.persistence.enabled.
 */}}
 {{- define "vigil.evidence.claimName" -}}
 {{- .Values.evidence.persistence.existingClaim | default (printf "%s-evidence" (include "vigil.fullname" .)) -}}
 {{- end -}}
 
 {{/*
-"true" when more than one pod mounts the evidence claim: the backend's replicas
-(or its HPA), the daemon's hot standby, or more than one llm-worker. A
-ReadWriteOnce volume attaches to one node, so those pods can only share it on
-one node; the default access mode is ReadWriteMany then, ReadWriteOnce otherwise.
+How many pods mount the evidence claim: the backend's replicas (2 for an HPA),
+the daemon (2 with its hot standby), the llm-workers (2 for an HPA or KEDA) and
+the backup job when it archives the store.
 */}}
-{{- define "vigil.evidence.shared" -}}
-{{- $backend := or .Values.backend.autoscaling.enabled (gt (int .Values.backend.replicaCount) 1) -}}
-{{- $daemon := and .Values.daemon.enabled .Values.daemon.leaderElection.enabled -}}
+{{- define "vigil.evidence.mounters" -}}
+{{- $n := ternary 2 (int .Values.backend.replicaCount) .Values.backend.autoscaling.enabled -}}
+{{- if .Values.daemon.enabled }}{{ $n = add $n (ternary 2 1 .Values.daemon.leaderElection.enabled) }}{{ end -}}
 {{- $w := .Values.llmWorker -}}
-{{- $worker := and $w.enabled (or $w.autoscaling.enabled $w.autoscaling.keda.enabled (gt (int $w.replicaCount) 1)) -}}
-{{- if or $backend $daemon $worker }}true{{ end -}}
+{{- if $w.enabled }}{{ $n = add $n (ternary 2 (int $w.replicaCount) (or $w.autoscaling.enabled $w.autoscaling.keda.enabled)) }}{{ end -}}
+{{- if and .Values.backup.enabled .Values.backup.includeEvidence }}{{ $n = add $n 1 }}{{ end -}}
+{{- $n -}}
 {{- end -}}
 
-{{/* The claim's access modes: evidence.persistence.accessModes when set, else derived. */}}
-{{- define "vigil.evidence.accessModes" -}}
-{{- $modes := .Values.evidence.persistence.accessModes -}}
-{{- if not $modes -}}
-{{- $modes = list (ternary "ReadWriteMany" "ReadWriteOnce" (eq (include "vigil.evidence.shared" .) "true")) -}}
+{{/*
+Refuses an evidence store the cluster cannot schedule: accessModes must be set,
+and a ReadWriteOnce claim (one node) cannot be shared by several pods that
+may land on different nodes.
+*/}}
+{{- define "vigil.evidence.validate" -}}
+{{- $p := .Values.evidence.persistence -}}
+{{- if $p.enabled -}}
+{{- if not $p.accessModes -}}
+{{- fail "evidence.persistence.enabled=true needs an explicit evidence.persistence.accessModes, e.g. {ReadWriteMany} with an RWX storageClassName (NFS, CephFS, Longhorn RWX, EFS ...)" -}}
 {{- end -}}
-{{- toYaml $modes -}}
+{{- $mounters := int (include "vigil.evidence.mounters" .) -}}
+{{- if and (has "ReadWriteOnce" $p.accessModes) (not (has "ReadWriteMany" $p.accessModes)) (gt $mounters 1) -}}
+{{- fail (printf "evidence.persistence.accessModes is ReadWriteOnce but %d pods mount the evidence claim (backend, daemon, llm-worker, backup); they may run on different nodes, where a ReadWriteOnce volume cannot attach. Use ReadWriteMany with an RWX storageClassName or existingClaim, or leave evidence.persistence.enabled=false." $mounters) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{/*
@@ -86,22 +95,18 @@ and the pods that mount it never start. NOTES.txt warns about it.
 */}}
 {{- define "vigil.evidence.rwxOnDefaultClass" -}}
 {{- $p := .Values.evidence.persistence -}}
-{{- if and $p.enabled (not $p.existingClaim) (not $p.storageClassName) (contains "ReadWriteMany" (include "vigil.evidence.accessModes" .)) }}true{{ end -}}
+{{- if and $p.enabled (not $p.existingClaim) (not $p.storageClassName) (has "ReadWriteMany" ($p.accessModes | default list)) }}true{{ end -}}
 {{- end -}}
 
 {{- define "vigil.evidenceVolumeMount" -}}
-{{- if .Values.evidence.persistence.enabled }}
 - name: vigil-evidence
   mountPath: {{ printf "%s/evidence" (trimSuffix "/" .Values.stateDirectory.mountPath) }}
-{{- end }}
 {{- end -}}
 
 {{- define "vigil.evidenceVolume" -}}
-{{- if .Values.evidence.persistence.enabled }}
 - name: vigil-evidence
   persistentVolumeClaim:
     claimName: {{ include "vigil.evidence.claimName" . }}
-{{- end }}
 {{- end -}}
 
 {{/*

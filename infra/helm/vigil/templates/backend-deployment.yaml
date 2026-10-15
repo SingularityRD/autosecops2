@@ -107,14 +107,18 @@ spec:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           volumeMounts:
             {{- include "vigil.stateVolumeMount" . | nindent 12 }}
+            {{- if .Values.evidence.persistence.enabled }}
             {{- include "vigil.evidenceVolumeMount" . | nindent 12 }}
+            {{- end }}
             {{- include "vigil.caBundleVolumeMount" . | nindent 12 }}
             {{- if eq ((.Values.medic).enabled | toString) "true" }}
             {{- include "vigil.medic.apiKeyMount" . | nindent 12 }}
             {{- end }}
       volumes:
         {{- include "vigil.stateVolume" . | nindent 8 }}
+        {{- if .Values.evidence.persistence.enabled }}
         {{- include "vigil.evidenceVolume" . | nindent 8 }}
+        {{- end }}
         {{- include "vigil.caBundleVolume" . | nindent 8 }}
         {{- if eq ((.Values.medic).enabled | toString) "true" }}
         {{- include "vigil.medic.apiKeyVolume" (dict "context" . "optional" true) | nindent 8 }}
