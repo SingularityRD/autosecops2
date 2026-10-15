@@ -194,11 +194,11 @@ def test_a_settled_row_leaves_the_backfill_and_keeps_its_analysis(throwaway_data
     analysis and a failed triage is settled by its lane decision. The analysis
     survives (merged against the locked row, not the sweep's stale copy), the
     lane decision is stored, and the row is no longer unrated."""
-    from core.storage.database_data_service import DatabaseDataService
-
     fid = _finding({**ANALYSIS, "ai_triage_error": "redis down"})
     processor = FindingProcessor(ProcessingConfig())
-    processor._data_service = DatabaseDataService()
+    # DatabaseService directly: DatabaseDataService answers from the demo
+    # service when another test left demo mode on.
+    processor._data_service = _service()
     # The sweep's copy predates the analysis.
     row = {"finding_id": fid, "ai_enrichment": {"ai_triage_error": "redis down"}}
 
