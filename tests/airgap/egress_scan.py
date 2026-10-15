@@ -366,6 +366,8 @@ TS_RULES: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
     ("socket", re.compile(r"\b(?:net|tls)\.connect\s*\(")),
     ("websocket", re.compile(r"\bnew\s+WebSocket\s*\(")),
     ("exec", re.compile(r"\b(?:spawn|execFile|execSync|exec)\s*\(\s*[\"'`]")),
+    # OTel SDK exporters open their own gRPC/HTTP connection (W0.30).
+    ("otel-exporter", re.compile(r"\bnew\s+OTLP\w*Exporter\s*\(")),
 )
 
 

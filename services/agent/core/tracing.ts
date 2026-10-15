@@ -21,10 +21,19 @@ function enabled(name: string): boolean {
   return ["true", "1", "yes"].includes((process.env[name] ?? "").toLowerCase());
 }
 
-// Python's switch, so one setting traces both sides. The SDK reads the endpoint and
-// sampler itself, from the OTEL_* variables Python is given.
+// Where spans would go. The SDK falls back to localhost:4317 when neither is set;
+// here an unset endpoint means no tracing at all (W0.30): nothing is exported to an
+// address the operator never named.
+export function otlpEndpoint(): string {
+  return (process.env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] ?? process.env["OTEL_EXPORTER_OTLP_ENDPOINT"] ?? "").trim();
+}
+
+// Python's switch, so one setting traces both sides, and an endpoint the operator
+// configured (an in-cluster collector). The SDK reads the endpoint and sampler itself,
+// from the OTEL_* variables Python is given.
 export function initTracing(service: string): boolean {
-  if (!enabled("VIGIL_OTEL_ENABLED") || provider !== null) return provider !== null;
+  if (provider !== null) return true;
+  if (!enabled("VIGIL_OTEL_ENABLED") || otlpEndpoint() === "") return false;
   try {
     provider = new NodeTracerProvider({
       resource: resourceFromAttributes({
@@ -47,9 +56,27 @@ export function initTracing(service: string): boolean {
 
 // Flushes what the batch still holds, so the spans of a run that ended just before
 // SIGTERM are not the ones lost.
-export async function shutdownTracing(): Promise<void> {
-  await provider?.shutdown().catch((error: unknown) => log.warn("tracing did not flush", errorFields(error)));
+// Bounded: a collector that is down must not hold a stopping process past its
+// grace period, so whatever has not flushed by then is dropped.
+const SHUTDOWN_LIMIT_MS = 5_000;
+
+export async function shutdownTracing(limitMs: number = SHUTDOWN_LIMIT_MS): Promise<void> {
+  const held = provider;
   provider = null;
+  if (held === null) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      log.warn("tracing did not flush in time", { limit_ms: limitMs });
+      resolve();
+    }, limitMs);
+    timer.unref?.();
+  });
+  try {
+    await Promise.race([held.shutdown().catch((error: unknown) => log.warn("tracing did not flush", errorFields(error))), limit]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Prompts, responses and tool I/O carry customer logs and IOCs, so they are exported

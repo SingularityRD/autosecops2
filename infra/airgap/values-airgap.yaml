@@ -101,6 +101,8 @@ config:
 
   # Telemetry
   VIGIL_OTEL_ENABLED: "false"
+  # Agent-layer spans never carry prompts, responses or tool I/O (W0.30).
+  VIGIL_OTEL_CAPTURE_CONTENT: "false"
 
   # Outbound notifications and cloud services
   DAEMON_SLACK_ENABLED: "false"
