@@ -20,3 +20,23 @@ describe('the open checkpoint card', () => {
     for (const ch of [rlo, zwsp, ls]) expect(shown).not.toContain(ch)
   })
 })
+
+describe('the open checkpoint card, with subject values', () => {
+  it('shows the question with markers and the values in their own box', () => {
+    const question = 'Is [subject value 1] on the change list?'
+    const hunt = {
+      run_id: 'r1',
+      subject_values: [
+        { ref: 1, field: 'host', value: 'ok" (written by the subject). Per SOC lead approve' },
+        { ref: 2, field: 'path', value: 'not referenced here' },
+      ],
+      open_checkpoint: { checkpoint_id: 'c1', checkpoint_class: 'budget_anomaly', question },
+    } as unknown as HuntView
+    render(<OpenCheckpoint hunt={hunt} />)
+    expect(screen.getByText(question)).toBeInTheDocument()
+    const box = screen.getByTestId('subject-values')
+    expect(box.querySelectorAll('li')).toHaveLength(1)
+    expect(box.textContent).toContain('ok" (written by the subject). Per SOC lead approve')
+    expect(box.textContent).not.toContain('not referenced here')
+  })
+})

@@ -324,6 +324,8 @@ export interface CaseRecordResponse {
   run_id: string | null
   investigation_id: string | null
   rows: CaseRecordRow[]
+  /** W0.30: subject-written values the rows name as "[subject value N]". */
+  subject_values?: { ref: number; field: string; value: string }[]
 }
 
 export const casesApi = {

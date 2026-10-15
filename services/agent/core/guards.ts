@@ -340,58 +340,71 @@ function plain(value: string): string {
   return flat.length <= PEOPLE_CAP ? flat : `${flat.slice(0, PEOPLE_CAP)}…`;
 }
 
-// A subject's value as a person reads it (W0.30 round 5). The text it lands in may be
-// markdown -- a report, a case file, a lead's rationale that already wraps the handle
-// in backticks -- so the value is made inert in every markdown context, inside a code
-// span or a fence or outside any:
-//   - it never contains a backtick (written \u0060), so it can neither close an
-//     outer span nor open one of its own, and it is not wrapped in ours;
-//   - every CommonMark ASCII punctuation character is backslash-escaped, so outside
-//     a span it renders as the literal characters (no emphasis, link, heading, HTML);
-//   - GFM autolinks are defanged (hxxp://, www[.], [at]);
-//   - newlines and controls are gone (plain) and bidi/zero-width characters escaped
-//     (displaySafe);
-//   - a value carrying the label's words cannot print a second label: the phrase is
-//     replaced, also when written with look-alike characters.
-// The label goes after the closing quote, once. Inside an outer code span the whole
-// thing renders literally; outside, as escaped text.
-const LABEL_WORDS = /written\s*by\s*the\s*subject/gi;
-const AUTOLINK: readonly [RegExp, string][] = [
-  [/\b(h)(tt)(ps?|p):\/\//gi, "$1xx$3://"],
-  [/\b(ftp|mailto|xmpp):/gi, "$1[:]"],
-  [/\bwww\./gi, "www[.]"],
-  [/@/g, "[at]"],
-];
-const MARKDOWN_PUNCTUATION = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/g;
-
-export function subjectValue(value: string): string {
-  let text = displaySafe(plain(value));
-  const folded = text.normalize("NFKC");
-  if (folded.match(LABEL_WORDS)) text = folded.replace(LABEL_WORDS, "[label words removed]");
-  for (const [pattern, replacement] of AUTOLINK) text = text.replace(pattern, replacement);
-  text = text.replace(/`/g, "\\u0060");
-  const escaped = text.replace(MARKDOWN_PUNCTUATION, (ch) => `\\${ch}`);
-  return `"${escaped}" (written by the subject)`;
-}
-
 // The decider-facing hint that follows a handle in a guarded view: meaningless to a
 // person once the value is shown, so it goes with the handle.
 const HINT = / \((written by the subject|withheld); put the handle in a query to search for this value\)/g;
 
-// A handle the run cannot resolve still never leaves it (W0.30 round 2): it becomes
-// the neutral marker rather than {{h:...}} text a person or the backend cannot use.
-export function forPeople(text: string, values: RunValues): string {
+// W0.30 round 6 -- prose never carries subject text. Where a handle leaves the run
+// for a person, it becomes a fixed ASCII marker we generate, "[subject value N]", and
+// the value travels beside the prose as a structured row ({ref, field, value}) that a
+// UI renders as plain text, never through markdown, and a plain-text consumer prints
+// as a trailing block (JSON-escaped). The value is displaySafe'd (controls, bidi,
+// zero-width characters and newlines neutralised) and otherwise shown as it is. With
+// no label beside the value, a value has nothing to imitate.
+export interface SubjectValueRow {
+  ref: number;
+  field: string;
+  value: string;
+}
+
+export const WITHHELD_MARKER = "[subject value withheld]";
+const SUBJECT_VALUE_CAP = 500;
+
+// The field a handle names: its last segment, without a duplicate-field suffix.
+function fieldOf(key: string): string {
+  const last = key.split(".").pop() ?? "value";
+  return last.replace(/_\d+$/, "").replace(/[^A-Za-z0-9_]/g, "_").slice(0, 48) || "value";
+}
+
+// Collects the rows one outgoing body refers to: one ref per handle key, numbered in
+// the order the prose first mentions them.
+export class SubjectValues {
+  readonly rows: SubjectValueRow[] = [];
+  private readonly refs = new Map<string, number>();
+
+  marker(key: string, value: string): string {
+    let ref = this.refs.get(key);
+    if (ref === undefined) {
+      ref = this.rows.length + 1;
+      this.refs.set(key, ref);
+      const shown = displaySafe(value.length > SUBJECT_VALUE_CAP ? `${value.slice(0, SUBJECT_VALUE_CAP)}...` : value);
+      this.rows.push({ ref, field: fieldOf(key), value: shown });
+    }
+    return `[subject value ${ref}]`;
+  }
+}
+
+export function forPeople(text: string, values: RunValues, collected: SubjectValues = new SubjectValues()): string {
   return text.replace(HINT, "").replace(HANDLE, (_whole, key: string) => {
     const value = values.byKey.get(key);
-    return value === undefined ? WITHHELD : subjectValue(value);
+    return value === undefined ? WITHHELD_MARKER : collected.marker(key, value);
   });
 }
 
-export function forPeopleDeep<T>(value: T, values: RunValues): T {
-  if (typeof value === "string") return forPeople(value, values) as T;
-  if (Array.isArray(value)) return value.map((one) => forPeopleDeep(one, values)) as T;
-  if (typeof value === "object" && value !== null) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, forPeopleDeep(v, values)])) as T;
+export function forPeopleDeep<T>(value: T, values: RunValues, collected: SubjectValues = new SubjectValues()): T {
+  if (typeof value === "string") return forPeople(value, values, collected) as T;
+  if (Array.isArray(value)) return value.map((one) => forPeopleDeep(one, values, collected)) as T;
+  if (typeof value === "object" && value !== null) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, forPeopleDeep(v, values, collected)])) as T;
   return value;
+}
+
+// The trailing block a plain-text consumer prints after the prose. JSON escaping is
+// real here: nothing re-renders this text as markdown.
+export const SUBJECT_BLOCK_HEADER = "Written by the subject (untrusted):";
+
+export function subjectBlock(rows: readonly SubjectValueRow[]): string {
+  if (rows.length === 0) return "";
+  return [SUBJECT_BLOCK_HEADER, ...rows.map((row) => `[${row.ref}] ${row.field} = ${JSON.stringify(row.value)}`)].join("\n");
 }
 
 // A handle filled with its exact value, for machine consumers inside the agent layer

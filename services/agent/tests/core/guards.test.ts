@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { forModels, forModelsDeep, forPeople, Handles, readOf, render, runValues, typeSafe, valuesBehind } from "../../core/guards.js";
+import { forModels, forModelsDeep, forPeople, Handles, SubjectValues, readOf, render, runValues, typeSafe, valuesBehind } from "../../core/guards.js";
 import type { ToolResult } from "../../contracts/tool.js";
 
 const result: ToolResult = { ok: true, rows: [{}], rowCount: 1, capped: false, sourceSystem: "splunk_search" };
@@ -61,8 +61,10 @@ describe("text that leaves the run", () => {
   const values = runValues(calls);
 
   it("gives a person the value, marked as the subject's", () => {
-    // AutoSecOps (W0.30 round 5): the value is markdown-inert (core/guards.ts subjectValue).
-    expect(forPeople("the process {{h:q7.1.image}} beacons", values)).toBe('the process "C\\:\\\\Users\\\\a\\\\ctlhb\\.dll" (written by the subject) beacons');
+        // AutoSecOps (W0.30 round 6): a fixed marker in the prose, the value as a row.
+    const rows = new SubjectValues();
+    expect(forPeople("the process {{h:q7.1.image}} beacons", values, rows)).toBe("the process [subject value 1] beacons");
+    expect(rows.rows).toEqual([{ ref: 1, field: "image", value: "C:\\Users\\a\\ctlhb.dll" }]);
   });
 
   it("gives another model a neutral marker, never the value", () => {
@@ -74,7 +76,7 @@ describe("text that leaves the run", () => {
 
   it("drops the decider's search hint when a person gets the value", () => {
     expect(forPeople("image = {{h:q7.1.image}} (written by the subject; put the handle in a query to search for this value)", values)).toBe(
-      'image = "C\\:\\\\Users\\\\a\\\\ctlhb\\.dll" (written by the subject)',
+      "image = [subject value 1]",
     );
   });
 

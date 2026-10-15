@@ -64,3 +64,23 @@ async def test_replay_never_carries_a_handle(monkeypatch):
 def test_a_string_without_handles_is_untouched():
     value = {"a": ["plain {{ not a handle }}", 3, None]}
     assert projections.neutralise_handles(value) == value
+
+
+@pytest.mark.asyncio
+async def test_the_event_log_carries_the_subject_values_beside_it(monkeypatch):
+    # W0.30 round 6: serve sends markers in the prose and the values beside it.
+    rows = [{"ref": 1, "field": "host", "value": "C:\\Windows\\System32\\svchost.exe"}]
+    _serve(
+        monkeypatch,
+        {
+            "events": [
+                {"kind": "evidence", "payload": {"summary": "ran on [subject value 1]"}}
+            ],
+            "subject_values": rows,
+        },
+    )
+
+    events, values = await projections.read_event_log(RUN)
+
+    assert events[0]["payload"]["summary"] == "ran on [subject value 1]"
+    assert values == rows

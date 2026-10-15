@@ -10,7 +10,6 @@ import {
 import { BASE_RATE_PROVENANCE } from "./controller.js";
 import { fold, type HuntEvent, type HuntKinds, type Projection } from "./ledger.js";
 import { huntProjection, type HuntProjection } from "./projection.js";
-import { forPeopleOf } from "./handles.js";
 import { NULL_CHECK_PROVENANCE } from "./strength.js";
 import type { DecisionRecord, EvidenceRecord, Hypothesis, HuntOutcome } from "./types.js";
 
@@ -210,10 +209,8 @@ export async function journalVerdict(
   if (!journalsVerdict(runKind)) return null;
   const held = journaledVerdict(await state.read(runId));
   if (held !== null) return held;
-  const raw = verdictOf(projection);
-  if (raw === null) return null;
-  // Guards (W0.30): the verdict leaves the agent layer, so it carries no handles.
-  const verdict = forPeopleOf(raw, projection.dispatches.values());
+  const verdict = verdictOf(projection);
+  if (verdict === null) return null;
   await state.append(runId, [{ run_id: runId, run_kind: runKind, kind: "verdict", payload: verdict }]);
   return verdict;
 }
@@ -224,7 +221,5 @@ export interface VerdictProjection extends HuntProjection {
 
 export function verdictProjection(runId: string, events: readonly AgentEvent<HuntKinds>[]): VerdictProjection {
   const hunt = huntProjection(runId, events);
-  const view = fold(events);
-  const verdict = journaledVerdict(events) ?? verdictOf(view);
-  return { ...hunt, verdict: verdict === null ? null : forPeopleOf(verdict, view.dispatches.values()) };
+  return { ...hunt, verdict: journaledVerdict(events) ?? verdictOf(fold(events)) };
 }

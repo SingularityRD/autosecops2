@@ -2,7 +2,6 @@ import { openCheckpoint, type OpenCheckpoint } from "../../contracts/events.js";
 import { recalledPayloadOf, type RecallPayload } from "../../contracts/memory.js";
 import { callViews, type CallView } from "../call-view.js";
 import { fold, type HuntEvent, type Projection } from "./ledger.js";
-import { forPeopleOf } from "./handles.js";
 import { citedTechniques, isGap, NULL_CHECK_PROVENANCE, sensorAttested } from "./strength.js";
 import { renderReport, type HuntReport } from "./report.js";
 import { stepsOf, type Narrative } from "./narrative.js";
@@ -186,8 +185,9 @@ export function huntProjection(runId: string, events: readonly HuntEvent[], opti
   const open = [...view.checkpoints.values()].find((checkpoint) => !answered.has(checkpoint.checkpoint_id));
   const report = reportIn(events);
 
-  // Guards (W0.30): what a person reads carries values, never handles.
-  return forPeopleOf<HuntProjection>({
+  // Guards (W0.30): handles stay as journaled; serve.ts answers through
+  // core/outbound.ts, which turns them into markers plus subject_values.
+  return {
     run_id: runId,
     name: view.hunt.name,
     scope: view.hunt.scope,
@@ -223,7 +223,7 @@ export function huntProjection(runId: string, events: readonly HuntEvent[], opti
     moves: [...view.decisions].reverse().slice(0, MOVES_SHOWN).map(moveView),
     calls: callViews(view.dispatches.values()),
     recall: recalledPayloadOf(events),
-  }, view.dispatches.values());
+  };
 }
 
 // Enough to read a whole hunt's reasoning, bounded for the reason the evidence is.

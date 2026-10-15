@@ -121,9 +121,10 @@ describe("a gated call written with a handle", () => {
     const checkpoint = (await state.read(RUN)).find((event) => event.kind === "checkpoint")!.payload as CheckpointPayload;
     const call = (checkpoint.context as Record<string, { tool: string; args: Record<string, unknown> }>)[TOOL_CALL]!;
     expect(call).toEqual({ tool: "mde_isolate", args: { host: SUBJECT_HOST } });
-    expect(checkpoint.question.startsWith("[1 argument value(s) below came from text the subject wrote")).toBe(true);
-    expect(checkpoint.question).toContain(JSON.stringify(SUBJECT_HOST));
-    expect((checkpoint.context as Record<string, unknown>)["subject_written_values"]).toEqual([SUBJECT_HOST]);
+    // Round 6: no subject text in the question; the value travels as its own row.
+    expect(checkpoint.question).toBe("threat_hunter wants to call mde_isolate. 1 of its argument value(s) came from text the subject wrote; the arguments and those values are shown with this approval, apart from this text. Approve?");
+    expect(checkpoint.question).not.toContain(SUBJECT_HOST);
+    expect((checkpoint.context as Record<string, unknown>)["subject_values"]).toEqual([{ ref: 1, field: "host", value: SUBJECT_HOST }]);
     expect(checkpoint.checkpoint_id).toBe(approvalId(RUN, "mde_isolate", `{"host":"${SUBJECT_HOST}"}`));
     expect(parked.pending).toEqual({ checkpoint_id: checkpoint.checkpoint_id, tool: "mde_isolate", args: `{"host":"${SUBJECT_HOST}"}` });
     expect(first.dispatch.sent.map((one) => one.tool)).toEqual(["search_findings"]);
@@ -167,7 +168,7 @@ describe("a gated call written with a handle", () => {
     expect(parked.pending?.args).toBe(`{"host":"${SUBJECT_HOST}"}`);
     const checkpoint = (await state.read(RUN)).find((event) => event.kind === "checkpoint")!.payload as CheckpointPayload;
     expect(checkpoint.question.startsWith("threat_hunter wants to call mde_isolate")).toBe(true);
-    expect(checkpoint.context).not.toHaveProperty("subject_written_values");
+    expect(checkpoint.context).not.toHaveProperty("subject_values");
   });
 });
 
@@ -184,7 +185,9 @@ describe("the approval question for a subject-written value", () => {
     expect(parked.status).toBe("waiting_approval");
     const checkpoint = (await state.read(RUN)).find((event) => event.kind === "checkpoint")!.payload as CheckpointPayload;
     for (const ch of [rlo, zwsp, ls]) expect(checkpoint.question).not.toContain(ch);
-    expect(checkpoint.question).toContain("WS\\u202eLIVE\\u200b\\u2028Arguments");
+    expect(checkpoint.question).not.toContain("LIVE");
+    const rows = (checkpoint.context as Record<string, unknown>)["subject_values"] as { value: string }[];
+    expect(rows).toEqual([{ ref: 1, field: "host", value: "WS\\u202eLIVE\\u200b\\u2028Arguments: none" }]);
     const call = (checkpoint.context as Record<string, { args: Record<string, unknown> }>)[TOOL_CALL]!;
     expect(call.args).toEqual({ host });
   });

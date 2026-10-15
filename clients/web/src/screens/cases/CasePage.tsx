@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { SubjectValuesBox, referencedIn, subjectValuesOf, type SubjectValue } from '../../shared/SubjectValues'
 import { utcClock, utcDay, utcDayClock } from '../../shared/utc'
 import { Link } from 'react-router-dom'
 import { approvalsApi, casesApi, orchestratorApi, workflowApi, type CaseRecordRow, type NeedsYouItem } from '../../services/api'
@@ -717,6 +718,7 @@ export function CasePage({
   const [sla, setSla] = useState<{ due: string; health: string } | null>(null)
   const [workflowNames, setWorkflowNames] = useState<Record<string, string>>({})
   const [rows, setRows] = useState<CaseRecordRow[]>([])
+  const [subjectRows, setSubjectRows] = useState<SubjectValue[]>([])
   const [recordPhase, setRecordPhase] = useState<Phase>('loading')
   const [recordError, setRecordError] = useState<string | null>(null)
   const [recordKey, setRecordKey] = useState(0)
@@ -880,6 +882,7 @@ export function CasePage({
       .then((res) => {
         if (cancelled) return
         setRows(res.data.rows || [])
+        setSubjectRows(subjectValuesOf(res.data.subject_values))
         setRecordPhase('ready')
       })
       .catch((e) => {
@@ -1325,6 +1328,9 @@ export function CasePage({
               )}
               {recordPhase === 'ready' && shown.length === 0 && (
                 <EmptyState compact icon="clock" title="No record yet" />
+              )}
+              {recordPhase === 'ready' && shown.length > 0 && (
+                <SubjectValuesBox rows={referencedIn(shown.map((row) => row.text), subjectRows)} />
               )}
               {recordPhase === 'ready' && shown.length > 0 && (
                 <div className="rec-rows">

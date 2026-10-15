@@ -131,12 +131,21 @@ class CaseRecordRow(BaseModel):
     text: str
 
 
+class CaseSubjectValue(BaseModel):
+    ref: int
+    field: str = "value"
+    value: str = ""
+
+
 class CaseRecordResponse(BaseModel):
     """The merged record. ``run_id`` is absent when the case has no run."""
 
     run_id: Optional[str] = None
     investigation_id: Optional[str] = None
     rows: list[CaseRecordRow] = []
+    # W0.30: subject-written values the rows name as [subject value N]; the
+    # console renders them as plain text in their own box.
+    subject_values: list[CaseSubjectValue] = []
 
 
 class CasePurgeResponse(BaseModel):

@@ -31,7 +31,6 @@ import type {
 } from "./ports.js";
 import { narrativeOf } from "./render.js";
 import { buildReport, renderCaseFile } from "./report.js";
-import { peopleText } from "./handles.js";
 import { criticPayload, sanitize, sanitizeQuestion } from "./sanitize.js";
 import {
   DEFAULT_DISPATCH,
@@ -1941,8 +1940,9 @@ export class HuntController {
     };
     // The deliverable, not a pointer to one: what IR is handed is the claim, the
     // strength numbers, the cited records and what the hunt could not see.
-    // Guards (W0.30): IR reads values, never handles.
-    handoff.case_markdown = peopleText(renderCaseFile(this.ledger.projection, handoff), this.ledger.projection.dispatches.values());
+    // Guards (W0.30): handles stay on the ledger; core/outbound.ts converts them where
+    // the case file leaves the agent layer.
+    handoff.case_markdown = renderCaseFile(this.ledger.projection, handoff);
     this.ledger.append({ kind: "handoff", payload: handoff });
     return `${hypothesisId} handed off to incident response as ${caseId}`;
   }

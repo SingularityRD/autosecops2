@@ -13,7 +13,6 @@ import { InProcessDirectiveQueue } from "../../workflows/hunt/directives.js";
 import type { HuntKinds } from "../../workflows/hunt/journal.js";
 import { fold } from "../../workflows/hunt/ledger.js";
 import { huntProjection } from "../../workflows/hunt/projection.js";
-import { subjectValue } from "../../core/guards.js";
 import type { AddressInfo } from "node:net";
 import { chatServer } from "../../serve.js";
 import type { HarnessFactory } from "../../harness.js";
@@ -103,7 +102,7 @@ function provider(): Provider & { workerViews: string[] } {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("a guarded hunt links the alerts it cites", () => {
-  it("pushes real finding ids, never handles, and serves people values", async () => {
+  it("pushes real finding ids, never handles, and serves people markers and values", async () => {
     vi.stubEnv("AUTOSECOPS_GUARDS", "on");
     const spec = recallHuntSpec();
     const state = new InProcessState<HuntKinds>();
@@ -145,11 +144,8 @@ describe("a guarded hunt links the alerts it cites", () => {
     const events = await state.read(RUN);
     const evidence = JSON.stringify([...fold(events).evidence.values()].map((record) => record.payload));
     expect(evidence).toContain("{{h:");
-    const served = JSON.stringify(huntProjection(RUN, events));
-    expect(served).not.toContain("{{h:");
-    // The real value, not a marker: a person reads the id the worker cited.
-    expect(served).toContain(JSON.stringify(subjectValue(LEGACY_ID)).slice(1, -1));
-    expect(subjectValue(LEGACY_ID)).toBe('"demo2\\-ts\\-009" (written by the subject)');
+    // In-process the projection is as journaled; the serve route converts it (below).
+    expect(JSON.stringify(huntProjection(RUN, events))).toContain("{{h:");
 
     // Round 4: every serve.ts route that returns ledger content -- what the case
     // record, the console and replay read -- answers through the same conversion.
@@ -158,14 +154,25 @@ describe("a guarded hunt links the alerts it cites", () => {
     await new Promise<void>((ready) => server.listen(0, "127.0.0.1", ready));
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     try {
+      // Round 6: every read route's prose carries markers; the values -- the real ones,
+      // readable -- ride in subject_values. The projection route is the one that
+      // converts it (huntProjection no longer does), so dropping sendJson there fails.
       for (const route of ["projection", "distil", "replay", "events", "events?snapshots=1"]) {
         const response = await fetch(`${base}/runs/${RUN}/${route}`, { headers: { authorization: "Bearer t" } });
         const body = await response.text();
         expect(response.status, route).toBe(200);
         expect(body, route).not.toContain("{{h:");
       }
-      const events = await (await fetch(`${base}/runs/${RUN}/events`, { headers: { authorization: "Bearer t" } })).text();
-      expect(events).toContain(JSON.stringify(subjectValue(LEGACY_ID)).slice(1, -1));
+      for (const route of ["projection", "events"]) {
+        const served = (await (await fetch(`${base}/runs/${RUN}/${route}`, { headers: { authorization: "Bearer t" } })).json()) as { subject_values?: { value: string }[] };
+        expect(served.subject_values?.map((row) => row.value), route).toContain(LEGACY_ID);
+        const prose = JSON.stringify({ ...served, subject_values: undefined });
+        expect(prose, route).toContain("[subject value ");
+        // The projection is prose for a person: no subject bytes in it. (The events
+        // route is the ledger itself, raw tool results and journaled handle values
+        // included, for the record and the hash chain.)
+        if (route === "projection") expect(prose, route).not.toContain(LEGACY_ID);
+      }
     } finally {
       server.close();
     }
@@ -195,7 +202,9 @@ describe("a guarded hunt links the alerts it cites", () => {
       const body = await response.text();
       expect(response.status, body).toBe(200);
       expect(body).not.toContain("{{h:");
-      expect(body).toContain(JSON.stringify(subjectValue(value)).slice(1, -1));
+      const written = JSON.parse(body) as { summary: string; subject_values: { value: string }[] };
+      expect(written.summary).toBe("alert [subject value 1] fired");
+      expect(written.subject_values.map((row) => row.value)).toEqual([value]);
     } finally {
       writer.close();
     }

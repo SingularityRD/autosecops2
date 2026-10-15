@@ -1,4 +1,4 @@
-import { displaySafe, forPeople, type RunValues } from "./guards.js";
+import { displaySafe, forPeople, SubjectValues, type RunValues, type SubjectValueRow } from "./guards.js";
 import { errorFields, logger } from "./log.js";
 import type { State } from "./seams.js";
 
@@ -7,9 +7,10 @@ const log = logger("agent.outbound");
 // W0.30 round 3: the one choke point every body the agent layer posts to the backend
 // passes through (core/checkpoints.ts httpAnnounce, workflows/compose/mirror.ts
 // httpMirror). A guarded run's model-written text can carry handles ({{h:...}});
-// here each becomes the value it stands for, escaped and marked as the subject's,
-// before a backend or a person sees it. A handle the run holds no value for becomes
-// a neutral marker. Nothing posted ever carries {{h:...}}.
+// here each becomes a "[subject value N]" marker and the value travels beside the
+// prose in subject_values, before a backend or a person sees it. A handle the run
+// holds no value for becomes a neutral marker. Nothing posted ever carries {{h:...}},
+// and no prose carries subject text.
 //
 // The values are what the run's ledger journaled: any event payload, or patch
 // fields, carrying a `handles` map (key -> value). The ledger is set by the worker
@@ -50,21 +51,28 @@ export async function outboundValues(runId: string, state: State | null = ledger
   return { byKey, byRef: new Map() };
 }
 
-function convert(value: unknown, values: RunValues, key: string | null): unknown {
+function convert(value: unknown, values: RunValues, key: string | null, collected: SubjectValues): unknown {
   if (typeof value === "string") {
     if (!value.includes(HANDLE_TEXT)) return value;
-    const filled = forPeople(value, values);
+    const filled = forPeople(value, values, collected);
     return key !== null && DISPLAY_KEYS.has(key) ? displaySafe(filled) : filled;
   }
-  if (Array.isArray(value)) return value.map((one) => convert(one, values, key));
+  if (Array.isArray(value)) return value.map((one) => convert(one, values, key, collected));
   if (typeof value === "object" && value !== null) {
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, convert(v, values, k)]));
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, convert(v, values, k, collected)]));
   }
   return value;
 }
 
-// body unchanged (the same object) when nothing in it names a handle.
+// body unchanged (the same object) when nothing in it names a handle. Otherwise every
+// handle in its prose is a "[subject value N]" marker and, for an object body, the
+// values ride beside it as subject_values ({ref, field, value}); a consumer renders
+// those as plain text (W0.30 round 6).
 export async function outbound<T>(runId: string, body: T, state: State | null = ledger): Promise<T> {
   if (!(JSON.stringify(body) ?? "").includes(HANDLE_TEXT)) return body;
-  return convert(body, await outboundValues(runId, state), null) as T;
+  const collected = new SubjectValues();
+  const converted = convert(body, await outboundValues(runId, state), null, collected);
+  if (collected.rows.length === 0 || typeof converted !== "object" || converted === null || Array.isArray(converted)) return converted as T;
+  const prior = (converted as { subject_values?: SubjectValueRow[] }).subject_values ?? [];
+  return { ...(converted as object), subject_values: [...prior, ...collected.rows] } as T;
 }

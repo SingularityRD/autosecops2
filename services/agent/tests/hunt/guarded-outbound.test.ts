@@ -135,14 +135,17 @@ describe("everything a guarded run posts to the backend", () => {
     // The lead's checkpoint reached the backend with the real value, escaped.
     const announced = outbound.find((post) => post.url.endsWith("/checkpoints") && post.body.includes("budget_anomaly"));
     expect(announced).toBeDefined();
-    const question = (JSON.parse(announced!.body) as { question: string }).question;
-    expect(question).toContain('"WS\\\\u202eEVIL" (written by the subject)');
-    expect(question).toContain("(written by the subject)");
-    expect(question).not.toContain("withheld");
+    const checkpoint = JSON.parse(announced!.body) as { question: string; subject_values: { ref: number; field: string; value: string }[] };
+    // Round 6: the prose carries a marker, never the subject's bytes.
+    expect(checkpoint.question).toBe("Is [subject value 1] on the change list?");
+    expect(checkpoint.subject_values).toEqual([{ ref: 1, field: "host", value: "WS\\u202eEVIL" }]);
     // The paused status carries the lead's reason with the real value too.
     const paused = outbound.find((post) => post.url.endsWith("/status") && post.body.includes('"paused"'));
     expect(paused).toBeDefined();
-    expect((JSON.parse(paused!.body) as { reason: string }).reason).toContain('"WS\\\\u202eEVIL" (written by the subject)');
+    const status = JSON.parse(paused!.body) as { reason: string; subject_values: { value: string }[] };
+    expect(status.reason).toContain("[subject value 1]");
+    expect(status.reason).not.toContain("EVIL");
+    expect(status.subject_values.map((row) => row.value)).toEqual(["WS\\u202eEVIL"]);
     // The alert was linked by its real id.
     const findings = outbound.find((post) => post.url.endsWith("/findings"));
     expect(JSON.parse(findings!.body)).toEqual({ finding_ids: [LEGACY_ID] });
@@ -173,7 +176,8 @@ describe("the outbound choke point, for a verdict_review question", () => {
     outboundLedger(state);
     await announceOpen(state, runId, "verdict", "cp-1", httpAnnounce({ url: "http://backend.test/runs", token: "t", fetch }));
 
-    const body = JSON.parse(sent[0]!) as { question: string };
-    expect(body.question).toBe('Mark h-1 proven? "WS\\\\u202eEVIL" (written by the subject) beacons');
+    const body = JSON.parse(sent[0]!) as { question: string; subject_values: unknown };
+    expect(body.question).toBe("Mark h-1 proven? [subject value 1] beacons");
+    expect(body.subject_values).toEqual([{ ref: 1, field: "host", value: "WS\\u202eEVIL" }]);
   });
 });

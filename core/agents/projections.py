@@ -9,7 +9,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.config import get_settings
 from core.secrets import get_secret
@@ -177,7 +177,16 @@ async def read_replay(
 
 
 async def read_events(run_id: str) -> Optional[List[Dict[str, Any]]]:
-    """The run's ledger, without snapshots.
+    """The run's ledger, without snapshots. See :func:`read_event_log`."""
+    log = await read_event_log(run_id)
+    return None if log is None else log[0]
+
+
+async def read_event_log(
+    run_id: str,
+) -> Optional[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]]:
+    """The run's ledger, without snapshots, and the subject-written values its
+    prose names as ``[subject value N]`` (W0.30; ``[]`` for an unguarded run).
 
     None is serve's 404. Anything else that is not an event list raises,
     because an operator opened Record and is owed the reason. Snapshots stay
@@ -201,7 +210,9 @@ async def read_events(run_id: str) -> Optional[List[Dict[str, Any]]]:
     events = body.get("events") if isinstance(body, dict) else None
     if not isinstance(events, list):
         raise RuntimeError("the agent layer returned no event list")
-    return events
+    values = body.get("subject_values") if isinstance(body, dict) else None
+    rows = [v for v in (values or []) if isinstance(v, dict)]
+    return events, rows
 
 
 async def read_verify(run_id: str) -> Optional[Dict[str, Any]]:

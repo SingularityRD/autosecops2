@@ -229,6 +229,8 @@ interface HuntBudgets {
 }
 export interface HuntView {
   run_id?: string
+  /** W0.30: subject-written values the prose names as "[subject value N]". */
+  subject_values?: unknown
   name?: string
   scope?: Record<string, unknown>
   status: string

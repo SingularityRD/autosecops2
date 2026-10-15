@@ -21,7 +21,7 @@ import {
 import { ProviderError, type Message, type ToolCall, type ToolSchema, type Turn, type TurnRequest } from "./provider.js";
 import { assemble, DEFAULT_FOLD, prefixOf, windowCeiling, type FoldPolicy, type Prefix } from "./context.js";
 import { scannerFor, wrap } from "./security.js";
-import { displaySafe } from "./guards.js";
+import { displaySafe, SubjectValues } from "./guards.js";
 import type { State } from "./seams.js";
 
 // Journaled from record without a checkpoint. An approvals entry would park
@@ -487,31 +487,33 @@ class Run<T, Kinds extends Record<string, unknown>> {
   // the person (W1.7b), so an approval of this call opens no other.
   //
   // args are already resolved (guards): the person sees, and the digest binds, the
-  // exact values that will run. A value filled in from a handle is text the subject
-  // could have written, so the question leads with that, before the arguments a
-  // length cap could cut (W0.30).
+  // exact values that will run (W0.30).
   private async park(
     checkpoint_id: string,
     tool: string,
     args: string,
     filled: readonly { handle: string; value: string }[] = [],
   ): Promise<Outcome<T>> {
-    const subject =
+    // W0.30 round 6: no subject text in the question. The person reads the arguments
+    // whole on the approval (args_canonical, plain text) and the values that came from
+    // the subject as their own rows (subject_values), never inside this prose.
+    const subject = new SubjectValues();
+    for (const one of filled) subject.marker(one.handle.slice(4, -2), one.value);
+    const question =
       filled.length === 0
-        ? ""
-        : `[${filled.length} argument value(s) below came from text the subject wrote, not from a sensor: ${filled
-            .map((one) => JSON.stringify(one.value.length > 120 ? `${one.value.slice(0, 120)}…` : one.value))
-            .join(", ")}] `;
+        ? `${this.cfg.role} wants to call ${tool} with ${args}. Approve?`
+        : `${this.cfg.role} wants to call ${tool}. ${filled.length} of its argument value(s) came from text the subject wrote; ` +
+          "the arguments and those values are shown with this approval, apart from this text. Approve?";
     const payload: CheckpointPayload = {
       checkpoint_id,
       checkpoint_class: TOOL_APPROVAL,
       // Display text beside an Approve button: escaped as the backend's display_safe
-      // does (W0.16), since the subject's values and the arguments reach it raw.
-      question: displaySafe(`${subject}${this.cfg.role} wants to call ${tool} with ${args}. Approve?`),
+      // does (W0.16), since the arguments reach it raw.
+      question: displaySafe(question),
       raised_at: new Date().toISOString(),
       context: {
         [TOOL_CALL]: { tool, args: parseArgs(args) ?? args },
-        ...(filled.length === 0 ? {} : { subject_written_values: filled.map((one) => one.value) }),
+        ...(filled.length === 0 ? {} : { subject_values: subject.rows }),
       },
     };
     await this.write({ run_id: this.cfg.run_id, run_kind: this.cfg.run_kind, kind: "checkpoint", payload });
