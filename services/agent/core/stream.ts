@@ -197,20 +197,27 @@ class Run<T, Kinds extends Record<string, unknown>> {
           yield* this.record(call, refused(`${call.tool} is not granted to ${this.cfg.role}`));
           continue;
         }
-        const gate = this.gate(tool, call.args, fold);
-        if (gate.kind === "park") return await this.park(gate.checkpoint_id, tool.id, call.args);
+        // Guards (core/guards.ts, W0.30): handles the model wrote are filled in HERE,
+        // before the gate, never at dispatch. The checkpoint id, the arguments the
+        // person is shown (and whose args_sha256 the backend binds, W0.16/W1.7b) and
+        // the arguments dispatched are then one string: filling after the gate made
+        // an approved call hash otherwise and be refused. Local tools are the run
+        // talking to itself and never see a handle filled.
+        const args = tool.local ? call.args : (this.cfg.guards?.resolve(call.args) ?? call.args);
+        const gate = this.gate(tool, args, fold);
+        if (gate.kind === "park") return await this.park(gate.checkpoint_id, tool.id, args, this.cfg.guards?.filled(call.args) ?? []);
         if (gate.kind === "rejected") {
-          yield* this.record(call, refused("a reviewer rejected this call"));
+          yield* this.record(call, refused("a reviewer rejected this call"), undefined, undefined, args);
           continue;
         }
         // Served from the ledger rather than run again: a resume replays the turn
         // from an empty transcript, and a gated call that acts would act twice.
         if (gate.kind === "served") {
-          yield* this.record(call, gate.result, gate.checkpoint_id);
+          yield* this.record(call, gate.result, gate.checkpoint_id, undefined, args);
           continue;
         }
-        const measured = await this.invoke(tool, call.args, gate.checkpoint_id);
-        yield* this.record(call, measured.result, gate.checkpoint_id, measured.duration_ms);
+        const measured = await this.invoke(tool, args, gate.checkpoint_id);
+        yield* this.record(call, measured.result, gate.checkpoint_id, measured.duration_ms, args);
       }
     }
 
@@ -271,18 +278,34 @@ class Run<T, Kinds extends Record<string, unknown>> {
     result: ToolResult,
     gated?: string,
     duration_ms?: number,
+    dispatched?: string,
   ): AsyncGenerator<StreamEvent<T>, void> {
     yield { type: "tool_call", call };
     const wrapped = wrap(call.tool, result, this.scan, this.cfg.result_cap);
+    // Guarded: an estate result that answered goes to the reader, and the model sees
+    // its findings. A failure goes through the guards too: a backend's error can echo
+    // the query, and with it a value a handle filled in. Local tools and calls never
+    // granted are the run talking to itself, so they reach the model as they are.
+    const tool = this.tools.find((granted) => granted.id === call.tool);
+    const guards = this.cfg.guards;
+    const ref = guards?.refAt(this.calls.length + 1) ?? "";
+    const guarded =
+      guards === undefined || tool === undefined || tool.local
+        ? undefined
+        : result.ok
+          ? await guards.read(call.tool, call.args, ref, result, wrapped)
+          : { shown: guards.failed(call.tool, ref, wrapped), read: null };
     const attempt: Attempt = {
       tool: call.tool,
       args: call.args,
       result,
       wrapped,
       ...(duration_ms === undefined ? {} : { duration_ms }),
+      ...(guarded === undefined ? {} : { shown: guarded.shown, read: guarded.read }),
+      ...(dispatched === undefined || dispatched === call.args ? {} : { dispatched_args: dispatched }),
     };
     this.calls.push(attempt);
-    this.transcript.push({ role: "tool", call_id: call.id, content: wrapped.text });
+    this.transcript.push({ role: "tool", call_id: call.id, content: guarded?.shown ?? wrapped.text });
     if (gated !== undefined) await this.journalExecuted(gated, call.tool, result);
     else if (call.tool === CANDIDATE_CHECK) await this.journalExecuted(`dsp-${call.id}`, call.tool, result);
     yield { type: "tool_result", call, attempt };
@@ -461,13 +484,32 @@ class Run<T, Kinds extends Record<string, unknown>> {
   // The context names the one call parked, arguments parsed as dispatch would
   // send them: the backend binds the approval to their digest and shows them to
   // the person (W1.7b), so an approval of this call opens no other.
-  private async park(checkpoint_id: string, tool: string, args: string): Promise<Outcome<T>> {
+  //
+  // args are already resolved (guards): the person sees, and the digest binds, the
+  // exact values that will run. A value filled in from a handle is text the subject
+  // could have written, so the question leads with that, before the arguments a
+  // length cap could cut (W0.30).
+  private async park(
+    checkpoint_id: string,
+    tool: string,
+    args: string,
+    filled: readonly { handle: string; value: string }[] = [],
+  ): Promise<Outcome<T>> {
+    const subject =
+      filled.length === 0
+        ? ""
+        : `[${filled.length} argument value(s) below came from text the subject wrote, not from a sensor: ${filled
+            .map((one) => JSON.stringify(one.value.length > 120 ? `${one.value.slice(0, 120)}…` : one.value))
+            .join(", ")}] `;
     const payload: CheckpointPayload = {
       checkpoint_id,
       checkpoint_class: TOOL_APPROVAL,
-      question: `${this.cfg.role} wants to call ${tool} with ${args}. Approve?`,
+      question: `${subject}${this.cfg.role} wants to call ${tool} with ${args}. Approve?`,
       raised_at: new Date().toISOString(),
-      context: { [TOOL_CALL]: { tool, args: parseArgs(args) ?? args } },
+      context: {
+        [TOOL_CALL]: { tool, args: parseArgs(args) ?? args },
+        ...(filled.length === 0 ? {} : { subject_written_values: filled.map((one) => one.value) }),
+      },
     };
     await this.write({ run_id: this.cfg.run_id, run_kind: this.cfg.run_kind, kind: "checkpoint", payload });
     const outcome = this.done("waiting_approval", null, `parked on approval for ${tool}`);
@@ -510,7 +552,7 @@ class Run<T, Kinds extends Record<string, unknown>> {
 
 // Not every throw is a turn that failed: an exhausted gateway cannot serve the next
 // call either, and a defect in this process is not a role that could not answer.
-function hardStop(error: unknown): boolean {
+export function hardStop(error: unknown): boolean {
   if (error instanceof TypeError || error instanceof ReferenceError || error instanceof SyntaxError) return true;
   return error instanceof GatewayExhausted || error instanceof ToolBoundsViolation;
 }

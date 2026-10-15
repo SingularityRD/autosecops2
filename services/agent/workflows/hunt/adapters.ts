@@ -1,10 +1,12 @@
 import { setMaxListeners } from "node:events";
 import { drain, streamTurn } from "../../core/stream.js";
-import type { Attempt, Harness, Outcome } from "../../core/loop.js";
+import type { Attempt, Harness, Outcome, TurnConfig } from "../../core/loop.js";
 import { clamp, isVisibilityGap } from "../../core/security.js";
 import type { RunKind } from "../../contracts/events.js";
 import type { RoleSpec, RunSpec } from "../../core/spec.js";
 import { SpecError } from "../../core/spec.js";
+import { guardsOn } from "../../core/guards.js";
+import { DECIDER_GUIDANCE, guardsFor } from "./quarantine.js";
 import { narrativeOf, renderDigest, renderDispatch, renderNullCheck } from "./render.js";
 import type { HuntKinds } from "./ledger.js";
 import type { DecisionProvider, DisconfirmationCritic, Narrator, WorkerDispatcher } from "./ports.js";
@@ -77,7 +79,17 @@ export function link(held?: AbortSignal, asked?: AbortSignal): Linked {
   return { signal: halt.signal, release: () => wired.forEach((unwire) => unwire()) };
 }
 
-function turnFor(options: AdapterOptions, id: string, spec: RoleSpec, task: string, signal?: AbortSignal) {
+function turnFor(options: AdapterOptions, id: string, spec: RoleSpec, task: string, signal?: AbortSignal): TurnConfig {
+  const base = plainTurnFor(options, id, spec, task, signal);
+  // Guards (W0.30, core/guards.ts): a role that can reach the estate -- a granted
+  // tool that is not answered in-process -- reads its results through the guarded
+  // reader. The verdict run (W2.1) is this same loop, so it is covered here too.
+  if (!guardsOn() || !options.harness.registry.granted(id).some((tool) => !tool.local)) return base;
+  const turn: TurnConfig = { ...base, system: `${base.system}\n\n${DECIDER_GUIDANCE}` };
+  return { ...turn, guards: guardsFor({ harness: options.harness, turn }) };
+}
+
+function plainTurnFor(options: AdapterOptions, id: string, spec: RoleSpec, task: string, signal?: AbortSignal): TurnConfig {
   const held = signal ?? options.signal;
   const { runtime } = options.spec;
   return {
@@ -226,7 +238,14 @@ export function salvaged(attempts: readonly Attempt[]): WorkerEvidence[] {
 
   const systems = [...new Set(kept.map(({ result }) => (result.ok ? result.sourceSystem : "")))].filter((one) => one);
   let spent = kept.reduce((total, { tool, args }) => total + JSON.stringify({ tool, query: args }).length, 0);
-  const gathered = kept.map(({ tool, args, result }) => {
+  const gathered = kept.map(({ tool, args, result, shown }) => {
+    // Guarded (W0.30): the rows were never read by a model, only the reader's view
+    // was, and the lead and critic read this record. The view goes on, not the rows.
+    if (shown !== undefined) {
+      const room = spent + shown.length <= SALVAGE_BUDGET;
+      spent += room ? shown.length : 0;
+      return { tool, query: args, ...(room ? { shown } : { rows_dropped: result.ok ? result.rows.length : 0 }) };
+    }
     const rows = result.ok ? result.rows : [];
     const text = JSON.stringify(rows);
     // Queries are never dropped — they are what an analyst re-runs. Rows are, past the
@@ -423,10 +442,14 @@ export const CALL_BUDGET = 16_000;
 export function callsOf(attempts: readonly Attempt[]): ToolCall[] {
   if (attempts.length === 0) return [];
   const share = Math.max(1, Math.floor(CALL_BUDGET / attempts.length));
-  return attempts.map(({ tool, args, wrapped, duration_ms }) => ({
+  // Guarded (W0.30): shown is what the worker read; the raw wrapped.text stays the
+  // audit record, and the reader's view rides beside it.
+  return attempts.map(({ tool, args, wrapped, duration_ms, shown, dispatched_args }) => ({
     tool,
     arguments: clamp(args, share),
     result: clamp(wrapped.text, share),
+    ...(shown === undefined ? {} : { shown: clamp(shown, share) }),
+    ...(dispatched_args === undefined ? {} : { dispatched_arguments: clamp(dispatched_args, share) }),
     ...(duration_ms === undefined ? {} : { duration_ms }),
   }));
 }

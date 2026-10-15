@@ -347,6 +347,11 @@ export interface ToolCall {
   tool: string;
   arguments: string;
   result: string;
+  // Guards (W0.30, core/guards.ts): what the worker was shown in place of result,
+  // and the arguments as dispatched when handles were filled into them. Absent with
+  // guards off.
+  shown?: string;
+  dispatched_arguments?: string;
   // Absent on a ledger written before calls were timed.
   duration_ms?: number;
 }

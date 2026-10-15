@@ -448,7 +448,13 @@ function queriesBehind(projection: Projection, record: EvidenceRecord): string[]
   return [
     "Queries behind it:",
     "",
-    ...dispatch.calls.map((call) => `- \`${call.tool}\` — \`${call.arguments}\``),
+    // Guards (W0.30): a person re-runs what was dispatched, handles filled in, and is
+    // told the filled values are text the subject wrote.
+    ...dispatch.calls.map((call) =>
+      call.dispatched_arguments === undefined
+        ? `- \`${call.tool}\` — \`${call.arguments}\``
+        : `- \`${call.tool}\` — \`${call.dispatched_arguments}\` (some values written by the subject)`,
+    ),
     "",
   ];
 }
