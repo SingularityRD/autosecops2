@@ -58,6 +58,8 @@ LICENSE
 !requirements.txt
 # The backend image's baked uvx connector list.
 !infra/docker/mcp-packages/uv-tools.txt
+# Its per-tool uv --overrides files.
+!infra/docker/mcp-packages/overrides/*.txt
 
 # Logs
 logs/

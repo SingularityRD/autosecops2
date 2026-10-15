@@ -245,3 +245,59 @@ def test_pre_release_git_pins_name_a_commit():
         assert match and _COMMIT_SHA.fullmatch(match.group(1)), (
             f"{name} must pin a full commit SHA, not a movable tag: {spec}"
         )
+
+
+# Baked tools whose own pins carry fixed advisories: the uv --overrides file
+# their uv-tools.txt line names must keep each package at or above the fix
+# (pip-audit of the Okta venv, 15 Oct 2026; W0.28 verifier finding 2).
+_ADVISORY_FLOORS = {
+    "okta-mcp-server": {
+        "fastmcp": "3.2.0",
+        "mcp": "1.28.1",
+        "starlette": "1.3.1",
+        "python-dotenv": "1.2.2",
+    },
+}
+_IMAGE_OVERRIDES = "/tmp/mcp-overrides/"
+
+
+def _version(text: str) -> tuple[int, ...]:
+    return tuple(int(p) for p in text.split("."))
+
+
+def _uv_tool_lines() -> dict[str, list[str]]:
+    lines = {}
+    for line in (_IMAGE_PACKAGES / "uv-tools.txt").read_text().splitlines():
+        tokens = line.split()
+        if tokens and not tokens[0].startswith("#"):
+            lines[tokens[0]] = tokens[1:]
+    return lines
+
+
+@pytest.mark.unit
+def test_baked_tool_overrides_stay_above_fixed_advisories():
+    lines = _uv_tool_lines()
+    dockerfile = (_REPO_ROOT / "infra" / "docker" / "Dockerfile.backend").read_text()
+    dockerignore = (_REPO_ROOT / ".dockerignore").read_text().splitlines()
+    assert "COPY infra/docker/mcp-packages/overrides/ /tmp/mcp-overrides/" in dockerfile
+    assert "!infra/docker/mcp-packages/overrides/*.txt" in dockerignore
+    for tool, floors in _ADVISORY_FLOORS.items():
+        matches = [spec for spec in lines if tool in spec]
+        assert len(matches) == 1, f"{tool}: expected one uv-tools.txt line, got {matches}"
+        rest = lines[matches[0]]
+        assert "--overrides" in rest, f"{tool} must install with --overrides"
+        path = rest[rest.index("--overrides") + 1]
+        assert path.startswith(_IMAGE_OVERRIDES), path
+        file = _IMAGE_PACKAGES / "overrides" / path[len(_IMAGE_OVERRIDES) :]
+        pins = {}
+        for raw in file.read_text().splitlines():
+            raw = raw.split("#", 1)[0].strip()
+            if raw:
+                name, sep, version = raw.partition("==")
+                assert sep, f"{file.name}: pin exactly, not a range: {raw}"
+                pins[name.strip().lower()] = version.strip()
+        for package, floor in floors.items():
+            assert package in pins, f"{file.name} lost its {package} override"
+            assert _version(pins[package]) >= _version(floor), (
+                f"{file.name}: {package}=={pins[package]} is below the fixed {floor}"
+            )

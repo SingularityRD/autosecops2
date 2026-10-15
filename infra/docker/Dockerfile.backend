@@ -134,13 +134,16 @@ COPY --from=mcp-node /opt/vigil/mcp/npm /opt/vigil/mcp/npm
 # and the uv that requirements.lock pins. Root-owned, readable by uid 1000.
 # Hardlinked from a cache dropped in the same layer, so the venvs share one
 # copy of their common dependencies.
+# overrides/: per-tool uv --overrides that lift a tool's own pins past fixed
+# advisories (uv-tools.txt names them; the pin ratchet checks the floors).
 COPY infra/docker/mcp-packages/uv-tools.txt /tmp/uv-tools.txt
+COPY infra/docker/mcp-packages/overrides/ /tmp/mcp-overrides/
 RUN grep -v '^#' /tmp/uv-tools.txt > /tmp/uv-tools.list \
     && UV_TOOL_DIR=/opt/vigil/mcp/uv-tools \
       UV_TOOL_BIN_DIR=/opt/vigil/mcp/uv-tools/.bin UV_PYTHON_DOWNLOADS=never \
       UV_CACHE_DIR=/tmp/uv-cache UV_LINK_MODE=hardlink UV_COMPILE_BYTECODE=1 \
       xargs -a /tmp/uv-tools.list -L1 uv tool install --python /usr/local/bin/python \
-    && rm -rf /tmp/uv-tools.txt /tmp/uv-tools.list /tmp/uv-cache
+    && rm -rf /tmp/uv-tools.txt /tmp/uv-tools.list /tmp/uv-cache /tmp/mcp-overrides
 
 # Application source — copy each top-level package separately so
 # modifying one doesn't bust the cache for all the others.
