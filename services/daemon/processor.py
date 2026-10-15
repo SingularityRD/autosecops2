@@ -48,7 +48,11 @@ from core.lanes.decision_store import DecisionTableMissing, settling_decisions
 from core.llm.local_lane import get_local_lane
 from core.llm.outage import report_outage, report_recovered
 from core.time import utcnow
-from services.daemon.config import ProcessingConfig, ResponseConfig
+from services.daemon.config import (
+    DEFAULT_TRIAGE_MAX_TOKENS,
+    ProcessingConfig,
+    ResponseConfig,
+)
 from services.daemon.probes import ACTIONS as TRIAGE_ACTIONS
 from services.daemon.probes import PROBE_DATA_SOURCE, is_genuine_probe
 from services.daemon.vendor_errors import (
@@ -128,10 +132,12 @@ _GROUP_HEADINGS = (
     ),
 )
 
-# Output ceiling for the triage reply. The reply is a few lines, but thinking
-# models (Gemini 2.5, OpenAI reasoning) spend output tokens before it; the
-# gateway's 2048 default cut REASONING off mid-sentence (#2315).
-TRIAGE_MAX_TOKENS = 8192
+# Default output ceiling for the triage reply (a JSON verdict). Thinking models
+# (Gemini 2.5, OpenAI reasoning) spend output tokens before it; the gateway's
+# 2048 default cut the verdict off mid-object, which then reads as an
+# inconclusive "not a JSON verdict" (#2315). ProcessingConfig.triage_max_tokens
+# (DAEMON_TRIAGE_MAX_TOKENS) is what a triage call actually asks for.
+TRIAGE_MAX_TOKENS = DEFAULT_TRIAGE_MAX_TOKENS
 
 # Finding-dict keys that triage/enrich produce; cached together in the
 # ai_enrichment JSONB column (these dict keys don't map to columns 1:1).
@@ -1769,7 +1775,7 @@ Rules:
                 provider_id=provider_id,
                 model=model,
                 timeout=self.config.triage_timeout,
-                max_tokens=TRIAGE_MAX_TOKENS,
+                max_tokens=self.config.triage_max_tokens,
             )
         except Exception as e:
             logger.error(f"LLM queue triage error: {e}")

@@ -230,6 +230,24 @@ def test_from_env_threads_triage_timeout(offline_config, monkeypatch):
     assert DaemonConfig.from_env().processing.triage_timeout == 150
 
 
+def test_from_env_threads_triage_max_tokens(offline_config, monkeypatch):
+    """W0.25 adapt(upstream 3df928f3): the triage output cap is configurable."""
+    monkeypatch.delenv("DAEMON_TRIAGE_MAX_TOKENS", raising=False)
+    get_settings.cache_clear()
+    assert DaemonConfig.from_env().processing.triage_max_tokens == 8192
+    monkeypatch.setenv("DAEMON_TRIAGE_MAX_TOKENS", "4096")
+    get_settings.cache_clear()
+    assert DaemonConfig.from_env().processing.triage_max_tokens == 4096
+
+
+def test_triage_max_tokens_is_bounded(monkeypatch):
+    from pydantic import ValidationError
+
+    monkeypatch.setenv("DAEMON_TRIAGE_MAX_TOKENS", "10")
+    with pytest.raises(ValidationError):
+        Settings()
+
+
 class _FakeConfigService:
     def __init__(self, rows):
         self.rows = rows

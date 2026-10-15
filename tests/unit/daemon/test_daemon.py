@@ -287,6 +287,21 @@ class TestTriageProviderResolution:
         )
         assert content is None and error == "AuthenticationError: bad key"
 
+    def test_gateway_gets_the_configured_triage_max_tokens(self):
+        """W0.25 adapt(upstream 3df928f3): DAEMON_TRIAGE_MAX_TOKENS reaches the gateway."""
+        assert TRIAGE_MAX_TOKENS == ProcessingConfig().triage_max_tokens == 8192
+        processor = FindingProcessor(ProcessingConfig(triage_max_tokens=3000))
+        gateway = Mock()
+        gateway.submit = AsyncMock(return_value={"content": "{}"})
+        processor._llm_gateway = gateway
+        with patch.object(
+            FindingProcessor,
+            "_resolve_triage_target",
+            return_value=("openai-1", "gpt-4o"),
+        ):
+            asyncio.run(processor._get_ai_triage("p"))
+        assert gateway.submit.await_args.kwargs["max_tokens"] == 3000
+
     def test_failed_triage_lands_in_ai_enrichment_without_ai_triage(self):
         processor = FindingProcessor(ProcessingConfig())
         finding = {"finding_id": "f1", "severity": "high"}

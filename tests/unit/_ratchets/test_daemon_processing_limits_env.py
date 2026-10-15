@@ -19,7 +19,11 @@ REPO = Path(__file__).resolve().parents[3]
 COMPOSE_PATH = REPO / "infra" / "docker" / "docker-compose.yml"
 HELM_VALUES_PATH = REPO / "infra" / "helm" / "vigil" / "values.yaml"
 
-LIMITS = ("DAEMON_HANDOFF_QUEUE_MAXSIZE", "DAEMON_ENRICH_MAX_INFLIGHT")
+LIMITS = (
+    "DAEMON_HANDOFF_QUEUE_MAXSIZE",
+    "DAEMON_ENRICH_MAX_INFLIGHT",
+    "DAEMON_TRIAGE_MAX_TOKENS",
+)
 
 
 def _default(key: str) -> str:
