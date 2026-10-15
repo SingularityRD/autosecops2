@@ -43,6 +43,9 @@ export interface TurnConfig {
     // The values a resolve filled in, for the approval a person reads: each one is
     // text the subject could have written, and the card says so.
     filled(rawArgs: string): { handle: string; value: string }[];
+    // Every value the turn's handles stand for, by key, so the workflow can journal
+    // them and resolve handles before anything leaves the agent layer.
+    values(): Record<string, string>;
   };
   run_id: string;
   run_kind: RunKind;

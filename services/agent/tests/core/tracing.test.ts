@@ -202,10 +202,23 @@ describe("traced", () => {
   });
 
   it("ends the span failed and rethrows when fn throws", async () => {
+    vi.stubEnv("VIGIL_OTEL_CAPTURE_CONTENT", "true");
     await expect(traced("run", {}, async () => Promise.reject(new Error("boom")))).rejects.toThrow("boom");
 
     const span = only();
     expect(span.status).toEqual({ code: SpanStatusCode.ERROR, message: "boom" });
     expect(span.events.map((event) => event.name)).toEqual(["exception"]);
+  });
+
+  // W0.30: an error message can quote a prompt or a customer value.
+  it("exports only the error's type when content capture is off", async () => {
+    vi.stubEnv("VIGIL_OTEL_CAPTURE_CONTENT", "false");
+    const secret = "user jdoe@corp.example pasted password hunter2";
+    await expect(traced("run", {}, async () => Promise.reject(new TypeError(secret)))).rejects.toThrow(secret);
+
+    const span = only();
+    expect(span.status).toEqual({ code: SpanStatusCode.ERROR, message: "TypeError" });
+    expect(JSON.stringify(span.events)).not.toContain("hunter2");
+    expect(span.events[0]!.attributes?.["exception.type"]).toBe("TypeError");
   });
 });

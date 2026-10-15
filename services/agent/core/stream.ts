@@ -21,6 +21,7 @@ import {
 import { ProviderError, type Message, type ToolCall, type ToolSchema, type Turn, type TurnRequest } from "./provider.js";
 import { assemble, DEFAULT_FOLD, prefixOf, windowCeiling, type FoldPolicy, type Prefix } from "./context.js";
 import { scannerFor, wrap } from "./security.js";
+import { displaySafe } from "./guards.js";
 import type { State } from "./seams.js";
 
 // Journaled from record without a checkpoint. An approvals entry would park
@@ -504,7 +505,9 @@ class Run<T, Kinds extends Record<string, unknown>> {
     const payload: CheckpointPayload = {
       checkpoint_id,
       checkpoint_class: TOOL_APPROVAL,
-      question: `${subject}${this.cfg.role} wants to call ${tool} with ${args}. Approve?`,
+      // Display text beside an Approve button: escaped as the backend's display_safe
+      // does (W0.16), since the subject's values and the arguments reach it raw.
+      question: displaySafe(`${subject}${this.cfg.role} wants to call ${tool} with ${args}. Approve?`),
       raised_at: new Date().toISOString(),
       context: {
         [TOOL_CALL]: { tool, args: parseArgs(args) ?? args },

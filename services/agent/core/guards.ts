@@ -102,6 +102,12 @@ export class Handles {
     });
   }
 
+  // Every value this run's handles stand for, by key: journaled with the dispatch so
+  // the run can turn handles back into values before anything leaves it.
+  values(): Record<string, string> {
+    return Object.fromEntries(this.held);
+  }
+
   // Which handles resolve() would fill in rawArgs, and with what: shown to the
   // person approving a gated call, labelled as written by the subject (W0.30).
   filled(rawArgs: string): { handle: string; value: string }[] {
@@ -132,6 +138,8 @@ const scan = scannerFor([]);
 // The shapes a value may have to reach the decider verbatim. Decided here, in code,
 // and not by the reader: a reader an injection fooled can call a command line
 // "observed", but a command line is not a number, an address, a time or a hash.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const SAFE: readonly RegExp[] = [
   /^-?\d+(\.\d+)?$/, // a number
   /^(\d{1,3}\.){3}\d{1,3}(:\d{1,5})?$/, // IPv4, with a port
@@ -140,18 +148,39 @@ const SAFE: readonly RegExp[] = [
   /^[0-9a-f]{8,128}$/i, // a hash
   /^(true|false|null)$/i,
   /^[A-Za-z0-9._$@:-]{1,32}$/, // a short identifier: a host, an account, an event or port name
+  // AutoSecOps (W0.30 round 2): a canonical UUID -- our finding, case and run ids.
+  // Fixed shape, no room for words, so it is safe whoever the reader says wrote it.
+  UUID,
 ];
 
 export function typeSafe(value: string): boolean {
   return SAFE.some((shape) => shape.test(value)) && !steeringIn(value);
 }
 
+export function isUuid(value: string): boolean {
+  return UUID.test(value);
+}
+
+// An id the run itself fetched: a field named *_id / id that the reader says the
+// collecting system recorded, in an id's alphabet. The ids a workflow links records by
+// (finding_id, alert_id, event_id) are longer than the short-identifier shape.
+const ID_FIELD = /(^|[_.-])id$/i;
+const ID_VALUE = /^[A-Za-z0-9._:-]{1,128}$/;
+
+export function observedId(field: string, value: string, authored: Authored): boolean {
+  return authored !== "subject" && ID_FIELD.test(field) && ID_VALUE.test(value) && !steeringIn(value);
+}
+
 // Phrases an injected note uses that the kernel's own scanner, built for prompt
 // syntax, does not: telling a reviewer what the activity is or what to do.
 const STEERING = /\b(authori[sz]ed|approved|sanctioned|whitelisted|allow-?listed|false positive|benign|no action|do not (escalate|investigate|report)|close (this|the) (case|ticket)|abandon|conclude|mark (it|this|as))\b/i;
+// AutoSecOps (W0.30 round 2): what a note says to whoever reviews it without the
+// words above -- "the reviewer should record this as expected maintenance and move
+// on". Kept identical in core/llm/subject_guards.py.
+const ADDRESSED = /\b((the )?(reviewer|analyst|investigator|responder|triager|soc|you)( team)? (should|must|can|may|need to|is asked to)|expected (maintenance|activity|behaviou?r|traffic)|move on|nothing to (see|investigate|report)|no (need|reason) to (investigate|escalate|review|look)|safe to (ignore|close|dismiss)|(ignore|dismiss|disregard) (this|it|the (case|ticket|event))|known (good|safe))\b/i;
 
 function steering(text: string): boolean {
-  return scan(text) || STEERING.test(text);
+  return scan(text) || STEERING.test(text) || ADDRESSED.test(text);
 }
 
 // The phrases above are \b-anchored, so words joined into one identifier
@@ -180,12 +209,19 @@ export function render(tool: string, ref: string, result: ToolResult, wrapped: W
   read.findings.forEach((finding, at) => {
     const n = at + 1;
     const hidden: string[] = [];
+    // AutoSecOps (W0.30 round 2): two values under one field name in a finding get
+    // distinct keys; upstream's second would overwrite the first's handle.
+    const used = new Set<string>();
     const values = finding.values.map((one) => {
       const value = String(one.value);
-      const key = `${ref}.${n}.${one.field.replace(/[^A-Za-z0-9_]/g, "_")}`;
+      const base = `${ref}.${n}.${one.field.replace(/[^A-Za-z0-9_]/g, "_")}`;
+      let key = base;
+      for (let k = 2; used.has(key); k += 1) key = `${base}_${k}`;
+      used.add(key);
       // Steering text is withheld even when the decider named it; anything else it
       // named itself is shown, since nothing new reaches it that way.
-      const withheld = steering(value) || (!(typeSafe(value) && one.authored !== "subject") && !known(value)) || value.length > VALUE_CAP;
+      const shaped = (typeSafe(value) && one.authored !== "subject") || isUuid(value) || observedId(one.field, value, one.authored);
+      const withheld = steering(value) || (!shaped && !known(value)) || value.length > VALUE_CAP;
       if (withheld) {
         if (value.length >= 4) hidden.push(value);
         return `  - ${one.field} = ${handles.put(key, value)} (${one.authored === "subject" ? "written by the subject" : "withheld"}; put the handle in a query to search for this value)`;
@@ -309,10 +345,53 @@ function plain(value: string): string {
 // person once the value is shown, so it goes with the handle.
 const HINT = / \((written by the subject|withheld); put the handle in a query to search for this value\)/g;
 
+// A handle the run cannot resolve still never leaves it (W0.30 round 2): it becomes
+// the neutral marker rather than {{h:...}} text a person or the backend cannot use.
 export function forPeople(text: string, values: RunValues): string {
-  return text.replace(HINT, "").replace(HANDLE, (whole, key: string) => {
+  return text.replace(HINT, "").replace(HANDLE, (_whole, key: string) => {
     const value = values.byKey.get(key);
-    return value === undefined ? whole : `\`${plain(value)}\` (written by the subject)`;
+    return value === undefined ? WITHHELD : `\`${displaySafe(plain(value))}\` (written by the subject)`;
+  });
+}
+
+export function forPeopleDeep<T>(value: T, values: RunValues): T {
+  if (typeof value === "string") return forPeople(value, values) as T;
+  if (Array.isArray(value)) return value.map((one) => forPeopleDeep(one, values)) as T;
+  if (typeof value === "object" && value !== null) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, forPeopleDeep(v, values)])) as T;
+  return value;
+}
+
+// A handle filled with its exact value, for machine consumers inside the agent layer
+// (the record ids a workflow links): null when the text names a handle the run holds no
+// value for, so the caller drops it rather than sending {{h:...}} on.
+export function resolveExact(text: string, values: RunValues): string | null {
+  let missing = false;
+  const out = text.replace(HANDLE, (_whole, key: string) => {
+    const value = values.byKey.get(key);
+    if (value === undefined) missing = true;
+    return value ?? "";
+  });
+  return missing ? null : out;
+}
+
+export function hasHandle(text: string): boolean {
+  return new RegExp(HANDLE.source).test(text);
+}
+
+// core/response/checkpoints.py display_safe, for text shown beside an Approve
+// button: newline, CR and tab, other C0/C1 controls, bidi and zero-width format
+// characters, U+2028/9 and NEL written as escapes (W0.16), so a subject's value
+// cannot start a forged line or reorder what is shown around it.
+const UNSAFE_DISPLAY = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu;
+const SHORT_ESCAPES: Record<string, string> = { "\n": "\\n", "\r": "\\r", "\t": "\\t" };
+
+export function displaySafe(text: string, keep = ""): string {
+  return text.replace(UNSAFE_DISPLAY, (ch) => {
+    if (keep.includes(ch)) return ch;
+    const short = SHORT_ESCAPES[ch];
+    if (short !== undefined) return short;
+    const code = ch.codePointAt(0) ?? 0;
+    return code <= 0xffff ? `\\u${code.toString(16).padStart(4, "0")}` : `\\U${code.toString(16).padStart(8, "0")}`;
   });
 }
 

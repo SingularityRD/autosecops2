@@ -126,7 +126,18 @@ export function traced<T>(name: string, attributes: Attributes, fn: (span: Span)
 
 // For a failure answered rather than thrown, which traced cannot see: the span is the
 // one active where it was caught, and none is a no-op.
+//
+// An error message can quote a prompt, a tool result or a customer value, so with
+// content capture off (the shipped default) only the error's type is exported
+// (W0.30): the run ledger holds the whole message under the run id.
 export function failed(error: unknown, span: Span | undefined = trace.getActiveSpan()): void {
-  span?.recordException(error instanceof Error ? error : String(error));
-  span?.setStatus({ code: SpanStatusCode.ERROR, message: error instanceof Error ? error.message : String(error) });
+  if (span === undefined) return;
+  if (capturesContent()) {
+    span.recordException(error instanceof Error ? error : String(error));
+    span.setStatus({ code: SpanStatusCode.ERROR, message: error instanceof Error ? error.message : String(error) });
+    return;
+  }
+  const type = error instanceof Error ? error.name : typeof error;
+  span.recordException({ name: type, message: "[redacted: VIGIL_OTEL_CAPTURE_CONTENT is off]" });
+  span.setStatus({ code: SpanStatusCode.ERROR, message: type });
 }

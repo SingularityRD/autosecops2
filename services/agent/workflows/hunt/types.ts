@@ -373,6 +373,10 @@ export interface DispatchRecord {
   // since the row is journaled before the worker starts.
   cost_usd: number;
   calls: ToolCall[];
+  // Guards (W0.30): what the dispatch's handles stand for, by key, so the run turns
+  // them back into values before anything leaves the agent layer. Never rendered to
+  // a model.
+  handles?: Record<string, string>;
 }
 
 export interface Decision {
@@ -528,6 +532,8 @@ export interface DispatchResult {
   // then died still spent them, and hunt.cost_usd is the budget counter.
   cost_usd: number;
   calls?: ToolCall[];
+  // Guards (W0.30): the values this dispatch's handles stand for, by key.
+  handles?: Record<string, string>;
 }
 
 export interface NullCheckEvidence {

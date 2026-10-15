@@ -40,6 +40,18 @@ _STEERING = re.compile(
     re.IGNORECASE,
 )
 
+# guards.ts ADDRESSED (W0.30 round 2): what a note says to whoever reviews it
+# without the words above ("the reviewer should record this as expected
+# maintenance and move on"). Kept identical to the TypeScript side.
+_ADDRESSED = re.compile(
+    r"\b((the )?(reviewer|analyst|investigator|responder|triager|soc|you)( team)? "
+    r"(should|must|can|may|need to|is asked to)|expected (maintenance|activity|"
+    r"behaviou?r|traffic)|move on|nothing to (see|investigate|report)|no (need|reason) "
+    r"to (investigate|escalate|review|look)|safe to (ignore|close|dismiss)|(ignore|"
+    r"dismiss|disregard) (this|it|the (case|ticket|event))|known (good|safe))\b",
+    re.IGNORECASE,
+)
+
 # security.ts INSTRUCTION_LIKE, the agent layer's scanner, alongside
 # core.llm.security.scan_for_injection.
 _INSTRUCTION_LIKE: Tuple[re.Pattern[str], ...] = (
@@ -59,7 +71,9 @@ GUARDED_AUTHOR = "adversary"
 
 
 def _steering(text: str) -> bool:
-    if _STEERING.search(text) or any(p.search(text) for p in _INSTRUCTION_LIKE):
+    if _STEERING.search(text) or _ADDRESSED.search(text):
+        return True
+    if any(p.search(text) for p in _INSTRUCTION_LIKE):
         return True
     return bool(scan_for_injection(text))
 

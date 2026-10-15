@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { Handles, READER_SCHEMA, guardedFailure, readOf, render, type Read } from "../../core/guards.js";
 import type { Harness, TurnConfig } from "../../core/loop.js";
 import { drain, hardStop, streamTurn } from "../../core/stream.js";
@@ -44,7 +45,7 @@ export const DECIDER_GUIDANCE = `You never see raw telemetry. Every result from 
 guarded reader, and you see its findings: a summary, and the values each
 finding rests on with who wrote them (observed by the sensor, set by the
 subject, or from an outside service). A value the adversary could have written
-is shown as a handle such as {{h:q3.1.command_line}}. You cannot read it, but
+is shown as a handle such as {{h:d1a2b3c4q3.1.command_line}}. You cannot read it, but
 you can search for it: put the handle, exactly as shown, inside a query's
 arguments and the real value is used. A call that needs a person's approval
 shows that person the real value, marked as written by the subject.
@@ -55,21 +56,32 @@ export interface GuardedTurn {
   harness: Harness<HuntKinds>;
   turn: TurnConfig;
   prompt?: string;
+  // What makes this turn's handle keys its own across the run (round 2): the
+  // dispatch id for a worker. Two dispatches both numbering from q1 would otherwise
+  // mint the same {{h:q1.1.host}} for different values.
+  scope?: string;
+}
+
+// A short, handle-safe token for a scope: [a-z0-9], so it sits inside {{h:...}}.
+export function scopeToken(scope: string): string {
+  return `d${createHash("sha256").update(scope).digest("hex").slice(0, 8)}`;
 }
 
 // The guards one turn runs under: its own handles (a turn's refs are its own, q1..qn,
 // so two dispatches never share a key), the reader as a tool-less child turn, and the
 // reader's calls refunded to the run's call allowance so the defence never starves the
 // work. Its dollars still count against the run.
-export function guardsFor({ harness, turn, prompt = READER_PROMPT }: GuardedTurn): NonNullable<TurnConfig["guards"]> {
+export function guardsFor({ harness, turn, prompt = READER_PROMPT, scope = randomUUID() }: GuardedTurn): NonNullable<TurnConfig["guards"]> {
   const handles = new Handles();
+  const token = scopeToken(scope);
   const budget = harness.budget;
   // What the decider already wrote or was briefed with is not new text from the
   // data: a value it named itself is shown as it is, whoever the reader says wrote it.
   let said = turn.task.toLowerCase();
   const known = (value: string) => value.length > 0 && said.includes(value.toLowerCase());
   return {
-    refAt: (n) => `q${n}`,
+    refAt: (n) => `${token}q${n}`,
+    values: () => handles.values(),
     resolve: (rawArgs) => handles.resolve(rawArgs),
     filled: (rawArgs) => handles.filled(rawArgs),
     failed: (tool, ref, wrapped) => guardedFailure(tool, ref, wrapped, handles),

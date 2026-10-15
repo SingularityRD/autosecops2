@@ -8,7 +8,7 @@ import { Markdown } from '../../shared/Markdown'
 import { type Workflow, type AgentTemplate, type Skill, prettyHandle, skillUsageText } from '../../data/appData'
 import { useWorkflows, useAgents, useAgentMeta, useSkills, workflowsOffered, modelSource, type Phase } from './useWorkflowsData'
 import { TITLES } from '../../data/data'
-import { ToolCallDetail, questionOf, toolCallOf } from '../decisions/ToolCallDetail'
+import { ToolCallDetail, displaySafe, questionOf, toolCallOf } from '../decisions/ToolCallDetail'
 import { approvalsApi, workflowApi, agentsApi, findingsApi, casesApi, type GeneratedDraft, type ReplayReport } from '../../services/api'
 import DescribeDialog from './DescribeDialog'
 import WorkflowReaderPane from './WorkflowReaderPane'
@@ -2719,7 +2719,7 @@ function HuntCheckpoints({ checkpoints }: { checkpoints: HuntCheckpoint[] }) {
             {checkpoints.map((c) => (
               <tr key={c.checkpoint_id}>
                 <td className="muted tight">{c.class}</td>
-                <td>{c.question}</td>
+                <td>{displaySafe(c.question)}</td>
                 <td className="muted">
                   {c.resolution ? `${c.resolution.answer} by ${c.resolution.actor}${c.resolution.text ? ` — ${c.resolution.text}` : ''}` : 'still pending'}
                 </td>

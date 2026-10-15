@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -284,6 +285,10 @@ def record_findings(
         _link_findings(case_id, run_id, cited.finding_ids)
 
 
+# A guarded hunt's handle (services/agent/core/guards.ts), never an id.
+_HANDLE = re.compile(r"\{\{h:[A-Za-z0-9_.:-]+\}\}")
+
+
 # Once per finding: link_finding answers False for one already on the case, so a
 # push the agent layer repeats (a resume starts with nothing marked sent) adds no
 # second audit row. An id the hunt invented names no finding and is not linked.
@@ -292,7 +297,14 @@ def _link_findings(case_id: str, run_id: str, finding_ids: List[str]) -> None:
     from core.storage.database_data_service import DatabaseDataService
 
     data = DatabaseDataService()
+    unresolved = 0
     for finding_id in dict.fromkeys(finding_ids):
+        if _HANDLE.search(finding_id):
+            # W0.30: a guarded hunt's handle ({{h:...}}) is not an id. The agent
+            # layer resolves handles before pushing, so one arriving here is a
+            # defect to see, not a finding to skip in silence.
+            unresolved += 1
+            continue
         try:
             if not data.get_finding(finding_id):
                 continue
@@ -310,6 +322,21 @@ def _link_findings(case_id: str, run_id: str, finding_ids: List[str]) -> None:
                 run_id,
                 case_id,
             )
+    if unresolved:
+        logger.warning(
+            "hunt %s pushed %d unresolved guard handle(s) as finding ids; "
+            "not linked to case %s",
+            run_id,
+            unresolved,
+            case_id,
+        )
+        _add_activity(
+            case_id,
+            "finding_link_skipped",
+            f"Hunt {run_id} cited {unresolved} alert(s) by a value it could not "
+            "resolve; they were not linked",
+            {"run_id": run_id, "reason": "unresolved_handle", "count": unresolved},
+        )
 
 
 # Files the handoff on a case and, for a hunt, tees up the backward run. Both the

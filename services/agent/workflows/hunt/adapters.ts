@@ -5,7 +5,7 @@ import { clamp, isVisibilityGap } from "../../core/security.js";
 import type { RunKind } from "../../contracts/events.js";
 import type { RoleSpec, RunSpec } from "../../core/spec.js";
 import { SpecError } from "../../core/spec.js";
-import { guardsOn } from "../../core/guards.js";
+import { guardsOn, isUuid, observedId } from "../../core/guards.js";
 import { DECIDER_GUIDANCE, guardsFor } from "./quarantine.js";
 import { narrativeOf, renderDigest, renderDispatch, renderNullCheck } from "./render.js";
 import type { HuntKinds } from "./ledger.js";
@@ -79,14 +79,14 @@ export function link(held?: AbortSignal, asked?: AbortSignal): Linked {
   return { signal: halt.signal, release: () => wired.forEach((unwire) => unwire()) };
 }
 
-function turnFor(options: AdapterOptions, id: string, spec: RoleSpec, task: string, signal?: AbortSignal): TurnConfig {
+function turnFor(options: AdapterOptions, id: string, spec: RoleSpec, task: string, signal?: AbortSignal, scope?: string): TurnConfig {
   const base = plainTurnFor(options, id, spec, task, signal);
   // Guards (W0.30, core/guards.ts): a role that can reach the estate -- a granted
   // tool that is not answered in-process -- reads its results through the guarded
   // reader. The verdict run (W2.1) is this same loop, so it is covered here too.
   if (!guardsOn() || !options.harness.registry.granted(id).some((tool) => !tool.local)) return base;
   const turn: TurnConfig = { ...base, system: `${base.system}\n\n${DECIDER_GUIDANCE}` };
-  return { ...turn, guards: guardsFor({ harness: options.harness, turn }) };
+  return { ...turn, guards: guardsFor({ harness: options.harness, turn, ...(scope === undefined ? {} : { scope }) }) };
 }
 
 function plainTurnFor(options: AdapterOptions, id: string, spec: RoleSpec, task: string, signal?: AbortSignal): TurnConfig {
@@ -241,10 +241,18 @@ export function salvaged(attempts: readonly Attempt[]): WorkerEvidence[] {
   const gathered = kept.map(({ tool, args, result, shown }) => {
     // Guarded (W0.30): the rows were never read by a model, only the reader's view
     // was, and the lead and critic read this record. The view goes on, not the rows.
+    // The alert ids in the rows still go on (round 2): a hunt links the alerts its
+    // evidence cites, and an id in a fixed id shape carries no words.
     if (shown !== undefined) {
       const room = spent + shown.length <= SALVAGE_BUDGET;
       spent += room ? shown.length : 0;
-      return { tool, query: args, ...(room ? { shown } : { rows_dropped: result.ok ? result.rows.length : 0 }) };
+      const ids = result.ok ? findingIdsIn(result.rows) : [];
+      return {
+        tool,
+        query: args,
+        ...(room ? { shown } : { rows_dropped: result.ok ? result.rows.length : 0 }),
+        ...(ids.length === 0 ? {} : { cited: ids.map((finding_id) => ({ finding_id })) }),
+      };
     }
     const rows = result.ok ? result.rows : [];
     const text = JSON.stringify(rows);
@@ -270,6 +278,16 @@ export function salvaged(attempts: readonly Attempt[]): WorkerEvidence[] {
       instruction_like: false,
     },
   ];
+}
+
+// finding_id values of the rows that are canonical UUIDs or an id's alphabet.
+function findingIdsIn(rows: readonly unknown[]): string[] {
+  const ids = new Set<string>();
+  for (const row of rows) {
+    const id = typeof row === "object" && row !== null ? (row as Record<string, unknown>)["finding_id"] : undefined;
+    if (typeof id === "string" && (isUuid(id) || observedId("finding_id", id, "observed"))) ids.add(id);
+  }
+  return [...ids];
 }
 
 // Declared to the model as a JSON string: a schema saying only "object" is one a
@@ -375,23 +393,20 @@ export function workerDispatcher(options: AdapterOptions): WorkerDispatcher {
       const scoped = { ...options, ...(request.signal === undefined ? {} : { signal: request.signal }) };
       const task = renderDispatch(request, narrativeOf(options.spec));
       const linked = link(options.signal, request.signal);
+      // Scoped to the dispatch, so its handle keys are its own across the run.
+      const turn = turnFor(scoped, request.agent_id, worker, task, linked.signal, request.dispatch_id);
       let outcome;
       try {
-        outcome = await charged(
-          options.harness,
-          before,
-          drain(
-            streamTurn<WorkerAnswer, HuntKinds>(
-              turnFor(scoped, request.agent_id, worker, task, linked.signal),
-              options.harness,
-            ),
-          ),
-        );
+        outcome = await charged(options.harness, before, drain(streamTurn<WorkerAnswer, HuntKinds>(turn, options.harness)));
       } finally {
         linked.release();
       }
 
       const cost_usd = outcome.cost_usd;
+      // What the handles stand for, journaled on the dispatch: the run resolves them
+      // before evidence, linked alerts or a report leave the agent layer (W0.30).
+      const held = turn.guards?.values() ?? {};
+      const handles = Object.keys(held).length === 0 ? {} : { handles: held };
       if (outcome.value === null) {
         return {
           dispatch_id: request.dispatch_id,
@@ -402,6 +417,7 @@ export function workerDispatcher(options: AdapterOptions): WorkerDispatcher {
           failure_reason: outcome.reason,
           stopped_by: stoppedBy(outcome),
           cost_usd,
+          ...handles,
         };
       }
       const questions = Array.isArray(outcome.value.ips_to_check) ? outcome.value.ips_to_check : [];
@@ -414,6 +430,7 @@ export function workerDispatcher(options: AdapterOptions): WorkerDispatcher {
         failed: false,
         failure_reason: "",
         cost_usd,
+        ...handles,
       };
     },
   };

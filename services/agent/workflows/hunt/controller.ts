@@ -31,6 +31,7 @@ import type {
 } from "./ports.js";
 import { narrativeOf } from "./render.js";
 import { buildReport, renderCaseFile } from "./report.js";
+import { peopleText } from "./handles.js";
 import { criticPayload, sanitize, sanitizeQuestion } from "./sanitize.js";
 import {
   DEFAULT_DISPATCH,
@@ -1921,7 +1922,8 @@ export class HuntController {
     };
     // The deliverable, not a pointer to one: what IR is handed is the claim, the
     // strength numbers, the cited records and what the hunt could not see.
-    handoff.case_markdown = renderCaseFile(this.ledger.projection, handoff);
+    // Guards (W0.30): IR reads values, never handles.
+    handoff.case_markdown = peopleText(renderCaseFile(this.ledger.projection, handoff), this.ledger.projection.dispatches.values());
     this.ledger.append({ kind: "handoff", payload: handoff });
     return `${hypothesisId} handed off to incident response as ${caseId}`;
   }
@@ -2182,6 +2184,7 @@ export class HuntController {
       stopped_by: result.failed ? (result.stopped_by ?? null) : null,
       cost_usd: result.cost_usd,
       calls: result.calls ?? [],
+      ...(result.handles === undefined ? {} : { handles: result.handles }),
     });
 
     // A lead is closed when taken so it is not re-issued every iteration -- but a dispatch

@@ -21,6 +21,7 @@ import { buildReport, renderReport, type HuntReport as HuntDeliverable } from ".
 import type { Handoff, HuntOutcome } from "./types.js";
 import { expandFrom } from "./expand.js";
 import { citedFindings } from "./findings.js";
+import { forPeopleOf, peopleText } from "./handles.js";
 import { errorFields, logger } from "../../core/log.js";
 import { registryOf } from "../../core/registry.js";
 import { toolsFrom } from "../../tools/remote.js";
@@ -274,7 +275,7 @@ async function end(
     // renders from that ledger rather than being a second account of one hunt.
     const events = await harness.state.read(options.run_id);
     const handoffs = handoffsOf(events, ledger.projection);
-    const summary = renderReport(built, ledger.projection, narrative, recalledPayloadOf(events));
+    const summary = peopleText(renderReport(built, ledger.projection, narrative, recalledPayloadOf(events)), ledger.projection.dispatches.values());
     await harness.state.append(options.run_id, [
       { run_id: options.run_id, run_kind: options.run_kind, kind: "terminal", payload: { outcome, reason, summary, handoffs } } as never,
     ]);
@@ -318,11 +319,15 @@ function handoffsOf(events: readonly HuntEvent[], projection: Projection): Termi
 // what is pushed the moment a handoff lands and what rides out on the terminal are
 // the same case, titled the same way.
 function toTerminalHandoff(handoff: Handoff, projection: Projection): TerminalHandoff {
-  return {
-    case_id: handoff.case_id,
-    title: projection.hypotheses.get(handoff.hypothesis_id)?.statement ?? handoff.rationale,
-    markdown: handoff.case_markdown ?? handoff.case_file ?? handoff.rationale,
-  };
+  // Guards (W0.30): what is pushed to the backend carries values, never handles.
+  return forPeopleOf(
+    {
+      case_id: handoff.case_id,
+      title: projection.hypotheses.get(handoff.hypothesis_id)?.statement ?? handoff.rationale,
+      markdown: handoff.case_markdown ?? handoff.case_file ?? handoff.rationale,
+    },
+    projection.dispatches.values(),
+  );
 }
 
 // New handoffs since the last look, filed as they land. Marked filed only once the

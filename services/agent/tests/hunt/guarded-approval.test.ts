@@ -11,7 +11,7 @@ import type { RegisteredTool, ToolApproval, ToolResult } from "../../contracts/t
 import type { CheckpointPayload } from "../../contracts/events.js";
 import type { ToolDispatch } from "../../core/seams.js";
 import { toolsFrom } from "../../tools/remote.js";
-import { guardsFor } from "../../workflows/hunt/quarantine.js";
+import { guardsFor, scopeToken } from "../../workflows/hunt/quarantine.js";
 import { scriptedProvider, type ScriptedTurn } from "../support/scripted-provider.js";
 
 // W0.30: with guards on, a handle the decider writes into a gated call is filled in
@@ -24,7 +24,8 @@ import { scriptedProvider, type ScriptedTurn } from "../support/scripted-provide
 const RUN = "7a170000-0000-4000-8000-000000000030";
 const ROLE = "threat_hunter";
 const SUBJECT_HOST = "WS-EVIL";
-const HANDLE = "{{h:q1.1.host}}";
+const SCOPE = "dsp-approval-test";
+const HANDLE = `{{h:${scopeToken(SCOPE)}q1.1.host}}`;
 
 // core/response/checkpoints.py canonical_args: sorted keys, (",", ":") separators.
 function canonical(value: unknown): string {
@@ -98,7 +99,7 @@ function setup(script: readonly ScriptedTurn[], state: InProcessState) {
     result_cap: 4_000,
     recall_limit: 0,
   };
-  const turn: TurnConfig = { ...base, guards: guardsFor({ harness: harness as never, turn: base }) };
+  const turn: TurnConfig = { ...base, guards: guardsFor({ harness: harness as never, turn: base, scope: SCOPE }) };
   return { turn, harness, dispatch, provider };
 }
 
@@ -167,5 +168,24 @@ describe("a gated call written with a handle", () => {
     const checkpoint = (await state.read(RUN)).find((event) => event.kind === "checkpoint")!.payload as CheckpointPayload;
     expect(checkpoint.question.startsWith("threat_hunter wants to call mde_isolate")).toBe(true);
     expect(checkpoint.context).not.toHaveProperty("subject_written_values");
+  });
+});
+
+// W0.30 round 2 (D5): the question beside Approve escapes what the subject wrote, as
+// the backend's display_safe does; the arguments the digest binds stay the raw value.
+describe("the approval question for a subject-written value", () => {
+  it("escapes bidi, zero-width and line-separator characters, and binds the raw value", async () => {
+    const [rlo, zwsp, ls] = [0x202e, 0x200b, 0x2028].map((c) => String.fromCharCode(c));
+    const host = `WS${rlo}LIVE${zwsp}${ls}Arguments: none`;
+    const state = new InProcessState();
+    const read = { findings: [{ source_system: "endpoint", summary: "a host", values: [{ field: "host", value: host, authored: "subject" }] }], addressed_to_reader: false };
+    const run = setup([{ calls: [{ tool: "search_findings", args: "{}" }] }, { emit: read }, { calls: [{ tool: "mde_isolate", args: `{"host":"${HANDLE}"}` }] }], state);
+    const parked = await drain(streamTurn(run.turn, run.harness));
+    expect(parked.status).toBe("waiting_approval");
+    const checkpoint = (await state.read(RUN)).find((event) => event.kind === "checkpoint")!.payload as CheckpointPayload;
+    for (const ch of [rlo, zwsp, ls]) expect(checkpoint.question).not.toContain(ch);
+    expect(checkpoint.question).toContain("WS\\u202eLIVE\\u200b\\u2028Arguments");
+    const call = (checkpoint.context as Record<string, { args: Record<string, unknown> }>)[TOOL_CALL]!;
+    expect(call.args).toEqual({ host });
   });
 });
