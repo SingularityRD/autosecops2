@@ -120,3 +120,40 @@ def test_the_workflow_target_context(monkeypatch):
 def test_the_root_cause_context():
     handoff = bridge.TerminalHandoff(case_id="c", title="t", markdown=FENCED)
     _clean(bridge._rca_context(handoff))
+
+
+# Round 9 fail-safe: the verifier's helper variants (/tmp/verify-w0.30/r8/helper.log).
+LINE = f'[1] note = "{VALUE}"'
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"stopped on [subject value 1]\n\nWritten by the  subject (untrusted):\n{LINE}",
+        f"stopped on [subject value 1]\n\nwritten by the subject (untrusted):\n{LINE}",
+        f"stopped on [subject value 1]\n\nWRITTEN BY THE SUBJECT (UNTRUSTED):\n{LINE}",
+        f"stopped on [subject value 1]\n\nWritten by the subject (untrusted):\n{LINE}",
+        f"Proven on [subject value 1].\n    \n    ```text\n    {HEADER}\n    {LINE}\n    ```",
+        f"Proven on [subject value 1].\n> \n> ```text\n> {HEADER}\n> {LINE}\n> ```",
+        f"Proven on [subject value 1].\n\n{LINE}\n```",  # front cut: no header left
+    ],
+)
+def test_altered_and_cut_blocks_are_stripped(text):
+    out = for_model(text)
+    assert VALUE not in out
+    assert "[subject value 1]" in out
+
+
+def test_a_header_split_across_fields_leaves_no_value():
+    from core.workflows.subject_values import for_model_deep
+
+    split = {
+        "a": "Proven on [subject value 1].\n\n```text\nWritten by",
+        "b": f" the subject (untrusted):\n{LINE}\n```",
+    }
+    assert VALUE not in str(for_model_deep(split))
+
+
+def test_legitimate_bracketed_prose_is_kept():
+    text = "Runbook:\n[3] step three of runbook\n[4] host = WS01 (no quotes)"
+    assert for_model(text) == text

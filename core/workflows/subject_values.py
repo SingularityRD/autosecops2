@@ -76,31 +76,87 @@ def as_dicts(values: Iterable[SubjectValue]) -> List[dict]:
 
 # A block as this module writes it: optionally fenced, the header, then one
 # "[N] field = ..." line per value. Matched also when the text it trails was
-# flattened onto one line (header to end of line) or cut short (no closing fence).
+# flattened onto one line (header to end of line), cut short (no closing fence),
+# indented or quoted ("> "), or the header was re-spaced or re-cased on the way
+# (round 9: matched on words, any whitespace, any case).
+_HEADER_WORDS = r"written\s+by\s+the\s+subject\s*\(\s*untrusted\s*\)\s*:"
 _BLOCK = re.compile(
-    r"[ \t]*\n*(?:```text\n)?"
-    + re.escape(HEADER)
-    + r"[^\n]*(?:\n\[\d+\] [^\n]*)*(?:\n```)?"
+    r"[ \t]*\n*(?:[ \t>]*```text[ \t]*\n)?[ \t>]*"
+    + _HEADER_WORDS
+    + r"[^\n]*(?:\n[ \t>]*\[\d+\] [^\n]*)*(?:\n[ \t>]*```)?",
+    re.IGNORECASE,
 )
+# Fail-safe: a value line wherever it stands -- its header lost to a front cut, or
+# split into another field -- is dropped whole.
+_VALUE_LINE = re.compile(r'^[ \t]*>?[ \t]*\[\d+\] \S+ = ".*(?:\n|$)', re.MULTILINE)
+WITHHELD = "[subject value withheld]"
 
 
 def for_model(text: Any) -> Any:
     """``text`` as a model may read it: every subject block removed, so only the
     ``[subject value N]`` markers remain (W0.30). People see the values in the
     block or the console's box; models never do. Non-strings pass through."""
-    if not isinstance(text, str) or HEADER not in text:
+    if not isinstance(text, str) or ("[" not in text and "subject" not in text.lower()):
         return text
-    return _BLOCK.sub("", text)
+    return _VALUE_LINE.sub("", _BLOCK.sub("", text))
+
+
+def _rows_in(value: Any, into: dict) -> None:
+    """Every ``subject_values`` row anywhere in ``value``: ref -> raw value."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if k == "subject_values" and isinstance(v, list):
+                for row in v:
+                    if isinstance(row, dict) and isinstance(row.get("value"), str):
+                        into.setdefault(row.get("ref"), row["value"])
+            else:
+                _rows_in(v, into)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _rows_in(v, into)
+
+
+def _mask(text: str, known: List[tuple]) -> str:
+    for ref, raw in known:
+        marker = f"[subject value {ref}]" if isinstance(ref, int) else WITHHELD
+        for spelled in (raw, json.dumps(raw, ensure_ascii=False)[1:-1]):
+            if spelled and spelled in text:
+                text = text.replace(spelled, marker)
+    return text
+
+
+def _deep(value: Any, known: List[tuple], key: Any = None) -> Any:
+    if isinstance(value, str):
+        return _mask(for_model(value), known)
+    if key == "subject_values" and isinstance(value, list):
+        return [
+            {**row, "value": WITHHELD} if isinstance(row, dict) else row
+            for row in value
+        ]
+    if isinstance(value, list):
+        return [_deep(v, known) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_deep(v, known) for v in value)
+    if isinstance(value, dict):
+        return {k: _deep(v, known, k) for k, v in value.items()}
+    return value
 
 
 def for_model_deep(value: Any) -> Any:
-    """:func:`for_model` over every string in a JSON-shaped value."""
-    if isinstance(value, str):
-        return for_model(value)
-    if isinstance(value, list):
-        return [for_model_deep(v) for v in value]
-    if isinstance(value, tuple):
-        return tuple(for_model_deep(v) for v in value)
-    if isinstance(value, dict):
-        return {k: for_model_deep(v) for k, v in value.items()}
-    return value
+    """:func:`for_model` over every string in a JSON-shaped value, for a model.
+
+    Round 9: an approval row hands a model its ``subject_values`` and, inside a
+    gated call's ``args_canonical`` / ``parameters`` / ``dispatched_arguments``,
+    the subject's text resolved. Every row's value becomes the withheld marker
+    (ref and field kept), and every string that contains a known value has it
+    replaced by its ``[subject value N]`` marker. A new object: what is stored,
+    and the digest the approval binds, are untouched."""
+    found: dict = {}
+    _rows_in(value, found)
+    # Longest first, so a value inside another is not split; short ones (a lone
+    # letter) would mask unrelated text, and say nothing a model could act on.
+    known = sorted(
+        ((ref, raw) for ref, raw in found.items() if len(raw) >= 3),
+        key=lambda pair: -len(pair[1]),
+    )
+    return _deep(value, known)

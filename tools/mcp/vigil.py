@@ -81,7 +81,14 @@ def caller() -> str:
 
 
 def jdump(obj, indent=2):
-    return json.dumps(obj, cls=_JsonEncoder, indent=indent)
+    # Every answer this server gives goes to a model, over /mcp or in process
+    # (W0.30 round 9): made model-facing here, the one place they all serialise --
+    # subject blocks stripped to markers, subject_values rows withheld, a
+    # subject's text inside an approval's arguments replaced by its marker.
+    from core.workflows.subject_values import for_model_deep
+
+    plain = json.loads(json.dumps(obj, cls=_JsonEncoder))
+    return json.dumps(for_model_deep(plain), indent=indent)
 
 
 def _call(fn, **kwargs) -> str:
