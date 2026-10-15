@@ -34,6 +34,7 @@ import AutoOpsScreen from '../screens/autoops/AutoOpsScreen'
 import HealthScreen from '../screens/health/HealthScreen'
 import HomeScreen from '../screens/home/HomeScreen'
 import SettingsScreen from '../screens/settings/SettingsScreen'
+import { AUTONOMY_CHANGED } from '../screens/settings/useSettings'
 import NotFoundScreen from '../screens/notfound/NotFoundScreen'
 import OverviewScreen from '../screens/overview/OverviewScreen'
 import TriageScreen from '../screens/triage/TriageScreen'
@@ -295,15 +296,20 @@ export default function SocConsole() {
 
   useEffect(() => {
     let live = true
-    configApi
-      .getAutonomy()
-      .then((res) => {
-        if (!live) return
-        setAutonomy(autonomyLabel(res.data))
-      })
-      .catch(() => {})
+    const read = () =>
+      configApi
+        .getAutonomy()
+        .then((res) => {
+          if (!live) return
+          setAutonomy(autonomyLabel(res.data))
+        })
+        .catch(() => {})
+    read()
+    // Settings saves Ask first / Act; re-read so the badge follows without a reload
+    window.addEventListener(AUTONOMY_CHANGED, read)
     return () => {
       live = false
+      window.removeEventListener(AUTONOMY_CHANGED, read)
     }
   }, [])
 
