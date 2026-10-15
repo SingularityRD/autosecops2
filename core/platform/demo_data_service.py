@@ -266,7 +266,13 @@ class DemoDataService:
         return False
 
     def write_ai_enrichment(
-        self, finding_id: str, ai_enrichment: Dict[str, Any], *, daemon: bool, **updates
+        self,
+        finding_id: str,
+        ai_enrichment: Dict[str, Any],
+        *,
+        daemon: bool,
+        patch: bool = False,
+        **updates,
     ) -> bool:
         from core.storage.service import merge_ai_enrichment
 
@@ -274,7 +280,7 @@ class DemoDataService:
             if f.get("finding_id") == finding_id:
                 f.update(updates)
                 f["ai_enrichment"] = merge_ai_enrichment(
-                    f.get("ai_enrichment"), ai_enrichment, daemon=daemon
+                    f.get("ai_enrichment"), ai_enrichment, daemon=daemon, patch=patch
                 )
                 return True
         return False

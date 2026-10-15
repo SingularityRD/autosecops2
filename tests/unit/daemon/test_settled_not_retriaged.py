@@ -45,11 +45,20 @@ class _Data:
         self.updates.append({"finding_id": finding_id, **updates})
         return True
 
-    def write_ai_enrichment(self, finding_id, ai_enrichment, *, daemon, **updates):
+    def write_ai_enrichment(
+        self, finding_id, ai_enrichment, *, daemon, patch=False, **updates
+    ):
         # W0.25 (#2316): the daemon writes only its own keys; recorded as an
-        # update so the assertions below read both paths alike.
-        self.writers.append((finding_id, daemon))
-        return self.update_finding(finding_id, ai_enrichment=ai_enrichment, **updates)
+        # update (merged as the store would) so the assertions read both alike.
+        from core.storage.service import merge_ai_enrichment
+
+        self.writers.append((finding_id, daemon, patch))
+        stored = next(
+            (r.get("ai_enrichment") for r in self.rows if r["finding_id"] == finding_id),
+            None,
+        )
+        merged = merge_ai_enrichment(stored, ai_enrichment, daemon=daemon, patch=patch)
+        return self.update_finding(finding_id, ai_enrichment=merged, **updates)
 
     def get_findings_missing_enrichment(self, limit, max_age_hours):
         return [dict(r) for r in self.rows]
@@ -198,7 +207,10 @@ async def test_backfill_records_instead_of_rerouting_a_settled_finding(monkeypat
     assert "ai_triage_error" not in by_id["verd"]
     assert processor.stats["backfill_skipped_settled"] == 2
     # W0.25: as the daemon (its keys only), never a full replace.
-    assert sorted(processor._data_service.writers) == [("done", True), ("verd", True)]
+    assert sorted(processor._data_service.writers) == [
+        ("done", True, True),
+        ("verd", True, True),
+    ]
 
 
 @pytest.mark.asyncio

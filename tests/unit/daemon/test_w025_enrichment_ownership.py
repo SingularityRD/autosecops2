@@ -91,8 +91,10 @@ class _Recording:
     def __init__(self):
         self.calls = []
 
-    def write_ai_enrichment(self, finding_id, ai_enrichment, *, daemon, **updates):
-        self.calls.append((finding_id, ai_enrichment, daemon, updates))
+    def write_ai_enrichment(
+        self, finding_id, ai_enrichment, *, daemon, patch=False, **updates
+    ):
+        self.calls.append((finding_id, ai_enrichment, daemon, patch, updates))
         return True
 
     def update_finding(self, finding_id, **updates):  # pragma: no cover - must not run
@@ -106,10 +108,59 @@ def test_persist_settled_uses_the_daemon_writer():
 
     assert asyncio.run(processor._persist_settled(row, _decision("s1")))
 
-    [(fid, enrichment, daemon, updates)] = processor._data_service.calls
-    assert (fid, daemon, updates) == ("s1", True, {})
+    [(fid, enrichment, daemon, patch, updates)] = processor._data_service.calls
+    assert (fid, daemon, patch, updates) == ("s1", True, True, {})
+    # Only the lane decision: nothing from the sweep's (possibly stale) copy.
+    assert list(enrichment) == ["alert_lane"]
     assert enrichment["alert_lane"]["lane"] == LANE_RULES
-    assert "ai_triage_error" not in enrichment
+
+
+VERDICT = {"ai_triage": {"result": {"verdict": "malicious"}}, "triage_reasoning": "c2"}
+
+
+def test_a_settle_patch_never_writes_back_the_stale_copy():
+    """Verifier probe, no DB: the sweep read {ai_triage_error}; a triage then
+    wrote its verdict; the settle patch must keep the verdict."""
+    after_triage = merge_ai_enrichment(
+        {"ai_triage_error": "redis down"}, VERDICT, daemon=True
+    )
+    settled = merge_ai_enrichment(
+        after_triage, {"alert_lane": LANE}, daemon=True, patch=True
+    )
+    assert settled == {**VERDICT, "alert_lane": LANE}
+
+
+def test_a_settle_patch_drops_the_error_only_without_a_triage():
+    no_triage = merge_ai_enrichment(
+        {**ANALYSIS, "ai_triage_error": "x"}, {"alert_lane": LANE}, daemon=True, patch=True
+    )
+    assert no_triage == {**ANALYSIS, "alert_lane": LANE}
+    with_triage = {"ai_triage": {}, "ai_triage_error": "x"}
+    kept = merge_ai_enrichment(with_triage, {"alert_lane": LANE}, daemon=True, patch=True)
+    assert kept == {**with_triage, "alert_lane": LANE}
+
+
+def test_the_backfill_settle_in_memory_keeps_a_verdict_that_landed_meanwhile():
+    """The same interleaving through _persist_settled and an in-memory store."""
+
+    class _Store:
+        def __init__(self):
+            self.row = {"ai_triage_error": "redis down"}
+
+        def write_ai_enrichment(self, fid, new, *, daemon, patch=False, **updates):
+            self.row = merge_ai_enrichment(self.row, new, daemon=daemon, patch=patch)
+            return True
+
+    store = _Store()
+    sweep_copy = {"finding_id": "s2", "ai_enrichment": dict(store.row)}
+    store.write_ai_enrichment("s2", VERDICT, daemon=True)  # triage lands
+    processor = FindingProcessor(ProcessingConfig())
+    processor._data_service = store
+
+    assert asyncio.run(processor._persist_settled(sweep_copy, _decision("s2")))
+    assert store.row["ai_triage"] == VERDICT["ai_triage"]
+    assert store.row["triage_reasoning"] == "c2"
+    assert store.row["alert_lane"]["lane"] == LANE_RULES
 
 
 # -- 3. the backfill predicate ------------------------------------------------
@@ -225,4 +276,26 @@ def test_generate_after_a_lane_decision_keeps_it_in_postgres(throwaway_database)
     stored = service.get_finding(fid).ai_enrichment
     assert stored == {**TRIAGE, "alert_lane": LANE, **ANALYSIS}
     assert service.get_finding(fid).severity == "high"
+    assert _unrated([fid]) == set()
+
+
+@pytest.mark.external_service
+@pytest.mark.database
+def test_a_triage_between_sweep_and_settle_survives_in_postgres(throwaway_database):
+    """Verifier probe on Postgres: the sweep reads {ai_triage_error}; a triage
+    then writes ai_triage + triage_reasoning; the settle must not lose them."""
+    service = _service()
+    fid = _finding({"ai_triage_error": "redis down"})
+    sweep_copy = {"finding_id": fid, "ai_enrichment": {"ai_triage_error": "redis down"}}
+    assert service.write_ai_enrichment(fid, VERDICT, daemon=True)  # triage lands
+    processor = FindingProcessor(ProcessingConfig())
+    processor._data_service = service
+
+    assert asyncio.run(processor._persist_settled(sweep_copy, _decision(fid)))
+
+    stored = service.get_finding(fid).ai_enrichment
+    assert stored["ai_triage"] == VERDICT["ai_triage"]
+    assert stored["triage_reasoning"] == "c2"
+    assert stored["alert_lane"]["lane"] == LANE_RULES
+    assert "ai_triage_error" not in stored
     assert _unrated([fid]) == set()

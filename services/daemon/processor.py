@@ -1413,13 +1413,11 @@ class FindingProcessor:
         """Write a recorded settling decision onto a row the sweep found unrated.
         True once written (the row has left the sweep's unrated set)."""
         finding_id = row.get("finding_id")
-        stored = row.get("ai_enrichment")
-        ai_enrichment = dict(stored) if isinstance(stored, dict) else {}
-        ai_enrichment[ENRICHMENT_KEY] = decision.to_enrichment()
-        if "ai_triage" not in ai_enrichment:
-            # Settled without a model: an earlier attempt's error is moot, and
-            # left alone it would keep the row in the sweep's unrated set.
-            ai_enrichment.pop("ai_triage_error", None)
+        # Only the lane decision, as a patch on the locked row: the sweep's copy
+        # may predate a triage that has since landed. Settled without a model,
+        # an earlier attempt's error is moot (it would keep the row unrated);
+        # the patch drops it only when the stored row has no ai_triage.
+        ai_enrichment = {ENRICHMENT_KEY: decision.to_enrichment()}
         logger.warning(
             "Enrichment backfill: %s was settled by its %s lane decision at %s; "
             "recording it instead of routing it again",
@@ -1428,13 +1426,12 @@ class FindingProcessor:
             decision.decided_at,
         )
         try:
-            # The daemon's keys only (#2316): a generated analysis on the row
-            # survives, and the lane decision is written, not filtered out.
             ok = await asyncio.to_thread(
                 self._data_service.write_ai_enrichment,
                 finding_id,
                 _storable(ai_enrichment),
                 daemon=True,
+                patch=True,
             )
         except Exception as e:  # noqa: BLE001
             ok = False

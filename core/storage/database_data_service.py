@@ -346,16 +346,22 @@ class DatabaseDataService:
         return False
 
     def write_ai_enrichment(
-        self, finding_id: str, ai_enrichment: Dict, *, daemon: bool, **updates
+        self,
+        finding_id: str,
+        ai_enrichment: Dict,
+        *,
+        daemon: bool,
+        patch: bool = False,
+        **updates,
     ) -> bool:
         if self._demo_mode and self._demo_service:
             return self._demo_service.write_ai_enrichment(
-                finding_id, ai_enrichment, daemon=daemon, **updates
+                finding_id, ai_enrichment, daemon=daemon, patch=patch, **updates
             )
         if self._db_available:
             try:
                 return self._db_service.write_ai_enrichment(
-                    finding_id, ai_enrichment, daemon=daemon, **updates
+                    finding_id, ai_enrichment, daemon=daemon, patch=patch, **updates
                 )
             except Exception as e:
                 logger.error("Error writing ai_enrichment in DB: %s", e)
