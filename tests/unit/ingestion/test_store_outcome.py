@@ -80,7 +80,13 @@ def test_a_cause_chain_is_followed():
         ({"ai_triage_error": "timeout"}, False),
         ({"ai_triage_error": "timeout", "ai_triage": {}}, True),
         ({"ai_triage": {}}, True),
-        ({"threat_intel": {}}, True),  # as UNRATED_WHERE: not null, no error
+        # W0.25 (#2316): an analysis-only row is one triage never reached.
+        ({"threat_intel": {}}, False),
+        ({"threat_summary": "x", "generated_at": "2026-10-01"}, False),
+        ({"enriched_at": "2026-10-01"}, True),
+        # A lane decision counts as triaged (W0.15 settled rows).
+        ({"alert_lane": {"lane": "rules"}}, True),
+        ({"alert_lane": {"lane": "rules"}, "ai_triage_error": "timeout"}, False),
     ],
 )
 def test_has_triage_matches_unrated_where(enrichment, triaged):

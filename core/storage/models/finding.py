@@ -26,11 +26,17 @@ from core.time import utcnow
 if TYPE_CHECKING:
     from core.storage.models.case import Case
 
-# The enrichment sweep's "unrated": never enriched, or triage failed with no
-# later success (#965). One SQL string, so the queries match the partial index;
-# migrate_schema.py rebuilds that index when this changes.
+# The enrichment sweep's "unrated": never enriched; holding only an on-demand
+# AI analysis, i.e. none of the daemon's markers (#2316: Generate no longer
+# wipes triage, so an analysis-only row is one triage never reached); or triage
+# failed with no later success (#965). A lane decision (``alert_lane``) counts
+# as triaged: a row the W2.2 lanes settled without a model is rated (W0.15).
+# One SQL string, so the queries match the partial index; migrate_schema.py
+# rebuilds that index when this changes, and init 44 carries the same text.
 UNRATED_WHERE = (
     "(ai_enrichment IS NULL"
+    " OR NOT (ai_enrichment ?| array['ai_triage', 'ai_triage_error',"
+    " 'enriched_at', 'alert_lane'])"
     " OR (ai_enrichment ? 'ai_triage_error' AND NOT (ai_enrichment ? 'ai_triage')))"
 )
 
