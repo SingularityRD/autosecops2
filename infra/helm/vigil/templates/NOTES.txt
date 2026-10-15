@@ -20,6 +20,23 @@ Vigil SOC has been installed in namespace {{ .Release.Namespace }} as release "{
    # Then open http://localhost:{{ .Values.backend.service.port }}
 {{- end }}
 
+{{- if include "vigil.evidence.rwxOnDefaultClass" . }}
+
+⚠️  EVIDENCE STORE: this release creates the case evidence claim
+   {{ include "vigil.evidence.claimName" . }} as ReadWriteMany on the cluster's DEFAULT
+   StorageClass, because more than one pod mounts it (backend replicas, daemon
+   standby or several llm-workers). If that class cannot provide ReadWriteMany
+   (most block, local-path and hostPath classes cannot), the claim stays Pending
+   and the backend, daemon and llm-worker pods never start. Check with:
+
+     kubectl get pvc -n {{ .Release.Namespace }} {{ include "vigil.evidence.claimName" . }}
+
+   Fix: evidence.persistence.storageClassName=<an RWX class>, or
+   evidence.persistence.existingClaim=<your claim>, or one backend replica with
+   daemon.leaderElection.enabled=false (ReadWriteOnce is then chosen), or
+   evidence.persistence.accessModes={ReadWriteOnce} on a single node / local-path.
+{{- end }}
+
 4. Run the smoke test:
 
    helm test {{ .Release.Name }} -n {{ .Release.Namespace }}

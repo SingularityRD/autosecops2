@@ -501,6 +501,11 @@ backup:
   activeDeadlineSeconds: 3600
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
+  # Also archive the case evidence store (evidence.persistence) on every run:
+  # evidence-<stamp>.tar.gz beside the dump, same retention, uploaded with it.
+  # Restored case_evidence rows point at these files. false: the database only,
+  # and backing up the evidence claim is the operator's job.
+  includeEvidence: true
   persistence:
     # false: dumps live only in the object store (objectStore.enabled required).
     enabled: true
@@ -594,11 +599,24 @@ stateDirectory:
 # by default, which would lose them on every pod restart, so the store gets a
 # persistent volume of its own, mounted at that path in the backend, daemon
 # (retention) and llm-worker pods. podSecurityContext.fsGroup (1000) makes it
-# writable by the app's uid.
+# writable by the app's uid. The backup CronJob archives it with each dump
+# (backup.includeEvidence).
 #
-# The backend runs more than one replica, so the claim is ReadWriteMany. On a
-# cluster without ReadWriteMany storage, point existingClaim at a claim you
-# provision, or run one backend replica with accessModes [ReadWriteOnce].
+# Access mode. Left empty, it follows how many pods mount the claim:
+#   - ReadWriteOnce when only one does: backend.replicaCount 1 (no HPA),
+#     daemon.leaderElection.enabled false and at most one llm-worker;
+#   - ReadWriteMany otherwise -- the defaults here (two backend replicas,
+#     daemon hot standby) are in that case.
+# IMPORTANT: ReadWriteMany needs a StorageClass that provides it (NFS, CephFS,
+# Longhorn RWX, EFS/Azure Files/Filestore ...). Most default classes do not;
+# the claim then stays Pending and the backend, daemon and llm-worker never
+# start. Set storageClassName to an RWX class, or existingClaim to a claim you
+# provision, or run one backend replica with daemon.leaderElection.enabled=false
+# (ReadWriteOnce), or set accessModes [ReadWriteOnce] yourself on a single node
+# or on local-path storage, whose node affinity schedules every pod that mounts
+# the claim onto the node that holds it (infra/airgap/values-airgap.yaml does).
+# helm install prints a warning when it creates an RWX claim on the default class.
+#
 # enabled: false drops the mount and evidence falls back to the State Directory
 # volume (lost on restart while that is an emptyDir).
 #
@@ -610,8 +628,8 @@ evidence:
     existingClaim: ""
     size: 20Gi
     storageClassName: ""
-    accessModes:
-      - ReadWriteMany
+    # Empty: derived (see above). Set it to override.
+    accessModes: []
 
 # -----------------------------------------------------------------------------
 # Custom CA bundle (TLS-inspecting proxies)

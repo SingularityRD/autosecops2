@@ -69,8 +69,8 @@ redis:
 secrets:
   postgresPassword: "dev_password_change_me"
 
-# A dev cluster is one node with one backend replica, so the evidence store can
-# use ordinary ReadWriteOnce storage (RWO is per node).
+# A dev cluster is one node with one backend replica: ReadWriteOnce is fine
+# even with the daemon's standby, since RWO is per node.
 evidence:
   persistence:
     accessModes:

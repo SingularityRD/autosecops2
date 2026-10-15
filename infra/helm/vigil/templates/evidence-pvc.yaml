@@ -14,7 +14,7 @@ metadata:
     helm.sh/resource-policy: keep
 spec:
   accessModes:
-    {{- toYaml .Values.evidence.persistence.accessModes | nindent 4 }}
+    {{- include "vigil.evidence.accessModes" . | nindent 4 }}
   {{- with .Values.evidence.persistence.storageClassName }}
   storageClassName: {{ . | quote }}
   {{- end }}

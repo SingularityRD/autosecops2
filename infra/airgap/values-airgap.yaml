@@ -117,3 +117,15 @@ config:
   DEMO_MODE: "false"
   # Mail goes to the log, not to an SMTP relay.
   VIGIL_EMAIL_BACKEND: "console"
+
+# Case evidence store (see evidence: in the chart's values.yaml). Air-gapped
+# installs are usually bare metal with a local-path / hostPath default class
+# that cannot provide ReadWriteMany, so the choice is explicit: ReadWriteOnce.
+# local-path pins the volume to one node and schedules every pod that mounts it
+# (backend, daemon, llm-worker, backup) there. For several nodes give an RWX
+# class instead (storageClassName, accessModes [ReadWriteMany]) or an
+# existingClaim.
+evidence:
+  persistence:
+    accessModes:
+      - ReadWriteOnce

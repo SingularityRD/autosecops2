@@ -55,6 +55,40 @@ volume together, or neither; both render nothing when persistence is off.
 {{- .Values.evidence.persistence.existingClaim | default (printf "%s-evidence" (include "vigil.fullname" .)) -}}
 {{- end -}}
 
+{{/*
+"true" when more than one pod mounts the evidence claim: the backend's replicas
+(or its HPA), the daemon's hot standby, or more than one llm-worker. A
+ReadWriteOnce volume attaches to one node, so those pods can only share it on
+one node; the default access mode is ReadWriteMany then, ReadWriteOnce otherwise.
+*/}}
+{{- define "vigil.evidence.shared" -}}
+{{- $backend := or .Values.backend.autoscaling.enabled (gt (int .Values.backend.replicaCount) 1) -}}
+{{- $daemon := and .Values.daemon.enabled .Values.daemon.leaderElection.enabled -}}
+{{- $w := .Values.llmWorker -}}
+{{- $worker := and $w.enabled (or $w.autoscaling.enabled $w.autoscaling.keda.enabled (gt (int $w.replicaCount) 1)) -}}
+{{- if or $backend $daemon $worker }}true{{ end -}}
+{{- end -}}
+
+{{/* The claim's access modes: evidence.persistence.accessModes when set, else derived. */}}
+{{- define "vigil.evidence.accessModes" -}}
+{{- $modes := .Values.evidence.persistence.accessModes -}}
+{{- if not $modes -}}
+{{- $modes = list (ternary "ReadWriteMany" "ReadWriteOnce" (eq (include "vigil.evidence.shared" .) "true")) -}}
+{{- end -}}
+{{- toYaml $modes -}}
+{{- end -}}
+
+{{/*
+"true" when the chart is about to create a ReadWriteMany evidence claim on the
+cluster's default StorageClass, which on many clusters (bare metal, local-path,
+most block storage) cannot provide ReadWriteMany: the claim then stays Pending
+and the pods that mount it never start. NOTES.txt warns about it.
+*/}}
+{{- define "vigil.evidence.rwxOnDefaultClass" -}}
+{{- $p := .Values.evidence.persistence -}}
+{{- if and $p.enabled (not $p.existingClaim) (not $p.storageClassName) (contains "ReadWriteMany" (include "vigil.evidence.accessModes" .)) }}true{{ end -}}
+{{- end -}}
+
 {{- define "vigil.evidenceVolumeMount" -}}
 {{- if .Values.evidence.persistence.enabled }}
 - name: vigil-evidence
