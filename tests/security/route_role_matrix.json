@@ -3280,6 +3280,14 @@
    "role-manager": "deny",
    "role-admin": "deny"
   },
+  "POST /internal/runs/{run_id}/progress": {
+   "gate": "internal-token",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
+   "role-manager": "deny",
+   "role-admin": "deny"
+  },
   "POST /internal/runs/{run_id}/status": {
    "gate": "internal-token",
    "role-viewer": "deny",

@@ -11,8 +11,10 @@ import { SeverityMark } from '../../shared/SeverityMark'
 import { StatePill, statePill } from '../../shared/StatePill'
 import { TabStrip } from '../../shared/TabStrip'
 import { HoldButton } from '../../shared/HoldButton'
+import { ToolCallDetail, displaySafe, questionOf, toolCallOf, type ToolCall } from '../decisions/ToolCallDetail'
 import { Icon } from '../../shared/icons'
 import { useToast } from '../../shell/toast'
+import { useFusedDecision } from '../../shell/useFusedDecision'
 import { EmptyState } from '../../shared/ui'
 import type { CaseRow } from '../../data/data'
 import Chat from '../../shell/Chat'
@@ -26,6 +28,7 @@ import { timeLeft, when } from './caseFormat'
 import {
   addedBy,
   agentRows,
+  EVIDENCE_PAGE,
   explanationWord,
   honestLine,
   moveTool,
@@ -108,6 +111,8 @@ function detailOf(error: unknown, fallback: string): string {
   return (error as { message?: string })?.message || fallback
 }
 
+const decisionFailText = (error: unknown) => detailOf(error, 'Could not update that decision')
+
 /** How long a decision has waited: "4 min", "7 h", "3 d". Empty when the stamp doesn't parse. */
 function waiting(since: string): string {
   const ms = Date.now() - new Date(since).getTime()
@@ -150,6 +155,18 @@ function ExplanationRow({ row, rootCauseRunId }: { row: HypothesisRow; rootCause
   )
 }
 
+/** Paused-run checkpoints first, then proposed approvals, each kind in the order served. */
+function byWeight(items: NeedsYouItem[]): NeedsYouItem[] {
+  return [...items.filter((it) => it.kind === 'checkpoint'), ...items.filter((it) => it.kind !== 'checkpoint')]
+}
+
+/** What's waiting, in a line: a paused run's ask, else the one proposal, else how many there are. */
+function needsAsk(items: NeedsYouItem[]): string | undefined {
+  const checkpoint = items.find((it) => it.kind === 'checkpoint')
+  if (checkpoint || items.length < 2) return (checkpoint ?? items[0])?.title
+  return `${items.length} proposed actions`
+}
+
 /** Under the tabs on every tab but Summary while a decision waits; the decision itself is on Summary. */
 function NeedsStrip({ ask, onDecide }: { ask?: string; onDecide: () => void }) {
   return (
@@ -161,6 +178,9 @@ function NeedsStrip({ ask, onDecide }: { ask?: string; onDecide: () => void }) {
     </div>
   )
 }
+
+/** Compact rows shown before "+N more proposed actions". */
+const ROWS_SHOWN = 3
 
 function CaseNeeds({
   items,
@@ -175,32 +195,89 @@ function CaseNeeds({
   onApprove: (item: NeedsYouItem) => void
   onReject: (item: NeedsYouItem, reason: string) => void
 }) {
+  const [showAll, setShowAll] = useState(false)
   if (items.length === 0) return null
+  // Every paused run gets the full block; with none, the first proposal does. Other proposals wait without blocking, so they collapse.
+  const ordered = byWeight(items)
+  const full = Math.max(1, ordered.filter((it) => it.kind === 'checkpoint').length)
+  const rows = ordered.slice(full)
+  const visible = showAll ? rows : rows.slice(0, ROWS_SHOWN)
   return (
     <section className="case-needs" aria-label="Needs you">
       {error && <p role="alert">{error}</p>}
-      {items.map((item) => (
+      {ordered.slice(0, full).map((item) => (
         <CaseNeed key={item.source_id} item={item} busy={busy} onApprove={onApprove} onReject={onReject} />
       ))}
+      {rows.length > 0 && (
+        <div className="needs-more">
+          <h3>{ordered[0].kind === 'approval' ? 'More proposed actions' : 'Proposed actions'} · {rows.length}</h3>
+          <ul aria-label="Proposed actions">
+            {visible.map((item) => (
+              <CaseNeedRow key={item.source_id} item={item} busy={busy} onApprove={onApprove} onReject={onReject} />
+            ))}
+          </ul>
+          {rows.length > visible.length && (
+            <div className="needs-more-foot">
+              <span>+{rows.length - visible.length} more proposed actions</span>
+              <button type="button" className="btn neutral" onClick={() => setShowAll(true)}>Show all</button>
+            </div>
+          )}
+        </div>
+      )}
     </section>
   )
 }
 
-function CaseNeed({
-  item,
-  busy,
-  onApprove,
-  onReject,
-}: {
+type NeedProps = {
   item: NeedsYouItem
   busy: boolean
   onApprove: (item: NeedsYouItem) => void
   onReject: (item: NeedsYouItem, reason: string) => void
-}) {
-  const [rejecting, setRejecting] = useState(false)
+}
+
+function ApproveButton({ item, busy, onApprove, label }: NeedProps & { label?: string }) {
+  return item.reversibility === 'reversible' ? (
+    <button type="button" className="btn primary" aria-label={label} disabled={busy} onClick={() => onApprove(item)}>
+      Approve
+    </button>
+  ) : (
+    <HoldButton label="Hold to approve" name={label && `Hold to approve ${item.title}`} disabled={busy} onConfirm={() => onApprove(item)} />
+  )
+}
+
+function RejectForm({ item, busy, onReject }: NeedProps) {
   const [reason, setReason] = useState('')
+  return (
+    <form
+      className="needs-reject"
+      onSubmit={(event) => {
+        event.preventDefault()
+        const text = reason.trim()
+        if (!text) return
+        onReject(item, text)
+      }}
+    >
+      <label htmlFor={`reject-${item.source_id}`}>Why? The reason goes back to the agents.</label>
+      <textarea
+        id={`reject-${item.source_id}`}
+        className="feedback-box"
+        aria-label="Rejection reason"
+        value={reason}
+        onChange={(event) => setReason(event.target.value)}
+        placeholder="Why is this being rejected?"
+        autoFocus
+      />
+      <button type="submit" className="btn neutral" disabled={busy || !reason.trim()}>
+        Confirm reject
+      </button>
+    </form>
+  )
+}
+
+function CaseNeed(props: NeedProps) {
+  const { item, busy } = props
+  const [rejecting, setRejecting] = useState(false)
   const waited = waiting(item.created_at)
-  const reversible = item.reversibility === 'reversible'
 
   return (
     <article>
@@ -217,16 +294,10 @@ function CaseNeed({
           </>
         )}
         <dt>Reversibility</dt>
-        <dd>{reversible ? 'Reversible' : 'Cannot be undone'}</dd>
+        <dd>{item.reversibility === 'reversible' ? 'Reversible' : 'Cannot be undone'}</dd>
       </dl>
       <div className="needs-actions">
-        {reversible ? (
-          <button type="button" className="btn" disabled={busy} onClick={() => onApprove(item)}>
-            Approve
-          </button>
-        ) : (
-          <HoldButton label="Hold to approve" disabled={busy} onConfirm={() => onApprove(item)} />
-        )}
+        <ApproveButton {...props} />
         <button
           type="button"
           className="btn neutral"
@@ -237,32 +308,139 @@ function CaseNeed({
           Reject
         </button>
       </div>
-      {rejecting && (
-        <form
-          className="needs-reject"
-          onSubmit={(event) => {
-            event.preventDefault()
-            const text = reason.trim()
-            if (!text) return
-            onReject(item, text)
-          }}
-        >
-          <label htmlFor={`reject-${item.source_id}`}>Why? The reason goes back to the agents.</label>
-          <textarea
-            id={`reject-${item.source_id}`}
-            className="feedback-box"
-            aria-label="Rejection reason"
-            value={reason}
-            onChange={(event) => setReason(event.target.value)}
-            placeholder="Why is this being rejected?"
-            autoFocus
-          />
-          <button type="submit" className="btn neutral" disabled={busy || !reason.trim()}>
-            Confirm reject
-          </button>
-        </form>
-      )}
+      {rejecting && <RejectForm {...props} />}
     </article>
+  )
+}
+
+/** The approval row behind a collapsed proposal: its question and the one call it binds. */
+type RowDetail = { state: 'loading' } | { state: 'ready'; question: string; call: ToolCall | null } | { state: 'failed' }
+
+/** One proposed action as a row: title, reversibility, Review, Approve and Reject.
+ *  Approve stays disabled until the row is opened and its bound call (tool,
+ *  target, canonical arguments, W0.14/W0.16) has been read, so a compact row
+ *  can never be approved on its title alone. */
+function CaseNeedRow(props: NeedProps) {
+  const { item, busy } = props
+  const [rejecting, setRejecting] = useState(false)
+  const [open, setOpen] = useState(false)
+  const [detail, setDetail] = useState<RowDetail | null>(null)
+  const [attempt, setAttempt] = useState(0)
+  const reversible = item.reversibility === 'reversible'
+  const detailId = `need-detail-${item.source_id}`
+
+  const asked = useRef(false)
+  useEffect(() => {
+    if (!open || asked.current) return
+    asked.current = true
+    let live = true
+    let settled = false
+    setDetail({ state: 'loading' })
+    approvalsApi
+      .getById(item.source_id)
+      .then((res) => {
+        if (!live) return
+        settled = true
+        const row = (res?.data ?? {}) as { description?: string; parameters?: Record<string, unknown> }
+        const call = toolCallOf(row.parameters)
+        setDetail({ state: 'ready', question: questionOf(row.description, call), call })
+      })
+      .catch(() => {
+        if (!live) return
+        settled = true
+        setDetail({ state: 'failed' })
+      })
+    return () => {
+      live = false
+      // Closed before the read came back: ask again on the next open.
+      if (!settled) {
+        asked.current = false
+        setDetail(null)
+      }
+    }
+  }, [open, item.source_id, attempt])
+
+  // Read before approve: opened, and the bound call has loaded. A failed read
+  // keeps Approve and Hold locked; the person retries or decides under Decisions.
+  const reviewed = open && detail?.state === 'ready'
+  return (
+    <li>
+      <div className="needs-row">
+        <span className="needs-row-title">{item.title}</span>
+        <span className={reversible ? 'needs-row-rev' : 'needs-row-rev irreversible'}>
+          {reversible ? 'Reversible' : 'Cannot be undone'}
+        </span>
+        <div className="needs-actions">
+          <button
+            type="button"
+            className="btn neutral"
+            aria-label={`Review ${item.title}`}
+            aria-expanded={open}
+            aria-controls={detailId}
+            onClick={() => setOpen((was) => !was)}
+          >
+            {open ? 'Hide' : 'Review'}
+          </button>
+          <span title={reviewed ? undefined : 'Review the action before approving it'}>
+            <ApproveButton {...props} busy={busy || !reviewed} label={`Approve ${item.title}`} />
+          </span>
+          <button
+            type="button"
+            className="btn neutral"
+            aria-label={`Reject ${item.title}`}
+            aria-expanded={rejecting}
+            disabled={busy}
+            onClick={() => setRejecting((was) => !was)}
+          >
+            Reject
+          </button>
+        </div>
+      </div>
+      {open && (
+        <div className="needs-row-detail" id={detailId} aria-label={`Details of ${item.title}`}>
+          <dl className="needs-facts">
+            {item.reason && (
+              <>
+                <dt>Why</dt>
+                <dd>{item.reason}</dd>
+              </>
+            )}
+            <dt>Reversibility</dt>
+            <dd>{reversible ? 'Reversible' : 'Cannot be undone'}</dd>
+          </dl>
+          {detail?.state === 'loading' && <p className="needs-row-note">Loading the proposed call…</p>}
+          {detail?.state === 'failed' && (
+            <div className="needs-row-note" role="alert">
+              The proposed call could not be loaded, so it cannot be approved here. Retry, or open it under Decisions
+              to see its target and arguments.{' '}
+              <button
+                type="button"
+                className="btn neutral"
+                aria-label={`Retry loading ${item.title}`}
+                onClick={() => {
+                  asked.current = false
+                  setDetail(null)
+                  setAttempt((n) => n + 1)
+                }}
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          {detail?.state === 'ready' && (
+            <>
+              {detail.question && <p className="needs-row-note">{displaySafe(detail.question)}</p>}
+              {detail.call ? (
+                <ToolCallDetail call={detail.call} />
+              ) : (
+                <p className="needs-row-note">This proposal binds no tool call.</p>
+              )}
+            </>
+          )}
+        </div>
+      )}
+      {rejecting && <RejectForm {...props} />}
+    </li>
   )
 }
 
@@ -318,7 +496,7 @@ function doorLines(fold: RunFold | null, foldPhase: Phase, hasRun: boolean, rows
   let evidence = none
   if (fold?.kind === 'hunt') {
     const n = stanceTotals(fold)
-    evidence = fold.evidence.length ? `${n.supports} support · ${n.weakens} go against · ${n.neither} neither` : 'None shown'
+    evidence = !fold.evidence.length ? 'None shown' : !n ? plural(fold.evidenceCount, 'row') : `${n.supports} support · ${n.weakens} go against · ${n.neither} neither`
   } else if (fold) {
     evidence = 'Findings, no for or against'
   }
@@ -558,7 +736,7 @@ export function CasePage({
   const [decisionBusy, setDecisionBusy] = useState<string | null>(null)
   const [decisionError, setDecisionError] = useState<string | null>(null)
   const decisionBusyRef = useRef<string | null>(null)
-  const { notifyUndoable, pending, settled } = useToast()
+  const { pending, settled } = useToast()
   const needsTicket = useRef(0)
   const seenCase = useRef(id)
   if (seenCase.current !== id) {
@@ -625,7 +803,9 @@ export function CasePage({
   const pill = combinedState || (phase === 'loading' ? '…' : c?.status || '—')
 
   // The newest run, re-read on Watch a run's interval while it is in flight.
-  const run = useRunDetail(runId ?? '', runId !== null)
+  const [evidenceLimit, setEvidenceLimit] = useState<number | undefined>(undefined)
+  useEffect(() => setEvidenceLimit(undefined), [runId])
+  const run = useRunDetail(runId ?? '', runId !== null, undefined, evidenceLimit)
   const { load: loadRun, setDphase: setRunPhase } = run
   useEffect(() => {
     if (!runId) return
@@ -718,10 +898,10 @@ export function CasePage({
   const tabCounts = counts(fold, rows.length, caseActions.actions.length)
   const gaps = visibilityGaps(fold)
   const recalled = recallEntityCalls(fold)
-  const shown = chip === 'all' ? rows : rows.filter((row) => recordChip(row.kind) === chip)
+  const shown = chip === 'all' ? rows : rows.filter((row) => recordChip(row.kind, row.source) === chip)
   const chipCounts = useMemo(() => {
     const counts: Record<RecordChip, number> = { agent: 0, human: 0, memory: 0, system: 0 }
-    for (const row of rows) counts[recordChip(row.kind)] += 1
+    for (const row of rows) counts[recordChip(row.kind, row.source)] += 1
     return counts
   }, [rows])
 
@@ -788,25 +968,16 @@ export function CasePage({
     onChangedRef.current()
   }, [settled, loadNeeds])
 
-  // Reversible approve and every reject commit through the toast's undo fuse, which owns the call
-  // and survives closing the case. A held (irreversible) approve commits at once via decide().
-  const fuse = (item: NeedsYouItem, verb: string, past: string, commit: () => Promise<unknown>) =>
-    notifyUndoable({
-      key: item.source_id,
-      text: `${verb}: ${item.title}`,
-      commit,
-      doneText: `${past}: ${item.title}`,
-      failText: (e) => detailOf(e, 'Could not update that decision'),
-    })
+  // Reversible approve and every reject commit through the toast's undo fuse, the same path as
+  // Home's card, and survive closing the case. A held (irreversible) approve commits at once via decide().
+  const fused = useFusedDecision(decisionFailText)
 
   const approve = (item: NeedsYouItem) => {
-    const commit = () => approvalsApi.approve(item.source_id)
-    if (item.reversibility === 'reversible') fuse(item, 'Approving', 'Approved', commit)
-    else void decide(item.source_id, commit)
+    if (item.reversibility === 'reversible') fused.approve(item)
+    else void decide(item.source_id, () => approvalsApi.approve(item.source_id))
   }
 
-  const reject = (item: NeedsYouItem, reason: string) =>
-    fuse(item, 'Rejecting', 'Rejected', () => approvalsApi.reject(item.source_id, reason))
+  const reject = fused.reject
 
   const decide = async (sourceId: string, act: () => Promise<unknown>) => {
     if (decisionBusyRef.current) return
@@ -874,9 +1045,10 @@ export function CasePage({
   const running = !closed && !stopped && tone !== 'needs'
   // Reason after the pill: the ask, where a live run stands (its directive is in the Now card), or who closed it.
   const reason =
-    tone === 'needs' ? shownNeeds[0]?.title : tone === 'live' ? runSentence(fold) : closed ? closedLine(closure) : ''
+    tone === 'needs' ? needsAsk(shownNeeds) : tone === 'live' ? runSentence(fold) : closed ? closedLine(closure) : ''
   const needsBlock = (
     <CaseNeeds
+      key={id} // Show all is per case
       items={shownNeeds}
       busy={decisionBusy !== null}
       error={decisionError}
@@ -941,7 +1113,7 @@ export function CasePage({
         />
       </div>
 
-      {needsShown > 0 && tab !== 'Summary' && <NeedsStrip ask={shownNeeds[0]?.title} onDecide={() => setTab('Summary')} />}
+      {needsShown > 0 && tab !== 'Summary' && <NeedsStrip ask={needsAsk(shownNeeds)} onDecide={() => setTab('Summary')} />}
 
       <div className="case-stage">
         <div className="detail-body" key={tab}>
@@ -1023,7 +1195,7 @@ export function CasePage({
             )
           )}
 
-          {tab === 'Evidence' && <EvidenceTrail fold={fold} phase={foldPhase} focusId={focusEvidence} />}
+          {tab === 'Evidence' && <EvidenceTrail fold={fold} phase={foldPhase} focusId={focusEvidence} onShowOlder={(shown) => setEvidenceLimit(shown + EVIDENCE_PAGE)} />}
 
           {tab === 'Checked' && (
             foldPhase === 'loading' ? (
@@ -1104,9 +1276,9 @@ export function CasePage({
                   <InfoTip
                     label="About the record"
                     align="start"
-                    source="The run’s journal and the case audit log, newest first."
+                    source="The run’s journal, the case audit log and the case’s activity history, newest first."
                     calculation="Each row is typed Agent, Human, Memory or System from what wrote it."
-                    limit="Only the run’s rows are hash-chained. Case audit rows are not."
+                    limit="Only the run’s rows are hash-chained. Case audit and activity rows are not."
                   />
                 </div>
                 <div className="rec-actions">
@@ -1157,7 +1329,7 @@ export function CasePage({
               {recordPhase === 'ready' && shown.length > 0 && (
                 <div className="rec-rows">
                   {shown.map((row) => {
-                    const type = recordChip(row.kind)
+                    const type = recordChip(row.kind, row.source)
                     return (
                       <div key={row.id} className="rec-row">
                         <span className="rec-time" title={when(row.at)}>{clock(row.at)}</span>

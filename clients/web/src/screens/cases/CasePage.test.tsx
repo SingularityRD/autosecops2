@@ -80,6 +80,7 @@ vi.mock('../../services/api', () => ({
   })),
   approvalsApi: {
     needsYou: vi.fn(() => Promise.resolve({ data: { count: 0, items: [] } })),
+    getById: vi.fn(() => Promise.resolve({ data: {} })),
     approve: vi.fn(() => Promise.resolve({})),
     reject: vi.fn(() => Promise.resolve({})),
   },
@@ -189,6 +190,8 @@ beforeEach(() => {
   vi.mocked(streamFetch).mockClear()
   vi.mocked(approvalsApi.needsYou).mockResolvedValue({ data: { count: 0, items: [] } } as never)
   vi.mocked(approvalsApi.approve).mockReset()
+  vi.mocked(approvalsApi.getById).mockReset()
+  vi.mocked(approvalsApi.getById).mockResolvedValue({ data: {} } as never)
   vi.mocked(approvalsApi.reject).mockReset()
   vi.mocked(approvalsApi.approve).mockResolvedValue({} as never)
   vi.mocked(approvalsApi.reject).mockResolvedValue({} as never)
@@ -366,7 +369,7 @@ describe('case page', () => {
         evidence_count: 7,
         evidence: [
           { ...HUNT.evidence[0] },
-          // Supports one explanation and weakens another: its stance on the leading one, each link named beneath.
+          // Supports one explanation and weakens another: its stance on the hunt's own explanation, each link named beneath.
           { ...base, evidence_id: 'e2', iteration: 3, source_system: 'okta', summary: 'new session', bears_on: [{ hypothesis_id: 'h2', relation: 'supports' }, { hypothesis_id: 'h1', relation: 'weakens' }] },
           { ...base, evidence_id: 'e3', iteration: 1, source_system: 'dns', summary: 'plain lookup', source_tier: 'not_evidence', bears_on: [] },
           // Gap row with no stamped tier, and an iteration the capped moves do not cover.
@@ -377,12 +380,12 @@ describe('case page', () => {
     renderCase('case-trail')
 
     fireEvent.click(await screen.findByRole('tab', { name: /^Evidence/ }))
-    expect(await screen.findByRole('heading', { name: 'Evidence trail · 7 rows · 2 support · 0 go against · 1 neither' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Evidence trail · 7 rows · showing 4 of 7 · 0 support · 2 go against · 5 neither' })).toBeInTheDocument()
 
     const row = (id: string) => document.querySelector(`[data-evidence-id="${id}"]`) as HTMLElement
     const first = row('e1')
-    // Read against the leading explanation (Still forming), a row that only bears on the ruled-out one is neither.
-    expect(within(first).getByText('Neither')).toBeInTheDocument()
+    // Read against the hunt's own explanation (The host is owned), not whichever ranks first.
+    expect(within(first).getByText('Goes against')).toBeInTheDocument()
     expect(within(first).getByText('Telemetry')).toBeInTheDocument()
     expect(within(first).getByText('threat_hunter')).toBeInTheDocument()
     expect(within(first).getByText('The host is owned')).toBeInTheDocument()
@@ -401,6 +404,35 @@ describe('case page', () => {
     const act = within(first).getByRole('button', { name: 'Actions for this row' })
     expect(act).toBeDisabled()
     expect(act).toHaveAttribute('title', 'Coming in a later release')
+  })
+
+  it('totals the Evidence header over every row, against the hunt\'s own explanation, and pages older rows in', async () => {
+    testState.cases = [{ ...openCase('case-157'), combined_state: 'executing', investigations: [investigation('executing', true, 'run-157')] }]
+    const newest = Array.from({ length: 50 }, (_, i) => ({
+      evidence_id: `n${i}`, iteration: 9, source_system: 'elastic', summary: `row ${i}`, is_gap: false, gap_detail: null, source_tier: 'telemetry', bears_on: [],
+    }))
+    // 157 rows; the newest 50 are all neither, but the hypothesis has 95 supports and 3 weakens across the run.
+    const hunt157 = {
+        ...HUNT,
+        evidence_count: 157,
+        evidence: newest,
+        hypotheses: [
+          { hypothesis_id: 'h1', statement: 'The host is owned', status: 'inconclusive', supports: 95, weakens: 3, neither: 59, resolution_reason: null, provenance: 'operator' },
+          { hypothesis_id: 'hb', statement: 'The activity has a legitimate explanation', status: 'active', supports: 0, weakens: 24, neither: 133, resolution_reason: null, provenance: 'base_rate' },
+        ],
+    }
+    testState.runs['run-157'] = { hunt: hunt157 }
+    renderCase('case-157')
+
+    fireEvent.click(await screen.findByRole('tab', { name: /^Evidence/ }))
+    expect(await screen.findByRole('heading', { name: 'Evidence trail · 157 rows · showing 50 of 157 · 95 support · 3 go against · 59 neither' })).toBeInTheDocument()
+
+    testState.runs['run-157'] = {
+      hunt: { ...hunt157, evidence: [...newest, ...newest.map((row, i) => ({ ...row, evidence_id: `o${i}` }))] },
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Show older' }))
+    await waitFor(() => expect(workflowApi.getRun).toHaveBeenCalledWith('run-157', 100))
+    expect(await screen.findByRole('heading', { name: 'Evidence trail · 157 rows · showing 100 of 157 · 95 support · 3 go against · 59 neither' })).toBeInTheDocument()
   })
 
   it('shows loading, then a read error, instead of an empty evidence trail', async () => {
@@ -579,7 +611,7 @@ describe('case page', () => {
     const doors = screen.getByRole('region', { name: 'Audit doors' })
     expect(within(doors).getAllByRole('button')).toHaveLength(5)
     expect(within(doors).getByText('1 forming · 1 ruled out')).toBeInTheDocument()
-    expect(within(doors).getByText('0 support · 0 go against · 1 neither')).toBeInTheDocument()
+    expect(within(doors).getByText('0 support · 2 go against · 0 neither')).toBeInTheDocument()
     expect(within(doors).getByText('$0.20 · 0 gaps')).toBeInTheDocument()
     expect(within(doors).getByText('Nothing recalled')).toBeInTheDocument()
     await waitFor(() => expect(within(doors).getByText('2 rows · 1 chained')).toBeInTheDocument())
@@ -877,8 +909,8 @@ describe('case page', () => {
       combined_state: 'executing',
       investigations: [investigation('executing', true, 'run-links')],
       linked_findings: [
-        { finding_id: 'f1', title: 'Beacon to rare host', description: 'console alert', source_link: 'https://example.test/alert/1' },
-        { finding_id: 'f2', description: 'no door', source_link: null },
+        { finding_id: 'f1', title: 'Beacon to rare host', description: 'console alert', source_link: 'https://example.test/alert/1', entities: ['web-1', 'alice'] },
+        { finding_id: 'f2', description: 'no door', source_link: null, entities: ['alice', 'db-2'] },
       ],
     }]
     testState.runs['run-links'] = { hunt: HUNT }
@@ -892,6 +924,8 @@ describe('case page', () => {
     // The title names the alert; a row without one keeps its description.
     expect(within(side).getByText('Beacon to rare host')).toBeInTheDocument()
     expect(within(side).queryByText('console alert')).not.toBeInTheDocument()
+    // The Entities row is what the linked alerts name, once each, while the run recalls none.
+    expect(within(side).getByText('web-1, alice, db-2')).toBeInTheDocument()
     expect(within(side).getByText('no door')).toBeInTheDocument()
     expect(within(side).queryByText('gone')).not.toBeInTheDocument()
     const link = within(side).getByRole('link', { name: 'Open in source' })
@@ -1004,7 +1038,7 @@ describe('case page', () => {
       testState.recordRows = rows
       await openRecord()
       fireEvent.click(await screen.findByRole('button', { name: 'About the record' }))
-      expect(screen.getByRole('tooltip')).toHaveTextContent('Only the run’s rows are hash-chained. Case audit rows are not.')
+      expect(screen.getByRole('tooltip')).toHaveTextContent('Only the run’s rows are hash-chained. Case audit and activity rows are not.')
     })
 
     it('Replay links to the run on Workflows, and closes the drawer', async () => {
@@ -1233,7 +1267,7 @@ describe('case page', () => {
   const queue = (...items: NeedsYouItem[]) =>
     vi.mocked(approvalsApi.needsYou).mockResolvedValue({ data: { count: items.length, items } } as never)
   const irreversible = () =>
-    need({ source_id: 'act-irr', title: 'Isolate host', reason: '', kind: 'checkpoint', reversibility: 'irreversible' })
+    need({ source_id: 'act-irr', title: 'Isolate host', reason: '', reversibility: 'irreversible' })
 
   it('shows a reversible and an irreversible ask with their own controls', async () => {
     testState.cases = [decCase]
@@ -1283,6 +1317,19 @@ describe('case page', () => {
       window.removeEventListener(CASES_CHANGED, changed)
       vi.useRealTimers()
     }
+  })
+
+  it('Approve is the accent primary, not the destructive outline, and shows the undo toast at once', async () => {
+    testState.cases = [decCase]
+    queue(need())
+    renderCase('case-dec')
+    await screen.findByRole('heading', { name: 'Block 1.2.3.4' })
+    const approve = screen.getByRole('button', { name: 'Approve' })
+    expect(approve).toHaveClass('btn', 'primary')
+    expect(approve).not.toHaveClass('danger')
+    fireEvent.click(approve)
+    expect(screen.getByText('Approving: Block 1.2.3.4')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
   })
 
   it('Undo sends nothing and brings the block back', async () => {
@@ -1442,7 +1489,7 @@ describe('case page', () => {
     try {
       testState.cases = [{ case_id: 'case-dec', title: 'Decision case', status: 'open', priority: 'high', finding_ids: [], created_at: '2026-06-15T09:14:00Z', combined_state: 'open', investigations: [] }]
       vi.mocked(approvalsApi.needsYou).mockResolvedValue({
-        data: { count: 3, items: [need({ reason: '' }), need({ source_id: 'a2', title: 'Two', created_at: '2026-06-15T05:00:00Z' }), need({ source_id: 'a3', title: 'Three', created_at: 'garbage' })] },
+        data: { count: 3, items: [need({ reason: '', kind: 'checkpoint' }), need({ source_id: 'a2', title: 'Two', kind: 'checkpoint', created_at: '2026-06-15T05:00:00Z' }), need({ source_id: 'a3', title: 'Three', kind: 'checkpoint', created_at: 'garbage' })] },
       } as never)
       renderCase('case-dec')
       expect(await screen.findByRole('heading', { name: 'Block 1.2.3.4' })).toBeInTheDocument()
@@ -1454,6 +1501,125 @@ describe('case page', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('gives a paused run the full block and collapses proposed actions into rows', async () => {
+    testState.cases = [decCase]
+    const proposals = ['Isolate WS-1', 'Isolate WS-2', 'Disable bob', 'Block 5.6.7.8', 'Disable eve'].map((title, i) =>
+      need({ source_id: `p${i}`, title, reversibility: i === 1 ? 'irreversible' : 'reversible' }),
+    )
+    queue(...proposals, need({ source_id: 'cp', kind: 'checkpoint', title: 'Proceed to containment?' }))
+    vi.mocked(approvalsApi.approve).mockResolvedValue({} as never)
+    renderCase('case-dec')
+
+    expect(await screen.findByRole('heading', { name: 'Proceed to containment?' })).toBeInTheDocument()
+    expect(document.querySelectorAll('.case-needs article')).toHaveLength(1)
+    const rows = screen.getByRole('list', { name: 'Proposed actions' })
+    expect(within(rows).getAllByRole('listitem')).toHaveLength(3)
+    expect(screen.getByText('+2 more proposed actions')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show all' }))
+    expect(within(rows).getAllByRole('listitem')).toHaveLength(5)
+    expect(within(rows).getByRole('button', { name: /^Hold to approve Isolate WS-2\. Press and hold/ })).toBeInTheDocument()
+
+    // a row approves through the same fuse and leaves at once, once reviewed
+    expect(screen.getByRole('button', { name: 'Approve Disable bob' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Review Disable bob' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve Disable bob' })).toBeEnabled())
+    vi.useFakeTimers()
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Approve Disable bob' }))
+      expect(screen.queryByText('Disable bob')).not.toBeInTheDocument()
+      await tick(8000)
+      expect(approvalsApi.approve).toHaveBeenCalledWith('p2')
+    } finally {
+      vi.useRealTimers()
+    }
+
+    fireEvent.click(screen.getByRole('tab', { name: /^Evidence/ }))
+    expect(document.querySelector('.case-needs-strip')?.textContent).toContain('Proceed to containment?')
+  })
+
+  it('keeps a collapsed proposal from being approved before its bound call is read', async () => {
+    testState.cases = [decCase]
+    queue(
+      need({ source_id: 'cp', kind: 'checkpoint', title: 'Proceed to containment?' }),
+      need({ source_id: 'p1', title: 'Isolate WS-1', reason: 'Beaconing to 5.6.7.8' }),
+      need({ source_id: 'p2', title: 'Disable bob', reversibility: 'irreversible' }),
+    )
+    let answer: (v: unknown) => void = () => {}
+    vi.mocked(approvalsApi.getById).mockImplementation(((id: string) =>
+      id === 'p1'
+        ? new Promise((resolve) => {
+            answer = resolve
+          })
+        : Promise.reject(new Error('down'))) as never)
+    renderCase('case-dec')
+
+    expect(await screen.findByRole('heading', { name: 'Proceed to containment?' })).toBeInTheDocument()
+    const approve = screen.getByRole('button', { name: 'Approve Isolate WS-1' })
+    expect(approve).toBeDisabled()
+    fireEvent.click(approve)
+    expect(approvalsApi.approve).not.toHaveBeenCalled()
+    // irreversible rows: the hold control is locked too
+    expect(screen.getByRole('button', { name: /^Hold to approve Disable bob/ })).toBeDisabled()
+
+    // opened but still loading: still locked
+    fireEvent.click(screen.getByRole('button', { name: 'Review Isolate WS-1' }))
+    expect(screen.getByRole('button', { name: 'Review Isolate WS-1' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('Loading the proposed call…')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Approve Isolate WS-1' })).toBeDisabled()
+
+    answer({
+      data: {
+        description: 'Contain the beaconing host\n\nTool: isolate_host',
+        parameters: {
+          tool: 'isolate_host',
+          args_canonical: '{"host":"WS-1","mode":"full"}',
+          args_targets: [['host', 'WS-1\u202e']],
+        },
+      },
+    })
+    const detail = await screen.findByLabelText('Details of Isolate WS-1')
+    expect(await within(detail).findByText('Contain the beaconing host')).toBeInTheDocument()
+    expect(within(detail).getByText('Beaconing to 5.6.7.8')).toBeInTheDocument()
+    expect(within(detail).getByText('Reversible')).toBeInTheDocument()
+    expect(within(detail).getByTestId('tool-call').textContent).toContain('host=WS-1\\u202e')
+    expect(within(detail).getByLabelText('Arguments').textContent).toBe('{"host":"WS-1","mode":"full"}')
+    expect(approvalsApi.getById).toHaveBeenCalledWith('p1')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve Isolate WS-1' })).toBeEnabled())
+
+    // closing the row locks Approve again
+    fireEvent.click(screen.getByRole('button', { name: 'Review Isolate WS-1' }))
+    expect(screen.getByRole('button', { name: 'Approve Isolate WS-1' })).toBeDisabled()
+
+    // a failed read says so and keeps the (hold-to-)approve control locked
+    fireEvent.click(screen.getByRole('button', { name: 'Review Disable bob' }))
+    expect(await screen.findByText(/could not be loaded/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Hold to approve Disable bob/ })).toBeDisabled()
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+    expect(screen.getByRole('button', { name: /^Hold to approve Disable bob/ })).toBeDisabled()
+
+    // Retry reads again; a successful read unlocks it
+    vi.mocked(approvalsApi.getById).mockResolvedValue({
+      data: { description: 'Disable the account', parameters: { tool: 'disable_user', args_canonical: '{"user":"bob"}', args_targets: [['user', 'bob']] } },
+    } as never)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry loading Disable bob' }))
+    expect(await screen.findByText('Disable the account')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Hold to approve Disable bob/ })).toBeEnabled())
+  })
+
+  it('names how many proposals wait when no run is paused', async () => {
+    testState.cases = [decCase]
+    queue(need(), need({ source_id: 'a2', title: 'Isolate WS-1' }), need({ source_id: 'a3', title: 'Disable bob' }))
+    renderCase('case-dec')
+
+    expect(await screen.findByRole('heading', { name: 'Block 1.2.3.4' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'More proposed actions · 2' })).toBeInTheDocument()
+    expect(document.querySelector('.case-reason')?.textContent).toBe('3 proposed actions')
+    fireEvent.click(screen.getByRole('tab', { name: /^Evidence/ }))
+    expect(document.querySelector('.case-needs-strip')?.textContent).toContain('3 proposed actions')
   })
 
   it('shows the error and renders nothing without items', async () => {

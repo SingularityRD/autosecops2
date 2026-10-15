@@ -891,9 +891,47 @@ PVC'ye yazar, sayı (`backup.keepLast`, 14) ve gün (`backup.retentionDays`, 30)
 saklama uygular. İsteğe bağlı olarak dökümü S3 uyumlu bir nesne deposuna yükler
 (`backup.objectStore`). Varsayılan zamanlama günlüktür (`backup.schedule`); RPO bu
 aralıktır. CronJob dökümü kendisi şifrelemez; PVC'nin ve nesne deposunun
-şifrelemesini kurum tarafında sağlayın. CronJob yalnızca veritabanını yedekler.
-Kimlik bilgilerini Secret/ExternalSecrets ile verdiyseniz durum dizini yeniden
-üretilebilir.
+şifrelemesini kurum tarafında sağlayın. CronJob veritabanını ve vaka kanıt
+deposunu yedekler (aşağıya bakın); durum dizinini yedeklemez. Kimlik bilgilerini
+Secret/ExternalSecrets ile verdiyseniz durum dizini yeniden üretilebilir.
+
+**Vaka kanıt deposu.** Vakaya eklenen dosyalar (ör. /hunt belgesi)
+`<stateDirectory.mountPath>/evidence` altına yazılır.
+
+> **UYARI: Helm'de kanıt dosyaları varsayılan olarak kalıcı değildir.**
+> `evidence.persistence.enabled` varsayılan olarak `false`'tur; dosyalar durum
+> dizini birimine (varsayılan `emptyDir`) yazılır, pod yeniden başlayınca ya da
+> taşınınca kaybolur ve iki backend kopyasında yalnızca dosyayı alan kopyada
+> bulunur. Veritabanındaki `case_evidence` satırları kalır ve artık olmayan
+> dosyaları gösterir. Kanıt saklayan her kurulumda açın:
+>
+> ```yaml
+> evidence:
+>   persistence:
+>     enabled: true
+>     storageClassName: <RWX sınıfı>   # NFS, CephFS, Longhorn RWX, EFS ...
+>     accessModes: [ReadWriteMany]     # zorunlu
+>     # ya da existingClaim: <PVC>
+> ```
+>
+> `accessModes` açıkken zorunludur. Birimi backend, daemon ve llm-worker (ve
+> yedek işi) birlikte bağladığından ve bunlar farklı düğümlerde çalışabildiğinden,
+> birden çok pod bağlıyorsa `ReadWriteOnce` şablon aşamasında reddedilir. RWX
+> sınıfı varsayılan sınıfa bırakılırsa kurulum çıktısı (NOTES) uyarır: o sınıf
+> RWX sağlamıyorsa PVC `Pending` kalır ve pod'lar başlamaz. İnternetsiz profil
+> (`infra/airgap/values-airgap.yaml`) birimi kapalı bırakır. Kanıtın PostgreSQL'e
+> ya da nesne deposuna taşınması ertelenmiş bir iştir.
+
+Birim açıksa ve `backup.includeEvidence: true` (varsayılan) iken yedek CronJob'u her dökümün
+yanına aynı zaman damgalı `evidence-<damga>.tar.gz` (ve `.sha256`,
+`LATEST_EVIDENCE`) yazar (dosyalar 0600), aynı saklama kurallarını uygular ve
+nesne deposuna yükler; geri yükleme artıkları (`.vigil-pre-restore-*`) arşive
+girmez. Birim kapalıyken yedekte kanıt dosyası yoktur. Geri yüklemede dökümü ve aynı damgalı arşivi birlikte kullanın: arşivi
+kanıt biriminin köküne açın (`tar -xzf evidence-<damga>.tar.gz -C <birim>`).
+`backup.includeEvidence: false` ise kanıt biriminin yedeği operatörün
+sorumluluğundadır. `python -m core.backup restore` durum dizinindeki bağlama
+noktalarını (kanıt birimi) yeniden adlandırmaz; içeriklerini yerinde geri yükler,
+öncekileri birimin içinde `.vigil-pre-restore-<damga>` altında bırakır.
 
 **Daemon sıcak yedeği.** Helm'de `daemon.leaderElection.enabled=true`
 varsayılandır ve daemon iki kopya çalışır. Postgres danışma kilidini alan kopya

@@ -168,7 +168,9 @@ COPY --chown=vigil:vigil scripts/reset_password.py ./scripts/reset_password.py
 COPY --from=web-builder --chown=vigil:vigil /build/web/build ./clients/web/build/
 
 # Writable dirs the app needs at runtime
-RUN mkdir -p /app/data/investigations /home/vigil/.vigil \
+# .vigil/evidence is the case evidence store (CaseEvidenceService); created here
+# so the vigil_home volume and the Helm evidence mount come up owned by 1000.
+RUN mkdir -p /app/data/investigations /home/vigil/.vigil/evidence \
     && chown -R vigil:vigil /app/data /home/vigil
 
 # core/version.py reads VERSION from disk. The COPY above already ships the repo

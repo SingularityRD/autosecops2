@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -293,3 +294,58 @@ def test_truncated_dump_is_rejected(admin, tmp_path):
     assert not list(backup_dir.glob("*.sha256"))
     assert not (backup_dir / "LATEST").exists()
     assert not list(backup_dir.glob(".*.partial"))
+
+
+def test_evidence_store_is_archived_beside_the_dump(admin, tmp_path):
+    # W0.26: restored case_evidence rows need the files they point at.
+    evidence = tmp_path / "evidence"
+    (evidence / "CASE-1").mkdir(parents=True)
+    (evidence / "CASE-1" / "report.pdf").write_bytes(b"%PDF flash report")
+    # What core.backup restore leaves beside a restored copy is not evidence.
+    (evidence / ".vigil-pre-restore-20261015T000000Z" / "CASE-0").mkdir(parents=True)
+    (evidence / ".vigil-pre-restore-20261015T000000Z" / "CASE-0" / "x").write_text("x")
+    (evidence / ".vigil-restore-stage-20261015T000000Z").mkdir()
+    backups = tmp_path / "backups"
+
+    names = []
+    for _ in range(3):
+        result = _run(
+            backups,
+            EVIDENCE_DIR=str(evidence),
+            BACKUP_KEEP_LAST="2",
+            BACKUP_RETENTION_DAYS="0",
+        )
+        assert result.returncode == 0, result.stderr
+        names.append((backups / "LATEST_EVIDENCE").read_text().strip())
+        time.sleep(1.1)
+
+    latest = names[-1]
+    dump = (backups / "LATEST").read_text().strip()
+    # Same timestamp as its dump.
+    assert latest == "evidence-" + dump.rsplit("-", 1)[1].replace(".dump", ".tar.gz")
+    check = subprocess.run(
+        ["sha256sum", "-c", f"{latest}.sha256"],
+        cwd=backups,
+        capture_output=True,
+        text=True,
+    )
+    assert check.returncode == 0, check.stdout + check.stderr
+    out = tmp_path / "out"
+    out.mkdir()
+    subprocess.run(["tar", "-xzf", str(backups / latest), "-C", str(out)], check=True)
+    assert (out / "CASE-1" / "report.pdf").read_bytes() == b"%PDF flash report"
+    assert sorted(p.name for p in out.iterdir()) == ["CASE-1"]
+    # Case data: owner-only, the archive and the dump alike.
+    for name in (latest, f"{latest}.sha256", dump):
+        assert stat.S_IMODE((backups / name).stat().st_mode) == 0o600, name
+    # Same retention as the dumps.
+    assert sorted(p.name for p in backups.glob("evidence-*.tar.gz")) == sorted(
+        names[-2:]
+    )
+    assert not list(backups.glob(".*.partial"))
+
+
+def test_a_missing_evidence_dir_is_refused(tmp_path):
+    result = _run(tmp_path, EVIDENCE_DIR=str(tmp_path / "nope"))
+    assert result.returncode == 2
+    assert "is not a directory" in result.stderr

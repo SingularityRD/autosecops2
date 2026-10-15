@@ -2311,7 +2311,10 @@ export interface paths {
         };
         /**
          * Get Iocs
-         * @description Get all IOCs for case.
+         * @description Get all IOCs for case: the ones recorded, then those its linked alerts name.
+         *
+         *     The alerts' are read from their ``entity_context`` and carry no ``ioc_id``;
+         *     one already recorded is not listed twice.
          */
         get: operations["get_api_cases_case_id_iocs"];
         put?: never;
@@ -2399,7 +2402,7 @@ export interface paths {
         };
         /**
          * Get Case Record
-         * @description The case record: the latest run's ledger, then this case's audit rows.
+         * @description The case record: the latest run's ledger, audit rows and activities.
          *
          *     Newest first. The agent returns the ledger with snapshots off. Audit rows
          *     are ``entity_type == case`` and ``entity_id`` this case — the table has no
@@ -7155,7 +7158,10 @@ export interface paths {
         };
         /**
          * Get Iocs
-         * @description Get all IOCs for case.
+         * @description Get all IOCs for case: the ones recorded, then those its linked alerts name.
+         *
+         *     The alerts' are read from their ``entity_context`` and carry no ``ioc_id``;
+         *     one already recorded is not listed twice.
          */
         get: operations["get_api_v1_cases_case_id_iocs"];
         put?: never;
@@ -8044,6 +8050,23 @@ export interface paths {
         put?: never;
         /** Record Phase */
         post: operations["post_internal_runs_run_id_phases"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/internal/runs/{run_id}/progress": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record Progress */
+        post: operations["post_internal_runs_run_id_progress"];
         delete?: never;
         options?: never;
         head?: never;
@@ -9096,6 +9119,11 @@ export interface components {
         CaseLinkedFinding: {
             /** Description */
             description?: string | null;
+            /**
+             * Entities
+             * @default []
+             */
+            entities: string[];
             /** Finding Id */
             finding_id: string;
             /** Source Link */
@@ -11864,6 +11892,13 @@ export interface components {
             count: number;
             /** Priority */
             priority: string;
+        };
+        /** ProgressUpdate */
+        ProgressUpdate: {
+            /** Iteration */
+            iteration: number;
+            /** Max Cost Usd */
+            max_cost_usd: number;
         };
         /** ProposeLessonRequest */
         ProposeLessonRequest: {
@@ -27245,7 +27280,10 @@ export interface operations {
     };
     get_api_workflows_runs_run_id: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Hunt evidence rows to return, newest first. */
+                evidence_limit?: number | null;
+            };
             header?: {
                 authorization?: string | null;
             };
@@ -28018,6 +28056,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["PhaseUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_internal_runs_run_id_progress: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProgressUpdate"];
             };
         };
         responses: {
