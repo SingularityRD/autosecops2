@@ -80,6 +80,7 @@ vi.mock('../../services/api', () => ({
   })),
   approvalsApi: {
     needsYou: vi.fn(() => Promise.resolve({ data: { count: 0, items: [] } })),
+    getById: vi.fn(() => Promise.resolve({ data: {} })),
     approve: vi.fn(() => Promise.resolve({})),
     reject: vi.fn(() => Promise.resolve({})),
   },
@@ -189,6 +190,8 @@ beforeEach(() => {
   vi.mocked(streamFetch).mockClear()
   vi.mocked(approvalsApi.needsYou).mockResolvedValue({ data: { count: 0, items: [] } } as never)
   vi.mocked(approvalsApi.approve).mockReset()
+  vi.mocked(approvalsApi.getById).mockReset()
+  vi.mocked(approvalsApi.getById).mockResolvedValue({ data: {} } as never)
   vi.mocked(approvalsApi.reject).mockReset()
   vi.mocked(approvalsApi.approve).mockResolvedValue({} as never)
   vi.mocked(approvalsApi.reject).mockResolvedValue({} as never)
@@ -1516,7 +1519,10 @@ describe('case page', () => {
     expect(within(rows).getAllByRole('listitem')).toHaveLength(5)
     expect(within(rows).getByRole('button', { name: /^Hold to approve Isolate WS-2\. Press and hold/ })).toBeInTheDocument()
 
-    // a row approves through the same fuse and leaves at once
+    // a row approves through the same fuse and leaves at once, once reviewed
+    expect(screen.getByRole('button', { name: 'Approve Disable bob' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Review Disable bob' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve Disable bob' })).toBeEnabled())
     vi.useFakeTimers()
     try {
       fireEvent.click(screen.getByRole('button', { name: 'Approve Disable bob' }))
@@ -1529,6 +1535,64 @@ describe('case page', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: /^Evidence/ }))
     expect(document.querySelector('.case-needs-strip')?.textContent).toContain('Proceed to containment?')
+  })
+
+  it('keeps a collapsed proposal from being approved before its bound call is read', async () => {
+    testState.cases = [decCase]
+    queue(
+      need({ source_id: 'cp', kind: 'checkpoint', title: 'Proceed to containment?' }),
+      need({ source_id: 'p1', title: 'Isolate WS-1', reason: 'Beaconing to 5.6.7.8' }),
+      need({ source_id: 'p2', title: 'Disable bob', reversibility: 'irreversible' }),
+    )
+    let answer: (v: unknown) => void = () => {}
+    vi.mocked(approvalsApi.getById).mockImplementation(((id: string) =>
+      id === 'p1'
+        ? new Promise((resolve) => {
+            answer = resolve
+          })
+        : Promise.reject(new Error('down'))) as never)
+    renderCase('case-dec')
+
+    expect(await screen.findByRole('heading', { name: 'Proceed to containment?' })).toBeInTheDocument()
+    const approve = screen.getByRole('button', { name: 'Approve Isolate WS-1' })
+    expect(approve).toBeDisabled()
+    fireEvent.click(approve)
+    expect(approvalsApi.approve).not.toHaveBeenCalled()
+    // irreversible rows: the hold control is locked too
+    expect(screen.getByRole('button', { name: /^Hold to approve Disable bob/ })).toBeDisabled()
+
+    // opened but still loading: still locked
+    fireEvent.click(screen.getByRole('button', { name: 'Review Isolate WS-1' }))
+    expect(screen.getByRole('button', { name: 'Review Isolate WS-1' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('Loading the proposed call…')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Approve Isolate WS-1' })).toBeDisabled()
+
+    answer({
+      data: {
+        description: 'Contain the beaconing host\n\nTool: isolate_host',
+        parameters: {
+          tool: 'isolate_host',
+          args_canonical: '{"host":"WS-1","mode":"full"}',
+          args_targets: [['host', 'WS-1\u202e']],
+        },
+      },
+    })
+    const detail = await screen.findByLabelText('Details of Isolate WS-1')
+    expect(await within(detail).findByText('Contain the beaconing host')).toBeInTheDocument()
+    expect(within(detail).getByText('Beaconing to 5.6.7.8')).toBeInTheDocument()
+    expect(within(detail).getByText('Reversible')).toBeInTheDocument()
+    expect(within(detail).getByTestId('tool-call').textContent).toContain('host=WS-1\\u202e')
+    expect(within(detail).getByLabelText('Arguments').textContent).toBe('{"host":"WS-1","mode":"full"}')
+    expect(approvalsApi.getById).toHaveBeenCalledWith('p1')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve Isolate WS-1' })).toBeEnabled())
+
+    // closing the row locks Approve again
+    fireEvent.click(screen.getByRole('button', { name: 'Review Isolate WS-1' }))
+    expect(screen.getByRole('button', { name: 'Approve Isolate WS-1' })).toBeDisabled()
+
+    // a failed read says so; the person is told where to see the call
+    fireEvent.click(screen.getByRole('button', { name: 'Review Disable bob' }))
+    expect(await screen.findByText(/could not be loaded/)).toBeInTheDocument()
   })
 
   it('names how many proposals wait when no run is paused', async () => {

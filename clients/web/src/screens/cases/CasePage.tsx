@@ -11,6 +11,7 @@ import { SeverityMark } from '../../shared/SeverityMark'
 import { StatePill, statePill } from '../../shared/StatePill'
 import { TabStrip } from '../../shared/TabStrip'
 import { HoldButton } from '../../shared/HoldButton'
+import { ToolCallDetail, displaySafe, questionOf, toolCallOf, type ToolCall } from '../decisions/ToolCallDetail'
 import { Icon } from '../../shared/icons'
 import { useToast } from '../../shell/toast'
 import { useFusedDecision } from '../../shell/useFusedDecision'
@@ -312,11 +313,54 @@ function CaseNeed(props: NeedProps) {
   )
 }
 
-/** One proposed action as a row: title, reversibility, its own Approve and Reject. */
+/** The approval row behind a collapsed proposal: its question and the one call it binds. */
+type RowDetail = { state: 'loading' } | { state: 'ready'; question: string; call: ToolCall | null } | { state: 'failed' }
+
+/** One proposed action as a row: title, reversibility, Review, Approve and Reject.
+ *  Approve stays disabled until the row is opened and its bound call (tool,
+ *  target, canonical arguments, W0.14/W0.16) has been read, so a compact row
+ *  can never be approved on its title alone. */
 function CaseNeedRow(props: NeedProps) {
   const { item, busy } = props
   const [rejecting, setRejecting] = useState(false)
+  const [open, setOpen] = useState(false)
+  const [detail, setDetail] = useState<RowDetail | null>(null)
   const reversible = item.reversibility === 'reversible'
+  const detailId = `need-detail-${item.source_id}`
+
+  const asked = useRef(false)
+  useEffect(() => {
+    if (!open || asked.current) return
+    asked.current = true
+    let live = true
+    let settled = false
+    setDetail({ state: 'loading' })
+    approvalsApi
+      .getById(item.source_id)
+      .then((res) => {
+        if (!live) return
+        settled = true
+        const row = (res?.data ?? {}) as { description?: string; parameters?: Record<string, unknown> }
+        const call = toolCallOf(row.parameters)
+        setDetail({ state: 'ready', question: questionOf(row.description, call), call })
+      })
+      .catch(() => {
+        if (!live) return
+        settled = true
+        setDetail({ state: 'failed' })
+      })
+    return () => {
+      live = false
+      // Closed before the read came back: ask again on the next open.
+      if (!settled) {
+        asked.current = false
+        setDetail(null)
+      }
+    }
+  }, [open, item.source_id])
+
+  // Read before approve: opened, and the bound call has loaded (or failed to, which is shown).
+  const reviewed = open && detail !== null && detail.state !== 'loading'
   return (
     <li>
       <div className="needs-row">
@@ -325,19 +369,61 @@ function CaseNeedRow(props: NeedProps) {
           {reversible ? 'Reversible' : 'Cannot be undone'}
         </span>
         <div className="needs-actions">
-          <ApproveButton {...props} label={`Approve ${item.title}`} />
+          <button
+            type="button"
+            className="btn neutral"
+            aria-label={`Review ${item.title}`}
+            aria-expanded={open}
+            aria-controls={detailId}
+            onClick={() => setOpen((was) => !was)}
+          >
+            {open ? 'Hide' : 'Review'}
+          </button>
+          <span title={reviewed ? undefined : 'Review the action before approving it'}>
+            <ApproveButton {...props} busy={busy || !reviewed} label={`Approve ${item.title}`} />
+          </span>
           <button
             type="button"
             className="btn neutral"
             aria-label={`Reject ${item.title}`}
             aria-expanded={rejecting}
             disabled={busy}
-            onClick={() => setRejecting((open) => !open)}
+            onClick={() => setRejecting((was) => !was)}
           >
             Reject
           </button>
         </div>
       </div>
+      {open && (
+        <div className="needs-row-detail" id={detailId} aria-label={`Details of ${item.title}`}>
+          <dl className="needs-facts">
+            {item.reason && (
+              <>
+                <dt>Why</dt>
+                <dd>{item.reason}</dd>
+              </>
+            )}
+            <dt>Reversibility</dt>
+            <dd>{reversible ? 'Reversible' : 'Cannot be undone'}</dd>
+          </dl>
+          {detail?.state === 'loading' && <p className="needs-row-note">Loading the proposed call…</p>}
+          {detail?.state === 'failed' && (
+            <p className="needs-row-note" role="alert">
+              The proposed call could not be loaded. Open it under Decisions to see its target and arguments.
+            </p>
+          )}
+          {detail?.state === 'ready' && (
+            <>
+              {detail.question && <p className="needs-row-note">{displaySafe(detail.question)}</p>}
+              {detail.call ? (
+                <ToolCallDetail call={detail.call} />
+              ) : (
+                <p className="needs-row-note">This proposal binds no tool call.</p>
+              )}
+            </>
+          )}
+        </div>
+      )}
       {rejecting && <RejectForm {...props} />}
     </li>
   )

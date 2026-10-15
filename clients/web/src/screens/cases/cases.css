@@ -225,6 +225,8 @@
 .case-needs .needs-row .needs-actions .home-hold { min-width: 124px; }
 .case-needs .needs-more li .needs-reject { background: var(--bg1); }
 
+.case-needs .needs-row-detail { padding: 6px 0 2px; display: flex; flex-direction: column; gap: 6px; }
+.case-needs .needs-row-note { margin: 0; font-size: 12px; color: var(--tx1); overflow-wrap: anywhere; }
 .case-needs .needs-more-foot {
   display: flex;
   align-items: center;
