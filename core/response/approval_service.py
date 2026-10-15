@@ -641,6 +641,23 @@ class ApprovalService:
             logger.error("DB error creating action: %s", e)
             raise
 
+    def has_action_for_finding(self, finding_id: str) -> bool:
+        """Whether any response action already names this finding as evidence.
+
+        Any status counts: a pending, approved, executed or rejected proposal
+        is the finding's response, and proposing it again is a duplicate (a
+        re-triaged finding, W0.25). Raises on a failed read.
+        """
+        with get_db_manager().session_scope() as session:
+            return (
+                session.execute(
+                    select(ApprovalActionRow.action_id)
+                    .where(ApprovalActionRow.evidence.contains([finding_id]))
+                    .limit(1)
+                ).first()
+                is not None
+            )
+
     def get_action(self, action_id: str) -> Optional[PendingAction]:
         """Get a specific action by ID."""
         try:

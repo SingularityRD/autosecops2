@@ -147,6 +147,14 @@ Helm'de tablolar iki farklı role (chart'ın veritabanı kullanıcısı ve
 uyguladığı dosyaları Helm db-init Job'unun `_vigil_schema_versions`
 tablosuna işler; `helm upgrade` bu dosyaları yeniden uygulamaz.
 
+db-init Job'u kayıtlı bir init dosyasını yeniden uygulamadığından, mevcut bir
+kısmi index'in koşulu değiştiğinde (ör. W0.25'te `idx_finding_unrated_sweep`)
+index'i Helm yeniden kurmaz. 2.0 sürümleri arasındaki her `helm upgrade`'den
+sonra, aynı port yönlendirmesiyle ve aynı `DATABASE_URL` ile
+`python scripts/migrate_schema.py` bir kez çalıştırılır. Komut idempotenttir:
+index güncel ise hiçbir şey yapmaz, değilse `CREATE INDEX CONCURRENTLY` ile
+yeniden kurar, bu sırada yazımlar sürer.
+
 ## Doğrulama
 
 - Komut `upgrade complete: <eski> -> <yeni>` ile ve çıkış kodu 0 ile biter.
