@@ -91,58 +91,58 @@ so the next radar starts there.
 
 Radar of 15 October 2026: upstream `58736836..7eea6a18`, 46 commits (triage
 notes in `docs/wp/w0.25.md`). Work packages: **W0.25** core and data fixes,
-**W0.26** hunt / case / console UI, **W0.27** password reset, **W0.28**
+**W0.26** hunt / case / console UI (search/entity chain deferred), **W0.27** password reset, **W0.28**
 connectors, **W0.30** agent guards and OTel. Next radar starts from
 **`7eea6a18`**.
 
 | Upstream | PR | Subject | Decision | Taken by / reason |
 |---|---|---|---|---|
-| `98ca1152` | #2197 | Experimental label for connectors never run live | UYARLA | W0.28: README text rebranded, support channel ours |
-| `596850b6` | #2198 | Weekly live connector runs; Okta MCP env fix | UYARLA | W0.28: Okta `OKTA_CLIENT_ORGURL` fix and Experimental entries; `tests/live` and the workflow deferred (CI secrets, runner egress) |
-| `ceb46864` | #2199 | Forgot / reset password screens | UYARLA | W0.27: on top of the W1.9 SSO login, AutoSecOps branding, token removed from the URL, air-gap (no SMTP) wording |
-| `ac147719` | #2205 | Ask gets the run's live state; bounded `replay_hunt` | AL | W0.26 |
-| `2ecfbb2c` | #2206 | /hunt preview names the real state; one Approve path | AL | W0.26 (client only; four-eyes stays server side) |
-| `29bb968c` | #2207 | A failed query is a blind spot, not evidence against | AL | W0.26 |
-| `6eaeec5c` | #2208 | Evidence tab totals every row | AL | W0.26 |
-| `d79131cb` | #2209 | Run-only case shows step, cap, entities | UYARLA | W0.26: init file renumbered to the next free number (52) with Helm, migrate and snapshots |
-| `de30c4b4` | #2223 | change-password returns 400 on password reuse | AL | W0.25 |
-| `cae2414a` | #2229 | Case activities in the Record tab | AL | W0.26 (rows marked unchained; audit chain unchanged) |
-| `d2e5f2b6` | #2228 | Approval times stamped as UTC | UYARLA | W0.25: also the fork's `expires_at` / `verified_at` / `reversed_at` and the `-rev` reversal id |
-| `92c8da6d` | #2248 | Orchestrator reads findings from Postgres, not the demo service | UYARLA | W0.25: kept the Federation bulk hydrate (one read per tick) |
-| `a37010f8` | #2249 | Triage queue scrolls inside its card | AL | W0.26 |
-| `b36a232c` | #2250 | Auto-investigate off: say alerts wait, no case opens | AL | W0.26 |
+| `98ca1152` | #2197 | Experimental label for connectors never run live | UYARLA | W0.28 (pending): README text rebranded, support channel ours |
+| `596850b6` | #2198 | Weekly live connector runs; Okta MCP env fix | UYARLA | W0.28 (pending): Okta `OKTA_CLIENT_ORGURL` fix and Experimental entries only; `tests/live` and the workflow ERTELE (CI secrets, runner egress) |
+| `ceb46864` | #2199 | Forgot / reset password screens | UYARLA | W0.27 (taken): on top of the W1.9 SSO login, AutoSecOps branding, token removed from the URL, air-gap (no SMTP) wording |
+| `ac147719` | #2205 | Ask gets the run's live state; bounded `replay_hunt` | AL | W0.26 (taken) |
+| `2ecfbb2c` | #2206 | /hunt preview names the real state; one Approve path | AL | W0.26 (taken) (client only; four-eyes stays server side) |
+| `29bb968c` | #2207 | A failed query is a blind spot, not evidence against | AL | W0.26 (taken) |
+| `6eaeec5c` | #2208 | Evidence tab totals every row | AL | W0.26 (taken) |
+| `d79131cb` | #2209 | Run-only case shows step, cap, entities | UYARLA | W0.26 (taken): init file renumbered to **62** (`62_workflow_runs_progress.sql`) with Helm, migrate and snapshots |
+| `de30c4b4` | #2223 | change-password returns 400 on password reuse | AL | W0.25 (taken) |
+| `cae2414a` | #2229 | Case activities in the Record tab | AL | W0.26 (taken) (rows marked unchained; audit chain unchanged) |
+| `d2e5f2b6` | #2228 | Approval times stamped as UTC | UYARLA | W0.25 (taken): also the fork's `expires_at` / `verified_at` / `reversed_at` and the `-rev` reversal id |
+| `92c8da6d` | #2248 | Orchestrator reads findings from Postgres, not the demo service | UYARLA | W0.25 (taken): kept the Federation bulk hydrate (one read per tick) |
+| `a37010f8` | #2249 | Triage queue scrolls inside its card | AL | W0.26 (taken) |
+| `b36a232c` | #2250 | Auto-investigate off: say alerts wait, no case opens | AL | W0.26 (taken) |
 | `5d6d2d5f` | #2251 | LogLM session secret help text | ATLA | LogLM only |
-| `0b42a5d4` | #2252 | Re-queued finding merges into its open case | UYARLA | W0.25: one batched open-case query per intake tick |
-| `e96f0bf3` | #2271 | Proposed actions collapse under the paused-run decision | UYARLA | W0.26: the collapsed row must show target and arguments (W0.16), or Approve only after expanding |
+| `0b42a5d4` | #2252 | Re-queued finding merges into its open case | UYARLA | W0.25 (taken): one batched open-case query per intake tick |
+| `e96f0bf3` | #2271 | Proposed actions collapse under the paused-run decision | UYARLA | W0.26 (taken): the collapsed row gets a Review button that reads the full action (target, arguments, W0.16) before Approve |
 | `a8fe22df` | #2264 | Agent kernel: one plugin-driven loop | ERTELE | Only useful with the whole kernel series; kernel re-base vs. own agent layer decided in 2027 Q1 |
 | `5dc40ab3` | #2265 | Root cause, chat, tally, compose as kernel plugins | ERTELE | Kernel series; compose `idOf()` drops the W1.7b `tool`/`args` binding, tally loses its `read_only` effect |
 | `6f7d7e12` | #2266 | Hunt and adjudicate as plugins; controller retired | ERTELE | Kernel series; breaks the W2.1 verdict run (acceptConclude, on_budget, provenance) |
 | `02f6d21f` | #2267 | Kernel trust: frames, ledger-only replay | ERTELE | Kernel series; recall content copied to the ledger needs a W3.5 / KVKK review first |
 | `2ea100f1` | #2268 | One skill library; workflows/ and arch/ folded into plugins | ERTELE | Kernel series; moves break path-based ratchets and inventories (W1.7, FIPS, egress) |
-| `05e50665` | #2276 | OTel traces for the agent layer | UYARLA | W0.30: keep `approval` in `remote.ts`, egress inventory entry, SBOM, content capture off in prod/air-gap |
-| `6d34c7cd` | #2298 | Hunt guards: subject-written text kept out of the verdict | UYARLA | W0.30: resolve handles before the gate (args digest), wire the reader to our controller and verdict run |
+| `05e50665` | #2276 | OTel traces for the agent layer | UYARLA | W0.30 (taken): keep `approval` in `remote.ts`, tracing only with an OTLP endpoint, egress inventory entry, content capture off in air-gap |
+| `6d34c7cd` | #2298 | Hunt guards: subject-written text kept out of the verdict | UYARLA | W0.30 (taken, manual port): `core/guards.ts` on our hunt loop; handles resolved before the approval gate (args digest) |
 | `4494721c` | #2299 | Case page side panel, citation chips, composer room | ERTELE | Client-only UX, taken in the post-GA UX batch after W0.26's case-page changes |
 | `5674c0d4` | #2300 | Eval estate SQL; reviewer upholds benign dismissals | ATLA | Needs the kernel's reviewer and live-model eval; lowering the benign-closure bar runs against human approval by default |
 | `dd88dd4b` | #2301 | Hunt case in words; waits on a person with controls | ERTELE | Needs the kernel (`book.ts` park reasons); the idea can move to our controller |
-| `59703064` | #2296 | /hunt proposes a PDF's own hypothesis; Ask keeps grounding | UYARLA | W0.26: the Python half; the TS half needs the kernel and is ported by hand to `workflows/chat` |
-| `c441a3fa` | #2297 | Hunt rules on the named host; evidence names its system | UYARLA | W0.26: Python half (entities, source tier, linked entities) and the link rule in `linkFindings`; keep W1.7 `is_gated` / `effect_of` |
-| `2f8fdf42` | #2302 | Evidence store under the State Directory; OpenRouter; setup gate | UYARLA | W0.26: evidence path only (data loss); OpenRouter `*` allow-list skipped; setup gate with the MCP runner |
-| `5f132b81` | #2329 | Okta MCP as a pinned uv tool | UYARLA | W0.28: pin a commit SHA, egress `exec:uvx` + `UV_OFFLINE`, drop `tests/live` hunks |
-| `6c8533f6` | #2331 | Chat session ids fall back to `getRandomValues` | AL | W0.25 |
-| `9f2a4e52` | #2332 | Reset without mail; operator-issued link | UYARLA | W0.27: e-mail-bound token (W1.9), refuse SSO-only and service accounts, audit + SIEM event, TTL setting, branding |
+| `59703064` | #2296 | /hunt proposes a PDF's own hypothesis; Ask keeps grounding | UYARLA (Python half), TS half ERTELE | W0.26 (taken, manual port): `hunt_claim.py` and `router.py` only; the Ask `exchange` grounding (TS) needs the kernel |
+| `c441a3fa` | #2297 | Hunt rules on the named host; evidence names its system | ERTELE | Search/entity chain (with e08ea09e, 265078af); deferred by W0.26's Non-goals, needs a hunt `linkFindings` port and keeps W1.7 `is_gated` / `effect_of` |
+| `2f8fdf42` | #2302 | Evidence store under the State Directory; OpenRouter; setup gate | UYARLA | W0.26 (taken, manual port): evidence path only (data loss); OpenRouter `*` allow-list ATLA; setup gate ERTELE with the MCP runner |
+| `5f132b81` | #2329 | Okta MCP as a pinned uv tool | UYARLA | W0.28 (pending): pin a commit SHA, egress `exec:uvx` + `UV_OFFLINE`, drop `tests/live` hunks |
+| `6c8533f6` | #2331 | Chat session ids fall back to `getRandomValues` | AL | W0.25 (taken) |
+| `9f2a4e52` | #2332 | Reset without mail; operator-issued link | UYARLA | W0.27 (taken): e-mail-bound token (W1.9), refuse SSO-only and service accounts, audit + SIEM event, TTL setting, branding |
 | `5a4bb2f1` | #2333 | Vertex API-key keys carry project and region | ATLA | Cloud Vertex only, no air-gap use; take cleanly if a customer runs Vertex |
 | `66ea4005` | #2328 | MCP runner supervisor | ERTELE | New image and architecture; one MCP runner WP with release/Trivy/SBOM/cosign, non-root mode, offline env |
-| `2cea176b` | #2334 | On-demand analysis: 8192-token cap for cloud | UYARLA | W0.25: any local endpoint (on-prem vLLM, LM Studio) keeps 1400, not only Ollama |
-| `2d28c92e` | #2335 | Built-ins that list findings can search them | AL | W0.26 (read-only grant) |
-| `e08ea09e` | #2336 | search_findings counts every match | ERTELE | Needs c441a3fa's entity extraction; with the search work after W0.26; `cluster_id` / `min_anomaly_score` are LogLM filters |
-| `3df928f3` | #2338 | Daemon triage asks for 8192 output tokens | AL | W0.25, plus `DAEMON_TRIAGE_MAX_TOKENS` (default 8192) |
-| `265078af` | #2337 | Findings search matches every term | UYARLA | W0.26: by hand (textually after e08ea09e), at most 10 terms |
+| `2cea176b` | #2334 | On-demand analysis: 8192-token cap for cloud | UYARLA | W0.25 (taken): any local endpoint (on-prem vLLM, LM Studio) keeps 1400, not only Ollama |
+| `2d28c92e` | #2335 | Built-ins that list findings can search them | AL | W0.26 (taken; read-only grant) |
+| `e08ea09e` | #2336 | search_findings counts every match | ERTELE | Search/entity chain: needs c441a3fa's entity extraction; `cluster_id` / `min_anomaly_score` are LogLM filters |
+| `3df928f3` | #2338 | Daemon triage asks for 8192 output tokens | AL | W0.25 (taken), plus `DAEMON_TRIAGE_MAX_TOKENS` (default 8192) |
+| `265078af` | #2337 | Findings search matches every term | ERTELE | Search/entity chain (textually after e08ea09e); not taken by W0.26; when taken, at most 10 terms |
 | `4bb6037a` | #2339 | Helm: MCP runner component | ERTELE | MCP runner WP: release matrix entry, `existingSecret` for air-gap, PSS `restricted` |
 | `89dcca09` | #2343 | Backend and daemon reach MCP servers through the runner | ERTELE | MCP runner WP: `is_integration_enabled` gates, offline env for children, mTLS, egress and FIPS notes |
-| `dcc79f66` | #2356 | AI analysis progress text no longer says local | AL | W0.25 |
+| `dcc79f66` | #2356 | AI analysis progress text no longer says local | AL | W0.25 (taken) |
 | `2acef19f` | #2357 | connectors-live probes through a runner | ATLA | CI-only, needs `tests/live`; the Cloudflare gate removal belongs to the MCP runner WP |
-| `c5f49d69` | #2358 | Only a generated analysis counts as cached enrichment | AL | W0.25 (also fixes the popup for `alert_lane`-only rows) |
-| `7eea6a18` | #2359 | Triage and AI analysis replace only their own keys | UYARLA | W0.25: `alert_lane` is a daemon key, `_persist_settled` writes as the daemon, the backfill predicate (`UNRATED_WHERE` + partial index) counts `alert_lane` as triaged |
+| `c5f49d69` | #2358 | Only a generated analysis counts as cached enrichment | AL | W0.25 (taken) (also fixes the popup for `alert_lane`-only rows) |
+| `7eea6a18` | #2359 | Triage and AI analysis replace only their own keys | UYARLA | W0.25 (taken): `alert_lane` is a daemon key, `_persist_settled` writes as the daemon, the backfill predicate (`UNRATED_WHERE` + partial index) counts `alert_lane` as triaged |
 
 ## Where this repository differs from upstream
 
