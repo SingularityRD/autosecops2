@@ -42,9 +42,12 @@ pytestmark = pytest.mark.unit
 
 
 class _FakeProvider:
-    def __init__(self, provider_type="ollama", provider_id="ollama-default"):
+    def __init__(
+        self, provider_type="ollama", provider_id="ollama-default", base_url=None
+    ):
         self.provider_type = provider_type
         self.provider_id = provider_id
+        self.base_url = base_url
 
 
 class _RecordingDataService:
@@ -605,9 +608,9 @@ def _patch_local_dispatch(monkeypatch, *, results, retry_limit=1, recovery_ready
     return calls
 
 
-async def _dispatch_local(provider_type="ollama"):
+async def _dispatch_local(provider_type="ollama", base_url=None):
     return await enrichment_service._dispatch(
-        provider=_FakeProvider(provider_type, f"{provider_type}-default"),
+        provider=_FakeProvider(provider_type, f"{provider_type}-default", base_url),
         model_id="qwen3:8b",
         prompt="PROMPT",
         claude_service=None,
@@ -632,6 +635,38 @@ async def test_cloud_dispatch_gets_the_cloud_cap(monkeypatch, provider_type):
     calls = _patch_local_dispatch(monkeypatch, results=[{"content": "OK"}])
 
     assert await _dispatch_local(provider_type=provider_type) == "OK"
+    assert calls[0]["max_tokens"] == enrichment_service.CLOUD_MAX_TOKENS
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://vllm:8000/v1",
+        "http://10.20.0.5:8000/v1",
+        "http://localhost:1234/v1",
+        "https://llm.bank.internal/v1",
+    ],
+)
+async def test_an_on_prem_openai_compatible_server_keeps_the_local_cap(
+    monkeypatch, base_url
+):
+    """W0.25 adapt(upstream 2cea176b): on-prem vLLM / LM Studio is local, not
+    cloud: slow per token, so 8192 would time out. Any local endpoint counts."""
+    calls = _patch_local_dispatch(monkeypatch, results=[{"content": "OK"}])
+
+    assert await _dispatch_local(provider_type="openai", base_url=base_url) == "OK"
+    assert calls[0]["max_tokens"] == enrichment_service.LOCAL_MAX_TOKENS
+
+
+async def test_a_public_base_url_gets_the_cloud_cap(monkeypatch):
+    calls = _patch_local_dispatch(monkeypatch, results=[{"content": "OK"}])
+
+    assert (
+        await _dispatch_local(
+            provider_type="openai", base_url="https://api.openai.com/v1"
+        )
+        == "OK"
+    )
     assert calls[0]["max_tokens"] == enrichment_service.CLOUD_MAX_TOKENS
 
 

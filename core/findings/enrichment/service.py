@@ -31,8 +31,9 @@ from core.time import utcnow
 logger = logging.getLogger(__name__)
 
 # Bounded separately per path: the enrichment JSON schema is large, so a tight
-# cap truncates it. Local (Ollama) models are slow per token, so they get the
-# tightest bound that still fits the object. Other cloud models behind Bifrost
+# cap truncates it. Local models (Ollama, or any provider on a local endpoint
+# such as on-prem vLLM) are slow per token, so they get the tightest bound that
+# still fits the object. Cloud models behind Bifrost
 # get the most room: thinking models (e.g. Gemini 2.5) spend their reasoning
 # tokens out of the same budget before writing the JSON.
 ANTHROPIC_MAX_TOKENS = 4096
@@ -106,6 +107,22 @@ def _resolve_provider(component: str) -> Tuple[Any, str, Any]:
     )
 
 
+def _is_local_provider(provider: Any) -> bool:
+    """Whether the model runs on the deployment's own hardware (slow per token).
+
+    Ollama always does. So does any provider whose ``base_url`` is a local
+    endpoint: an on-prem OpenAI-compatible server (vLLM, LM Studio) or a model
+    server on the deployment's own network. Only a provider reached at a
+    public address (or through Bifrost with no ``base_url``) is cloud.
+    """
+    if provider.provider_type == "ollama":
+        return True
+    from core.llm.local_lane import is_local_endpoint
+
+    base_url = getattr(provider, "base_url", None)
+    return bool(base_url) and is_local_endpoint(base_url)
+
+
 async def _dispatch(
     *,
     provider: Any,
@@ -144,7 +161,7 @@ async def _dispatch(
         "system_prompt": LOCAL_SYSTEM_PROMPT,
         "model": model_id,
         "max_tokens": (
-            LOCAL_MAX_TOKENS if provider.provider_type == "ollama" else CLOUD_MAX_TOKENS
+            LOCAL_MAX_TOKENS if _is_local_provider(provider) else CLOUD_MAX_TOKENS
         ),
     }
     from core.llm.providers.recovery import (
