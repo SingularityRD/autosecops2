@@ -11,8 +11,9 @@ reuse check, lockout clear and session revocation all happen in the existing
 /password-reset/confirm route; this script never handles a password.
 
 The link is valid for PASSWORD_RESET_TTL_SECONDS (default one hour) and works
-once. It is bound to the account's current email address, like an emailed
-link: changing the address retires it. Single-sign-on-only accounts (no local
+once. It is bound to the account's current email address and password, like
+an emailed link: changing either retires it. The token is in the URL fragment
+(``#token=``), which browsers never send to the server. Single-sign-on-only accounts (no local
 password) and service accounts are refused.
 
 Every issued link is recorded before it is printed: a ``case_audit_logs`` row
@@ -184,7 +185,7 @@ def issue_link(session, who: str, base_url: str, operator: str):
         return 1, None
     ttl = int(get_settings().password_reset_ttl_seconds)
     record_issue(session, user, operator, ttl)
-    link = reset_link(base_url, generate_reset_token(user.user_id, user.email))
+    link = reset_link(base_url, generate_reset_token(user.user_id, user.email, user.password_hash))
     return 0, (user.username, user.email, link, ttl)
 
 

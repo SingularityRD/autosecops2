@@ -347,7 +347,7 @@ def test_person_reset_uses_the_email_bound_token():
         auth_router.password_reset_request.__wrapped__(
             MagicMock(), body, _plain_session(person)
         )
-    gen.assert_called_once_with("ana", "ana@example.com")
+    gen.assert_called_once_with("ana", "ana@example.com", "h")
     send.assert_called_once()
 
 

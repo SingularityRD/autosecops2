@@ -60,7 +60,7 @@ def test_issued_link_is_chained_and_exported_without_the_token(audit_db):
         )
         session.commit()
     assert code == 0
-    token = parse_qs(urlparse(issued[2]).query)["token"][0]
+    token = parse_qs(urlparse(issued[2]).fragment)["token"][0]
 
     with audit_db.engine.connect() as conn:
         row = (

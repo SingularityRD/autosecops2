@@ -203,18 +203,30 @@ Hava boşluklu (air-gap) kurulumlarda SMTP genellikle yoktur: ekran bu durumda
 tanımlıysa ekran ayrıca SSO kullanıcılarının parolasını kimlik sağlayıcıda
 sıfırlaması gerektiğini yazar.
 
-Bağlantı `/reset-password?token=…` sayfasını açar. Sayfa belirteci okur okumaz
+Bağlantı `/reset-password#token=…` sayfasını açar. Belirteç adresin **parça**
+(fragment, `#`) kısmındadır; tarayıcı parçayı sunucuya hiç göndermez, bu yüzden
+belirteç erişim loglarına, ters vekil (proxy) loglarına ya da `Referer`'a düşmez.
+Bu sürümden önce verilmiş `?token=…` biçimli bağlantılar da açılır. Ek önlem
+olarak backend, HTTP erişim logunda (uvicorn) adı `token`, `code`, `state`,
+`password`, `secret`, `key` ya da `reset` içeren her sorgu parametresinin
+değerini `[REDACTED]` yapar; erişim logu kapatılmaz. Sayfa belirteci okur okumaz
 adres çubuğundan ve tarayıcı geçmişinden siler; sunucu bu sayfayı
-`Referrer-Policy: no-referrer` ile gönderir, belirteç başka bir siteye `Referer`
-olarak gitmez. Yeni parola aynı parola politikasından geçer (uzunluk, zxcvbn, son
-5 parola). Başarılı sıfırlama kilidi kaldırır ve hesabın tüm açık oturumlarını
-kapatır. Bağlantı `PASSWORD_RESET_TTL_SECONDS` süresince (varsayılan 1 saat)
-geçerlidir ve **bir kez** kullanılır: belirteç, parola denetiminden önce harcanır;
-politikaya takılan bir deneme de bağlantıyı tüketir, kullanıcı yeni bağlantı ister.
-Bağlantı hesabın o anki e-posta adresine bağlıdır; adres değişirse bekleyen tüm
-bağlantılar geçersiz olur. Akış zorlanan CSRF altında çalışır (sayfa yüklemesi
-`csrf_token` çerezini verir). E-postadaki bağlantının konsol adresi
-`VIGIL_FRONTEND_URL`'den gelir; boşsa e-posta yalnızca belirteci içerir.
+`Referrer-Policy: no-referrer` ile gönderir. Yeni parola aynı parola
+politikasından geçer (uzunluk, zxcvbn, son 5 parola). Başarılı sıfırlama kilidi
+kaldırır ve hesabın tüm açık oturumlarını kapatır.
+
+Bağlantı `PASSWORD_RESET_TTL_SECONDS` süresince (varsayılan 1 saat) geçerlidir ve
+**bir kez** kullanılır: belirteç, parola denetiminden önce harcanır; politikaya
+takılan bir deneme de bağlantıyı tüketir, kullanıcı yeni bağlantı ister. Tek
+kullanım Redis'te tutulur; Redis'e ulaşılamazsa sıfırlama **yapılmaz** ve kullanıcı
+"Password reset is unavailable right now" (503) görür; Redis dönünce aynı bağlantı
+yeniden denenebilir. Bağlantı hesabın o anki e-posta adresine **ve parolasına**
+bağlıdır: adres ya da parola değişirse (parola değiştirme, başka bir sıfırlama)
+bekleyen tüm bağlantılar geçersiz olur. Bu sürüme yükseltmeden önce verilmiş,
+kullanılmamış bağlantılar da bu yüzden geçersizdir; kullanıcı yenisini ister. Akış
+zorlanan CSRF altında çalışır (sayfa yüklemesi `csrf_token` çerezini verir).
+E-postadaki bağlantının konsol adresi `VIGIL_FRONTEND_URL`'den gelir; boşsa e-posta
+yalnızca belirteci içerir.
 
 **Kimler sıfırlayamaz.** SSO ile oluşmuş (parolasız) hesaplar ve hizmet hesapları
 (Medic ağ geçidi) ne e-posta alır ne de yönetici bağlantısı. SSO hesabı bir
@@ -227,7 +239,17 @@ reddedilir; parolası kimlik sağlayıcıda sıfırlanır. Hizmet hesabının pa
 operatör tek kullanımlık bir bağlantı üretir ve kullanıcıya güvenilir bir kanaldan
 iletir. Araç parolayla hiç uğraşmaz; parolayı kullanıcı aynı `/reset-password`
 ekranında kendisi belirler. Bağlantı çalışan backend'in `JWT_SECRET_KEY`'iyle
-imzalanır, bu yüzden araç backend ile aynı ortamda çalışmalıdır:
+imzalanır, bu yüzden araç backend ile aynı ortamda çalışmalıdır.
+
+> **Güven sınırı.** Aracı çalıştırabilen kişi backend'in `JWT_SECRET_KEY`'ine
+> erişebilir; bu, sunucu ya da konteyner üzerinde root/kök erişimine denktir (aynı
+> anahtarla her hesap için oturum belirteci de üretilebilir). Araç kimseyi kimlik
+> doğrulamasından geçirmez: denetim kaydındaki `cli:<operatör>` adı **operatörün
+> kendi beyanıdır**. Bu aracı yalnızca sunucuda zaten tam yetkili olan kişilere
+> açın; kimin çalıştırdığını işletim sistemi, `sudo`, `docker exec` ya da
+> Kubernetes denetim loglarıyla ayrıca doğrulayın.
+
+
 
 ```bash
 # Tek sunucu (yerel kurulum): hesapları listele, sonra bağlantı üret
@@ -250,8 +272,11 @@ konteyner içinde bu genellikle bir hizmet kullanıcısıdır.
 Her bağlantı **ekrana basılmadan önce** denetim kaydına yazılır; kayıt yazılamazsa
 bağlantı gösterilmez. Kayıt `case_audit_logs` tablosundadır (`entity_type='user'`,
 `action='reset_link_issued'`, `changed_by='cli:<operatör>'`) ve kimin, kimin için,
-ne zaman verdiğini ve bitiş zamanını tutar; belirtecin kendisi hiçbir loga ya da
-kayda yazılmaz. Satır denetim zincirine girer (`python -m core.audit.verify` ile
+ne zaman verdiğini ve bitiş zamanını tutar; belirtecin kendisi bu kayda, araç ve
+backend loglarına yazılmaz (araç bağlantıyı yalnızca kendi terminal çıktısına
+basar; o çıktıyı saklamayın). Tek istisna geliştirme kipidir: `DEV_MODE=true` ve
+posta yokken backend e-postadaki bağlantıyı bilerek sunucu loguna yazar; üretimde
+`DEV_MODE` kapalıdır. Satır denetim zincirine girer (`python -m core.audit.verify` ile
 doğrulanır) ve SIEM aktarımı açıksa `case_audit` kaynağından
 `case.user.reset_link_issued` olayı olarak gider. Kullanıcının bağlantıyı
 kullanması ayrıca `password_reset` kimlik doğrulama olayı olarak kaydedilir.

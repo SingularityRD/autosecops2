@@ -86,6 +86,7 @@ class TestPasswordResetLogging:
             email=EMAIL,
             is_active=True,
             service_account=False,
+            password_hash="pbkdf2$x",
         )
         sent = []
         real_send = email_service.ConsoleBackend.send
@@ -110,6 +111,7 @@ class TestPasswordResetLogging:
             email=EMAIL,
             is_active=True,
             service_account=False,
+            password_hash="pbkdf2$x",
         )
         assert "(token) " in _request_reset(monkeypatch, user, caplog)
 

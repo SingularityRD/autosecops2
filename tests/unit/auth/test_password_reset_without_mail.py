@@ -112,10 +112,12 @@ def test_link_carries_a_token_for_that_user():
     assert code == 0
     parsed = urlparse(issued[2])
     assert parsed.path == "/vigil/reset-password"
-    token = parse_qs(parsed.query)["token"][0]
+    # adapt (W0.27): the token is in the fragment, never sent to the server
+    assert parsed.query == ""
+    token = parse_qs(parsed.fragment)["token"][0]
     assert asyncio.run(password_reset.verify_reset_token(token)) == "u-admin"
     # adapt: bound to the address, so the confirm route accepts it (W1.9)
-    assert password_reset.token_matches_email(token, "admin@example.com")
+    assert password_reset.token_matches_account(token, "admin@example.com", "pbkdf2$x")
 
 
 @pytest.mark.parametrize(

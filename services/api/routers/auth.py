@@ -30,9 +30,10 @@ from core.auth.auth_service import (
 from core.auth.login_policy import local_login_allowed
 from core.auth.oidc_accounts import is_sso_only
 from core.auth.password_reset import (
+    ResetStoreUnavailable,
     generate_reset_token,
     reset_link,
-    token_matches_email,
+    token_matches_account,
     ttl_text,
     verify_reset_token,
 )
@@ -984,7 +985,7 @@ def password_reset_request(
         and not is_sso_only(user)
         and not _is_service_account(user)
     ):
-        token = generate_reset_token(user.user_id, user.email)
+        token = generate_reset_token(user.user_id, user.email, user.password_hash)
         frontend_base = settings.vigil_frontend_url
         if frontend_base:
             link = reset_link(frontend_base, token)
@@ -1057,7 +1058,14 @@ async def password_reset_confirm(
     password strength policy + reuse check, rotates the hash, and
     revokes every outstanding token so any existing sessions die.
     """
-    user_id = await verify_reset_token(body.token)
+    try:
+        user_id = await verify_reset_token(body.token)
+    except ResetStoreUnavailable:
+        # Single use can't be enforced right now: refuse, reset nothing.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Password reset is unavailable right now. Try again later.",
+        )
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1078,8 +1086,8 @@ async def password_reset_confirm(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Account no longer eligible for reset",
         )
-    if not token_matches_email(body.token, user.email):
-        # The account's email changed after this link was sent.
+    if not token_matches_account(body.token, user.email, user.password_hash):
+        # The account's email or password changed after this link was sent.
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired reset token",

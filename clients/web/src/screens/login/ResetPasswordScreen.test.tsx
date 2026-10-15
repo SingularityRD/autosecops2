@@ -22,7 +22,11 @@ vi.mock('react-router-dom', async () => {
 
 function LocationProbe() {
   const location = useLocation()
-  return <output data-testid="location">{location.pathname + location.search}</output>
+  return (
+    <output data-testid="location">
+      {location.pathname + location.search + location.hash}
+    </output>
+  )
 }
 
 function renderAt(url: string) {
@@ -86,7 +90,37 @@ describe('ResetPasswordScreen', () => {
     expect(screen.getByLabelText('New password')).toBeInTheDocument()
   })
 
-  it('takes the token out of the URL once read, and still confirms with it', async () => {
+  it('reads the token from the fragment and removes it', async () => {
+    confirmPasswordReset.mockResolvedValueOnce({ data: { message: 'ok' } })
+    renderAt('/reset-password#token=fragtok')
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent(/^\/reset-password$/),
+    )
+    submit('a-long-new-passphrase')
+    await waitFor(() =>
+      expect(confirmPasswordReset).toHaveBeenCalledWith({
+        token: 'fragtok',
+        new_password: 'a-long-new-passphrase',
+      }),
+    )
+  })
+
+  it('prefers the fragment over an old-style query token', async () => {
+    confirmPasswordReset.mockResolvedValueOnce({ data: { message: 'ok' } })
+    renderAt('/reset-password?token=querytok#token=fragtok')
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent(/^\/reset-password$/),
+    )
+    submit('a-long-new-passphrase')
+    await waitFor(() =>
+      expect(confirmPasswordReset).toHaveBeenCalledWith({
+        token: 'fragtok',
+        new_password: 'a-long-new-passphrase',
+      }),
+    )
+  })
+
+  it('takes an old-style query token out of the URL once read, and still confirms with it', async () => {
     confirmPasswordReset.mockResolvedValueOnce({ data: { message: 'ok' } })
     renderAt('/reset-password?token=tok123&lang=en')
     await waitFor(() =>

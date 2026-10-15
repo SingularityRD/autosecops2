@@ -1,27 +1,40 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { authApi } from '../../services/api'
 import { Icon } from '../../shared/icons'
 import AuthLayout from './AuthLayout'
 import { requestErrorMessage } from './requestErrorMessage'
 
-// Landing page for the emailed (or administrator-issued) /reset-password?token=…
-// link. Public: the signed token is the credential. AuthProvider's /auth/me GET
-// on mount seeds the csrf_token cookie the confirm POST needs in a fresh browser.
+// The token travels in the fragment (/reset-password#token=…): a browser never
+// sends a fragment to the server, so it can't reach an access log. Links
+// issued before that carried ?token=…; those still work.
+function tokenFrom(hash: string, search: string): string {
+  const fromHash = new URLSearchParams(hash.replace(/^#/, '')).get('token')
+  if (fromHash) return fromHash
+  return new URLSearchParams(search).get('token') ?? ''
+}
+
+// Landing page for the emailed (or administrator-issued) reset link. Public:
+// the signed token is the credential. AuthProvider's /auth/me GET on mount
+// seeds the csrf_token cookie the confirm POST needs in a fresh browser.
 export default function ResetPasswordScreen() {
   const navigate = useNavigate()
-  const [params, setParams] = useSearchParams()
+  const location = useLocation()
+  const [, setParams] = useSearchParams()
   // Read once, then kept in memory only: the address bar, history entry and
   // any Referer stop carrying it (see the effect below).
-  const [token] = useState(() => params.get('token') ?? '')
+  const [token] = useState(() => tokenFrom(location.hash, location.search))
 
   useEffect(() => {
-    // Take the token out of the URL as soon as it is read. A replace (the
-    // router's history.replaceState), so Back can't bring it back either.
-    if (params.has('token')) {
-      const rest = new URLSearchParams(params)
-      rest.delete('token')
-      setParams(rest, { replace: true })
+    // Take the token out of the URL as soon as it is read, from the fragment
+    // (the whole fragment goes; the screen uses no other) and the query. A replace (the router's history.replaceState), so
+    // Back can't bring it back either.
+    const search = new URLSearchParams(location.search)
+    const inHash = new URLSearchParams(location.hash.replace(/^#/, '')).has('token')
+    if (search.has('token') || inHash) {
+      search.delete('token')
+      // Navigates to "?<rest>" on this path, which also drops the fragment.
+      setParams(search, { replace: true })
     }
     // Belt and braces with the server's Referrer-Policy: no-referrer on this
     // page, for a dev server or proxy that doesn't send it.

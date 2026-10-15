@@ -182,7 +182,9 @@ def confirm_patches():
 
 def _token(user=None):
     user = user or _user()
-    return password_reset.generate_reset_token(user.user_id, user.email)
+    return password_reset.generate_reset_token(
+        user.user_id, user.email, user.password_hash
+    )
 
 
 # --- single use and expiry ----------------------------------------------------
@@ -218,6 +220,63 @@ def test_link_ttl_comes_from_settings(monkeypatch):
     assert "valid for 30 minutes" in sent["body"]
     assert password_reset.ttl_text(3600) == "1 hour"
     assert password_reset.ttl_text(7200) == "2 hours"
+
+
+def test_password_change_retires_a_pending_link(confirm_patches):
+    """W0.13 R6: a link issued before a password change no longer works."""
+    user = _user()
+    token = _token(user)
+    user.password_hash = "pbkdf2$changed-by-change-password"
+    resp = _confirm(TestClient(_app(user)), token)
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Invalid or expired reset token"
+    assert confirm_patches == []
+
+
+def test_a_token_without_the_password_binding_is_refused(confirm_patches):
+    user = _user()
+    legacy = password_reset._get_serializer().dumps(
+        {"user_id": user.user_id, "eb": password_reset._email_binding(EMAIL)}
+    )
+    assert _confirm(TestClient(_app(user)), legacy).status_code == 400
+    assert confirm_patches == []
+
+
+def test_the_payload_does_not_carry_the_password_hash():
+    user = _user(password_hash="pbkdf2$verysecrethash")
+    payload = password_reset._get_serializer().loads(_token(user))
+    assert "verysecrethash" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("outage", ["raises", "no_client"])
+def test_confirm_fails_closed_without_the_used_token_store(
+    outage, monkeypatch, confirm_patches
+):
+    if outage == "raises":
+        broken = AsyncMock()
+        broken.set = AsyncMock(side_effect=ConnectionError("redis down"))
+        monkeypatch.setattr(password_reset, "_redis_client", lambda: broken)
+    else:
+        monkeypatch.setattr(password_reset, "_redis_client", lambda: None)
+    resp = _confirm(TestClient(_app(_user())), _token())
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == (
+        "Password reset is unavailable right now. Try again later."
+    )
+    assert confirm_patches == []
+
+
+def test_links_carry_the_token_in_the_fragment():
+    link = password_reset.reset_link("https://soc.example/a/", "TOK")
+    assert link == "https://soc.example/a/reset-password#token=TOK"
+    sent = {}
+    with (
+        patch.object(auth, "get_settings", return_value=_settings("smtp")),
+        patch.object(auth, "send_email", side_effect=lambda **kw: sent.update(kw)),
+    ):
+        _request(TestClient(_app(_user())))
+    assert "/reset-password#token=" in sent["body"]
+    assert "?token=" not in sent["body"]
 
 
 # --- the reply cannot enumerate accounts ------------------------------------
@@ -361,7 +420,8 @@ def test_operator_link_is_bound_to_the_email_and_confirms(confirm_patches, monke
     assert ttl == 1800
     parsed = urlparse(link)
     assert parsed.path == "/autosecops/reset-password"
-    token = parse_qs(parsed.query)["token"][0]
+    assert parsed.query == ""  # fragment only: never sent to the server
+    token = parse_qs(parsed.fragment)["token"][0]
     assert password_reset.token_matches_email(token, EMAIL)
     resp = _confirm(TestClient(_app(user)), token)
     assert resp.status_code == 200, resp.text
@@ -378,7 +438,7 @@ def test_operator_link_audit_record_names_who_whom_when_but_not_the_token(
     session = _Session(_user())
     code, issued = script.issue_link(session, EMAIL, "http://x", "alice")
     assert code == 0
-    token = parse_qs(urlparse(issued[2]).query)["token"][0]
+    token = parse_qs(urlparse(issued[2]).fragment)["token"][0]
     assert session.flushed
     (row,) = session.added
     assert row.entity_type == "user" and row.entity_id == "u-ana"
