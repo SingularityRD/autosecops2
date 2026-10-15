@@ -30,7 +30,10 @@ SS = 4  # supersampling factor for smooth edges
 
 def _hexagon(cx: float, cy: float, r: float) -> list[tuple[float, float]]:
     return [
-        (cx + r * math.cos(math.radians(90 + 60 * i)), cy + r * math.sin(math.radians(90 + 60 * i)))
+        (
+            cx + r * math.cos(math.radians(90 + 60 * i)),
+            cy + r * math.sin(math.radians(90 + 60 * i)),
+        )
         for i in range(6)
     ]
 
@@ -67,7 +70,18 @@ def main() -> None:
     app_icon(256).save(OUT / "256x256.png")
     big = app_icon(1024)
     big.resize((512, 512), Image.LANCZOS).save(OUT / "512x512.png")
-    big.save(OUT / "icon.icns", sizes=[(16, 16), (32, 32), (64, 64), (128, 128), (256, 256), (512, 512), (1024, 1024)])
+    big.save(
+        OUT / "icon.icns",
+        sizes=[
+            (16, 16),
+            (32, 32),
+            (64, 64),
+            (128, 128),
+            (256, 256),
+            (512, 512),
+            (1024, 1024),
+        ],
+    )
     tray_icon(44).save(OUT / "tray.png")
     tray_icon(88).save(OUT / "tray@2x.png")
     print(f"placeholder icons written to {OUT}")

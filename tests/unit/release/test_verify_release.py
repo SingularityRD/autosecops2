@@ -222,7 +222,9 @@ def _add(rel: Path, name: str, body: str, listed: bool = True) -> None:
             fh.write(f"{digest}  {name}\n")
 
 
-def test_desktop_installers_are_verified_when_present(tmp_path: Path, release: Path) -> None:
+def test_desktop_installers_are_verified_when_present(
+    tmp_path: Path, release: Path
+) -> None:
     """W0.24: the dmg / AppImage / exe of a release carry their own signature."""
     names = (
         f"autosecops-{V}-desktop-mac-arm64-unsigned.dmg",
@@ -241,7 +243,9 @@ def test_desktop_installers_are_verified_when_present(tmp_path: Path, release: P
     assert "RESULT: VERIFIED" not in proc.stdout
 
 
-def test_desktop_installer_missing_from_sha256sums_fails(tmp_path: Path, release: Path) -> None:
+def test_desktop_installer_missing_from_sha256sums_fails(
+    tmp_path: Path, release: Path
+) -> None:
     _add(release, f"autosecops-{V}-desktop-mac-x64.dmg", "dmg", listed=False)
     proc, _ = _run(tmp_path, release, "--skip-images")
     assert proc.returncode != 0

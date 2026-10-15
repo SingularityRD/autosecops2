@@ -660,7 +660,9 @@ def test_desktop_install_collects_the_rebranded_log_names(env, tmp_path):
     (state / "logs" / "autosecops-desktop.log").write_text("app\n")
     (state / "logs" / "autosecops-desktop.log.1").write_text("older app\n")
     (state / "logs" / "vigil-desktop.log").write_text("before the rename\n")
-    (state / "logs" / "containers" / "autosecops-20261005T000000Z.log").write_text("snap\n")
+    (state / "logs" / "containers" / "autosecops-20261005T000000Z.log").write_text(
+        "snap\n"
+    )
     (state / "logs" / "autosecops-other.log").write_text("not ours\n")
     standalone = state / "standalone"
     standalone.mkdir()
