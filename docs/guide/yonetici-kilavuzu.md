@@ -185,6 +185,77 @@ kapatamaz. MFA'yı kapatmak kurtarma kodlarını da siler.
 kodu uçları dakikada 5; parola sıfırlama isteği saatte 3, sıfırlamanın tamamlanması
 saatte 5 ile sınırlıdır.
 
+### Parola sıfırlama
+
+**Kullanıcının akışı.** Giriş ekranındaki **Forgot password?** bağlantısı e-posta
+soran bir istek ekranı açar (`POST /api/auth/password-reset/request`). Yanıt hesap
+olsun olmasın, etkin ya da SSO'lu olsun aynıdır; hangi e-postanın kayıtlı olduğunu
+sızdırmaz. Yanıt yalnızca posta yapılandırmasına göre değişir (`delivery` alanı):
+
+| `VIGIL_EMAIL_BACKEND` | `DEV_MODE` | Kullanıcının gördüğü |
+|---|---|---|
+| `smtp` | herhangi | "If that email matches an active account, a reset link has been sent." |
+| `console` (varsayılan) | `false` | E-posta kurulu olmadığı, bağlantı **gönderilmediği** ve AutoSecOps yöneticisine başvurması gerektiği |
+| `console` | `true` | Bağlantının ya da belirtecin sunucu loguna yazıldığı (yalnızca geliştirme) |
+
+Hava boşluklu (air-gap) kurulumlarda SMTP genellikle yoktur: ekran bu durumda
+"bağlantı gönderildi" demez, kullanıcıyı yöneticiye yönlendirir. SSO sağlayıcısı
+tanımlıysa ekran ayrıca SSO kullanıcılarının parolasını kimlik sağlayıcıda
+sıfırlaması gerektiğini yazar.
+
+Bağlantı `/reset-password?token=…` sayfasını açar. Sayfa belirteci okur okumaz
+adres çubuğundan ve tarayıcı geçmişinden siler; sunucu bu sayfayı
+`Referrer-Policy: no-referrer` ile gönderir, belirteç başka bir siteye `Referer`
+olarak gitmez. Yeni parola aynı parola politikasından geçer (uzunluk, zxcvbn, son
+5 parola). Başarılı sıfırlama kilidi kaldırır ve hesabın tüm açık oturumlarını
+kapatır. Bağlantı `PASSWORD_RESET_TTL_SECONDS` süresince (varsayılan 1 saat)
+geçerlidir ve **bir kez** kullanılır: belirteç, parola denetiminden önce harcanır;
+politikaya takılan bir deneme de bağlantıyı tüketir, kullanıcı yeni bağlantı ister.
+Bağlantı hesabın o anki e-posta adresine bağlıdır; adres değişirse bekleyen tüm
+bağlantılar geçersiz olur. Akış zorlanan CSRF altında çalışır (sayfa yüklemesi
+`csrf_token` çerezini verir). E-postadaki bağlantının konsol adresi
+`VIGIL_FRONTEND_URL`'den gelir; boşsa e-posta yalnızca belirteci içerir.
+
+**Kimler sıfırlayamaz.** SSO ile oluşmuş (parolasız) hesaplar ve hizmet hesapları
+(Medic ağ geçidi) ne e-posta alır ne de yönetici bağlantısı. SSO hesabı bir
+bağlantıyı yine de açarsa "This account signs in with single sign-on…" iletisiyle
+reddedilir; parolası kimlik sağlayıcıda sıfırlanır. Hizmet hesabının parolası
+`python -m core.auth.service_account ensure` ile döndürülür. Devre dışı hesaplar
+önce yeniden etkinleştirilmelidir.
+
+**Yöneticinin verdiği bağlantı (posta yokken).** Sunucuya erişimi olan bir
+operatör tek kullanımlık bir bağlantı üretir ve kullanıcıya güvenilir bir kanaldan
+iletir. Araç parolayla hiç uğraşmaz; parolayı kullanıcı aynı `/reset-password`
+ekranında kendisi belirler. Bağlantı çalışan backend'in `JWT_SECRET_KEY`'iyle
+imzalanır, bu yüzden araç backend ile aynı ortamda çalışmalıdır:
+
+```bash
+# Tek sunucu (yerel kurulum): hesapları listele, sonra bağlantı üret
+scripts/reset-password.sh --list
+scripts/reset-password.sh ana@example.com --operator "Ayşe Yılmaz"
+
+# Docker Compose
+docker exec deeptempo-backend python scripts/reset_password.py ana@example.com --operator ayse
+
+# Kubernetes (backend Deployment adını `kubectl get deploy` ile bulun)
+kubectl -n <ad-alanı> exec deploy/<backend-deployment> -- python scripts/reset_password.py ana@example.com --operator ayse
+```
+
+`--list` her hesabı kullanıcı adı, e-posta, rol, tür (`local` / `sso-only` /
+`service`) ve durumuyla gösterir. `--base-url` bağlantının konsol adresini verir
+(varsayılan `VIGIL_FRONTEND_URL`). `--operator` verilmezse `SUDO_USER` ya da işletim
+sistemi kullanıcısı kaydedilir; kişisel adınızı vermenizi öneririz, çünkü
+konteyner içinde bu genellikle bir hizmet kullanıcısıdır.
+
+Her bağlantı **ekrana basılmadan önce** denetim kaydına yazılır; kayıt yazılamazsa
+bağlantı gösterilmez. Kayıt `case_audit_logs` tablosundadır (`entity_type='user'`,
+`action='reset_link_issued'`, `changed_by='cli:<operatör>'`) ve kimin, kimin için,
+ne zaman verdiğini ve bitiş zamanını tutar; belirtecin kendisi hiçbir loga ya da
+kayda yazılmaz. Satır denetim zincirine girer (`python -m core.audit.verify` ile
+doğrulanır) ve SIEM aktarımı açıksa `case_audit` kaynağından
+`case.user.reset_link_issued` olayı olarak gider. Kullanıcının bağlantıyı
+kullanması ayrıca `password_reset` kimlik doğrulama olayı olarak kaydedilir.
+
 **SSO (OIDC).** Yönetici **Ayarlar → System → Single sign-on** bölümünden bir ya
 da daha çok OIDC sağlayıcısı tanımlar (türler: Entra ID, Okta, Keycloak, genel
 OIDC). Giriş ekranı her etkin sağlayıcı için bir "Sign in with …" düğmesi gösterir.

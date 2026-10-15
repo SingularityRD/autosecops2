@@ -88,7 +88,7 @@ def test_issued_link_is_chained_and_exported_without_the_token(audit_db):
     assert token not in json.dumps(payload)
 
     event = CaseAuditSource.event(SimpleNamespace(name="case_audit"), dict(row))
-    assert event.action == "case.user.reset_link_issued"
+    assert event.action == script.SIEM_ACTION == "case.user.reset_link_issued"
     assert event.actor == "cli:alice"
     assert event.target_id == "u-reset-db"
     assert "alice" in event.message and "ana" in event.message

@@ -57,6 +57,9 @@ from core.time import utcnow  # noqa: E402
 #: ``case_audit_logs.action`` of an operator-issued link (String(20)).
 AUDIT_ACTION = "reset_link_issued"
 AUDIT_SOURCE = "scripts/reset_password.py"
+#: The event the SIEM export's ``case_audit`` source makes of that row
+#: (``case.<entity_type>.<action>``, core/compliance/audit_export.py).
+SIEM_ACTION = "case.user.reset_link_issued"
 
 _REFUSALS = {
     REFUSED_INACTIVE: "is inactive; reactivate it before resetting.",
