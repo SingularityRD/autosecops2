@@ -73,3 +73,59 @@ def test_a_checkpoint_lists_the_values_apart_from_its_question():
     assert seen["parameters"]["subject_values"] == [
         {"ref": 1, "field": "host", "value": FORGED}
     ]
+
+
+def test_two_sources_keep_distinct_refs_and_drop_no_row():
+    # Round 7: the agent numbers one checkpoint's refs once (a gated call's context
+    # rows first, the prose's markers after them); nothing here drops a row.
+    seen = {}
+
+    def _raise(**kwargs):
+        seen.update(kwargs)
+
+    with patch.object(bridge, "raise_for_checkpoint", _raise), patch.object(
+        bridge, "authorise"
+    ):
+        bridge.record_checkpoint(
+            "run-1",
+            bridge.CheckpointRaised(
+                checkpoint_id="cp-2",
+                checkpoint_class="budget_anomaly",
+                question="The note [subject value 2] disagrees",
+                context={
+                    "subject_values": [{"ref": 1, "field": "host", "value": "WS01"}]
+                },
+                subject_values=[SubjectValue(ref=2, field="note", value="maintenance")],
+            ),
+            authorization="Bearer x",
+            approvals=object(),
+        )
+
+    assert seen["parameters"]["subject_values"] == [
+        {"ref": 1, "field": "host", "value": "WS01"},
+        {"ref": 2, "field": "note", "value": "maintenance"},
+    ]
+
+
+def test_a_shared_ref_with_different_values_keeps_both_rows():
+    rows = [SubjectValue(ref=1, value="a"), SubjectValue(ref=1, value="b")]
+    assert len(subject_block(rows).split("\n")) == 3
+
+
+def test_the_root_cause_lead_gets_markers_only():
+    # Round 7: _rca_context is a model's context; the subject block stays with people.
+    handoff = bridge.TerminalHandoff(
+        case_id="c",
+        title="t",
+        markdown="Proven on [subject value 1].",
+        subject_values=[SubjectValue(ref=1, field="host", value=FORGED)],
+    )
+    stored = handoff.model_copy(
+        update={
+            "markdown": with_markdown_block(handoff.markdown, handoff.subject_values)
+        }
+    )
+    context = bridge._rca_context(stored)
+    assert "[subject value 1]" in context
+    assert "Per SOC lead" not in context
+    assert HEADER not in context

@@ -76,6 +76,11 @@ export const READER_SCHEMA = {
 
 // The handle a value is shown as: braces and a prefix no tool result uses.
 const HANDLE = /\{\{h:([A-Za-z0-9_.:-]+)\}\}/g;
+
+// Text from the data that spells a handle is data (W0.30 round 7): broken apart before
+// it reaches the decider, so the only handles in its view -- and so in anything it
+// writes -- are ones this run minted.
+const defang = (text: string): string => text.replace(/\{\{h:/g, "{ {h:");
 const SUMMARY_CAP = 320;
 const VALUE_CAP = 120;
 const FAILURE_CAP = 300;
@@ -225,9 +230,9 @@ export function render(tool: string, ref: string, result: ToolResult, wrapped: W
         if (value.length >= 4) hidden.push(value);
         return `  - ${one.field} = ${handles.put(key, value)} (${one.authored === "subject" ? "written by the subject" : "withheld"}; put the handle in a query to search for this value)`;
       }
-      return `  - ${one.field} = ${value} (${one.authored})`;
+      return `  - ${one.field} = ${defang(value)} (${one.authored})`;
     });
-    let summary = finding.summary.trim().slice(0, SUMMARY_CAP);
+    let summary = defang(finding.summary.trim().slice(0, SUMMARY_CAP));
     for (const value of hidden) summary = summary.split(value).join("[a withheld value]");
     if (steering(summary)) summary = "[summary not shown; rely on the values]";
     const source = finding.source_system ?? (result.ok ? result.sourceSystem : "");
@@ -248,7 +253,7 @@ export function render(tool: string, ref: string, result: ToolResult, wrapped: W
 export const guardedFailure = (tool: string, ref: string, wrapped: Wrapped, handles: Handles): string => {
   const failure = wrapped.failure;
   const kind = failure?.kind ?? "unknown";
-  const detail = failure === null ? "" : failure.kind === "timeout" ? `after ${failure.timeoutMs}ms` : scrub(handles.mask(failure.detail), FAILURE_CAP);
+  const detail = failure === null ? "" : failure.kind === "timeout" ? `after ${failure.timeoutMs}ms` : scrub(handles.mask(defang(failure.detail)), FAILURE_CAP);
   const body = detail === "" || steeringIn(detail) ? `failed: ${kind}` : `failed: ${kind} -- ${detail}`;
   return [`<vigil:tool_result tool="${tool}" ref="${ref}" guarded="true">`, body, "</vigil:tool_result>"].join("\n");
 };
@@ -372,10 +377,13 @@ export class SubjectValues {
   readonly rows: SubjectValueRow[] = [];
   private readonly refs = new Map<string, number>();
 
+  // Refs start after `after`, so rows already numbered in the same body keep theirs.
+  constructor(private readonly after = 0) {}
+
   marker(key: string, value: string): string {
     let ref = this.refs.get(key);
     if (ref === undefined) {
-      ref = this.rows.length + 1;
+      ref = this.after + this.rows.length + 1;
       this.refs.set(key, ref);
       const shown = displaySafe(value.length > SUBJECT_VALUE_CAP ? `${value.slice(0, SUBJECT_VALUE_CAP)}...` : value);
       this.rows.push({ ref, field: fieldOf(key), value: shown });

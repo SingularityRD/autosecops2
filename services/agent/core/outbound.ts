@@ -51,7 +51,14 @@ export async function outboundValues(runId: string, state: State | null = ledger
   return { byKey, byRef: new Map() };
 }
 
+// Never rewritten (W0.30 round 7): the bound arguments of a gated call travel byte for
+// byte as parked, because the backend binds the approval to their digest; and raw data
+// -- tool results, journaled handle values, the subject_values rows themselves -- is
+// data even when it spells {{h:...}}. Only model- and harness-written prose is converted.
+const RAW_KEYS: ReadonlySet<string> = new Set(["tool_call", "args", "dispatched_arguments", "result", "rows", "handles", "subject_values"]);
+
 function convert(value: unknown, values: RunValues, key: string | null, collected: SubjectValues): unknown {
+  if (key !== null && RAW_KEYS.has(key)) return value;
   if (typeof value === "string") {
     if (!value.includes(HANDLE_TEXT)) return value;
     const filled = forPeople(value, values, collected);
@@ -64,13 +71,28 @@ function convert(value: unknown, values: RunValues, key: string | null, collecte
   return value;
 }
 
+// The refs already in the body (a gated call's context.subject_values), so one
+// checkpoint's markers are numbered once: new refs start after them (round 7).
+function highestRef(value: unknown, key: string | null = null): number {
+  if (Array.isArray(value)) {
+    return value.reduce<number>((top, one) => {
+      const ref = key === "subject_values" && typeof one === "object" && one !== null ? Number((one as { ref?: unknown }).ref) : NaN;
+      return Math.max(top, Number.isFinite(ref) ? ref : 0, highestRef(one, null));
+    }, 0);
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.entries(value).reduce((top, [k, v]) => Math.max(top, highestRef(v, k)), 0);
+  }
+  return 0;
+}
+
 // body unchanged (the same object) when nothing in it names a handle. Otherwise every
 // handle in its prose is a "[subject value N]" marker and, for an object body, the
 // values ride beside it as subject_values ({ref, field, value}); a consumer renders
 // those as plain text (W0.30 round 6).
 export async function outbound<T>(runId: string, body: T, state: State | null = ledger): Promise<T> {
   if (!(JSON.stringify(body) ?? "").includes(HANDLE_TEXT)) return body;
-  const collected = new SubjectValues();
+  const collected = new SubjectValues(highestRef(body));
   const converted = convert(body, await outboundValues(runId, state), null, collected);
   if (collected.rows.length === 0 || typeof converted !== "object" || converted === null || Array.isArray(converted)) return converted as T;
   const prior = (converted as { subject_values?: SubjectValueRow[] }).subject_values ?? [];

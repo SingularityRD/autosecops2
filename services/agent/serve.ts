@@ -9,7 +9,7 @@ import { verifyLedger, type VerifyResult } from "./ledger/verify.js";
 import { poolConfig } from "./core/db.js";
 import { errorFields, logger } from "./core/log.js";
 import { failed, initTracing, shutdownTracing, traced } from "./core/tracing.js";
-import { outbound } from "./core/outbound.js";
+import { outbound, outboundLedger } from "./core/outbound.js";
 import type { RunKind } from "./contracts/events.js";
 import type { ToolPrincipal } from "./contracts/tool.js";
 import { FRESH } from "./core/budget.js";
@@ -161,10 +161,14 @@ function refuse(res: ServerResponse, status: number, detail: string): void {
 }
 
 // A route that threw: logged with the run, then answered as the refusal it is.
-function fail(res: ServerResponse, status: number, route: string, runId: string, error: unknown): void {
+// The detail can quote ledger content -- a narrator's error over a guarded run's
+// prose -- so it answers through the same outbound conversion as a read (W0.30).
+async function fail(res: ServerResponse, status: number, route: string, runId: string, error: unknown): Promise<void> {
   log.error("request failed", { route, run_id: runId, status, ...errorFields(error) });
   failed(error);
-  refuse(res, status, error instanceof Error ? error.message : String(error));
+  const body = await outbound(runId, { detail: error instanceof Error ? error.message : String(error) }).catch(() => ({ detail: "the request failed" }));
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
 }
 
 // A run folded by the workflow that owns it. The events stay ours: a reader gets
@@ -297,6 +301,8 @@ async function openChat(state: State, req: IncomingMessage, res: ServerResponse,
 export type VerifyRun = (runId: string) => Promise<VerifyResult>;
 
 export function chatServer(state: State, ready: Ready, build: HarnessFactory = harnessFor, verify?: VerifyRun): Server {
+  // Where fail()'s outbound conversion reads a guarded run's handle values.
+  outboundLedger(state);
   return createServer((req, res) => {
     void (async () => {
       // Before the auth check, because the kubelet has no token. These say only

@@ -40,6 +40,19 @@ export function withoutSubjectBlock(text: string): string {
   return at >= 0 ? text.slice(0, at) : text
 }
 
+/** One list from several sources, each ref once (the agent layer numbers a body's
+ *  refs once; a repeat of the same row is dropped, never a different one). */
+export function mergeSubjectValues(...lists: readonly SubjectValue[][]): SubjectValue[] {
+  const seen = new Set<string>()
+  return lists
+    .flat()
+    .filter((row) => {
+      const key = `${row.ref}\u0000${row.field}\u0000${row.value}`
+      return !seen.has(key) && seen.add(key) !== undefined
+    })
+    .sort((a, b) => a.ref - b.ref)
+}
+
 export function SubjectValuesBox({ rows }: { rows: readonly SubjectValue[] }) {
   if (rows.length === 0) return null
   return (
@@ -53,7 +66,7 @@ export function SubjectValuesBox({ rows }: { rows: readonly SubjectValue[] }) {
       <div className="font-semibold text-[11.5px]" style={{ color: 'var(--poor)' }}>{SUBJECT_HEADER}</div>
       <ul className="mt-1 flex flex-col gap-0.5" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {rows.map((row) => (
-          <li key={row.ref} className="mono" style={{ overflowWrap: 'anywhere' }}>
+          <li key={`${row.ref}:${row.field}:${row.value}`} className="mono" style={{ overflowWrap: 'anywhere' }}>
             <span className="muted">[{row.ref}] {row.field} = </span>
             <span>{row.value}</span>
           </li>

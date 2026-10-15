@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 from typing import Dict, List
+from xml.sax.saxutils import escape as _xml_escape
 
 try:
     from reportlab.lib import colors
@@ -24,6 +25,14 @@ except ImportError:
     REPORTLAB_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+
+def _text(value: object) -> str:
+    """Text for a ReportLab ``Paragraph``, which parses its argument as markup:
+    escaped so a case description, a note or a subject-written value (W0.30)
+    can neither add a link or an image nor make the build raise, with newlines
+    kept as line breaks."""
+    return _xml_escape("" if value is None else str(value)).replace("\n", "<br/>")
 
 
 class ReportService:
@@ -114,7 +123,9 @@ class ReportService:
 
             # Title
             title = case.get("title", "Investigation Case")
-            story.append(Paragraph(f"Case Report: {title}", self.styles["CustomTitle"]))
+            story.append(
+                Paragraph(f"Case Report: {_text(title)}", self.styles["CustomTitle"])
+            )
             story.append(Spacer(1, 0.2 * inch))
 
             # Case metadata
@@ -157,7 +168,7 @@ class ReportService:
             # Description
             description = case.get("description", "No description provided.")
             story.append(Paragraph("Description", self.styles["CustomHeading"]))
-            story.append(Paragraph(description, self.styles["CustomBody"]))
+            story.append(Paragraph(_text(description), self.styles["CustomBody"]))
             story.append(Spacer(1, 0.2 * inch))
 
             # Tags
@@ -165,7 +176,7 @@ class ReportService:
             if tags:
                 story.append(Paragraph("Tags", self.styles["CustomHeading"]))
                 tags_text = ", ".join(tags)
-                story.append(Paragraph(tags_text, self.styles["CustomBody"]))
+                story.append(Paragraph(_text(tags_text), self.styles["CustomBody"]))
                 story.append(Spacer(1, 0.2 * inch))
 
             # Timeline
@@ -215,7 +226,7 @@ class ReportService:
                         note_timestamp = note_timestamp.split("T")[0]
                     story.append(
                         Paragraph(
-                            f"<b>{note_timestamp}:</b> {note_text}",
+                            f"<b>{_text(note_timestamp)}:</b> {_text(note_text)}",
                             self.styles["CustomBody"],
                         )
                     )
@@ -270,7 +281,7 @@ class ReportService:
                 for i, step in enumerate(resolution_steps, 1):
                     story.append(
                         Paragraph(
-                            f"Step {i}: {step.get('description', 'N/A')}",
+                            f"Step {i}: {_text(step.get('description', 'N/A'))}",
                             self.styles["CustomSubheading"],
                         )
                     )
@@ -381,7 +392,7 @@ class ReportService:
                 for i, finding in enumerate(findings, 1):
                     story.append(
                         Paragraph(
-                            f"Finding {i}: {finding.get('finding_id', 'N/A')}",
+                            f"Finding {i}: {_text(finding.get('finding_id', 'N/A'))}",
                             self.styles["CustomSubheading"],
                         )
                     )

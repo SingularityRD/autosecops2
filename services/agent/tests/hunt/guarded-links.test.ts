@@ -209,6 +209,32 @@ describe("a guarded hunt links the alerts it cites", () => {
       writer.close();
     }
 
+    // Round 7: a narrate that fails answers 502 with a detail quoting the narrator's
+    // rejected emission -- through the same conversion, so no {{h: there either.
+    const broken: HarnessFactory = (kind, spec, ledgerState, memory, seed) => ({
+      ...narrator(kind, spec, ledgerState, memory, seed),
+      provider: {
+        model: "scripted/model",
+        provider_type: "scripted",
+        stream: async function* (request: TurnRequest): AsyncGenerator<ProviderEvent> {
+          if (request.emit !== undefined) yield { type: "text_delta", text: `not json, about {{h:${key}}}` };
+          yield { type: "usage", tokens: ZERO_TOKENS };
+        },
+      },
+    });
+    const failing = chatServer(state as never, async () => true, broken);
+    await new Promise<void>((ready) => failing.listen(0, "127.0.0.1", ready));
+    try {
+      const at = `http://127.0.0.1:${(failing.address() as AddressInfo).port}`;
+      const response = await fetch(`${at}/runs/${RUN}/narrate`, { method: "POST", headers: { authorization: "Bearer t" } });
+      const body = await response.text();
+      expect(response.status, body).toBe(502);
+      expect(body).toContain("[subject value 1]");
+      expect(body).not.toContain("{{h:");
+    } finally {
+      failing.close();
+    }
+
     // The stored ledger is untouched, so it stays replayable.
     expect(JSON.stringify(await state.read(RUN))).toContain("{{h:");
   });

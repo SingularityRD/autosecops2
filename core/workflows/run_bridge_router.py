@@ -32,6 +32,7 @@ from core.workflows.subject_values import (
     as_dicts,
     with_markdown_block,
     with_plain_block,
+    without_blocks,
 )
 from core.workflows.workflow_run_service import WorkflowRunService
 
@@ -684,7 +685,10 @@ _RCA_FINDING_CHARS = 8000
 
 
 def _rca_finding(handoff: TerminalHandoff) -> str:
-    finding = handoff.markdown.strip() or handoff.title
+    # Markers only (W0.30): the subject block a guarded hunt's case file carries is
+    # for people. This text is the root-cause lead's model context, which the
+    # guards keep subject text out of; "[subject value N]" names what it may search.
+    finding = without_blocks(handoff.markdown).strip() or handoff.title
     if len(finding) <= _RCA_FINDING_CHARS:
         return finding
     # No id named: handoff.case_id is the agent's own, not the Vigil case anyone

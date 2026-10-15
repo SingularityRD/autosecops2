@@ -40,3 +40,22 @@ describe('the open checkpoint card, with subject values', () => {
     expect(box.textContent).not.toContain('not referenced here')
   })
 })
+
+describe('the open checkpoint card, with two sources of values', () => {
+  it('shows each row once, with distinct refs, and drops none', () => {
+    const question = 'Isolate? The note [subject value 2] disagrees'
+    const hunt = {
+      run_id: 'r1',
+      subject_values: [{ ref: 2, field: 'note', value: 'maintenance' }],
+      open_checkpoint: {
+        checkpoint_id: 'c1',
+        checkpoint_class: 'tool_approval',
+        question,
+        context: { subject_values: [{ ref: 1, field: 'host', value: 'WS01' }] },
+      },
+    } as unknown as HuntView
+    render(<OpenCheckpoint hunt={hunt} />)
+    const rows = [...screen.getByTestId('subject-values').querySelectorAll('li')].map((li) => li.textContent)
+    expect(rows).toEqual(['[1] host = WS01', '[2] note = maintenance'])
+  })
+})

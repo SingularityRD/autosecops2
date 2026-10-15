@@ -33,7 +33,17 @@ class SubjectValue(BaseModel):
 
 
 def _rows(values: Iterable[SubjectValue]) -> List[SubjectValue]:
-    return sorted({v.ref: v for v in values}.values(), key=lambda v: v.ref)
+    """In ref order; an exact repeat is dropped, never a different row. The agent
+    layer numbers one body's refs once (core/outbound.ts), so two rows sharing a
+    ref is a defect to show, not a value to lose."""
+    seen = set()
+    out = []
+    for v in values:
+        key = (v.ref, v.field, v.value)
+        if key not in seen:
+            seen.add(key)
+            out.append(v)
+    return sorted(out, key=lambda v: v.ref)
 
 
 def subject_block(values: Iterable[SubjectValue]) -> str:
@@ -61,3 +71,13 @@ def with_markdown_block(text: str, values: Iterable[SubjectValue]) -> str:
 
 def as_dicts(values: Iterable[SubjectValue]) -> List[dict]:
     return [v.model_dump() for v in _rows(values)]
+
+
+def without_blocks(text: str) -> str:
+    """``text`` without the subject blocks appended above (plain or fenced): what
+    goes on into a model's context, which must carry the markers only (W0.30)."""
+    for start in (f"\n\n```text\n{HEADER}", f"\n\n{HEADER}"):
+        at = text.find(start)
+        if at >= 0:
+            text = text[:at]
+    return text
