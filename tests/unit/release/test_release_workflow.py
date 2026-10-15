@@ -130,7 +130,20 @@ def test_no_untrusted_context_in_run_scripts(wf: dict) -> None:
             assert bad not in run, f"{name}: {bad} interpolated into a shell script"
         assert "secrets." not in run, f"{name}: secret in a shell script"
     secrets = set(re.findall(r"secrets\.(\w+)", WF_PATH.read_text(encoding="utf-8")))
-    assert secrets <= {"GITHUB_TOKEN"}, secrets
+    # W0.24: the human-provided desktop signing secrets, scoped to the desktop
+    # job's env (tests/unit/release/test_desktop_app.py pins where).
+    assert secrets <= {"GITHUB_TOKEN"} | DESKTOP_SIGNING_SECRETS, secrets
+
+
+DESKTOP_SIGNING_SECRETS = {
+    "CSC_LINK",
+    "CSC_KEY_PASSWORD",
+    "APPLE_ID",
+    "APPLE_APP_SPECIFIC_PASSWORD",
+    "APPLE_TEAM_ID",
+    "WIN_CSC_LINK",
+    "WIN_CSC_KEY_PASSWORD",
+}
 
 
 def test_checkouts_do_not_persist_credentials(wf: dict) -> None:

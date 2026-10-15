@@ -16,7 +16,8 @@
 # Steps (each failure stops with a non-zero exit):
 #   1. every file listed in SHA256SUMS exists and matches (sha256sum / shasum)
 #   2. SHA256SUMS carries a valid keyless signature from the release workflow
-#   3. every SBOM, provenance, image list and web bundle carries its own signature
+#   3. every SBOM, provenance, image list and web bundle carries its own signature,
+#      and so does every desktop installer (autosecops-<V>-desktop-*) present
 #   4. every image digest in autosecops-<V>-images.tsv has a signed SLSA
 #      provenance (index) and CycloneDX SBOM (each platform) attestation
 #
@@ -110,6 +111,15 @@ for f in "autosecops-${version}-images.json" "$images_tsv" \
          "autosecops-${version}-web.tar.gz" autosecops-"${version}"-*.cdx.json \
          autosecops-"${version}"-*.provenance.json; do
   [ -f "$f" ] || die "expected release file missing: $f"
+  grep -q "  $f\$" SHA256SUMS || die "$f is not listed in SHA256SUMS"
+  verify_blob "$f"
+done
+
+# Desktop installers (dmg, AppImage, exe) are optional: a release may ship
+# without them. When present they are checked like every other file.
+for f in autosecops-"${version}"-desktop-*; do
+  [ -f "$f" ] || continue
+  case "$f" in *.sigstore.json) continue ;; esac
   grep -q "  $f\$" SHA256SUMS || die "$f is not listed in SHA256SUMS"
   verify_blob "$f"
 done

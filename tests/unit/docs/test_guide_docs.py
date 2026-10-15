@@ -84,6 +84,10 @@ CORPUS_PREFIXES = (
     "evalkit/",
     "eval/suites/",
     "clients/web/src/",
+    # The desktop app (W0.24): its code, packaging scripts and config.
+    "clients/desktop/src/",
+    "clients/desktop/scripts/",
+    "clients/desktop/electron-builder.yml",
     ".github/workflows/",
     "tests/airgap/",
 )
@@ -92,6 +96,7 @@ TEXT_SUFFIXES = {
     ".py",
     ".ts",
     ".tsx",
+    ".js",  # clients/desktop/scripts (W0.24)
     ".sql",
     ".yaml",
     ".yml",
@@ -116,7 +121,11 @@ SCRIPTS = {
         "core/backup/restore.py",
     ),
 }
-PACKAGE_JSONS = ("services/agent/package.json", "clients/web/package.json")
+PACKAGE_JSONS = (
+    "services/agent/package.json",
+    "clients/web/package.json",
+    "clients/desktop/package.json",
+)
 HELM_VALUES = (
     "infra/helm/vigil/values.yaml",
     "infra/airgap/values-airgap.yaml",

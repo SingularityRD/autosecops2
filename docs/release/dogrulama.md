@@ -35,6 +35,7 @@ GitHub Release'teki dosyalar (`<V>` = sürüm):
 | `autosecops-<V>-image-<bileşen>.provenance.att.sigstore.json` | Index özetine bağlı SLSA provenance attestation'ı | — |
 | `autosecops-<V>-image-<bileşen>-<mimari>.sbom.att.sigstore.json` | Platform özetine bağlı CycloneDX attestation'ı | — |
 | `autosecops-<V>-web.tar.gz` | Web konsolunun statik dosyaları (backend imajındakiyle aynı) | `<dosya>.sigstore.json` |
+| `autosecops-<V>-desktop-mac-{arm64,x64}[-unsigned].dmg`, `autosecops-<V>-desktop-linux-x86_64.AppImage`, `autosecops-<V>-desktop-win-x64[-unsigned].exe` | Masaüstü uygulaması kurulum dosyaları; `-unsigned` olanlar Apple Developer ID / Authenticode imzası taşımaz (bkz. [yönetici kılavuzu](../guide/yonetici-kilavuzu.md#masaüstü-uygulaması)) | `<dosya>.sigstore.json` |
 | `verify-release.sh` | Bu belgedeki adımları uygulayan betik | `<dosya>.sigstore.json` |
 | `trusted_root.json` | Sürüm anındaki Sigstore güven kökü (**kolaylık kopyası**, bkz. §3) | — |
 | `vigil-support-<V>.tar.gz` (+ `.sha256`) | Destek aracı; **imzalı küme dışında**, yalnızca `.sha256` ile | — |
