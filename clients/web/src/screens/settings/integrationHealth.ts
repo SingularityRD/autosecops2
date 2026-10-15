@@ -14,13 +14,8 @@ export interface ServerRow {
   integration?: IntegrationMetadata
   isEnabled: boolean
   isRunning: boolean
-  /** the integration's config gate (extension: gate D) */
+  /** the integration's config gate */
   configured: boolean
-  /** extension master switch: configured on both gates / on only one */
-  isExtension: boolean
-  extConfigured: boolean
-  masterOn: boolean
-  masterMixed: boolean
   /** On in Connected; everything else is offered under Add integration */
   connected: boolean
   /** null is "no level": neutral, and `word` says why */
@@ -48,8 +43,6 @@ export function buildRows(i: HealthInput): ServerRow[] {
     const isEnabled = !!i.enabled[name]
     const isRunning = i.statuses[name] === 'running'
     const configured = integration ? i.enabledIntegrations.includes(integration.id) : false
-    const isExtension = !!integration?.fields?.some((f) => f.name === 'connectorUrl')
-    const masterOn = configured && isEnabled
     const lastTest = integration ? i.lastTest[integration.id] : undefined
     const missing = i.missingCredentials[name] ?? []
     const failedTest = lastTest?.success === false
@@ -69,10 +62,6 @@ export function buildRows(i: HealthInput): ServerRow[] {
       isEnabled,
       isRunning,
       configured,
-      isExtension,
-      extConfigured: Boolean(isExtension && integration && i.integrations[integration.id]?.['connectorUrl']),
-      masterOn,
-      masterMixed: isExtension && configured !== isEnabled,
       connected,
       level,
       word: level ? '' : isEnabled ? 'Not running' : integration && !configured ? 'Not set up' : 'Off',

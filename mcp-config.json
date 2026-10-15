@@ -27,15 +27,6 @@
       }
     },
 
-    "loglm": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote@0.1.49", "${LOGLM_MCP_URL}", "--header", "Authorization: Bearer ${LOGLM_MCP_TOKEN}"],
-      "env": {
-        "_security_note": "mcp-remote pinned to 0.1.49 (CVE-2025-6514 is fixed in 0.1.16+). Stay on 0.1.x; do not jump to 0.8.x.",
-        "LOGLM_MCP_URL": "${LOGLM_MCP_URL}"
-      }
-    },
-
     "_comment_tier1": "--- Tier 1: Official Vendor MCP Servers (replacing legacy tools/*) ---",
 
     "crowdstrike": {

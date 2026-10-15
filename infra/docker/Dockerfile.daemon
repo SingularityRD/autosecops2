@@ -65,7 +65,9 @@ COPY --chown=vigil:vigil setup.cfg    ./setup.cfg
 COPY --chown=vigil:vigil INTENT.md    ./INTENT.md
 
 # Persistent investigation artifacts (mount a PVC here in K8s) and user home state
-RUN mkdir -p /app/data/investigations /home/vigil/.vigil \
+# .vigil/evidence is the case evidence store (CaseEvidenceService); created here
+# so the vigil_home volume and the Helm evidence mount come up owned by 1000.
+RUN mkdir -p /app/data/investigations /home/vigil/.vigil/evidence \
     && chown -R vigil:vigil /app/data /home/vigil
 
 RUN if [ -n "${VIGIL_VERSION}" ]; then echo "${VIGIL_VERSION}" > /app/VERSION; fi

@@ -1,5 +1,5 @@
 """Analyst IP exclusions against Postgres: the store, the findings filter, the
-HTTP surface, and that ingest -- LogLM included -- ignores exclusions entirely.
+HTTP surface, and that ingest -- sequence parquet included -- ignores exclusions entirely.
 
 Runs on the throwaway database tests/unit/conftest.py provisions per process.
 """
@@ -41,7 +41,7 @@ def _seed(**findings):
         service.create_finding(
             finding_id=fid,
             mitre_predictions={},
-            data_source="loglm",
+            data_source="flow",
             entity_context=context,
             severity="high",
             status="new",
@@ -223,30 +223,30 @@ def test_the_cache_sees_a_write_once_it_commits():
 # --- ingest keeps processing excluded addresses ---------------------------------
 
 
-def test_loglm_ingest_still_stores_findings_for_an_excluded_address():
+def test_sequence_ingest_still_stores_findings_for_an_excluded_address():
     from core.ingestion.ingestion_service import IngestionService
 
     _exclude()
     service = IngestionService()
     finding = service._parquet_row_to_finding(
         {
-            "sequence_id": "ipx-loglm-seq",
+            "sequence_id": "ipx-seq-seq",
             "event_start_time": 1753000000000,
             "focal_ip": SCANNER,
             "engaged_ip": HOST,
             "confidence_score": 0.97,
             "mitre_pred": 10,
         },
-        data_source="loglm",
+        data_source="flow",
     )
-    finding["finding_id"] = "ipx-loglm-1"
+    finding["finding_id"] = "ipx-seq-1"
     assert service.ingest_finding(finding) is True
 
-    stored = DatabaseService().get_finding("ipx-loglm-1")
+    stored = DatabaseService().get_finding("ipx-seq-1")
     assert stored is not None
     assert stored.anomaly_score == pytest.approx(0.97)
-    assert "ipx-loglm-1" in _ids("only")
-    assert "ipx-loglm-1" not in _ids("hide")
+    assert "ipx-seq-1" in _ids("only")
+    assert "ipx-seq-1" not in _ids("hide")
 
 
 # --- HTTP ----------------------------------------------------------------------

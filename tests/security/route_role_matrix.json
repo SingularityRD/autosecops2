@@ -1104,15 +1104,6 @@
    "role-manager": "allow",
    "role-admin": "allow"
   },
-  "GET /api/integrations/{integration_id}/session-token": {
-   "gate": "login + dynamic:required",
-   "role-viewer": "conditional",
-   "role-analyst": "conditional",
-   "role-senior-analyst": "conditional",
-   "role-manager": "conditional",
-   "role-admin": "conditional",
-   "note": "Permission is '<integration_id>.view', computed from the path: only a role holding that extension's view grant (loglm.view: Analyst and up) may mint a session token."
-  },
   "GET /api/kafka/config": {
    "gate": "login",
    "role-viewer": "allow",
@@ -3273,6 +3264,14 @@
    "role-admin": "deny"
   },
   "POST /internal/runs/{run_id}/phases": {
+   "gate": "internal-token",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
+   "role-manager": "deny",
+   "role-admin": "deny"
+  },
+  "POST /internal/runs/{run_id}/progress": {
    "gate": "internal-token",
    "role-viewer": "deny",
    "role-analyst": "deny",

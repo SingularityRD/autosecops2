@@ -19,7 +19,7 @@ from core.findings.source_evidence import (
     normalize_source_evidence,
     normalize_finding_source_evidence,
     project_finding_source_evidence_for_list,
-    source_evidence_from_loglm_row,
+    source_evidence_from_sequence_row,
 )
 
 REPO = Path(__file__).resolve().parent.parent.parent.parent
@@ -32,8 +32,8 @@ findings_api = importlib.util.module_from_spec(_FINDINGS_SPEC)
 _FINDINGS_SPEC.loader.exec_module(findings_api)
 
 
-def test_legacy_loglm_events_and_sequence_become_generic_evidence():
-    evidence = source_evidence_from_loglm_row(
+def test_sequence_events_and_sequence_text_become_generic_evidence():
+    evidence = source_evidence_from_sequence_row(
         {
             "events_json": json.dumps(
                 [
@@ -63,7 +63,7 @@ def test_legacy_loglm_events_and_sequence_become_generic_evidence():
 
 
 def test_explicit_kind_selects_dns_renderer_without_data_source_guessing():
-    evidence = source_evidence_from_loglm_row(
+    evidence = source_evidence_from_sequence_row(
         {
             "source_evidence_kind": "dns",
             "source_evidence_schema_id": "resolver-events.v3",
@@ -77,7 +77,7 @@ def test_explicit_kind_selects_dns_renderer_without_data_source_guessing():
 
 
 def test_declared_missing_evidence_is_truthful_and_payload_free():
-    evidence = source_evidence_from_loglm_row(
+    evidence = source_evidence_from_sequence_row(
         {"source_evidence_kind": "netflow", "source_evidence_status": "not_in_artifact"}
     )
 
@@ -103,7 +103,7 @@ def test_malformed_explicit_evidence_fails_closed_as_invalid():
 
 
 def test_unknown_explicit_kind_fails_closed_instead_of_guessing():
-    evidence = source_evidence_from_loglm_row(
+    evidence = source_evidence_from_sequence_row(
         {
             "source_evidence_kind": "packet_magic",
             "events_json": [{"message": "event"}],

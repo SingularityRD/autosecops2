@@ -93,6 +93,7 @@ def load_role_grants(init_dir: Path = INIT_SQL) -> Dict[str, Dict[str, bool]]:
         grants[role_id] = _json_obj(perms)
 
     # 17: UPDATE roles SET permissions = permissions || '{...}' WHERE role_id IN (...)
+    # (inert since W0.29: nothing checks loglm.view; frozen 0.7.1 file)
     loglm = (init_dir / "17_loglm_setup.sql").read_text()
     m = re.search(
         r"permissions\s*\|\|\s*'(\{.*?\})'::jsonb.*?role_id IN \(([^)]*)\)",
@@ -385,11 +386,8 @@ def route_key(route, method: str) -> str:
     return f"{method} {getattr(route, 'path_format', None) or route.path}"
 
 
-DYNAMIC_NOTES = {
-    "required": "Permission is '<integration_id>.view', computed from the path: "
-    "only a role holding that extension's view grant (loglm.view: Analyst and up) "
-    "may mint a session token.",
-}
+# Per-variable notes for a permission computed from the request; none today.
+DYNAMIC_NOTES: Dict[str, str] = {}
 
 
 def _strip_context(path: str, context_path: str) -> str:

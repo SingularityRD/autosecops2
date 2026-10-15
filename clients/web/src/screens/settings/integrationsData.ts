@@ -26,7 +26,6 @@ export const WIP_SERVERS = new Set([
  *  than renaming the server id, which is load-bearing (mcp-config.json, backend
  *  registration, persisted enabled-state store). */
 export const SERVER_DISPLAY_NAMES = new Map(Object.entries({
-  loglm: 'LogLM',
   'gcp-scc': 'GCP Security Command Center',
   'splunk-selfhosted': 'Splunk (Self-Hosted)',
 }))
@@ -40,7 +39,6 @@ interface McpCategory {
     `servers` list contains it; anything unmatched lands in "Other". */
 export const MCP_CATEGORIES: McpCategory[] = [
   { label: 'Internal / Platform', servers: ['security-detections'] },
-  { label: 'DeepTempo', servers: ['loglm'] },
   { label: 'Reference Servers', servers: ['github'] },
   { label: 'EDR / XDR', servers: ['crowdstrike', 'sentinelone', 'carbon-black', 'microsoft-defender'] },
   { label: 'SIEM / Data Lake', servers: ['splunk', 'splunk-selfhosted', 'elastic', 'opensearch', 'azure-sentinel', 'gcp-secops', 'cribl-stream'] },

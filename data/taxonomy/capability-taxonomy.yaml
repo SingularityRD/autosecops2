@@ -73,7 +73,7 @@ categories:
           performing compound detections via high-dimensional embeddings rather
           than signatures. Addresses novel attack patterns, zero-day behaviors,
           and subtle anomalies that rule-based detection cannot cover because
-          no signature exists. DeepTempo's LogLM is the reference implementation.
+          no signature exists.
 
   - id: triage
     name: Triage

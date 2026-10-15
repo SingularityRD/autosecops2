@@ -46,15 +46,15 @@ def test_recorded_run_missed_when_window_has_no_entity_time_overlap():
     assert empty_window["citations"] == []
 
 
-def test_recorded_run_loglm_when_only_loglm_hits_the_step():
+def test_recorded_run_anomaly_when_only_a_legacy_anomaly_source_hits_the_step():
     recorded = _recorded()
     result = reconstruct(recorded["steps"], recorded["findings"])
     step = result["steps"][WMI]
-    assert step["verdict"] == "loglm"
+    assert step["verdict"] == "anomaly"
     assert [item["finding_id"] for item in step["citations"]] == ["loglm-wmi-seq"]
 
 
-def test_recorded_run_both_when_rule_and_loglm_hit_the_same_step():
+def test_recorded_run_both_when_rule_and_anomaly_hit_the_same_step():
     recorded = _recorded()
     result = reconstruct(recorded["steps"], recorded["findings"])
 
@@ -67,14 +67,24 @@ def test_recorded_run_both_when_rule_and_loglm_hit_the_same_step():
     assert cited["loglm-seq-1"]["description"] == "Anomalous process sequence"
 
 
-def test_no_loglm_findings_never_emits_loglm():
+def test_verdicts_never_name_the_removed_connector():
+    """W0.29: the verdict is "anomaly"; the retired vendor name is not a verdict,
+    even for findings stored with its legacy ``data_source``."""
+    recorded = _recorded()
+    result = reconstruct(recorded["steps"], recorded["findings"])
+
+    assert "loglm" not in _verdicts(result)
+    assert set(_verdicts(result)) <= {"rule", "anomaly", "both", "missed"}
+
+
+def test_no_anomaly_findings_never_emits_anomaly():
     recorded = _recorded()
     findings = [
         finding for finding in recorded["findings"] if finding["data_source"] != "loglm"
     ]
     result = reconstruct(recorded["steps"], findings)
 
-    assert "loglm" not in _verdicts(result)
+    assert "anomaly" not in _verdicts(result)
     assert "both" not in _verdicts(result)
     assert _verdicts(result) == ["rule", "missed", "missed", "missed"]
 
@@ -86,7 +96,7 @@ def test_unknown_step_keys_are_ignored_and_do_not_join_on_technique_id():
     assert result["steps"][LSASS]["verdict"] == "missed"
 
 
-def test_src_ip_only_step_joins_a_loglm_finding_by_ip():
+def test_src_ip_only_step_joins_an_anomaly_finding_by_ip():
     steps = [
         {
             "id": "step-4",
@@ -106,7 +116,7 @@ def test_src_ip_only_step_joins_a_loglm_finding_by_ip():
     ]
     result = reconstruct(steps, findings)
     assert result["steps"][0]["id"] == "step-4"
-    assert result["steps"][0]["verdict"] == "loglm"
+    assert result["steps"][0]["verdict"] == "anomaly"
 
 
 def test_user_only_step_joins_a_rule_finding_by_user():
@@ -149,7 +159,7 @@ async def test_backend_tool_dispatches_reconstruct_run(monkeypatch):
         {"steps": recorded["steps"], "limit": 2, "technique_id": "T1059.001"},
     )
     assert handled is True
-    assert _verdicts(result) == ["both", "missed", "missed", "loglm"]
+    assert _verdicts(result) == ["both", "missed", "missed", "anomaly"]
 
     no_loglm = [
         finding for finding in recorded["findings"] if finding["data_source"] != "loglm"
@@ -166,7 +176,7 @@ async def test_backend_tool_dispatches_reconstruct_run(monkeypatch):
         "reconstruct_run", {"steps": recorded["steps"]}
     )
     assert handled is True
-    assert "loglm" not in _verdicts(result)
+    assert "anomaly" not in _verdicts(result)
     assert "both" not in _verdicts(result)
 
     tools = SecurityDetectionsTools()

@@ -77,13 +77,14 @@ _NOT_EVIDENCE: Set[str] = {
 
 # The nine values present in `findings.data_source`, enumerated against live
 # data on 2026-08-28: `loglm` carries 98% of rows and the rest are the ingest
-# and demo pipeline labels behind it. All nine observe our own estate.
+# and demo pipeline labels behind it. All nine observe our own estate. `loglm`
+# is the value the third-party anomaly connector stored; the connector is gone
+# (W0.29), but rows ingested before then keep the value and their tier.
 #
 # A census of what the column holds, not of what it can hold: `data_source` is
-# caller-supplied (`ingestion_service` takes it as a parameter), the Kafka
-# consumer mints `kafka:<topic>`, and a connector extension brands findings
-# with its own manifest id, so vendor names are a designed path. Values outside
-# this set are expected and take the default.
+# caller-supplied (`ingestion_service` takes it as a parameter) and the Kafka
+# consumer mints `kafka:<topic>`, so vendor names are a designed path. Values
+# outside this set are expected and take the default.
 _CASE_TIERS: Dict[str, SourceTier] = {
     "loglm": SourceTier.TELEMETRY,
     "firewall": SourceTier.TELEMETRY,

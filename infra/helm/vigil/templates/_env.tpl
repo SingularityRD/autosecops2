@@ -46,6 +46,70 @@ write. Include all three together, or none.
 {{- end -}}
 
 {{/*
+Case evidence store: a persistent volume at <State Directory>/evidence, where
+CaseEvidenceService writes (vigil_path("evidence")). Mounted over the State
+Directory volume so no extra setting is needed. Include the mount and the
+volume together, or neither, and only when evidence.persistence.enabled.
+*/}}
+{{- define "vigil.evidence.claimName" -}}
+{{- .Values.evidence.persistence.existingClaim | default (printf "%s-evidence" (include "vigil.fullname" .)) -}}
+{{- end -}}
+
+{{/*
+How many pods mount the evidence claim: the backend's replicas (2 for an HPA),
+the daemon (2 with its hot standby), the llm-workers (2 for an HPA or KEDA) and
+the backup job when it archives the store.
+*/}}
+{{- define "vigil.evidence.mounters" -}}
+{{- $n := ternary 2 (int .Values.backend.replicaCount) .Values.backend.autoscaling.enabled -}}
+{{- if .Values.daemon.enabled }}{{ $n = add $n (ternary 2 1 .Values.daemon.leaderElection.enabled) }}{{ end -}}
+{{- $w := .Values.llmWorker -}}
+{{- if $w.enabled }}{{ $n = add $n (ternary 2 (int $w.replicaCount) (or $w.autoscaling.enabled $w.autoscaling.keda.enabled)) }}{{ end -}}
+{{- if and .Values.backup.enabled .Values.backup.includeEvidence }}{{ $n = add $n 1 }}{{ end -}}
+{{- $n -}}
+{{- end -}}
+
+{{/*
+Refuses an evidence store the cluster cannot schedule: accessModes must be set,
+and a ReadWriteOnce claim (one node) cannot be shared by several pods that
+may land on different nodes.
+*/}}
+{{- define "vigil.evidence.validate" -}}
+{{- $p := .Values.evidence.persistence -}}
+{{- if $p.enabled -}}
+{{- if not $p.accessModes -}}
+{{- fail "evidence.persistence.enabled=true needs an explicit evidence.persistence.accessModes, e.g. {ReadWriteMany} with an RWX storageClassName (NFS, CephFS, Longhorn RWX, EFS ...)" -}}
+{{- end -}}
+{{- $mounters := int (include "vigil.evidence.mounters" .) -}}
+{{- if and (has "ReadWriteOnce" $p.accessModes) (not (has "ReadWriteMany" $p.accessModes)) (gt $mounters 1) -}}
+{{- fail (printf "evidence.persistence.accessModes is ReadWriteOnce but %d pods mount the evidence claim (backend, daemon, llm-worker, backup); they may run on different nodes, where a ReadWriteOnce volume cannot attach. Use ReadWriteMany with an RWX storageClassName or existingClaim, or leave evidence.persistence.enabled=false." $mounters) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+"true" when the chart is about to create a ReadWriteMany evidence claim on the
+cluster's default StorageClass, which on many clusters (bare metal, local-path,
+most block storage) cannot provide ReadWriteMany: the claim then stays Pending
+and the pods that mount it never start. NOTES.txt warns about it.
+*/}}
+{{- define "vigil.evidence.rwxOnDefaultClass" -}}
+{{- $p := .Values.evidence.persistence -}}
+{{- if and $p.enabled (not $p.existingClaim) (not $p.storageClassName) (has "ReadWriteMany" ($p.accessModes | default list)) }}true{{ end -}}
+{{- end -}}
+
+{{- define "vigil.evidenceVolumeMount" -}}
+- name: vigil-evidence
+  mountPath: {{ printf "%s/evidence" (trimSuffix "/" .Values.stateDirectory.mountPath) }}
+{{- end -}}
+
+{{- define "vigil.evidenceVolume" -}}
+- name: vigil-evidence
+  persistentVolumeClaim:
+    claimName: {{ include "vigil.evidence.claimName" . }}
+{{- end -}}
+
+{{/*
 Operator-supplied CA PEM for TLS-inspecting proxies. Include all three together
 (or none) on backend, daemon, llm-worker, agent-worker, and agent-serve only —
 the same rule as vigil.state*: env without the mount advertises a path the

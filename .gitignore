@@ -311,3 +311,4 @@ index.scip.stamp
 
 # Timestamped .env copies left by setup and migration scripts.
 .env.*
+dump.rdb

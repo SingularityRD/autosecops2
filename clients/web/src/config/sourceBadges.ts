@@ -7,9 +7,6 @@ export interface SourceBadge {
 
 // Keyed by the data_source string ingestion stores, not the integration catalog id.
 const SOURCE_BADGES: Record<string, SourceBadge> = {
-  // loglm is intentionally absent — as a UI-extension connector its chip comes
-  // from its manifest badge (see SourceChip), keeping vendor branding out of
-  // host code.
   splunk: { label: 'Splunk', color: '#65a637', icon: 'search' },
   crowdstrike: { label: 'CrowdStrike', color: '#e2705f', icon: 'shield' },
   microsoft_defender: { label: 'Defender', color: '#2a7de1', icon: 'shield' },

@@ -180,7 +180,7 @@ async def set_server_enabled(
         # Missing-credentials case is dormancy-by-design, not an error —
         # the UI treats it via the existing "Not Configured" chip.
         if mcp_client is not None:
-            # Re-derive configs so a connectorUrl saved this session lands in the
+            # Re-derive configs so a value saved this session lands in the
             # init-time-cached spawn args before we connect.
             try:
                 mcp_service.reload_server_configs()

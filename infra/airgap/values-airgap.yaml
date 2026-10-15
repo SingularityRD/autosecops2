@@ -119,3 +119,18 @@ config:
   DEMO_MODE: "false"
   # Mail goes to the log, not to an SMTP relay.
   VIGIL_EMAIL_BACKEND: "console"
+
+# Case evidence store (see evidence: in the chart's values.yaml). Left OFF
+# here: air-gapped installs are usually bare metal whose default class
+# (local-path, hostPath) cannot provide ReadWriteMany, and ReadWriteOnce is
+# refused because backend, daemon and llm-worker all mount the claim. Evidence
+# files are then NOT persistent. With an RWX class in the cluster, enable it:
+#
+#   evidence:
+#     persistence:
+#       enabled: true
+#       storageClassName: <rwx-class>
+#       accessModes: [ReadWriteMany]
+evidence:
+  persistence:
+    enabled: false

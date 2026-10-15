@@ -1,7 +1,7 @@
 """Timeline routes over findings that have no timestamp.
 
 ``findings.timestamp`` is nullable (``25_nullable_finding_score_timestamp.sql``):
-LogLM parquet ingest leaves it NULL when a row carries no ``event_start_time``.
+Sequence parquet ingest leaves it NULL when a row carries no ``event_start_time``.
 The routes parsed every finding's time unconditionally, so a single undated
 finding turned the whole response into a 500.
 
@@ -78,7 +78,7 @@ def _finding(
     return Finding(
         finding_id=finding_id,
         timestamp=at,
-        data_source="loglm",
+        data_source="flow",
         severity=severity,
         **kw,
     )
@@ -99,7 +99,7 @@ def test_case_timeline_leaves_out_an_undated_finding(client):
     _seed(
         Case(
             case_id="tl-case",
-            title="LogLM import",
+            title="Sequence import",
             findings=[_finding("tl-dated", T0), _finding("tl-undated", None)],
         )
     )
@@ -196,7 +196,7 @@ def test_a_page_of_undated_findings_does_not_hide_a_cluster(client, undated_page
 
 
 def test_a_clusters_own_undated_findings_do_not_hide_its_dated_ones(client):
-    # LogLM parquet ingest sets cluster_id from attack_id on the same rows that
+    # Sequence parquet ingest sets cluster_id from attack_id on the same rows that
     # can arrive without an event time.
     _seed(
         *(
@@ -220,7 +220,7 @@ def test_case_timeline_labels_an_unrated_finding_unknown(client):
     _seed(
         Case(
             case_id="tl-case",
-            title="LogLM import",
+            title="Sequence import",
             findings=[_finding("tl-unrated", T0, severity=None)],
         )
     )

@@ -713,15 +713,6 @@ export interface PlatformDatabaseProxyConfig {
   has_ssh_key_passphrase: boolean
 }
 
-// the backend calls the connector BFF server-to-server, so the mint secret
-// never reaches the browser
-export const extensionsApi = {
-  getSessionToken: (integrationId: string) =>
-    api.get<{ token: string | null; expires_in: number | null; user: string }>(
-      `/integrations/${integrationId}/session-token`,
-    ),
-}
-
 export interface LLMProvider {
   provider_id: string
   provider_type: 'anthropic' | 'openai' | 'ollama' | 'vertex' | 'openrouter'
@@ -1043,7 +1034,9 @@ export const workflowApi = {
   // every prompt transcript
   listRuns: (id: string, params: { limit?: number; offset?: number; status?: string } = {}) =>
     api.get(`/workflows/${id}/runs`, { params }),
-  getRun: (runId: string) => api.get(`/workflows/runs/${runId}`),
+  // A hunt lists its newest rows; evidenceLimit asks for more of them.
+  getRun: (runId: string, evidenceLimit?: number) =>
+    api.get(`/workflows/runs/${runId}`, evidenceLimit ? { params: { evidence_limit: evidenceLimit } } : undefined),
   // What one decision was shown, rebuilt against the record. Folds the whole ledger on
   // the agent side, so it is asked for on a click and never on the getRun poll.
   getReplay: (runId: string, decisionId: string) =>

@@ -139,7 +139,7 @@ def ioc(db, ioc_type, value, *, case_id="case-733"):
     return row
 
 
-def finding(db, finding_id, *, case_id="case-733", when, source="loglm"):
+def finding(db, finding_id, *, case_id="case-733", when, source="flow"):
     row = Finding(
         finding_id=finding_id,
         anomaly_score=0.5,
@@ -175,7 +175,7 @@ class TestWhatAClosureWrites:
     ):
         case(session)
         closure(session)
-        finding(session, "f-733-a", when=datetime(2026, 8, 1, 10, 0), source="loglm")
+        finding(session, "f-733-a", when=datetime(2026, 8, 1, 10, 0), source="flow")
         finding(session, "f-733-b", when=datetime(2026, 8, 2, 11, 0), source="firewall")
 
         counts = write_case_distil(session, "case-733")
@@ -184,7 +184,7 @@ class TestWhatAClosureWrites:
         (row,) = verdicts(session)
         assert row.hypothesis_id == "case-733"
         assert row.statement == "beaconing from 10.1.2.3 to evil.example.com"
-        assert {s.source_system for s in sources(session, row)} == {"loglm", "firewall"}
+        assert {s.source_system for s in sources(session, row)} == {"flow", "firewall"}
         # A closure is a conclusion, not an observation. What was observed were
         # the Case's Findings, and those are not this writer's to record.
         assert session.query(EpisodicSighting).count() == 0
@@ -195,7 +195,7 @@ class TestWhatAClosureWrites:
     ):
         case(session)
         closure(session, category=ClosureCategory.FALSE_POSITIVE.value)
-        finding(session, "f-733-a", when=datetime(2026, 8, 1, 10, 0), source="loglm")
+        finding(session, "f-733-a", when=datetime(2026, 8, 1, 10, 0), source="flow")
         finding(session, "f-733-b", when=datetime(2026, 8, 2, 11, 0), source="edr")
 
         write_case_distil(session, "case-733")
@@ -209,7 +209,7 @@ class TestWhatAClosureWrites:
     def test_the_source_tier_is_stamped_at_write_time(self, session):
         case(session)
         closure(session)
-        finding(session, "f-733-a", when=datetime(2026, 8, 1, 10, 0), source="loglm")
+        finding(session, "f-733-a", when=datetime(2026, 8, 1, 10, 0), source="flow")
 
         write_case_distil(session, "case-733")
 

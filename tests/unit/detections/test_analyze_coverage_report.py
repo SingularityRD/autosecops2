@@ -72,7 +72,7 @@ def test_execute_atomic_trace_scores_end_to_end(monkeypatch):
     ]
     reconstructed = reconstruct(trace, findings[:1])
     assert reconstructed["steps"][0]["verdict"] == "rule"
-    assert reconstruct(trace, findings[1:])["steps"][0]["verdict"] == "loglm"
+    assert reconstruct(trace, findings[1:])["steps"][0]["verdict"] == "anomaly"
 
     row = _by_technique(coverage_report(trace, reconstruct(trace, findings)))
     assert row["T1059.001"]["verdict"] == "both"
@@ -99,7 +99,7 @@ def test_groups_reconstructed_steps_by_technique_id():
     assert rows["T1059.001"]["verdict"] == "both"
     assert rows["T1003.001"]["verdict"] == "missed"
     assert rows["T1021.002"]["verdict"] == "missed"
-    assert rows["T1047"]["verdict"] == "loglm"
+    assert rows["T1047"]["verdict"] == "anomaly"
 
     missed = rows["T1003.001"]["missed"]
     assert len(missed) == 1
@@ -162,7 +162,7 @@ def test_join_by_step_id_not_reconstructed_index():
     assert missed[0]["src_ip"] == "10.0.1.10"
 
 
-def test_no_loglm_findings_never_emits_loglm_on_the_report():
+def test_no_anomaly_findings_never_emits_anomaly_on_the_report():
     recorded = _recorded()
     findings = [
         finding for finding in recorded["findings"] if finding["data_source"] != "loglm"
@@ -171,7 +171,7 @@ def test_no_loglm_findings_never_emits_loglm_on_the_report():
     report = coverage_report(recorded["steps"], reconstructed)
     verdicts = [row["verdict"] for row in report["techniques"]]
 
-    assert "loglm" not in verdicts
+    assert "anomaly" not in verdicts
     assert "both" not in verdicts
     rows = _by_technique(report)
     assert rows["T1059.001"]["verdict"] == "rule"
@@ -240,7 +240,7 @@ async def test_analyze_coverage_run_id_asks_the_agent_layer(monkeypatch):
     report = await tools.analyze_coverage(run_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
     assert seen["run_id"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     verdicts = [row["verdict"] for row in report["techniques"]]
-    assert "loglm" not in verdicts
+    assert "anomaly" not in verdicts
     assert "both" not in verdicts
     assert _by_technique(report)["T1059.001"]["verdict"] == "rule"
 

@@ -28,7 +28,7 @@ def test_catalog_loads_without_a_project_virtualenv(tmp_path):
     }
     service = MCPService(
         project_root=tmp_path,
-        integration_bridge=SimpleNamespace(derive_remote_mcp_env=lambda: {}),
+        integration_bridge=SimpleNamespace(),
         detection_rules=SimpleNamespace(get_mcp_env_vars=lambda: {}),
     )
     assert service.servers["fixture"].command == sys.executable
@@ -45,7 +45,7 @@ def test_existing_project_virtualenv_remains_selected(tmp_path):
     (tmp_path / "mcp-config.json").write_text('{"mcpServers": {}}')
     service = MCPService(
         project_root=tmp_path,
-        integration_bridge=SimpleNamespace(derive_remote_mcp_env=lambda: {}),
+        integration_bridge=SimpleNamespace(),
         detection_rules=SimpleNamespace(get_mcp_env_vars=lambda: {}),
     )
     assert service.python_exe == venv_python

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import getpass
 import json
+import logging
 import os
 import re
 import secrets
@@ -60,6 +61,8 @@ from core.storage.models import ApprovalAction, User
 from core.time import utcnow
 from core.version import __version__
 
+logger = logging.getLogger(__name__)
+
 # The FIRST_BREAK query from services/agent/ledger/verify.ts. The hash stays
 # the database's agent_event_hash; $1 is the whole ledger (NULL run id).
 _LEDGER_BREAK = """
@@ -96,12 +99,26 @@ class _Placed:
 
 
 @dataclass
+class _MountSwap:
+    """An entry of a restored directory that is a mount point of its own (the
+    Helm evidence claim at <State Directory>/evidence). It cannot be renamed
+    (EBUSY), so its contents are swapped inside it: the current ones go to a
+    pre-restore directory on the mount, the snapshot's are moved in."""
+
+    name: str
+    aside_dir: Path | None = None
+    aside: list[str] = field(default_factory=list)
+    moved_in: list[str] = field(default_factory=list)
+
+
+@dataclass
 class _Swapped:
     item: _Placed
     previous: Path | None = None
     aside: list[str] = field(default_factory=list)
     moved_in: list[str] = field(default_factory=list)
     created: bool = False
+    mounts: list[_MountSwap] = field(default_factory=list)
 
 
 def restore_snapshot(
@@ -663,6 +680,11 @@ def _swap_files(placed: list[_Placed], stamp: str) -> list[str]:
                 lines.append(f"previous {item.name}: {swapped.previous}")
             else:
                 lines.append(f"restored {item.name}: {item.target}")
+            for swap in swapped.mounts:
+                lines.append(
+                    f"restored in place {item.name}/{swap.name}: "
+                    f"{item.target / swap.name}"
+                )
         # Kept until now so an undo has somewhere to put the staged entries.
         for swapped in done:
             if swapped.item.is_dir:
@@ -684,17 +706,79 @@ def _swap_dir(swapped: _Swapped, stamp: str) -> None:
         raise BackupError(f"previous copy already exists: {previous}")
     previous.mkdir()
     swapped.previous = previous
+    mounted: set[str] = set()
     for entry in sorted(item.target.iterdir()):
         if _is_restore_artifact(entry.name):
+            continue
+        if os.path.ismount(entry):
+            # A rename of a mount point fails with EBUSY; swapped in place below.
+            mounted.add(entry.name)
             continue
         entry.rename(previous / entry.name)
         swapped.aside.append(entry.name)
     for entry in sorted(item.staged.iterdir()):
+        if entry.name in mounted:
+            _swap_mount(swapped, entry, item.target / entry.name, stamp)
+            continue
         entry.rename(item.target / entry.name)
         swapped.moved_in.append(entry.name)
+    for name in sorted(mounted - {m.name for m in swapped.mounts}):
+        logger.warning(
+            "restore: %s is a mount point the snapshot has nothing for; left as it is",
+            item.target / name,
+        )
     if not swapped.aside:
         previous.rmdir()
         swapped.previous = None
+
+
+def _swap_mount(swapped: _Swapped, staged: Path, mount: Path, stamp: str) -> None:
+    if not staged.is_dir():
+        logger.warning(
+            "restore: %s is a mount point and the snapshot has a file there; skipped",
+            mount,
+        )
+        return
+    swap = _MountSwap(staged.name)
+    swapped.mounts.append(swap)
+    aside_dir = mount / f"{PRE_RESTORE_PREFIX}{stamp}"
+    if aside_dir.exists():
+        raise BackupError(f"previous copy already exists: {aside_dir}")
+    aside_dir.mkdir()
+    swap.aside_dir = aside_dir
+    # Same filesystem: renames. The staged copy is on another one: moves (copies).
+    for entry in sorted(mount.iterdir()):
+        if _is_restore_artifact(entry.name):
+            continue
+        entry.rename(aside_dir / entry.name)
+        swap.aside.append(entry.name)
+    for entry in sorted(staged.iterdir()):
+        shutil.move(str(entry), str(mount / entry.name))
+        swap.moved_in.append(entry.name)
+    staged.rmdir()
+    if not swap.aside:
+        aside_dir.rmdir()
+        swap.aside_dir = None
+    logger.info(
+        "restore: %s is a mount point; its contents were restored in place%s",
+        mount,
+        f" (previous contents in {aside_dir})" if swap.aside else "",
+    )
+
+
+def _undo_mount(swap: _MountSwap, target: Path, staged_root: Path) -> None:
+    mount = target / swap.name
+    staged = staged_root / swap.name
+    staged.mkdir(exist_ok=True)
+    for name in reversed(swap.moved_in):
+        shutil.move(str(mount / name), str(staged / name))
+    if swap.aside_dir is not None:
+        for name in reversed(swap.aside):
+            (swap.aside_dir / name).rename(mount / name)
+        try:
+            swap.aside_dir.rmdir()
+        except OSError:
+            pass
 
 
 def _swap_file(swapped: _Swapped, pre_root: Path) -> None:
@@ -729,6 +813,8 @@ def _undo_files(done: list[_Swapped]) -> None:
                 except OSError:
                     pass
             continue
+        for swap in reversed(swapped.mounts):
+            _undo_mount(swap, item.target, item.staged)
         for name in reversed(swapped.moved_in):
             (item.target / name).rename(item.staged / name)
         if swapped.previous is None:

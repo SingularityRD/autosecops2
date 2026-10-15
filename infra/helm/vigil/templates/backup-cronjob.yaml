@@ -14,6 +14,9 @@ RPO = the schedule interval; restore steps: docs/operations/rpo-rto.md.
 {{- end }}
 {{- $fullname := printf "%s-backup" (include "vigil.fullname" .) | trunc 52 | trimSuffix "-" }}
 {{- $claim := $b.persistence.existingClaim | default $fullname }}
+{{- /* The case evidence store goes into each run too (evidence-<stamp>.tar.gz
+       next to the dump), so restored case_evidence rows find their files. */ -}}
+{{- $withEvidence := and $b.includeEvidence .Values.evidence.persistence.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -81,7 +84,15 @@ spec:
             runAsNonRoot: true
             runAsUser: 70  # postgres user in the alpine image
             runAsGroup: 70
+            {{- if $withEvidence }}
+            # The app's group (podSecurityContext.fsGroup) owns the evidence
+            # claim; using it here lets uid 70 read it without the kubelet
+            # re-grouping the evidence files, and still write the backup claim.
+            fsGroup: {{ .Values.podSecurityContext.fsGroup | default 1000 }}
+            fsGroupChangePolicy: OnRootMismatch
+            {{- else }}
             fsGroup: 70
+            {{- end }}
             seccompProfile:
               type: RuntimeDefault
           {{- if $b.objectStore.enabled }}
@@ -116,6 +127,10 @@ spec:
                   value: {{ $b.keepLast | toString | quote }}
                 - name: BACKUP_RETENTION_DAYS
                   value: {{ $b.retentionDays | toString | quote }}
+                {{- if $withEvidence }}
+                - name: EVIDENCE_DIR
+                  value: /evidence
+                {{- end }}
               resources:
                 {{- toYaml $b.resources | nindent 16 }}
               securityContext:
@@ -131,6 +146,11 @@ spec:
                   mountPath: /backup
                 - name: tmp
                   mountPath: /tmp
+                {{- if $withEvidence }}
+                - name: vigil-evidence
+                  mountPath: /evidence
+                  readOnly: true
+                {{- end }}
           {{- if $b.objectStore.enabled }}
           containers:
             - name: upload
@@ -147,6 +167,12 @@ spec:
                   aws s3 cp "$@" "/backup/${latest}.sha256" "${dest}${latest}.sha256"
                   aws s3 cp "$@" "/backup/${latest}" "${dest}${latest}"
                   echo "pg-backup: uploaded ${latest} to ${dest}"
+                  if [ -f /backup/LATEST_EVIDENCE ]; then
+                    evidence="$(cat /backup/LATEST_EVIDENCE)"
+                    aws s3 cp "$@" "/backup/${evidence}.sha256" "${dest}${evidence}.sha256"
+                    aws s3 cp "$@" "/backup/${evidence}" "${dest}${evidence}"
+                    echo "pg-backup: uploaded ${evidence} to ${dest}"
+                  fi
               env:
                 - name: HOME
                   value: /tmp
@@ -192,6 +218,12 @@ spec:
               {{- end }}
             - name: tmp
               emptyDir: {}
+            {{- if $withEvidence }}
+            - name: vigil-evidence
+              persistentVolumeClaim:
+                claimName: {{ include "vigil.evidence.claimName" . }}
+                readOnly: true
+            {{- end }}
           {{- with $b.nodeSelector }}
           nodeSelector:
             {{- toYaml . | nindent 12 }}

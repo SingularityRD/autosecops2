@@ -1,19 +1,16 @@
--- LogLM feature setup: the loglm.view role grant.
+-- Retired (W0.29): the third-party LogLM connector this file served is gone.
 --
--- This file once also provisioned a pgvector embedding column/index on
--- findings. Vigil no longer stores per-finding embeddings; the column/index
--- are dropped by 23_drop_finding_embedding.sql.
+-- The statement below is left exactly as shipped and is harmless: it adds a
+-- `loglm.view` key to the analyst-and-above roles, and since W0.29 nothing reads
+-- that permission (no route, no screen, no extension checks it). It is kept,
+-- rather than emptied, because this file is part of the frozen 0.7.1 init set
+-- (tests/unit/test_upgrade_database.py): a 0.7.1 database already ran it, so an
+-- edit would only split fresh installs from upgraded ones. The file also keeps
+-- its name and number because installs record it in `_vigil_schema_versions`.
+-- No migration drops the inert key. Idempotent: safe to re-run.
 --
--- Kept as a NEW migration file rather than edits to 01/06 on purpose: the
--- dbInit path only runs a file whose name it hasn't applied before, so edits to
--- already-shipped files never reach existing deployments — a new filename does.
--- Idempotent: safe to re-run.
-
--- Grant the LogLM page-extension view permission to analyst-and-above roles.
--- Runs on both fresh and existing deployments (see the file header); the WHERE
--- guard makes it idempotent. The extension manifest declares this permission;
--- without it the LogLM tab is hidden outside DEV_MODE. `roles` always exists
--- here — 06_auth_tables.sql runs before this file on every path.
+-- History: this file once also provisioned a pgvector embedding column/index
+-- on findings; 23_drop_finding_embedding.sql drops them.
 UPDATE roles
 SET permissions = permissions || '{"loglm.view": true}'::jsonb,
     updated_at = NOW()

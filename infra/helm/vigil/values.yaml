@@ -468,6 +468,7 @@ dbInit:
     - 56_alert_lane_decisions.sql
     - 58_broadcast_unique_and_clock_heads.sql
     - 61_approval_decisions.sql
+    - 62_workflow_runs_progress.sql
   resources:
     requests:
       cpu: 50m
@@ -500,6 +501,12 @@ backup:
   activeDeadlineSeconds: 3600
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
+  # Also archive the case evidence store on every run, when evidence.persistence
+  # is enabled (nothing to archive otherwise):
+  # evidence-<stamp>.tar.gz beside the dump, same retention, uploaded with it.
+  # Restored case_evidence rows point at these files. false: the database only,
+  # and backing up the evidence claim is the operator's job.
+  includeEvidence: true
   persistence:
     # false: dumps live only in the object store (objectStore.enabled required).
     enabled: true
@@ -584,6 +591,42 @@ stateDirectory:
   mountPath: /var/lib/vigil
   volume:
     emptyDir: {}
+
+# -----------------------------------------------------------------------------
+# Case evidence store
+# -----------------------------------------------------------------------------
+# Files attached to cases (the /hunt document and other evidence) are written to
+# <stateDirectory.mountPath>/evidence.
+#
+# WARNING: OFF by default, and then evidence is NOT persistent. It lives in the
+# State Directory volume, an emptyDir by default, and is lost whenever a pod is
+# restarted or rescheduled; it is also per pod, so with two backend replicas an
+# attachment exists only on the replica that took it. The case_evidence rows in
+# Postgres survive and point at files that are gone. Turn it on for any install
+# that keeps evidence.
+#
+# enabled: true mounts a persistent claim at that path in the backend, daemon
+# (retention) and llm-worker pods (and the backup job, backup.includeEvidence).
+# podSecurityContext.fsGroup (1000) makes it writable by the app. Every one of
+# those pods mounts it and they may run on different nodes, so it must be
+# ReadWriteMany: set accessModes [ReadWriteMany] and a storageClassName that
+# provides it (NFS, CephFS, Longhorn RWX, EFS / Azure Files / Filestore ...), or
+# an existingClaim. accessModes is required; ReadWriteOnce is refused at
+# template time whenever more than one pod mounts the claim.
+#
+# The chart-created claim carries helm.sh/resource-policy: keep, so
+# `helm uninstall` leaves the evidence in place.
+#
+# Deferred: keep evidence in Postgres or the object store instead of a shared
+# filesystem (docs/wp/w0.26.md, option d).
+evidence:
+  persistence:
+    enabled: false
+    existingClaim: ""
+    size: 20Gi
+    storageClassName: ""
+    # Required when enabled, e.g. [ReadWriteMany].
+    accessModes: []
 
 # -----------------------------------------------------------------------------
 # Custom CA bundle (TLS-inspecting proxies)

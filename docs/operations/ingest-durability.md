@@ -14,7 +14,7 @@ testinin bulguları.
   yeniden denenir.
 - **503 + `Retry-After` = kabul edilmedi.** Spool dolu, yazılamıyor ya da (spool
   kapalıyken) satır zamanında yazılamadı. Gönderen bulguyu tutar ve yeniden
-  dener (LogLM bağlayıcısı ve genel göndericiler 503'te imleçlerini ilerletmez).
+  dener (göndericiler 503'te imleçlerini ilerletmez).
 - **Çift satır yok.** Yeniden oynatma ve yeniden gönderim `finding_id` (ve
   `(data_source, external_id)`) ile tekilleşir: zaten yazılmış bir bulgu ikinci
   satır üretmez ve yeniden oynatmada ikinci kez triage edilmez.

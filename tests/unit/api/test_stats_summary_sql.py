@@ -70,7 +70,7 @@ def _seed_findings(rows):
             [
                 {
                     "finding_id": f"{PREFIX}{i}",
-                    "data_source": "loglm",
+                    "data_source": "flow",
                     "status": "new",
                     "timestamp": now,
                     **row,
@@ -133,7 +133,7 @@ def test_findings_summary_breakdowns_and_unknown_bucket(client):
             {"severity": "high", "data_source": "splunk"},
             {"severity": "high", "data_source": "splunk"},
             {"severity": "low", "data_source": "elastic"},
-            {"severity": None, "data_source": "loglm"},
+            {"severity": None, "data_source": "flow"},
             {"severity": "", "data_source": ""},
         ]
     )
