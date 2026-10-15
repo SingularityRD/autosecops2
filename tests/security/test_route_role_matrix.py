@@ -79,8 +79,9 @@ def test_seeded_grants_match_the_known_builtin_roles():
     assert grants["role-manager"].get("settings.write") is True
     assert grants["role-admin"].get("users.delete") is True
     # Later grant files.
-    # 17_loglm_setup.sql is a no-op since W0.29: it grants nothing.
-    assert all("loglm.view" not in g for g in grants.values())
+    # 17_loglm_setup.sql (frozen 0.7.1 file) still grants the inert loglm.view.
+    assert grants["role-analyst"].get("loglm.view") is True
+    assert grants["role-viewer"].get("loglm.view") in (None, False)
     assert grants["role-admin"].get("medic.admin") is True
     assert grants["role-manager"].get("medic.read") is True
     assert grants["role-manager"].get("medic.admin") in (None, False)

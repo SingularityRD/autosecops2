@@ -1,14 +1,18 @@
--- Retired (W0.29): intentionally a no-op.
+-- Retired (W0.29): the third-party LogLM connector this file served is gone.
 --
--- This file used to grant the `loglm.view` permission to the analyst-and-above
--- roles, for the third-party LogLM page extension. That connector was removed
--- in W0.29 (see FORK.md). The file stays, under the same name and number,
--- because existing installs record it in `_vigil_schema_versions`; deleting
--- or renumbering it would make the numbering unstable.
+-- The statement below is left exactly as shipped and is harmless: it adds a
+-- `loglm.view` key to the analyst-and-above roles, and since W0.29 nothing reads
+-- that permission (no route, no screen, no extension checks it). It is kept,
+-- rather than emptied, because this file is part of the frozen 0.7.1 init set
+-- (tests/unit/test_upgrade_database.py): a 0.7.1 database already ran it, so an
+-- edit would only split fresh installs from upgraded ones. The file also keeps
+-- its name and number because installs record it in `_vigil_schema_versions`.
+-- No migration drops the inert key. Idempotent: safe to re-run.
 --
--- Upgraded installs: the `loglm.view` key already set on their roles is left
--- in place. Nothing reads it any more, so it is inert. No migration drops it.
---
--- New installs: nothing is granted. The statement below only gives runners
--- that reject an empty script something to execute.
-SELECT 1;
+-- History: this file once also provisioned a pgvector embedding column/index
+-- on findings; 23_drop_finding_embedding.sql drops them.
+UPDATE roles
+SET permissions = permissions || '{"loglm.view": true}'::jsonb,
+    updated_at = NOW()
+WHERE role_id IN ('role-analyst', 'role-senior-analyst', 'role-manager', 'role-admin')
+  AND COALESCE((permissions->>'loglm.view')::boolean, false) = false;

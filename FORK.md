@@ -186,7 +186,7 @@ Upstream changes to LogLM are therefore not cherry-picked.
 | Page-extension host | console tabs mounted from a connector's `manifest.json`, `GET /api/integrations/{id}/session-token`, `EXTENSION_CONNECTOR_ALLOWLIST` (CSP, `index.html` meta, SSRF guard), `connectorUrl` → `<ID>_MCP_URL` | removed: LogLM was its only user |
 | Coverage verdicts | `rule \| loglm \| both \| missed` | `rule \| anomaly \| both \| missed`; stored `data_source = "loglm"` rows still count as `anomaly` (`ANOMALY_SOURCES` in `core/detections/reconstruction.py`) |
 | Parquet ingest | "LogLM" schema kind | same column layout, called `sequence` |
-| `17_loglm_setup.sql` | grants `loglm.view` | same name and number, a no-op (`SELECT 1`); upgraded installs keep an inert `loglm.view` key |
+| `17_loglm_setup.sql` | grants `loglm.view` | unchanged statement (frozen 0.7.1 init file), new comments; the `loglm.view` grant is inert: nothing checks it |
 
 Kept, because something else uses it: the `${VAR}` substitution in MCP server
 configs (Splunk's `SPLUNK_MCP_URL`), `reload_server_configs()` before an MCP
