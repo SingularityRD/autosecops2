@@ -277,7 +277,7 @@ describe('outside a secure context', () => {
     try {
       vi.mocked(streamFetch).mockResolvedValue(emptyStream())
       renderChat()
-      fireEvent.change(screen.getByPlaceholderText(/Ask Vigil/), { target: { value: 'status?' } })
+      fireEvent.change(screen.getByPlaceholderText(/Ask AutoSecOps/), { target: { value: 'status?' } })
       fireEvent.click(screen.getByRole('button', { name: 'Send' }))
       await waitFor(() => expect(streamFetch).toHaveBeenCalled())
       const body = JSON.parse(String(vi.mocked(streamFetch).mock.calls[0][1]?.body))
