@@ -256,6 +256,9 @@ def split_secrets(
     The returned non_secrets dict is a fresh copy with secret fields
     removed — safe to persist to the DB / JSON.
     """
+    retired = _RETIRED_SECRET_FIELDS.get(integration_id)
+    if retired:
+        config = {k: v for k, v in config.items() if k not in retired}
     mapping = secret_fields_for(integration_id)
     if not mapping:
         return {}, dict(config)
@@ -273,17 +276,28 @@ def split_secrets(
     return secrets, non_secrets
 
 
+# Secret field names of integrations that are no longer in the catalog. They are
+# not registered (nothing reads or rehydrates them), but a config row saved
+# before the removal may still hold them, so they are stripped on read and save.
+# ``loglm``: the third-party connector removed in W0.29.
+_RETIRED_SECRET_FIELDS: Mapping[str, frozenset[str]] = {
+    "loglm": frozenset({"mint_secret", "mcp_token"}),
+}
+
+
 def redact_secrets(integration_id: str, config: Dict[str, object]) -> Dict[str, object]:
     """Return a copy of ``config`` with registered secret fields removed.
 
     Used by the GET handler so the frontend never receives plaintext
     credentials. The form will treat absent secret fields as "leave existing
-    value untouched" on the next save.
+    value untouched" on the next save. A retired integration's secret fields
+    are removed too.
     """
+    retired = _RETIRED_SECRET_FIELDS.get(integration_id, frozenset())
     mapping = secret_fields_for(integration_id)
-    if not mapping:
+    if not mapping and not retired:
         return dict(config)
-    return {k: v for k, v in config.items() if k not in mapping}
+    return {k: v for k, v in config.items() if k not in mapping and k not in retired}
 
 
 # Config keys that say where the integration connects (server_url, connectorUrl,

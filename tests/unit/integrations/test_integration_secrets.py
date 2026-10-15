@@ -291,3 +291,22 @@ def test_credentials_to_resupply_names_secrets_left_blank_when_a_url_moves(monke
     assert moved == ["password"]
     assert kept == []
     assert resupplied == []
+
+
+def test_a_legacy_loglm_row_never_returns_its_secrets():
+    """W0.29: ``loglm`` left the registry, but a row saved before then may still
+    hold plaintext ``mint_secret`` / ``mcp_token``. GET must not return them,
+    and a re-save must not persist them."""
+    raw = {
+        "connectorUrl": "https://connector.example",
+        "mint_secret": "hmac-plaintext",
+        "mcp_token": "bearer-plaintext",
+    }
+    redacted = redact_secrets("loglm", raw)
+    assert redacted == {"connectorUrl": "https://connector.example"}
+    assert "hmac-plaintext" not in str(redacted)
+    assert "bearer-plaintext" not in str(redacted)
+
+    secrets, kept = split_secrets("loglm", raw)
+    assert secrets == {}
+    assert kept == {"connectorUrl": "https://connector.example"}

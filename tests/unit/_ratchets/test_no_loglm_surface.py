@@ -4,7 +4,8 @@ We do not ship DeepTempo's paid LogLM connector; our own model is separate
 work. This ratchet fails when user-visible code or docs name the product or the
 vendor again: the web console source (including the generated API types, so
 backend docstrings count), the API routers, the MCP server catalogue, the
-operator guide and the runbooks.
+operator guide, the runbooks, README.md and the built-in workflow and skill
+definitions users read in the console.
 
 Lower-case ``deeptempo`` on its own is not matched. It is an infrastructure
 identifier inherited from upstream (the Postgres role and database
@@ -12,8 +13,9 @@ identifier inherited from upstream (the Postgres role and database
 renaming those is separate work (FORK.md, "Where this repository differs").
 
 History is allowed: CHANGELOG.md and FORK.md are not scanned, and
-``HISTORY_ALLOWLIST`` lists the few scanned files that may keep a mention
-because they record the past rather than describe the product.
+``HISTORY_ALLOWLIST`` lists the exact lines (path + full line text) in scanned
+files that may keep a mention because they record the past rather than describe
+the product. Every other line of those files is scanned.
 """
 
 from __future__ import annotations
@@ -35,11 +37,16 @@ SCOPE = (
     "docs/guide",
     "docs/operations",
     "README.md",
+    "core/workflows/definitions",
+    "core/skills/library",
 )
 
-# path -> why it may still name the vendor
+# (path, exact stripped line) -> why that one line may still name the vendor
 HISTORY_ALLOWLIST = {
-    "README.md": "credits DeepTempo as the upstream project's sponsor",
+    (
+        "README.md",
+        "- [DeepTempo](https://deeptempo.ai): sponsor of the upstream Vigil project",
+    ): "credits DeepTempo as the upstream project's sponsor",
 }
 
 FORBIDDEN = re.compile(r"(?i:loglm)|DeepTempo|(?i:deeptempo\.ai)")
@@ -75,14 +82,12 @@ def mentions(rel_paths: list[str], root: Path = REPO) -> list[str]:
     """Every ``path:line: text`` in ``rel_paths`` that names the product."""
     found: list[str] = []
     for rel in rel_paths:
-        if rel in HISTORY_ALLOWLIST:
-            continue
         path = root / rel
         if path.suffix not in _TEXT_SUFFIXES or not path.is_file():
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         for number, line in enumerate(text.splitlines(), start=1):
-            if FORBIDDEN.search(line):
+            if FORBIDDEN.search(line) and (rel, line.strip()) not in HISTORY_ALLOWLIST:
                 found.append(f"{rel}:{number}: {line.strip()[:120]}")
     return found
 
@@ -98,8 +103,38 @@ def test_user_visible_surface_does_not_name_loglm_or_deeptempo():
 
 
 def test_allowlist_entries_exist():
-    for rel in HISTORY_ALLOWLIST:
-        assert (REPO / rel).is_file(), f"stale allow-list entry: {rel}"
+    for rel, line in HISTORY_ALLOWLIST:
+        text = (REPO / rel).read_text(encoding="utf-8")
+        assert line in {raw.strip() for raw in text.splitlines()}, (
+            f"stale allow-list entry: {rel}: {line}"
+        )
+
+
+def _readme_with(tmp_path, extra: str) -> Path:
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    (tmp_path / "README.md").write_text(readme + extra, encoding="utf-8")
+    return tmp_path
+
+
+def test_readme_allows_only_the_sponsor_line():
+    """The real README passes only because its one sponsor line is listed."""
+    assert mentions(["README.md"]) == []
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    hits = [line.strip() for line in text.splitlines() if FORBIDDEN.search(line)]
+    assert hits == [line for _, line in HISTORY_ALLOWLIST]
+
+
+def test_a_planted_loglm_line_in_readme_fails(tmp_path):
+    root = _readme_with(tmp_path, "\nEnable LogLM in Settings for anomaly detection.\n")
+    found = mentions(["README.md"], root=root)
+    assert len(found) == 1 and "LogLM" in found[0]
+
+
+def test_a_reworded_sponsor_line_in_readme_fails(tmp_path):
+    root = _readme_with(
+        tmp_path, "\n- [DeepTempo](https://deeptempo.ai): LogLM connects via MCP\n"
+    )
+    assert mentions(["README.md"], root=root)
 
 
 @pytest.mark.parametrize(
