@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -300,6 +301,10 @@ def test_evidence_store_is_archived_beside_the_dump(admin, tmp_path):
     evidence = tmp_path / "evidence"
     (evidence / "CASE-1").mkdir(parents=True)
     (evidence / "CASE-1" / "report.pdf").write_bytes(b"%PDF flash report")
+    # What core.backup restore leaves beside a restored copy is not evidence.
+    (evidence / ".vigil-pre-restore-20261015T000000Z" / "CASE-0").mkdir(parents=True)
+    (evidence / ".vigil-pre-restore-20261015T000000Z" / "CASE-0" / "x").write_text("x")
+    (evidence / ".vigil-restore-stage-20261015T000000Z").mkdir()
     backups = tmp_path / "backups"
 
     names = []
@@ -329,6 +334,10 @@ def test_evidence_store_is_archived_beside_the_dump(admin, tmp_path):
     out.mkdir()
     subprocess.run(["tar", "-xzf", str(backups / latest), "-C", str(out)], check=True)
     assert (out / "CASE-1" / "report.pdf").read_bytes() == b"%PDF flash report"
+    assert sorted(p.name for p in out.iterdir()) == ["CASE-1"]
+    # Case data: owner-only, the archive and the dump alike.
+    for name in (latest, f"{latest}.sha256", dump):
+        assert stat.S_IMODE((backups / name).stat().st_mode) == 0o600, name
     # Same retention as the dumps.
     assert sorted(p.name for p in backups.glob("evidence-*.tar.gz")) == sorted(
         names[-2:]

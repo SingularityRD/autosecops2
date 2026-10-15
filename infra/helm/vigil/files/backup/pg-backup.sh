@@ -15,12 +15,17 @@
 #                       next to the dump (same timestamp, so a dump and the files
 #                       its case_evidence rows point at restore together), verified
 #                       by reading it back, with its own .sha256, LATEST_EVIDENCE,
-#                       and the same retention as the dumps.
+#                       and the same retention as the dumps. Restore leftovers
+#                       (.vigil-pre-restore-*, .vigil-restore-stage-*) are left out.
+#
+# Every file written is mode 0600 (umask 077).
 #
 # Output: <db>-<UTC timestamp>.dump (custom format) and <dump>.sha256, written
 # under a temporary name and renamed only after pg_restore reads the whole
 # dump back (TOC and every data block); LATEST holds the newest dump's file name.
 set -eu
+# Dumps and evidence archives hold case data: readable by this uid only.
+umask 077
 
 : "${BACKUP_DIR:?BACKUP_DIR is required}"
 : "${PGDATABASE:?PGDATABASE is required}"
@@ -70,7 +75,11 @@ echo "pg-backup: ok ${name} (${size} bytes, ${entries} entries)"
 # The evidence store, after the dump: a file attached in between is extra in
 # the archive, never missing from it.
 if [ -n "${EVIDENCE_DIR:-}" ]; then
-    tar -czf "$evidence_partial" -C "$EVIDENCE_DIR" .
+    # Leftovers of a restore (core.backup restore keeps the replaced copy beside
+    # the restored one) are not evidence: never archived again.
+    tar -czf "$evidence_partial" \
+        --exclude='.vigil-pre-restore-*' --exclude='.vigil-restore-stage-*' \
+        -C "$EVIDENCE_DIR" .
     if ! files="$(tar -tzf "$evidence_partial" | grep -vc '/$')"; then
         files=0
     fi
