@@ -231,6 +231,7 @@ describe("a compose phase granted a destructive tool", () => {
       status: async () => true,
       handoff: async () => true,
       findings: async () => true,
+      progress: async () => true,
       decisions: async () => [],
     };
   }
