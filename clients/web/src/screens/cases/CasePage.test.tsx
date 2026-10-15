@@ -1592,9 +1592,22 @@ describe('case page', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Review Isolate WS-1' }))
     expect(screen.getByRole('button', { name: 'Approve Isolate WS-1' })).toBeDisabled()
 
-    // a failed read says so; the person is told where to see the call
+    // a failed read says so and keeps the (hold-to-)approve control locked
     fireEvent.click(screen.getByRole('button', { name: 'Review Disable bob' }))
     expect(await screen.findByText(/could not be loaded/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Hold to approve Disable bob/ })).toBeDisabled()
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+    expect(screen.getByRole('button', { name: /^Hold to approve Disable bob/ })).toBeDisabled()
+
+    // Retry reads again; a successful read unlocks it
+    vi.mocked(approvalsApi.getById).mockResolvedValue({
+      data: { description: 'Disable the account', parameters: { tool: 'disable_user', args_canonical: '{"user":"bob"}', args_targets: [['user', 'bob']] } },
+    } as never)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry loading Disable bob' }))
+    expect(await screen.findByText('Disable the account')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Hold to approve Disable bob/ })).toBeEnabled())
   })
 
   it('names how many proposals wait when no run is paused', async () => {

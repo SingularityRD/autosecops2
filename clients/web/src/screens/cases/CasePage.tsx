@@ -325,6 +325,7 @@ function CaseNeedRow(props: NeedProps) {
   const [rejecting, setRejecting] = useState(false)
   const [open, setOpen] = useState(false)
   const [detail, setDetail] = useState<RowDetail | null>(null)
+  const [attempt, setAttempt] = useState(0)
   const reversible = item.reversibility === 'reversible'
   const detailId = `need-detail-${item.source_id}`
 
@@ -357,10 +358,11 @@ function CaseNeedRow(props: NeedProps) {
         setDetail(null)
       }
     }
-  }, [open, item.source_id])
+  }, [open, item.source_id, attempt])
 
-  // Read before approve: opened, and the bound call has loaded (or failed to, which is shown).
-  const reviewed = open && detail !== null && detail.state !== 'loading'
+  // Read before approve: opened, and the bound call has loaded. A failed read
+  // keeps Approve and Hold locked; the person retries or decides under Decisions.
+  const reviewed = open && detail?.state === 'ready'
   return (
     <li>
       <div className="needs-row">
@@ -408,9 +410,22 @@ function CaseNeedRow(props: NeedProps) {
           </dl>
           {detail?.state === 'loading' && <p className="needs-row-note">Loading the proposed call…</p>}
           {detail?.state === 'failed' && (
-            <p className="needs-row-note" role="alert">
-              The proposed call could not be loaded. Open it under Decisions to see its target and arguments.
-            </p>
+            <div className="needs-row-note" role="alert">
+              The proposed call could not be loaded, so it cannot be approved here. Retry, or open it under Decisions
+              to see its target and arguments.{' '}
+              <button
+                type="button"
+                className="btn neutral"
+                aria-label={`Retry loading ${item.title}`}
+                onClick={() => {
+                  asked.current = false
+                  setDetail(null)
+                  setAttempt((n) => n + 1)
+                }}
+              >
+                Retry
+              </button>
+            </div>
           )}
           {detail?.state === 'ready' && (
             <>
