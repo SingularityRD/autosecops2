@@ -232,14 +232,20 @@ See the [Helm guide](https://vigilsoc.org/docs/helm/) for values, external Postg
 
 ### Desktop app
 
-The desktop app packages the stack without a source tree. It runs the backend and agent images from an offline tarball, alongside a bundled Bifrost gateway, so **Docker must be installed and running**. Bifrost reaches a host Ollama through `host.docker.internal`.
+The desktop app (`clients/desktop`, Electron) puts a native window in front of the local stack: PostgreSQL, Redis, the Bifrost gateway, the backend and the agent layer, all running as Docker containers from the published `ghcr.io/singularityrd/autosecops-*` images. It needs no source tree, but **Docker must be installed and running** (Docker Desktop on macOS and Windows, Docker Engine with the Compose v2 plugin on Linux). The console listens on `127.0.0.1:6987` only. Bifrost reaches a host Ollama through `host.docker.internal`.
+
+Each release ships signed installers next to the other release files: `autosecops-<V>-desktop-mac-{arm64,x64}.dmg`, `autosecops-<V>-desktop-linux-x86_64.AppImage` and `autosecops-<V>-desktop-win-x64.exe` (Windows is a preview). Files named `*-unsigned.*` carry no Apple Developer ID / Authenticode signature; every installer carries a cosign signature and is listed in `SHA256SUMS`. Install, first run, data and log locations, update, uninstall and verification steps (Turkish): [administrator guide, "Masaüstü uygulaması"](docs/guide/yonetici-kilavuzu.md#masaüstü-uygulaması).
+
+To build locally (Node 22.12+):
 
 ```bash
-bash clients/desktop/scripts/bundle-image.sh linux/arm64   # tarball is arch-specific
-cd clients/desktop && npm run dist                          # macOS DMG / Linux AppImage
+cd clients/desktop && npm ci && npm test   # type-check and unit tests
+npm run dist                                # installers for this OS into release/ (needs Docker for the schema SQL)
+# optional, for a machine without registry access (arch-specific):
+bash scripts/bundle-image.sh linux/arm64 && npm run dist
 ```
 
-Local builds are ad-hoc signed, not notarized, so macOS may report the app as "damaged". Clear the quarantine with `xattr -dr com.apple.quarantine /Applications/AutoSecOps.app`, or use **System Settings → Privacy & Security → Open Anyway**.
+Local builds are ad-hoc signed, not notarized, so macOS reports the app as "damaged". After checking where the file came from, clear the quarantine with `xattr -dr com.apple.quarantine /Applications/AutoSecOps.app`, or use **System Settings → Privacy & Security → Open Anyway**. The app has no auto-updater and makes no network calls of its own beyond pulling the images it runs.
 
 ### Tests
 
@@ -258,7 +264,7 @@ pytest tests/unit tests/security -m "not external_service"   # same invocation a
 sh scripts/vigil-support/vigil-support.sh   # from a checkout
 ```
 
-Without a checkout, download `vigil-support-<version>.tar.gz` and its `.sha256` from the [release](https://github.com/Vigil-SOC/vigil/releases/latest), verify it, extract it, and run `sh vigil-support/vigil-support.sh`. Vigil Desktop shows the exact command under **Support Bundle Command…** in the tray menu. For a Helm install, run it from your own machine with your current `kubectl` context: `--mode helm [--release NAME --namespace NS]`.
+Without a checkout, download `vigil-support-<version>.tar.gz` and its `.sha256` from the [release](https://github.com/Vigil-SOC/vigil/releases/latest), verify it, extract it, and run `sh vigil-support/vigil-support.sh`. The AutoSecOps desktop app shows the exact command under **Help → Support Bundle Command…** (also in the tray menu). For a Helm install, run it from your own machine with your current `kubectl` context: `--mode helm [--release NAME --namespace NS]`.
 
 Re-run with `sudo` to include system logs that need elevation; the bundle still examines, and belongs to, the invoking user's install. `sudo` resets `VIGIL_DIR`, so pass `--state-dir` for a non-default State Directory.
 

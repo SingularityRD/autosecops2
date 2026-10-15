@@ -64,7 +64,7 @@ with no install found each is an empty directory with a `not collected` entry.
 | `logs/checkout/` | native, compose: everything under the checkout's `logs/`, including `.1`-`.4` rotations, PID files and `containers/` |
 | `logs/state/vigil.log` | `vigil.log` in the State Directory (all modes, see below) |
 | `logs/docker/<container>.log` | all modes: `docker logs --timestamps --since <DAYS> days`. On native these are Postgres, Redis and Bifrost, in addition to the snapshots `start.sh` saves under `logs/checkout/containers/`. |
-| `logs/desktop/` | desktop: the app log directory (`vigil-desktop.log*` and the `containers/vigil-*.log` snapshots written on quit). Linux `<State Directory>/logs` (`~/.config/AutoSecOps/logs`, or `~/.config/Vigil/logs` for installs made before the rename), macOS `~/Library/Logs/AutoSecOps` (or `~/Library/Logs/Vigil`). |
+| `logs/desktop/` | desktop: the app log directory (`autosecops-desktop.log*` and the `containers/autosecops-*.log` snapshots written on quit; `vigil-desktop.log*` and `containers/vigil-*.log` from versions before 2.0). Linux `<State Directory>/logs` (`~/.config/AutoSecOps/logs`, or `~/.config/Vigil/logs` for installs made before the rename), macOS `~/Library/Logs/AutoSecOps` (or `~/Library/Logs/Vigil`). |
 
 Containers are listed from `docker ps -a`: names `deeptempo-*` or the install's
 Compose project (native, compose), project `vigil` (desktop). Lab and demo

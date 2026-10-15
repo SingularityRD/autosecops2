@@ -1,4 +1,15 @@
-import { app, BrowserWindow, Tray, Menu, ipcMain, shell, nativeImage, dialog, clipboard } from "electron";
+import {
+  app,
+  BrowserWindow,
+  Tray,
+  Menu,
+  ipcMain,
+  shell,
+  nativeImage,
+  dialog,
+  clipboard,
+  session,
+} from "electron";
 import { spawn, execFileSync, ChildProcess } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
@@ -7,8 +18,8 @@ import * as crypto from "crypto";
 import * as readline from "readline";
 import { openAppLog, captureToFile, snapshotContainerLogs } from "./logkeep";
 import { supportCommand } from "./supportcmd";
+import { BACKEND_URL, isAppUrl, isExternalAllowed, isPermissionAllowed } from "./navguard";
 
-const BACKEND_URL = "http://127.0.0.1:6987";
 const HEALTH_URL = `${BACKEND_URL}/api/health`;
 const BACKEND_IMAGE = "ghcr.io/singularityrd/autosecops-backend";
 const DOCKER_INSTALL_URL = "https://www.docker.com/products/docker-desktop/";
@@ -119,7 +130,7 @@ function agentInternalToken(): string {
   return token;
 }
 
-/* ---------------- locating the Vigil source tree ---------------- */
+/* ---------------- locating the AutoSecOps source tree ---------------- */
 
 // "denied" matters as much as "missing": macOS TCC guards ~/Documents, ~/Desktop
 // and ~/Downloads, and a GUI-launched app has no consent for them — existsSync
@@ -149,7 +160,19 @@ let deniedPath: string | null = null;
 
 // Conventional clone locations, probed relative to $HOME so the bundle carries
 // no absolute path from the build machine.
+// The autosecops* names come first; the vigil* ones find checkouts cloned
+// before the rename.
 const COMMON_CLONE_DIRS = [
+  "Documents/GitHub/autosecops2",
+  "Documents/GitHub/autosecops",
+  "Documents/autosecops2",
+  "GitHub/autosecops2",
+  "Developer/autosecops2",
+  "Projects/autosecops2",
+  "src/autosecops2",
+  "code/autosecops2",
+  "autosecops2",
+  "autosecops",
   "Documents/GitHub/vigil",
   "Documents/vigil",
   "GitHub/vigil",
@@ -270,9 +293,12 @@ async function promptForRepoRoot(): Promise<string | null> {
 // has no Metal passthrough). Report what's missing before the stack fails.
 function whichBin(bin: string): string | null {
   try {
-    return execFileSync("/usr/bin/which", [bin], { env: augmentedEnv() })
-      .toString()
-      .trim() || null;
+    // `where` prints every match, one per line; the first is what a shell runs.
+    const out =
+      process.platform === "win32"
+        ? execFileSync("where.exe", [bin], { env: augmentedEnv() })
+        : execFileSync("/usr/bin/which", [bin], { env: augmentedEnv() });
+    return out.toString().split(/\r?\n/)[0].trim() || null;
   } catch {
     return null;
   }
@@ -318,6 +344,10 @@ async function ensureDockerRunning(): Promise<boolean> {
   try {
     if (process.platform === "darwin") execFileSync("/usr/bin/open", ["-a", "Docker"], { stdio: "ignore" });
     else if (process.platform === "linux") execFileSync("systemctl", ["start", "docker"], { stdio: "ignore" });
+    else if (process.platform === "win32") {
+      const exe = path.join(process.env.ProgramFiles || "C:\\Program Files", "Docker", "Docker", "Docker Desktop.exe");
+      spawn(exe, [], { detached: true, stdio: "ignore" }).unref();
+    }
   } catch {
     /* couldn't launch it; the poll below still gives the user time to start it */
   }
@@ -487,8 +517,9 @@ async function stopStack(keepDocker = false): Promise<void> {
 // Standalone has no logs/ directory on disk — the logs live in the containers,
 // so snapshot them to a file the OS can open.
 async function openLogs(): Promise<void> {
+  if (!mode) return; // the Help menu exists before the stack mode is known
   if (mode !== "standalone") return void shell.openPath(path.join(repoRoot!, "logs"));
-  const file = path.join(app.getPath("temp"), "vigil-logs.txt");
+  const file = path.join(app.getPath("temp"), "autosecops-logs.txt");
   const r = await captureToFile(spawnCompose, composeArgs("logs", "--tail", "500", "--no-color"), file);
   if (r.error) fs.writeFileSync(file, String(r.error));
   else if (!r.bytes) fs.writeFileSync(file, "No container logs yet.");
@@ -504,11 +535,15 @@ async function showSupportCommand(): Promise<void> {
   const command = supportCommand(dir);
   const { response } = await dialog.showMessageBox({
     type: "info",
-    title: "Support Bundle",
-    message: "Support bundle command",
+    title: "AutoSecOps Support Bundle",
+    message: "AutoSecOps support bundle command",
     detail:
       "Run this in a terminal. It writes one redacted .tar.gz to the current " +
-      "directory and uploads nothing. Re-run with sudo to include logs that need elevation.\n\n" +
+      "directory and uploads nothing. Re-run with sudo to include logs that need elevation." +
+      (process.platform === "win32"
+        ? " On Windows, run it from WSL or Git Bash; it needs a POSIX shell."
+        : "") +
+      "\n\n" +
       command,
     buttons: ["Copy", "Close"],
     defaultId: 0,
@@ -630,6 +665,8 @@ function createSplash(): void {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
     },
   });
   splashWindow.loadFile(path.join(__dirname, "..", "src", "splash.html"));
@@ -662,7 +699,8 @@ function createMainWindow(): void {
     ...(process.platform === "darwin"
       ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 8, y: 13 } }
       : {}),
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
+    // No preload: the console is a plain web page and gets no bridge.
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
   });
   mainWindow.loadURL(BACKEND_URL);
   // With the OS title bar hidden, the traffic lights would overlap the nav-rail
@@ -688,14 +726,8 @@ function createMainWindow(): void {
     if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
     splashWindow = null;
   });
-  // Open external links (docs, integrations) in the system browser.
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (!url.startsWith(BACKEND_URL)) {
-      shell.openExternal(url);
-      return { action: "deny" };
-    }
-    return { action: "allow" };
-  });
+  // Links, window.open and redirects are guarded for every window in
+  // hardenWebContents (app "web-contents-created").
   // Closing the window means "I'm done" — quit the app, which runs the full
   // shutdown (before-quit). The `quitting` guard avoids recursing when quit
   // itself closes the window.
@@ -760,7 +792,7 @@ function trayTemplate(): Electron.MenuItemConstructorOptions[] {
         else if (stackReady) createMainWindow();
       },
     },
-    { label: "Open in Browser", enabled: stackReady, click: () => shell.openExternal(BACKEND_URL) },
+    { label: "Open in Browser", enabled: stackReady, click: () => void shell.openExternal(BACKEND_URL) },
     { type: "separator" },
     {
       label: "Restart Stack",
@@ -811,6 +843,87 @@ function createTray(): void {
   }
 }
 
+/* ---------------- web content restrictions ---------------- */
+
+// A URL that came from web content: only https/mailto reach the OS, and only
+// through here. Fixed URLs the app itself owns (Docker download page, macOS
+// settings deep link, the console in a browser) call shell.openExternal directly.
+function openExternalFromContent(url: string): void {
+  if (isExternalAllowed(url)) void shell.openExternal(url);
+  else appLog(`blocked opening ${url.slice(0, 200)}`);
+}
+
+// Every window: no navigation away from the console (the splash never
+// navigates at all), new windows only for the console itself, external links
+// to the system browser, no <webview>.
+function hardenWebContents(contents: Electron.WebContents): void {
+  const guard = (event: Electron.Event, url: string) => {
+    if (isAppUrl(url)) return;
+    event.preventDefault();
+    openExternalFromContent(url);
+  };
+  contents.on("will-navigate", guard);
+  contents.on("will-redirect", guard);
+  contents.on("will-attach-webview", (event) => event.preventDefault());
+  contents.setWindowOpenHandler(({ url }) => {
+    if (isAppUrl(url)) {
+      return {
+        action: "allow",
+        overrideBrowserWindowOptions: {
+          webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
+        },
+      };
+    }
+    openExternalFromContent(url);
+    return { action: "deny" };
+  });
+}
+
+app.on("web-contents-created", (_event, contents) => hardenWebContents(contents));
+
+// Camera, microphone, geolocation and the rest are refused; the console gets
+// clipboard writes, notifications and fullscreen.
+function restrictPermissions(): void {
+  const ses = session.defaultSession;
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+    callback(isPermissionAllowed(permission, details.requestingUrl || wc.getURL()));
+  });
+  ses.setPermissionCheckHandler((_wc, permission, requestingOrigin) =>
+    isPermissionAllowed(permission, requestingOrigin),
+  );
+}
+
+// Replaces Electron's default menu, whose Help entries link to electronjs.org.
+// Keeps the standard edit roles (copy/paste shortcuts need them on macOS).
+function installAppMenu(): void {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    ...(process.platform === "darwin" ? [{ role: "appMenu" as const }] : [{ role: "fileMenu" as const }]),
+    { role: "editMenu" },
+    {
+      label: "View",
+      submenu: [
+        { role: "reload" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" },
+        // Developer tools only in a development run, never in an installed app.
+        ...(app.isPackaged ? [] : [{ role: "toggleDevTools" as const }]),
+      ],
+    },
+    { role: "windowMenu" },
+    {
+      label: "Help",
+      submenu: [
+        { label: "Open Logs", click: () => void openLogs() },
+        { label: "Support Bundle Command…", click: () => void showSupportCommand() },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 ipcMain.handle("retry", async () => {
   await bringUpStack();
 });
@@ -819,6 +932,8 @@ ipcMain.handle("quit", () => app.quit());
 
 app.whenReady().then(async () => {
   appLog = openAppLog(app.getPath("logs"));
+  restrictPermissions();
+  installAppMenu();
   // Order matters: the external apps we drive must exist, and we must know
   // where the source tree is, before any script can run.
   if (!(await checkDependencies())) return app.exit(1);

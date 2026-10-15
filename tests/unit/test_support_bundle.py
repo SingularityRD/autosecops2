@@ -653,6 +653,32 @@ def test_state_dir_flag_makes_the_host_copy_win(env, tmp_path):
     assert (root / "logs/state/vigil.log").read_text() == "state log\n"
 
 
+def test_desktop_install_collects_the_rebranded_log_names(env, tmp_path):
+    """W0.24: the app writes autosecops-desktop.log and containers/autosecops-<UTC>.log."""
+    state = tmp_path / "state"
+    (state / "logs" / "containers").mkdir(parents=True)
+    (state / "logs" / "autosecops-desktop.log").write_text("app\n")
+    (state / "logs" / "autosecops-desktop.log.1").write_text("older app\n")
+    (state / "logs" / "vigil-desktop.log").write_text("before the rename\n")
+    (state / "logs" / "containers" / "autosecops-20261005T000000Z.log").write_text("snap\n")
+    (state / "logs" / "autosecops-other.log").write_text("not ours\n")
+    standalone = state / "standalone"
+    standalone.mkdir()
+    (standalone / "docker-compose.yml").write_text("name: vigil\n")
+    env["FAKE_DOCKER_PS"] = f"vigil-backend-1|vigil|{standalone}/docker-compose.yml\n"
+    proc = run(env, tmp_path, "--state-dir", str(state))
+    assert proc.returncode == 0, proc.stderr
+    entries = entries_of(tmp_path)
+    for path in (
+        "logs/desktop/autosecops-desktop.log",
+        "logs/desktop/autosecops-desktop.log.1",
+        "logs/desktop/vigil-desktop.log",
+        "logs/desktop/containers/autosecops-20261005T000000Z.log",
+    ):
+        assert entries[path]["state"] == "collected", path
+    assert "logs/desktop/autosecops-other.log" not in entries
+
+
 def test_desktop_install_reads_the_app_log_directory(env, tmp_path):
     state = tmp_path / "state"
     (state / "logs" / "containers").mkdir(parents=True)

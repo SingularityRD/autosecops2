@@ -332,6 +332,11 @@
       "id": "W4.6",
       "topic": "Belgeler",
       "topic_en": "documentation"
+    },
+    {
+      "id": "W0.24",
+      "topic": "Masaüstü uygulaması GA hazırlığı: AutoSecOps kimliği, macOS dmg / Linux AppImage / Windows (önizleme) kurulum dosyaları sürüm hattında, Electron 44 ve sertleştirme",
+      "topic_en": "desktop app GA readiness: AutoSecOps identity, macOS dmg / Linux AppImage / Windows (preview) installers in the release pipeline, Electron 44 and hardening"
     }
   ],
   "highlights": [
@@ -560,6 +565,12 @@
     {
       "when": [],
       "text": "**Tedarik zinciri:** imzalı imajlar, CycloneDX SBOM'ları, SLSA provenance ve çevrimdışı doğrulama (W4.7, bkz. `docs/release/dogrulama.md`)."
+    },
+    {
+      "when": [
+        "W0.24"
+      ],
+      "text": "**Masaüstü uygulaması:** sürüm hattı macOS dmg (arm64, x64), Linux AppImage ve Windows kurulum dosyasını (önizleme) üretir; hepsi cosign ile imzalı ve `SHA256SUMS` içinde, SBOM'u `autosecops-<V>-node-desktop.cdx.json`. Uygulama kimliği `com.singularityrd.autosecops`; Electron 44 (desteklenen sürüm); pencereler yalıtılmış ve kum havuzunda, gezinme ve dış bağlantılar kısıtlı, Electron sigortaları kapalı; kendi kendini güncelleme yok (W0.24)."
     }
   ],
   "upgrade_notes": [
@@ -751,6 +762,10 @@
     {
       "wp": "W1.9",
       "text": "JIT hesapların rolü her SSO girişinde IdP gruplarından yeniden eşlendiği için yalnızca SSO ile giren son Admin, IdP'deki grup değişikliğiyle düşürülebilir; geri dönüş yolu parolalı Admin ya da (yerel giriş kapalıyken) zorunlu break-glass Admin hesabıdır."
+    },
+    {
+      "wp": "W0.24",
+      "text": "Masaüstü kurulum dosyalarının Apple Developer ID / noter onayı ve Windows Authenticode imzası, depo sırları (`CSC_LINK`, `APPLE_ID`, `WIN_CSC_LINK` ve diğerleri; VERSIONING.md) verilene kadar yoktur; bu dosyalar `-unsigned` adını taşır. Windows kurulum dosyası gerçek bir Windows makinesinde sınanmadı (önizleme). AutoSecOps logosu henüz yok; uygulama simgesi nötr bir yer tutucudur. Masaüstü penceresinde OIDC SSO desteklenmez."
     }
   ],
   "sections": {

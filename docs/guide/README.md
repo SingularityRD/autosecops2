@@ -18,7 +18,7 @@ anlatır. Henüz birleşmemiş bir iş paketinin getireceği özellik, satırın
 |---|---|---|
 | [Sürüm kapsamı](kapsam.md) | herkes, önce bunu okuyun | Bu sürümde olan / olmayan; iş paketi → dal tablosu |
 | [İnternetsiz kurulum kılavuzu](kurulum-internetsiz.md) | kurulum mühendisi | İmzalı paketin üretilmesi, doğrulanması, kurulumu; `airgap.env` profili; sıfır egress kanıtı |
-| [Yönetici kılavuzu](yonetici-kilavuzu.md) | AutoSecOps yöneticisi | Kullanıcılar, roller ve izinler, kimlik doğrulama (OIDC SSO, FIPS modu), entegrasyonlar, müdahale politikası ve onaylar, görevler ayrılığı raporu, otonomi katmanları, yerel model şeridi, dersler, saklama ve imha, denetim kayıtları ve doğrulaması, SIEM'e denetim aktarımı, kanıt paketi, sürüm yükseltme, yedekleme ve sıcak yedek |
+| [Yönetici kılavuzu](yonetici-kilavuzu.md) | AutoSecOps yöneticisi | Kullanıcılar, roller ve izinler, kimlik doğrulama (OIDC SSO, FIPS modu), entegrasyonlar, müdahale politikası ve onaylar, görevler ayrılığı raporu, otonomi katmanları, yerel model şeridi, dersler, saklama ve imha, denetim kayıtları ve doğrulaması, SIEM'e denetim aktarımı, kanıt paketi, sürüm yükseltme, yedekleme ve sıcak yedek, masaüstü uygulaması (kurulum, veri konumları, güncelleme, kaldırma, doğrulama) |
 | [Güvenlik teknik belgesi](guvenlik-teknik-belgesi.md) | güvenlik mimarı, denetçi | Mimari, güven sınırları, köken/karar sözleşmesi, onaylar, denetim zinciri, egress denetimi, sırlar, kriptografi |
 | [Tehdit modeli](tehdit-modeli.md) | güvenlik ekibi, pentest | Bileşen başına STRIDE, uygulanmış önlemler, açık riskler |
 | [Mevzuat eşlemesi](mevzuat-eslemesi.md) | uyum ekibi | BDDK, KVKK, DORA, NIS2, SPK, ISO/IEC 27001 kontrolleri → ürün özelliği → kanıt (hukuki görüş değildir) |
