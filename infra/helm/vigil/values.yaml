@@ -830,6 +830,8 @@ config:
   DAEMON_AUTO_TRIAGE: "true"
   DAEMON_AUTO_ENRICH: "true"
   DAEMON_ENRICH_MAX_INFLIGHT: "50"
+  # Output-token ceiling for one daemon triage reply (thinking models need room).
+  DAEMON_TRIAGE_MAX_TOKENS: "8192"
   DAEMON_HANDOFF_QUEUE_MAXSIZE: "1000"
   # W0.12: findings the webhook acknowledged but has not stored yet; full =>
   # 503 + Retry-After. The directory is per pod (daemon-statefulset.yaml).

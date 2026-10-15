@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from services.daemon.config import ProcessingConfig
-from services.daemon.processor import FindingProcessor
+from services.daemon.processor import TRIAGE_MAX_TOKENS, FindingProcessor
 from services.daemon.responder import AutonomousResponder
 
 
@@ -279,9 +279,28 @@ class TestTriageProviderResolution:
         ):
             content, error = asyncio.run(processor._get_ai_triage("p"))
         gateway.submit.assert_awaited_once_with(
-            "p", provider_id="openai-1", model="gpt-4o", timeout=60
+            "p",
+            provider_id="openai-1",
+            model="gpt-4o",
+            timeout=60,
+            max_tokens=TRIAGE_MAX_TOKENS,
         )
         assert content is None and error == "AuthenticationError: bad key"
+
+    def test_gateway_gets_the_configured_triage_max_tokens(self):
+        """W0.25 adapt(upstream 3df928f3): DAEMON_TRIAGE_MAX_TOKENS reaches the gateway."""
+        assert TRIAGE_MAX_TOKENS == ProcessingConfig().triage_max_tokens == 8192
+        processor = FindingProcessor(ProcessingConfig(triage_max_tokens=3000))
+        gateway = Mock()
+        gateway.submit = AsyncMock(return_value={"content": "{}"})
+        processor._llm_gateway = gateway
+        with patch.object(
+            FindingProcessor,
+            "_resolve_triage_target",
+            return_value=("openai-1", "gpt-4o"),
+        ):
+            asyncio.run(processor._get_ai_triage("p"))
+        assert gateway.submit.await_args.kwargs["max_tokens"] == 3000
 
     def test_failed_triage_lands_in_ai_enrichment_without_ai_triage(self):
         processor = FindingProcessor(ProcessingConfig())
@@ -293,10 +312,11 @@ class TestTriageProviderResolution:
         assert finding["ai_triage_error"] == "boom"
         assert "ai_triage" not in finding
         processor._data_service = Mock()
-        processor._data_service.update_finding.return_value = True
+        processor._data_service.write_ai_enrichment.return_value = True
         asyncio.run(processor._update_finding(finding))
-        kwargs = processor._data_service.update_finding.call_args.kwargs
-        assert kwargs["ai_enrichment"] == {"ai_triage_error": "boom"}
+        args = processor._data_service.write_ai_enrichment.call_args
+        assert args.args == ("f1", {"ai_triage_error": "boom"})
+        assert args.kwargs == {"daemon": True, "severity": "high"}
 
     def test_success_clears_previous_error(self):
         processor = FindingProcessor(ProcessingConfig())
@@ -326,7 +346,7 @@ class TestTriageTimeout:
 
     @classmethod
     def _run(cls, triage_timeout):
-        async def slow_submit(prompt, *, provider_id, model, timeout):
+        async def slow_submit(prompt, *, provider_id, model, timeout, max_tokens):
             # Mirrors arq's job.result(timeout=...): the gateway's own clock.
             await asyncio.wait_for(asyncio.sleep(cls.ROUND_TRIP), timeout)
             return {

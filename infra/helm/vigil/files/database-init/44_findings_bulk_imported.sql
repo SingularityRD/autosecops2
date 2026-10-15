@@ -47,6 +47,7 @@ BEGIN
         (timestamp IS NULL OR created_at - timestamp > interval '24 hours')
     WHERE bulk_imported IS NULL
       AND (ai_enrichment IS NULL
+           OR NOT (ai_enrichment ?| array['ai_triage', 'ai_triage_error', 'enriched_at', 'alert_lane'])
            OR (ai_enrichment ? 'ai_triage_error' AND NOT (ai_enrichment ? 'ai_triage')));
 END $$;
 
@@ -54,4 +55,5 @@ END $$;
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_finding_unrated_sweep
     ON findings (bulk_imported, created_at)
     WHERE (ai_enrichment IS NULL
+           OR NOT (ai_enrichment ?| array['ai_triage', 'ai_triage_error', 'enriched_at', 'alert_lane'])
            OR (ai_enrichment ? 'ai_triage_error' AND NOT (ai_enrichment ? 'ai_triage')));

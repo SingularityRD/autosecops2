@@ -67,24 +67,30 @@
         rows[phase] = li;
         return li;
       }
-      window.vigil.onStep(({ phase, status }) => {
+      window.autosecops.onStep(({ phase, status }) => {
         if (phase === "up" || phase === "setup") { if (status === "done") return; }
         const li = row(phase);
         li.className = status;
       });
-      window.vigil.onLog((line) => { logEl.textContent = line; });
-      window.vigil.onError((msg) => {
-        document.getElementById("sub").innerHTML = '<span class="err">' + msg + "</span>";
+      window.autosecops.onLog((line) => { logEl.textContent = line; });
+      window.autosecops.onError((msg) => {
+        // textContent, never innerHTML: the message can carry docker or OS output.
+        const sub = document.getElementById("sub");
+        sub.textContent = "";
+        const err = document.createElement("span");
+        err.className = "err";
+        err.textContent = msg;
+        sub.appendChild(err);
         const acts = document.querySelector(".acts");
         acts.style.display = "flex";
         document.getElementById("retry").onclick = () => {
           acts.style.display = "none";
           document.getElementById("sub").textContent = "Retrying…";
-          window.vigil.retry();
+          window.autosecops.retry();
         };
         // The splash is frameless and the tray may be unavailable (Linux), so
         // this is the only guaranteed way out of a failed start.
-        document.getElementById("quit").onclick = () => window.vigil.quit();
+        document.getElementById("quit").onclick = () => window.autosecops.quit();
       });
     </script>
   </body>

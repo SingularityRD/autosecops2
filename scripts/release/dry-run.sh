@@ -15,7 +15,8 @@
 #      with a notice, and with --strict-notes it fails; fetch the history with
 #      `git fetch --unshallow --tags` first (the tag pipeline checks out with
 #      fetch-depth: 0 and unshallows if needed)
-#   3. CycloneDX SBOMs from requirements.lock and every package-lock.json,
+#   3. CycloneDX SBOMs from requirements.lock and every package-lock.json
+#      (the desktop app's is autosecops-<V>-node-desktop.cdx.json),
 #      validated, into DIR
 #   4. SHA256SUMS over DIR, checked back with sha256sum/shasum
 # Image builds, image SBOMs (syft) and signing need the registry and an OIDC

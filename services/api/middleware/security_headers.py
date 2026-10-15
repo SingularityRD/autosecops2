@@ -36,6 +36,11 @@ DEFAULT_CSP = (
 )
 
 
+def is_reset_password_page(path: str) -> bool:
+    """The console's /reset-password screen, under any context path."""
+    return path.rstrip("/").endswith("/reset-password")
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
@@ -85,7 +90,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if self.frame_options_enabled:
             response.headers.setdefault("X-Frame-Options", "DENY")
 
-        if self.referrer_policy_enabled:
+        if is_reset_password_page(request.url.path):
+            # The page's URL carries a password-reset token until the SPA
+            # strips it (history.replaceState): no Referer may ever repeat it,
+            # whatever else the deployment chose for this header.
+            response.headers["Referrer-Policy"] = "no-referrer"
+        elif self.referrer_policy_enabled:
             response.headers.setdefault(
                 "Referrer-Policy", "strict-origin-when-cross-origin"
             )

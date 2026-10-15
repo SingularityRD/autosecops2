@@ -17,8 +17,10 @@
 > records exist and how to verify them (`python -m core.audit.verify`, signed
 > checkpoints, per-case evidence packs), SIEM audit export over syslog/HTTPS
 > (free-text PII redaction is best effort), encrypted restic backups with tested
-> restore, the Helm backup CronJob and daemon hot standby, and where the 0.7 →
-> 2.0 upgrade procedure lives.
+> restore, the Helm backup CronJob and daemon hot standby, where the 0.7 →
+> 2.0 upgrade procedure lives, and the desktop app (macOS dmg, Linux AppImage,
+> Windows installer as a preview): requirements, first run, data and log
+> locations, manual update, uninstall, support bundle and signature checks.
 
 Bu kılavuz, kurulumdan sonra AutoSecOps'u işleten yöneticiye yöneliktir. Kurulum
 için [internetsiz kurulum kılavuzu](kurulum-internetsiz.md), neyin bu sürümde
@@ -184,6 +186,102 @@ kapatamaz. MFA'yı kapatmak kurtarma kodlarını da siler.
 **Hız sınırları.** Giriş, ilk hesap, parola değiştirme, MFA doğrulama ve kurtarma
 kodu uçları dakikada 5; parola sıfırlama isteği saatte 3, sıfırlamanın tamamlanması
 saatte 5 ile sınırlıdır.
+
+### Parola sıfırlama
+
+**Kullanıcının akışı.** Giriş ekranındaki **Forgot password?** bağlantısı e-posta
+soran bir istek ekranı açar (`POST /api/auth/password-reset/request`). Yanıt hesap
+olsun olmasın, etkin ya da SSO'lu olsun aynıdır; hangi e-postanın kayıtlı olduğunu
+sızdırmaz. Yanıt yalnızca posta yapılandırmasına göre değişir (`delivery` alanı):
+
+| `VIGIL_EMAIL_BACKEND` | `DEV_MODE` | Kullanıcının gördüğü |
+|---|---|---|
+| `smtp` | herhangi | "If that email matches an active account, a reset link has been sent." |
+| `console` (varsayılan) | `false` | E-posta kurulu olmadığı, bağlantı **gönderilmediği** ve AutoSecOps yöneticisine başvurması gerektiği |
+| `console` | `true` | Bağlantının ya da belirtecin sunucu loguna yazıldığı (yalnızca geliştirme) |
+
+Hava boşluklu (air-gap) kurulumlarda SMTP genellikle yoktur: ekran bu durumda
+"bağlantı gönderildi" demez, kullanıcıyı yöneticiye yönlendirir. SSO sağlayıcısı
+tanımlıysa ekran ayrıca SSO kullanıcılarının parolasını kimlik sağlayıcıda
+sıfırlaması gerektiğini yazar.
+
+Bağlantı `/reset-password#token=…` sayfasını açar. Belirteç adresin **parça**
+(fragment, `#`) kısmındadır; tarayıcı parçayı sunucuya hiç göndermez, bu yüzden
+belirteç erişim loglarına, ters vekil (proxy) loglarına ya da `Referer`'a düşmez.
+Bu sürümden önce verilmiş `?token=…` biçimli bağlantılar da açılır. Ek önlem
+olarak backend, HTTP erişim logunda (uvicorn) adı `token`, `code`, `state`,
+`password`, `secret`, `key` ya da `reset` içeren her sorgu parametresinin
+değerini `[REDACTED]` yapar; erişim logu kapatılmaz. Sayfa belirteci okur okumaz
+adres çubuğundan ve tarayıcı geçmişinden siler; sunucu bu sayfayı
+`Referrer-Policy: no-referrer` ile gönderir. Yeni parola aynı parola
+politikasından geçer (uzunluk, zxcvbn, son 5 parola). Başarılı sıfırlama kilidi
+kaldırır ve hesabın tüm açık oturumlarını kapatır.
+
+Bağlantı `PASSWORD_RESET_TTL_SECONDS` süresince (varsayılan 1 saat) geçerlidir ve
+**bir kez** kullanılır: belirteç, parola denetiminden önce harcanır; politikaya
+takılan bir deneme de bağlantıyı tüketir, kullanıcı yeni bağlantı ister. Tek
+kullanım Redis'te tutulur; Redis'e ulaşılamazsa sıfırlama **yapılmaz** ve kullanıcı
+"Password reset is unavailable right now" (503) görür; Redis dönünce aynı bağlantı
+yeniden denenebilir. Bağlantı hesabın o anki e-posta adresine **ve parolasına**
+bağlıdır: adres ya da parola değişirse (parola değiştirme, başka bir sıfırlama)
+bekleyen tüm bağlantılar geçersiz olur. Bu sürüme yükseltmeden önce verilmiş,
+kullanılmamış bağlantılar da bu yüzden geçersizdir; kullanıcı yenisini ister. Akış
+zorlanan CSRF altında çalışır (sayfa yüklemesi `csrf_token` çerezini verir).
+E-postadaki bağlantının konsol adresi `VIGIL_FRONTEND_URL`'den gelir; boşsa e-posta
+yalnızca belirteci içerir.
+
+**Kimler sıfırlayamaz.** SSO ile oluşmuş (parolasız) hesaplar ve hizmet hesapları
+(Medic ağ geçidi) ne e-posta alır ne de yönetici bağlantısı. SSO hesabı bir
+bağlantıyı yine de açarsa "This account signs in with single sign-on…" iletisiyle
+reddedilir; parolası kimlik sağlayıcıda sıfırlanır. Hizmet hesabının parolası
+`python -m core.auth.service_account ensure` ile döndürülür. Devre dışı hesaplar
+önce yeniden etkinleştirilmelidir.
+
+**Yöneticinin verdiği bağlantı (posta yokken).** Sunucuya erişimi olan bir
+operatör tek kullanımlık bir bağlantı üretir ve kullanıcıya güvenilir bir kanaldan
+iletir. Araç parolayla hiç uğraşmaz; parolayı kullanıcı aynı `/reset-password`
+ekranında kendisi belirler. Bağlantı çalışan backend'in `JWT_SECRET_KEY`'iyle
+imzalanır, bu yüzden araç backend ile aynı ortamda çalışmalıdır.
+
+> **Güven sınırı.** Aracı çalıştırabilen kişi backend'in `JWT_SECRET_KEY`'ine
+> erişebilir; bu, sunucu ya da konteyner üzerinde root/kök erişimine denktir (aynı
+> anahtarla her hesap için oturum belirteci de üretilebilir). Araç kimseyi kimlik
+> doğrulamasından geçirmez: denetim kaydındaki `cli:<operatör>` adı **operatörün
+> kendi beyanıdır**. Bu aracı yalnızca sunucuda zaten tam yetkili olan kişilere
+> açın; kimin çalıştırdığını işletim sistemi, `sudo`, `docker exec` ya da
+> Kubernetes denetim loglarıyla ayrıca doğrulayın.
+
+
+
+```bash
+# Tek sunucu (yerel kurulum): hesapları listele, sonra bağlantı üret
+scripts/reset-password.sh --list
+scripts/reset-password.sh ana@example.com --operator "Ayşe Yılmaz"
+
+# Docker Compose
+docker exec deeptempo-backend python scripts/reset_password.py ana@example.com --operator ayse
+
+# Kubernetes (backend Deployment adını `kubectl get deploy` ile bulun)
+kubectl -n <ad-alanı> exec deploy/<backend-deployment> -- python scripts/reset_password.py ana@example.com --operator ayse
+```
+
+`--list` her hesabı kullanıcı adı, e-posta, rol, tür (`local` / `sso-only` /
+`service`) ve durumuyla gösterir. `--base-url` bağlantının konsol adresini verir
+(varsayılan `VIGIL_FRONTEND_URL`). `--operator` verilmezse `SUDO_USER` ya da işletim
+sistemi kullanıcısı kaydedilir; kişisel adınızı vermenizi öneririz, çünkü
+konteyner içinde bu genellikle bir hizmet kullanıcısıdır.
+
+Her bağlantı **ekrana basılmadan önce** denetim kaydına yazılır; kayıt yazılamazsa
+bağlantı gösterilmez. Kayıt `case_audit_logs` tablosundadır (`entity_type='user'`,
+`action='reset_link_issued'`, `changed_by='cli:<operatör>'`) ve kimin, kimin için,
+ne zaman verdiğini ve bitiş zamanını tutar; belirtecin kendisi bu kayda, araç ve
+backend loglarına yazılmaz (araç bağlantıyı yalnızca kendi terminal çıktısına
+basar; o çıktıyı saklamayın). Tek istisna geliştirme kipidir: `DEV_MODE=true` ve
+posta yokken backend e-postadaki bağlantıyı bilerek sunucu loguna yazar; üretimde
+`DEV_MODE` kapalıdır. Satır denetim zincirine girer (`python -m core.audit.verify` ile
+doğrulanır) ve SIEM aktarımı açıksa `case_audit` kaynağından
+`case.user.reset_link_issued` olayı olarak gider. Kullanıcının bağlantıyı
+kullanması ayrıca `password_reset` kimlik doğrulama olayı olarak kaydedilir.
 
 **SSO (OIDC).** Yönetici **Ayarlar → System → Single sign-on** bölümünden bir ya
 da daha çok OIDC sağlayıcısı tanımlar (türler: Entra ID, Okta, Keycloak, genel
@@ -809,3 +907,184 @@ RPO/RTO hedefleri, ölçüm yöntemi, geri yükleme prosedürü ve kalan riskler
 [docs/operations/rpo-rto.md](../operations/rpo-rto.md). Bu belgedeki süreler
 hedeftir. Devralma ve döküm/geri yükleme testlerle sınanır, ancak bir müşteri
 ortamında ölçülmüş RTO değeri yoktur; tatbikatı yapıp süreyi kaydedin.
+
+## Masaüstü uygulaması
+
+AutoSecOps masaüstü uygulaması, tek bir makinede Docker üzerinde çalışan yerel
+yığının (PostgreSQL, Redis, Bifrost LLM ağ geçidi, backend, ajan katmanı) önüne
+yerel bir pencere koyar. Kaynak kod, Python ya da Node gerekmez; yalnızca Docker
+gerekir. Değerlendirme, eğitim ve tek analistlik küçük kurulumlar içindir; çok
+kullanıcılı üretim kurulumu için Docker Compose ya da Helm kullanın
+([internetsiz kurulum kılavuzu](kurulum-internetsiz.md)). Konsol yalnızca bu
+makineden erişilen `http://127.0.0.1:6987` adresinde çalışır; diğer servisler
+dışarı port açmaz.
+
+### Gereksinimler
+
+| | macOS | Linux | Windows (önizleme) |
+|---|---|---|---|
+| İşletim sistemi | macOS 12 ve üstü, Apple silikon (arm64) ya da Intel (x64) | x86_64, glibc tabanlı güncel bir dağıtım; AppImage için FUSE 2 kitaplığı | Windows 10/11 x64 |
+| Docker | Docker Desktop | Docker Engine ve Compose v2 eklentisi; kullanıcı `docker` komutunu `sudo` olmadan çalıştırabilmeli | Docker Desktop (WSL 2 arka ucu) |
+| Kaynak | En az 8 GB bellek (16 GB önerilir), imajlar ve veri için ~15 GB disk | aynı | aynı |
+| İsteğe bağlı | Yerel modeller için Ollama | aynı | aynı |
+
+Windows kurulum dosyası sürüm hattında üretilir, ancak gerçek bir Windows
+makinesinde uçtan uca sınanmamıştır; bu yüzden **önizleme** olarak verilir.
+
+### Kurulum
+
+Kurulum dosyaları GitHub Release'te `autosecops-<V>-desktop-<işletim sistemi>-<mimari>`
+adıyla durur. Önce dosyayı doğrulayın (aşağıda, "Doğrulama"). Adında `-unsigned`
+geçen dosya, işletim sisteminin kod imzasını (Apple Developer ID / Authenticode)
+taşımaz; cosign imzası ve `SHA256SUMS` yine de vardır.
+
+- **macOS:** `autosecops-<V>-desktop-mac-arm64.dmg` (Apple silikon) ya da
+  `-mac-x64.dmg` (Intel) dosyasını açın, AutoSecOps'u Applications klasörüne
+  sürükleyin. İmzasız (`-unsigned`) bir dmg'den kurulan uygulamayı macOS
+  "hasarlı" (damaged) diye açmaz. Dosyayı doğruladıktan sonra karantina işaretini
+  kaldırın: `xattr -dr com.apple.quarantine /Applications/AutoSecOps.app`, ya da
+  **Sistem Ayarları → Gizlilik ve Güvenlik → Yine de Aç** yolunu kullanın.
+- **Linux:** `chmod +x autosecops-<V>-desktop-linux-x86_64.AppImage` ve dosyayı
+  çalıştırın. Kurulum gerekmez.
+- **Windows:** `autosecops-<V>-desktop-win-x64.exe` kurulum sihirbazını
+  çalıştırın (kullanıcı başına kurulur, yönetici yetkisi istemez). İmzasız bir
+  dosyada SmartScreen "Windows bilgisayarınızı korudu" der: **Ek bilgi → Yine de
+  çalıştır**.
+
+### İlk çalıştırma
+
+1. Uygulama Docker'ı arar. Yoksa indirme sayfasını öneren bir uyarıyla kapanır;
+   Docker kurulu ama çalışmıyorsa başlatmayı dener ve en çok üç dakika bekler.
+2. Compose dosyasını ve şema SQL'ini uygulama veri dizinine kopyalar (her yeni
+   sürümde bir kez).
+3. Yığının beş imajını kullanır; yerelde olmayanı ilk açılışta indirir (birkaç
+   dakika sürer):
+   - `ghcr.io/singularityrd/autosecops-backend:<V>`
+   - `ghcr.io/singularityrd/autosecops-agent:<V>`
+   - `postgres:16-alpine`
+   - `redis:7-alpine`
+   - `maximhq/bifrost:v2.2.1`
+
+   Kayıt defterlerine erişimi olmayan bir makinede beşini de önceden
+   `docker load` ile yükleyin (imaj arşivleri için bkz.
+   [internetsiz kurulum kılavuzu](kurulum-internetsiz.md)). Beşi de yerelde
+   varsa uygulama ağa çıkmaz; biri eksikse Docker onu indirmeyi dener ve
+   internetsiz makinede açılış başarısız olur.
+4. PostgreSQL'i başlatır, şemayı uygular, servisleri ayağa kaldırır ve konsolu
+   açar. Kurulumda hazır bir hesap yoktur: ilk açılışta yönetici hesabını siz
+   oluşturursunuz (kullanıcı adı ve parola sizin seçiminizdir).
+
+Uygulama ilk açılışta bu kuruluma özel bir JWT imza anahtarı ve ajan iç belirteci
+üretir ve veri dizinindeki `config.json` dosyasına (yalnızca sahibi okuyabilir,
+`0600`) yazar. Uygulamayı kapatmak tüm konteynerleri durdurur ve kaldırır; vakaları
+ve ayarları tutan Docker birimleri kalır.
+
+### Veri ve log konumları
+
+| | macOS | Linux | Windows |
+|---|---|---|---|
+| Uygulama verisi (`config.json`, Compose kopyası) | `~/Library/Application Support/AutoSecOps` | `~/.config/AutoSecOps` | `%APPDATA%\AutoSecOps` |
+| Uygulama logu (`autosecops-desktop.log`, son 5 açılış) ve kapanışta alınan konteyner logları (`containers/autosecops-<UTC>.log`, son 5) | `~/Library/Logs/AutoSecOps` | `~/.config/AutoSecOps/logs` | `%APPDATA%\AutoSecOps\logs` |
+| Veritabanı, Redis, durum dizini, Bifrost verisi | Compose projesi `vigil` altındaki Docker birimleri: `postgres_data`, `redis_data`, `vigil_home`, `bifrost_data` (Docker'da proje adı önekiyle görünür) | aynı | aynı |
+
+Docker birimlerindeki ve konteyner adlarındaki `vigil` öneki, Compose proje
+adından gelen iç bir addır. Yükseltmede verinin yerinde kalması için bilerek
+korunur. 2.0'dan önceki sürümlerin yazdığı `vigil-desktop.log` ve
+`containers/vigil-*.log` dosyaları da destek paketine girer.
+
+### Güncelleme
+
+Uygulamanın kendi kendini güncelleme özelliği yoktur ve hiçbir güncelleme
+sunucusuna bağlanmaz (internetsiz kurulumlar için bilinçli bir karar). Yeni
+sürümü yükseltmek için:
+
+1. Uygulamayı kapatın. Veri önemliyse veritabanı birimini (`postgres_data`) yedekleyin.
+2. Yeni kurulum dosyasını indirin, doğrulayın ve eskisinin üzerine kurun (macOS:
+   Applications'taki uygulamayı değiştirin; Linux: yeni AppImage'ı kullanın;
+   Windows: yeni kurulum sihirbazını çalıştırın).
+3. İlk açılışta uygulama yeni Compose dosyasını kopyalar ve yeni sürümün
+   imajlarını indirir (ya da yerelde bulur); veritabanı birimi korunur.
+
+2.0 sürümünde uygulama kimliği `com.singularityrd.autosecops` olarak değişti
+(önceki: `ai.deeptempo.vigil`). macOS, Tam Disk Erişimi izinlerini uygulama
+kimliğine bağladığı için bu izni bir kez yeniden vermeniz gerekebilir; veri
+dizini değişmez.
+
+### Kaldırma
+
+- **macOS:** Applications'taki AutoSecOps'u çöpe atın.
+- **Linux:** AppImage dosyasını silin.
+- **Windows:** **Ayarlar → Uygulamalar → AutoSecOps → Kaldır**.
+
+Kaldırma; veri dizinini, logları ve Docker birimlerini **silmez**. Tamamen
+temizlemek için uygulama veri ve log dizinlerini silin, ardından birimleri
+kaldırın (geri alınamaz; tüm vakalar ve ayarlar gider):
+
+```bash
+docker volume ls --filter label=com.docker.compose.project=vigil
+docker volume rm $(docker volume ls -q --filter label=com.docker.compose.project=vigil)
+```
+
+### Loglar ve destek paketi
+
+**Help → Open Logs** (ya da sistem tepsisi menüsü) konteynerlerin son 500
+satırını geçici dizinde `autosecops-logs.txt` dosyasına yazar ve açar.
+**Help → Support Bundle Command…** bu kuruluma uygun destek paketi komutunu
+gösterir ve kopyalar, örneğin macOS'ta:
+
+```bash
+sh "/Applications/AutoSecOps.app/Contents/Resources/vigil-support/vigil-support.sh"
+```
+
+Komut bir terminalde çalıştırılır, maskelenmiş tek bir `.tar.gz` yazar ve hiçbir
+şey yüklemez ([destek aracının belgesi](../../scripts/vigil-support/README.md)).
+Betik POSIX `sh` ister; Windows'ta WSL ya da Git Bash içinden çalıştırın.
+
+### Doğrulama
+
+Her kurulum dosyası `SHA256SUMS` içinde listelenir ve yanında bir
+`<dosya>.sigstore.json` cosign imzası bulunur. Sürüm dizininin tamamı
+`verify-release.sh` ile doğrulanır; betik masaüstü kurulum dosyalarının
+imzalarını da denetler ([docs/release/dogrulama.md](../release/dogrulama.md)).
+Tek dosya için:
+
+```bash
+cosign verify-blob \
+  --bundle autosecops-<V>-desktop-mac-arm64.dmg.sigstore.json \
+  --certificate-identity "https://github.com/SingularityRD/autosecops2/.github/workflows/release.yml@refs/tags/v<V>" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  autosecops-<V>-desktop-mac-arm64.dmg
+```
+
+İşletim sisteminin kod imzası ayrıca denetlenir:
+
+- **macOS, imzalı:** `spctl --assess --type execute -vv /Applications/AutoSecOps.app`
+  çıktısında `accepted` ve `source=Notarized Developer ID` görünür;
+  `codesign -dv --verbose=4 /Applications/AutoSecOps.app` çıktısında
+  `Authority=Developer ID Application: …` satırı vardır.
+- **macOS, imzasız (`-unsigned`):** `codesign -dv` çıktısında `Signature=adhoc`
+  görünür ve `spctl` uygulamayı reddeder; bu beklenen durumdur, dosyanın
+  bütünlüğünü cosign imzası ve `SHA256SUMS` kanıtlar.
+- **Windows, imzalı:** PowerShell'de `Get-AuthenticodeSignature .\autosecops-<V>-desktop-win-x64.exe`
+  komutu `Status: Valid` ve yayıncı sertifikasını gösterir. İmzasız dosyada
+  durum NotSigned olur.
+- **Linux:** AppImage'ın işletim sistemi imzası yoktur; cosign imzası ve
+  `SHA256SUMS` yeterlidir.
+
+### Güvenlik özellikleri ve sınırlar
+
+- Her pencere yalıtılmış (context isolation) ve kum havuzunda (sandbox) çalışır;
+  web içeriği Node.js'e erişemez. Ana pencere yalnızca yerel backend'i
+  (`127.0.0.1:6987`) gösterir. Başka bir adrese giden bağlantı, yönlendirme ya da
+  yeni pencere uygulamada açılmaz; yalnızca `https:` ve `mailto:` bağlantıları
+  sistem tarayıcısına verilir, diğer şemalar (`file:`, `smb:` ve benzeri)
+  engellenir. Kamera, mikrofon, konum gibi izinler reddedilir.
+- Kurulu uygulamada geliştirici araçları kapalıdır. Electron sigortaları
+  (fuses) ile uygulamanın düz Node olarak çalıştırılması, `NODE_OPTIONS` ve
+  `--inspect` bayrakları kapatılmıştır; kod yalnızca `app.asar`'dan yüklenir ve
+  macOS ile Windows'ta `app.asar` paketleme sırasında gömülen bütünlük özetiyle
+  karşılaştırılır (değiştirilmiş bir `app.asar` ile uygulama açılmaz). Konsol
+  oturum çerezleri diskte işletim sisteminin anahtar deposuyla şifrelenir.
+- OIDC tek oturum açma, masaüstü penceresinde desteklenmez: kimlik sağlayıcının
+  sayfası sistem tarayıcısında açılır ve oturum orada kalır. Masaüstü
+  uygulamasında yerel hesap kullanın.

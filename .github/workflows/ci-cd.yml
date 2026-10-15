@@ -1190,6 +1190,64 @@ jobs:
           retention-days: 7
 
   # ============================================================================
+  # Desktop app (W0.24): build only
+  # ============================================================================
+  # Type-checks, unit-tests and packages the Electron app unpacked for Linux, so
+  # breakage shows up on a PR instead of on the release tag (release.yml builds
+  # and signs the installers). No signing, no publish, no registry, no secrets.
+  build-desktop:
+    name: Build Desktop App
+    if: github.repository == 'SingularityRD/autosecops2'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Electron 44 needs Node >= 22.12 (the web console stays on NODE_VERSION).
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - name: Install, type-check and unit-test
+        working-directory: clients/desktop
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: Package unpacked for Linux (unsigned, not published)
+        working-directory: clients/desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx electron-builder --config electron-builder.yml --linux --dir --publish never
+
+      - name: Package carries the app, its resources and the fuses
+        working-directory: clients/desktop/release/linux-unpacked
+        env:
+          FORCE_COLOR: "0" # plain "<fuse> is Disabled" lines for the greps below
+        run: |
+          set -eu
+          test -x autosecops
+          test -f resources/app.asar
+          test -f resources/standalone/docker-compose.yml
+          test -f resources/vigil-support/vigil-support.sh
+          fuses=$(npx --no-install electron-fuses read --app autosecops | sed 's/\x1b\[[0-9;]*m//g')
+          printf '%s\n' "$fuses"
+          # Every fuse the app depends on, with its required state. A fuse
+          # missing from the output fails like a wrong state does.
+          for want in RunAsNode:Disabled EnableNodeOptionsEnvironmentVariable:Disabled \
+            EnableNodeCliInspectArguments:Disabled EnableEmbeddedAsarIntegrityValidation:Enabled \
+            OnlyLoadAppFromAsar:Enabled EnableCookieEncryption:Enabled; do
+            line="  ${want%%:*} is ${want#*:}"
+            printf '%s\n' "$fuses" | grep -qxF "$line" || { echo "::error::fuse ${want%%:*} is not ${want#*:}"; exit 1; }
+          done
+
+  # ============================================================================
   # Deploy to Staging (DISABLED - Only testing enabled)
   # ============================================================================
   # Uncomment when ready to deploy to VMs

@@ -1,10 +1,10 @@
-# AutoSecOps 2.0 — İş paketi durumu (14 Ekim 2026, gece)
+# AutoSecOps 2.0 — İş paketi durumu (15 Ekim 2026)
 
 > Yeni oturumda devam etmek için önce `docs/wp/HANDOFF.md` (kurulum + başlangıç komutu), sonra bu dosya.
 Hedef: düzenlenmiş sektör GA, 30 Ekim 2026 (31 Ekim tampon). Plan: `docs/wp/NORTHSTAR_PLAN.md`.
 Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) → yalnızca spec + diff gören bağımsız doğrulayıcı → PASS → `integration`'a merge → tam test + gates → `integration` ve `main` push.
 
-**`main` == `integration` == bu commit (W0.23 sonrası)** (remote `target` = SingularityRD/autosecops2). Ürün sürümü **2.0.0** (`release_tool.py check-versions`); sürüm notları `docs/release/2.0.0.md` (58 dahil, 4 hariç: W0.8, W1.4, W2.9, W4.4). **`v2.0.0` etiketi yok.**
+**`main` == `integration` == bu commit (W0.27 sonrası)** (remote `target` = SingularityRD/autosecops2). Ürün sürümü **2.0.0** (`release_tool.py check-versions`); sürüm notları `docs/release/2.0.0.md` (58 dahil, 4 hariç: W0.8, W1.4, W2.9, W4.4). **`v2.0.0` etiketi yok.**
 
 ## 1. main'de (doğrulandı, birleşti)
 
@@ -28,6 +28,12 @@ Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) → yalnızca spe
 | W0.22 CI imaj taraması + PyJWT 2.14.0 | PASS (Yüksek) | backend/daemon imajları CI'da push'suz build + Trivy; **PyJWT CVE-2026-102268 (CRITICAL) kapatıldı** (tek-algoritma allow-list'lerimiz yüzünden istismar edilemiyordu) |
 | W0.23 tarama sertleştirme + PyJWT 2.15.1 | PASS, tur 2 (Yüksek) | Tüm Trivy adımları SHA+v0.75.0; her imajda ayrı gizli bilgi kapısı (her şiddet); UI'daki sahte GCP anahtar placeholder'ı kaldırıldı |
 
+15 Ekim — upstream (Vigil-SOC/vigil) fork sonrası 46 commit'in alınması (kullanıcı kararı: LogLM hariç, eksik olan her şey; masaüstü uygulaması destekli bileşen):
+
+| WP | Sonuç | Not |
+|---|---|---|
+| W0.27 parola sıfırlama (ceb46864, 9f2a4e52) | PASS, tur 2 (Yüksek, insan onayı) | Bağlantı `#token=` (sunucuya gitmez); erişim logunda `token/code/password` maskeleniyor; parola değişince eski bağlantı geçersiz (yükseltme öncesi bağlantılar da); Redis yoksa onay 503. Takip: `api.ts:1472` yorumu hâlâ `?token=` diyor |
+
 ## 1b. Sürüm adayı
 
 `v2.0.0-rc.1` @ `87b1438e` (kullanıcı GitHub arayüzünden oluşturdu; bu oturumun proxy'si etiket push'unu reddediyor). Release run 38644995176 başarılı: 3 imaj GHCR'de (amd64+arm64), SBOM, cosign imza + SLSA, SHA256SUMS, öz-doğrulama, taslak Release. Release sayfası "Latest" görünüyordu → pre-release işaretlenmeli.
@@ -39,6 +45,13 @@ Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) → yalnızca spe
 | WP | Durum | Sıradaki adım |
 |---|---|---|
 | W1.4 prompt-injection seti | Spec taslağı `wp/w1.4-injection-set` | İnsan kararı (aşağı §3). |
+| W0.24 masaüstü uygulaması (upstream) | doğrulama tur 2 | İmza sırları (macOS CSC_LINK/CSC_KEY_PASSWORD/APPLE_*; Windows WIN_CSC_*) ve logo kullanıcıdan |
+| W0.25 çekirdek/veri düzeltmeleri (10 commit) + FORK.md radar kaydı | doğrulama tur 2 | `services/daemon/processor.py`'de W0.30 ile çakışır → sıralı merge |
+| W0.26 hunt/case/UI | doğrulama tur 2 | Kanıt PVC varsayılanı (RWX / replicas 2) ürün kararı gerektirebilir |
+| W0.28 bağlayıcılar (98ca1152, 596850b6 Okta, 5f132b81) | başlamadı | W0.29 sonrası |
+| W0.29 LogLM kaldırma | doğrulama tur 2 | Kendi LogLM'imiz ayrı iş |
+| W0.30 enjeksiyon korumaları + ajan OTel | doğrulama tur 2 | Korumalar varsayılan açık yalnızca UUID bağlama + onay metni kaçışı düzeldiyse |
+| Ertelenen upstream | — | ajan çekirdeği yeniden yazımı (2027 Ç1 kararı), MCP runner zinciri, arama zinciri (e08ea09e, 265078af, c441a3fa) |
 
 ## 3. GA kontrol listesi (sahibiyle)
 

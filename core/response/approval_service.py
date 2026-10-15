@@ -36,6 +36,7 @@ from core.storage.config_service import get_config_service
 from core.storage.connection import get_db_manager
 from core.storage.models import ApprovalAction as ApprovalActionRow
 from core.storage.models import Investigation, Role, User, WorkflowRun
+from core.storage.schemas.base import _iso_utc
 from core.telemetry import get_meter
 from core.time import utcnow
 
@@ -285,7 +286,8 @@ def _first_approver_role(
 
 
 def _iso(value: Optional[datetime]) -> Optional[str]:
-    return value.isoformat() if value else None
+    # Stored naive UTC; mark it as UTC so the console reads it in the viewer's zone.
+    return _iso_utc(value) if value else None
 
 
 def _row_to_pending(row: ApprovalActionRow) -> PendingAction:
@@ -298,13 +300,13 @@ def _row_to_pending(row: ApprovalActionRow) -> PendingAction:
         confidence=float(row.confidence or 0),
         reason=row.reason,
         evidence=list(row.evidence or []),
-        created_at=row.created_at.isoformat() if row.created_at else "",
+        created_at=_iso_utc(row.created_at) if row.created_at else "",
         created_by=row.created_by,
         requires_approval=bool(row.requires_approval),
         status=row.status,
-        approved_at=row.approved_at.isoformat() if row.approved_at else None,
+        approved_at=_iso_utc(row.approved_at) if row.approved_at else None,
         approved_by=row.approved_by,
-        executed_at=row.executed_at.isoformat() if row.executed_at else None,
+        executed_at=_iso_utc(row.executed_at) if row.executed_at else None,
         execution_result=row.execution_result,
         rejection_reason=row.rejection_reason,
         parameters=dict(row.parameters or {}),
@@ -583,7 +585,7 @@ class ApprovalService:
         if annotate_rule:
             reason = f"{reason}; {rule}" if reason else rule
 
-        action_id = f"action-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
+        action_id = f"action-{utcnow().strftime('%Y%m%d-%H%M%S-%f')}"
         status = (
             ActionStatus.PENDING.value
             if requires_approval
@@ -638,6 +640,23 @@ class ApprovalService:
         except SQLAlchemyError as e:
             logger.error("DB error creating action: %s", e)
             raise
+
+    def has_action_for_finding(self, finding_id: str) -> bool:
+        """Whether any response action already names this finding as evidence.
+
+        Any status counts: a pending, approved, executed or rejected proposal
+        is the finding's response, and proposing it again is a duplicate (a
+        re-triaged finding, W0.25). Raises on a failed read.
+        """
+        with get_db_manager().session_scope() as session:
+            return (
+                session.execute(
+                    select(ApprovalActionRow.action_id)
+                    .where(ApprovalActionRow.evidence.contains([finding_id]))
+                    .limit(1)
+                ).first()
+                is not None
+            )
 
     def get_action(self, action_id: str) -> Optional[PendingAction]:
         """Get a specific action by ID."""
@@ -1169,7 +1188,7 @@ class ApprovalService:
                     # be alive, so the reverse checks state before acting.
                     parameters["supersedes"] = supersedes
                 row = ApprovalActionRow(
-                    action_id=f"action-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-rev",
+                    action_id=f"action-{utcnow().strftime('%Y%m%d-%H%M%S-%f')}-rev",
                     action_type=original.action_type,
                     title=f"Reverse: {original.title}"[:2000],
                     description=f"Reversal of {original_id}",

@@ -908,7 +908,9 @@ collect_logs() {
             _dl=$EFF_HOME/Library/Logs/AutoSecOps
             [ -d "$_dl" ] || [ ! -d "$EFF_HOME/Library/Logs/Vigil" ] || _dl=$EFF_HOME/Library/Logs/Vigil
         else _dl=$STATE_DIR/logs; fi
-        collect_tree logs/desktop "$_dl" \( -name 'vigil-desktop.log*' -o \( -path '*/containers/*' -name 'vigil-*.log' \) \)
+        # autosecops-* since the desktop rebrand (W0.24); vigil-* from older versions.
+        collect_tree logs/desktop "$_dl" \( -name 'autosecops-desktop.log*' -o -name 'vigil-desktop.log*' \
+            -o \( -path '*/containers/*' \( -name 'autosecops-*.log' -o -name 'vigil-*.log' \) \) \)
         ;;
     esac
     collect_state logs/state/vigil.log vigil.log

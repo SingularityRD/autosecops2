@@ -58,7 +58,6 @@ def _orchestrator(**extra) -> Orchestrator:
     orch._create_investigation = AsyncMock()
     orch._create_manual_investigation = AsyncMock()
     orch._decide_trigger = MagicMock()
-    orch._data_service = MagicMock()
     orch._attach_to_overlapping_case = MagicMock(
         return_value=(_Overlap.MERGED, "case-1")
     )
@@ -637,3 +636,116 @@ def test_intake_surge_notification_is_caseless_and_carries_depth(monkeypatch):
     assert notif.notification_type == "intake_surge"
     assert notif.notification_metadata == {"queue_depth": 12}
     assert "12" in notif.message
+
+
+def test_demo_mode_still_hydrates_a_detection_from_postgres(monkeypatch):
+    """Intake rows name Postgres findings, so demo mode must not hide them (#2236).
+
+    The tick reads the whole queue's findings from Postgres in one call.
+    """
+    from core.storage.models import Finding
+    from core.storage.schemas import FindingSchema
+    from core.storage.service import DatabaseService
+
+    monkeypatch.setattr("core.config.is_demo_mode", lambda: True)
+    monkeypatch.setattr("core.storage.database_data_service.is_demo_mode", lambda: True)
+    monkeypatch.setattr(DatabaseService, "__init__", lambda self: None)
+    real = Finding(
+        finding_id="f-real",
+        severity="high",
+        data_source="webhook",
+        entity_context={"hostnames": ["FYODOR-L"]},
+    )
+    reads = []
+
+    def by_ids(self, ids):
+        reads.append(list(ids))
+        return [FindingSchema.dump(real)] if "f-real" in ids else []
+
+    monkeypatch.setattr(DatabaseService, "get_findings_by_ids", by_ids)
+    orch = _orchestrator()
+    rows = [
+        {"id": 4, "kind": "detection", "finding_id": "f-real"},
+        {"id": 5, "kind": "detection", "finding_id": "f-gone"},
+    ]
+    orch._queued_intake_triggers = MagicMock(return_value=rows)
+
+    kept = orch._resolve_queue(utcnow())
+
+    assert reads == [["f-real", "f-gone"]]
+    assert kept == rows
+    assert rows[0]["_finding"]["finding_id"] == "f-real"
+    assert rows[0]["_finding"]["severity"] == "high"
+    assert rows[1]["_finding"] is None
+
+
+def test_a_failed_postgres_read_leaves_every_detection_without_a_finding(monkeypatch):
+    """A failed bulk read hydrates nothing: the rows stay queued, nothing launches."""
+    from core.storage.service import DatabaseService
+
+    monkeypatch.setattr(DatabaseService, "__init__", lambda self: None)
+
+    def boom(self, ids):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(DatabaseService, "get_findings_by_ids", boom)
+    orch = _orchestrator()
+    row = {"id": 4, "kind": "detection", "finding_id": "f-real"}
+
+    assert orch._hydrate_detection_findings([row]) == {}
+
+
+def test_the_tick_reads_open_cases_once_for_the_whole_queue(monkeypatch):
+    """#2245 in the batched tick: one open-case read per tick, not one per row.
+
+    A finding already on an open Case merges into it; the rest go on.
+    """
+    reads = []
+
+    def holding(ids):
+        reads.append(sorted(ids))
+        return {"f-high": "case-open"}
+
+    monkeypatch.setattr("services.daemon.orchestrator._open_cases_holding", holding)
+    orch = _orchestrator()
+    orch._hydrate_detection_findings = MagicMock(
+        return_value={"f-high": HIGH, "f-med": MEDIUM}
+    )
+    rows = [
+        {"id": 1, "kind": "detection", "finding_id": "f-high"},
+        {"id": 2, "kind": "detection", "finding_id": "f-med"},
+        {"id": 3, "kind": "schedule", "payload": {}},
+    ]
+    orch._queued_intake_triggers = MagicMock(return_value=rows)
+
+    kept = orch._resolve_queue(utcnow())
+
+    assert reads == [["f-high", "f-med"]]
+    assert [r["id"] for r in kept] == [2, 3]
+    orch._decide_trigger.assert_called_once_with(
+        1, state="merged", reason="finding_on_open_case", merged_into="case-open"
+    )
+    assert orch.stats["dedup_prevented"] == 1
+
+
+def test_a_failed_open_case_read_holds_every_detection_in_the_tick(monkeypatch):
+    def boom(_ids):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("services.daemon.orchestrator._open_cases_holding", boom)
+    orch = _orchestrator()
+    orch._hydrate_detection_findings = MagicMock(
+        return_value={"f-high": HIGH, "f-med": MEDIUM}
+    )
+    rows = [
+        {"id": 1, "kind": "detection", "finding_id": "f-high"},
+        {"id": 2, "kind": "detection", "finding_id": "f-med"},
+        {"id": 3, "kind": "schedule", "payload": {}},
+    ]
+    orch._queued_intake_triggers = MagicMock(return_value=rows)
+
+    kept = orch._resolve_queue(utcnow())
+
+    assert [r["id"] for r in kept] == [3]
+    orch._decide_trigger.assert_not_called()
+    assert orch.stats["dedup_prevented"] == 0

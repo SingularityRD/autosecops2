@@ -5,12 +5,11 @@ rather than fixed here, so any regression stays bisectable:
 
 * Dispatch is asymmetric — Anthropic runs on a threadpool with no retry; other
   providers get ``LLMRouter`` + retry + local-Bifrost recovery.
-* The ``ai_enrichment`` write is a full replace, and ``daemon/processor`` writes
-  a disjoint set of triage keys to the same column. So a daemon payload can
-  satisfy the API's cache check yet render as ``undefined``, writing here wipes
-  daemon triage, and the finding then leaves the daemon's
-  ``ai_enrichment IS NULL`` backfill for good. ``persist=False`` is the seam for
-  fixing that separately.
+* ``daemon/processor`` writes a disjoint set of triage keys to the same
+  ``ai_enrichment`` column. Each writer replaces only its own keys
+  (``write_ai_enrichment``), so neither wipes the other, but a daemon-only
+  payload can still satisfy the API's cache check yet render as ``undefined``
+  (#2317).
 """
 
 import asyncio
@@ -31,9 +30,13 @@ from core.time import utcnow
 logger = logging.getLogger(__name__)
 
 # Bounded separately per path: the enrichment JSON schema is large, so a tight
-# cap truncates it — but local models are slow per token, so they get a
-# tighter bound than the cloud path while still leaving room for the object.
+# cap truncates it. Local models (Ollama, or any provider on a local endpoint
+# such as on-prem vLLM) are slow per token, so they get the tightest bound that
+# still fits the object. Cloud models behind Bifrost
+# get the most room: thinking models (e.g. Gemini 2.5) spend their reasoning
+# tokens out of the same budget before writing the JSON.
 ANTHROPIC_MAX_TOKENS = 4096
+CLOUD_MAX_TOKENS = 8192
 LOCAL_MAX_TOKENS = 1400
 
 LOCAL_SYSTEM_PROMPT = (
@@ -103,6 +106,22 @@ def _resolve_provider(component: str) -> Tuple[Any, str, Any]:
     )
 
 
+def _is_local_provider(provider: Any) -> bool:
+    """Whether the model runs on the deployment's own hardware (slow per token).
+
+    Ollama always does. So does any provider whose ``base_url`` is a local
+    endpoint: an on-prem OpenAI-compatible server (vLLM, LM Studio) or a model
+    server on the deployment's own network. Only a provider reached at a
+    public address (or through Bifrost with no ``base_url``) is cloud.
+    """
+    if provider.provider_type == "ollama":
+        return True
+    from core.llm.local_lane import is_local_endpoint
+
+    base_url = getattr(provider, "base_url", None)
+    return bool(base_url) and is_local_endpoint(base_url)
+
+
 async def _dispatch(
     *,
     provider: Any,
@@ -140,7 +159,9 @@ async def _dispatch(
         "messages": [{"role": "user", "content": f"/no_think\n{prompt}"}],
         "system_prompt": LOCAL_SYSTEM_PROMPT,
         "model": model_id,
-        "max_tokens": LOCAL_MAX_TOKENS,
+        "max_tokens": (
+            LOCAL_MAX_TOKENS if _is_local_provider(provider) else CLOUD_MAX_TOKENS
+        ),
     }
     from core.llm.providers.recovery import (
         is_gateway_connection_error,
@@ -179,7 +200,24 @@ async def _dispatch(
                 attempt + 1,
                 retry_limit,
             )
+    if result.get("finish_reason") == "length":
+        # Hit max_tokens — the JSON is likely truncated and parse will fall back.
+        logger.warning(
+            "Enrichment for %s hit the %s-token cap on model %s; response may be truncated",
+            finding_id,
+            dispatch_args["max_tokens"],
+            model_id,
+        )
     return result.get("content", "")
+
+
+def is_generated_analysis(enrichment: Any) -> bool:
+    """True when ``ai_enrichment`` holds an analysis from ``enrich()``.
+
+    The daemon writes triage keys into the same column, so presence alone
+    isn't enough; only ``enrich()`` stamps ``generated_at``.
+    """
+    return isinstance(enrichment, dict) and bool(enrichment.get("generated_at"))
 
 
 async def _persist(
@@ -187,14 +225,15 @@ async def _persist(
 ) -> bool:
     """Write ``enrichment`` to the finding's ``ai_enrichment`` column.
 
-    A full replace, not a merge — see the module docstring. A failed write is
+    Replaces the analysis keys and keeps the stored daemon triage keys, merged
+    against the locked row rather than the caller's copy. A failed write is
     logged and swallowed: the caller still gets the payload it paid a provider
     call for. Offloaded with ``to_thread`` because the data layer is sync
     SQLAlchemy and this runs on the event loop.
     """
     service = data_service if data_service is not None else _default_data_service()
     success = await asyncio.to_thread(
-        service.update_finding, finding_id, ai_enrichment=enrichment
+        service.write_ai_enrichment, finding_id, enrichment, daemon=False
     )
     if not success:
         logger.error("Failed to save enrichment for %s", finding_id)

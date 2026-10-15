@@ -8,7 +8,9 @@ const { execFileSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
-const version = require("../package.json").version;
+// The release pipeline passes the tag's version (2.0.0-rc.1 for an rc tag,
+// whose images carry that tag); otherwise the app version.
+const version = process.env.AUTOSECOPS_DESKTOP_VERSION || require("../package.json").version;
 const image = `ghcr.io/singularityrd/autosecops-backend:${version}`;
 const repoRoot = path.join(__dirname, "..", "..", "..");
 const outDir = path.join(__dirname, "..", "standalone");
