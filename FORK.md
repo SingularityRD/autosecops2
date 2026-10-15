@@ -172,3 +172,27 @@ Helm and Medic workflows run. To run the full pipeline in this repository,
 change that condition (costs GitHub Actions minutes on a private repository).
 `.oss-scanner/` (upstream #2180) is upstream's configuration for an external
 scanner and describes upstream's project; no workflow here runs it.
+
+### 7. Removed: the DeepTempo LogLM connector (W0.29)
+
+Upstream ships an opt-in connector for DeepTempo's paid LogLM model. This
+repository does not: we build our own anomaly model later, as separate work.
+Upstream changes to LogLM are therefore not cherry-picked.
+
+| Area | Upstream | Here |
+|---|---|---|
+| Catalog and UI | `loglm` integration, Settings → Data card, DeepTempo chip in setup | removed |
+| MCP | `mcp-config.json#loglm` (`mcp-remote` to the connector) | removed; no egress entry |
+| Page-extension host | console tabs mounted from a connector's `manifest.json`, `GET /api/integrations/{id}/session-token`, `EXTENSION_CONNECTOR_ALLOWLIST` (CSP, `index.html` meta, SSRF guard), `connectorUrl` → `<ID>_MCP_URL` | removed: LogLM was its only user |
+| Coverage verdicts | `rule \| loglm \| both \| missed` | `rule \| anomaly \| both \| missed`; stored `data_source = "loglm"` rows still count as `anomaly` (`ANOMALY_SOURCES` in `core/detections/reconstruction.py`) |
+| Parquet ingest | "LogLM" schema kind | same column layout, called `sequence` |
+| `17_loglm_setup.sql` | grants `loglm.view` | same name and number, a no-op (`SELECT 1`); upgraded installs keep an inert `loglm.view` key |
+
+Kept, because something else uses it: the `${VAR}` substitution in MCP server
+configs (Splunk's `SPLUNK_MCP_URL`), `reload_server_configs()` before an MCP
+connect, the integration secret registry and the "Detection & AI" catalog
+category. Lower-case `deeptempo` infrastructure identifiers (the Postgres role,
+`deeptempo_soc`, `~/.deeptempo`, container names) are not product mentions and
+stay; `tests/unit/_ratchets/test_no_loglm_surface.py` keeps LogLM and DeepTempo
+out of the console, the API routers, `mcp-config.json`, `docs/guide` and
+`docs/operations`.
