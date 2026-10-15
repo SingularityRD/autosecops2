@@ -4,7 +4,7 @@
 Hedef: düzenlenmiş sektör GA, 30 Ekim 2026 (31 Ekim tampon). Plan: `docs/wp/NORTHSTAR_PLAN.md`.
 Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) → yalnızca spec + diff gören bağımsız doğrulayıcı → PASS → `integration`'a merge → tam test + gates → `integration` ve `main` push.
 
-**`main` == `integration` == bu commit (W0.27 sonrası)** (remote `target` = SingularityRD/autosecops2). Ürün sürümü **2.0.0** (`release_tool.py check-versions`); sürüm notları `docs/release/2.0.0.md` (58 dahil, 4 hariç: W0.8, W1.4, W2.9, W4.4). **`v2.0.0` etiketi yok.**
+**`main` == `integration` == bu commit (W0.24–W0.29 sonrası)** (remote `target` = SingularityRD/autosecops2). Ürün sürümü **2.0.0** (`release_tool.py check-versions`); sürüm notları `docs/release/2.0.0.md` (58 dahil, 4 hariç: W0.8, W1.4, W2.9, W4.4). **`v2.0.0` etiketi yok.**
 
 ## 1. main'de (doğrulandı, birleşti)
 
@@ -33,6 +33,11 @@ Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) → yalnızca spe
 | WP | Sonuç | Not |
 |---|---|---|
 | W0.27 parola sıfırlama (ceb46864, 9f2a4e52) | PASS, tur 2 (Yüksek, insan onayı) | Bağlantı `#token=` (sunucuya gitmez); erişim logunda `token/code/password` maskeleniyor; parola değişince eski bağlantı geçersiz (yükseltme öncesi bağlantılar da); Redis yoksa onay 503. Takip: `api.ts:1472` yorumu hâlâ `?token=` diyor |
+| W0.24 masaüstü uygulaması | PASS, tur 2 (Yüksek, insan onayı) | Electron 44.7.0, sigortalar + asar bütünlüğü CI'da; imza sırları (macOS CSC_LINK/CSC_KEY_PASSWORD/APPLE_*; Windows WIN_CSC_*) ve logo kullanıcıdan. Takip: release adımında `npm ci` sırlarla aynı ortamda |
+| W0.25 çekirdek/veri düzeltmeleri (10 commit) + FORK.md radar kaydı | PASS, tur 2 (Yüksek, insan onayı) | ai_enrichment kilitli yama kipi; yeniden triyajda ikinci yanıt yok. Takip: yüksek önemde yeniden triyaj Slack/PagerDuty'yi yeniden çağırabilir |
+| W0.26 hunt/vaka/konsol (init SQL 62) | PASS, tur 3 (Yüksek, insan onayı) | Helm kanıt birimi varsayılan kapalı (kalıcı değil); RWO + çoklu bağlayıcı şablonda reddedilir. Ertelenen: kanıt Postgres/nesne deposuna (seçenek d); `ReadWriteOncePod` kontrolü |
+| W0.29 LogLM kaldırma | PASS, tur 3 (Yüksek, insan onayı) | Uzantı barındırıcısı, session-token rotası, CSP eklentisi kaldırıldı; `17_loglm_setup.sql` etkisiz; eski LogLM sırları maskeli; ratchet. Kendi LogLM'imiz ayrı iş |
+| W0.28 bağlayıcılar (98ca1152, 596850b6 Okta, 5f132b81) | PASS, tur 2 (Normal) | Tek `SERVER_SUPPORT` haritası, Experimental etiketi; Okta imaja gömülü, SHA'ya pinli, açık bulgu yok (override'lar). Okta gerçek kiracıda sınanmadı |
 
 ## 1b. Sürüm adayı
 
@@ -45,12 +50,7 @@ Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) → yalnızca spe
 | WP | Durum | Sıradaki adım |
 |---|---|---|
 | W1.4 prompt-injection seti | Spec taslağı `wp/w1.4-injection-set` | İnsan kararı (aşağı §3). |
-| W0.24 masaüstü uygulaması (upstream) | doğrulama tur 2 | İmza sırları (macOS CSC_LINK/CSC_KEY_PASSWORD/APPLE_*; Windows WIN_CSC_*) ve logo kullanıcıdan |
-| W0.25 çekirdek/veri düzeltmeleri (10 commit) + FORK.md radar kaydı | doğrulama tur 2 | `services/daemon/processor.py`'de W0.30 ile çakışır → sıralı merge |
-| W0.26 hunt/case/UI | doğrulama tur 2 | Kanıt PVC varsayılanı (RWX / replicas 2) ürün kararı gerektirebilir |
-| W0.28 bağlayıcılar (98ca1152, 596850b6 Okta, 5f132b81) | başlamadı | W0.29 sonrası |
-| W0.29 LogLM kaldırma | doğrulama tur 2 | Kendi LogLM'imiz ayrı iş |
-| W0.30 enjeksiyon korumaları + ajan OTel | doğrulama tur 2 | Korumalar varsayılan açık yalnızca UUID bağlama + onay metni kaçışı düzeldiyse |
+| W0.30 enjeksiyon korumaları + ajan OTel | doğrulama tur 6 | Tur 3–5'te satır içi kaçış her seferinde aşıldı; tur 6'da yapısal tasarım: düzyazıda yalnızca `[subject value N]` işaretçisi, değerler ayrı `subject_values` alanında, UI'da markdown'sız kutu |
 | Ertelenen upstream | — | ajan çekirdeği yeniden yazımı (2027 Ç1 kararı), MCP runner zinciri, arama zinciri (e08ea09e, 265078af, c441a3fa) |
 
 ## 3. GA kontrol listesi (sahibiyle)

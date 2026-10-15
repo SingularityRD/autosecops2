@@ -337,6 +337,31 @@
       "id": "W0.24",
       "topic": "Masaüstü uygulaması GA hazırlığı: AutoSecOps kimliği, macOS dmg / Linux AppImage / Windows (önizleme) kurulum dosyaları sürüm hattında, Electron 44 ve sertleştirme",
       "topic_en": "desktop app GA readiness: AutoSecOps identity, macOS dmg / Linux AppImage / Windows (preview) installers in the release pipeline, Electron 44 and hardening"
+    },
+    {
+      "id": "W0.25",
+      "topic": "upstream çekirdek ve veri düzeltmeleri (10 commit): UTC onay saatleri, orkestratörde Postgres bulguları, yeniden kuyruğa giren bulgunun açık vakasına katılması, CSPRNG oturum kimlikleri, token sınırları, ai_enrichment anahtarlarının yazar başına korunması; FORK.md upstream radar kaydı",
+      "topic_en": "upstream core and data fixes (10 commits): UTC approval times, Postgres findings in the orchestrator, a re-queued finding joins its open case, CSPRNG session ids, token caps, per-writer ai_enrichment keys; FORK.md upstream radar log"
+    },
+    {
+      "id": "W0.26",
+      "topic": "upstream hunt, vaka ve konsol iyileştirmeleri: hunt ilerlemesi (init SQL 62), vaka inceleme kapısı, kanıt yedeği ve yerinde geri yükleme",
+      "topic_en": "upstream hunt, case and console improvements: hunt progress (init SQL 62), case review gating, evidence backup and in-place restore"
+    },
+    {
+      "id": "W0.27",
+      "topic": "upstream parola sıfırlama akışı ve operatörün verdiği sıfırlama bağlantısı",
+      "topic_en": "upstream password reset flow and operator-issued reset links"
+    },
+    {
+      "id": "W0.28",
+      "topic": "upstream bağlayıcı dürüstlüğü: Experimental etiketi, Okta bağlayıcısının onarımı (imaja gömülü, commit'e pinli)",
+      "topic_en": "upstream connector honesty: Experimental label, Okta connector fixed (baked into the image, pinned to a commit)"
+    },
+    {
+      "id": "W0.29",
+      "topic": "üçüncü taraf DeepTempo LogLM bağlayıcısının kaldırılması",
+      "topic_en": "removal of the third-party DeepTempo LogLM connector"
     }
   ],
   "highlights": [
@@ -571,6 +596,24 @@
         "W0.24"
       ],
       "text": "**Masaüstü uygulaması:** sürüm hattı macOS dmg (arm64, x64), Linux AppImage ve Windows kurulum dosyasını (önizleme) üretir; hepsi cosign ile imzalı ve `SHA256SUMS` içinde, SBOM'u `autosecops-<V>-node-desktop.cdx.json`. Uygulama kimliği `com.singularityrd.autosecops`; Electron 44 (desteklenen sürüm); pencereler yalıtılmış ve kum havuzunda, gezinme ve dış bağlantılar kısıtlı, Electron sigortaları kapalı; kendi kendini güncelleme yok (W0.24)."
+    },
+    {
+      "when": [
+        "W0.27"
+      ],
+      "text": "**Parola sıfırlama:** giriş ekranında \"Parolamı unuttum\"; bağlantı `#token=` biçiminde olduğundan belirteç sunucu loguna düşmez, erişim logunda `token`/`code`/`password` parametreleri maskelenir, bağlantı tek kullanımlıktır ve parola değişince geçersizleşir. SMTP yoksa (air-gap) ekran yöneticiye başvurmayı söyler; yönetici `scripts/` altındaki betikle denetim kaydı yazılarak bağlantı üretebilir. Yalnızca SSO kullanan ve servis hesapları reddedilir (W0.27)."
+    },
+    {
+      "when": [
+        "W0.28"
+      ],
+      "text": "**Bağlayıcı destek durumu:** canlı ortamda hiç sınanmamış 10 bağlayıcı, açıldığı her ekranda kapatılamayan bir **Experimental** etiketi taşır; destek tablosu yönetici kılavuzunda. Okta bağlayıcısı artık çalışır: imaja gömülü, tam commit SHA'sına pinli ve ağsız başlar (W0.28)."
+    },
+    {
+      "when": [
+        "W0.26"
+      ],
+      "text": "**Hunt ve vaka:** hunt koşusunun ilerlemesi canlı izlenir; vaka sayfasında öneri, incelenmeden onaylanamaz; Helm yedeği kanıt dizinini de alır ve geri yükleme bağlama noktasını yerinde değiştirir (W0.26)."
     }
   ],
   "upgrade_notes": [
@@ -678,6 +721,18 @@
         "W0.18"
       ],
       "text": "**Reddedilen büyük onaylar (W0.18):** faz yolunda (`/internal/runs/{id}/phases`) 64 KB'ı aşan argümanlı bir araç çağrısı reddedildiğinde koşu artık `paused` kalmaz, `failed` olur (faz satırı `status=failed`, `approval_state=refused`, `error` nedeni taşır); bu koşuları bekleyen otomasyon `failed` durumunu da ele almalıdır. `/checkpoints` yolu (hunt koşuları) 413 döner ama koşu durumunu değiştirmez; hunt'ın park durumu `/status` ile gelir. Geri yüklemeden sonra anahtar yalnızca ortamdaysa ileti artık servisleri yeniden başlatmayı ve ortamdaki eski `JWT_SECRET_KEY` değerini değiştirmeyi söyler."
+    },
+    {
+      "when": [
+        "W0.27"
+      ],
+      "text": "**Parola sıfırlama (W0.27):** yükseltmeden önce verilmiş, henüz kullanılmamış sıfırlama bağlantıları geçersizdir (parola parmak izine bağlandı); kullanıcı yenisini ister. Redis yoksa sıfırlama onayı 503 döner ve hiçbir parola değişmez."
+    },
+    {
+      "when": [
+        "W0.26"
+      ],
+      "text": "**Helm kanıt birimi (W0.26):** `evidence.persistence.enabled` varsayılan olarak kapalıdır; kanıt pod yeniden başlarsa kalıcı değildir. Açmak için RWX destekleyen bir StorageClass ve açık `accessModes` gerekir; birden çok pod bağlıyken ReadWriteOnce şablon aşamasında reddedilir."
     }
   ],
   "known_issues": [
@@ -766,6 +821,18 @@
     {
       "wp": "W0.24",
       "text": "Masaüstü kurulum dosyalarının Apple Developer ID / noter onayı ve Windows Authenticode imzası, depo sırları (`CSC_LINK`, `APPLE_ID`, `WIN_CSC_LINK` ve diğerleri; VERSIONING.md) verilene kadar yoktur; bu dosyalar `-unsigned` adını taşır. Windows kurulum dosyası gerçek bir Windows makinesinde sınanmadı (önizleme). AutoSecOps logosu henüz yok; uygulama simgesi nötr bir yer tutucudur. Masaüstü penceresinde OIDC SSO desteklenmez."
+    },
+    {
+      "wp": "W0.26",
+      "text": "Kanıtın Postgres'e veya nesne deposuna taşınması (kalıcı kanıt için RWX gerektirmeyen yol) sonraki sürüme ertelendi. `ReadWriteOncePod` erişim kipi çoklu bağlama kontrolüne henüz dahil değil."
+    },
+    {
+      "wp": "W0.28",
+      "text": "Okta ve diğer \"desteklenen\" bağlayıcılar bu sürümde gerçek bir kiracıya karşı çalıştırılmadı; Okta sunucusu upstream'in sınamadığı fastmcp 3 ile gelir. Upstream'in haftalık canlı bağlayıcı testleri (`tests/live`) alınmadı."
+    },
+    {
+      "wp": "W0.25",
+      "text": "Yükseltmeden sonra yeniden triyaj edilen yüksek önem dereceli bir bulgu, onay satırı olmadığı için Slack/PagerDuty bildirimini bir kez daha gönderebilir."
     }
   ],
   "sections": {
