@@ -8,6 +8,8 @@ import CheckTable, { type CheckRow } from './CheckTable'
 import ConnectFields from './ConnectFields'
 import { fieldsOf, missingFields, type ConnectConfig } from './connectConfig'
 import SourceCollection from './SourceCollection'
+import { isExperimentalIntegration } from '../settings/integrationsData'
+import { ExperimentalNote } from '../settings/ExperimentalLabel'
 
 /** One server's answer to a save. `connected: null` means the MCP subsystem could not say. */
 export interface ConnectResult {
@@ -130,6 +132,7 @@ export default function ConnectSource({
       }
     >
       <div className="flex flex-col gap-3.5">
+        {isExperimentalIntegration(integration.id) && <ExperimentalNote />}
         <ConnectFields
           integration={integration}
           config={config}

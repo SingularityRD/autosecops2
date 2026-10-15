@@ -6,6 +6,8 @@ import { DATA_SOURCE_CATEGORIES } from './setupSteps'
 import { configApi, mcpApi } from '../../services/api'
 import { Icon, type IconName } from '../../shared/icons'
 import { TextInput } from '../../shared/ui'
+import { isExperimentalIntegration } from '../settings/integrationsData'
+import { ExperimentalChip } from '../settings/ExperimentalLabel'
 import ChoiceCard from './ChoiceCard'
 import ConnectSource, { type ConnectResult } from './ConnectSource'
 import { fieldsOf, type ConnectConfig } from './connectConfig'
@@ -167,6 +169,7 @@ const DataSourceDialog = ({ onAdvance }: { onAdvance: () => void }) => {
       title={i.name}
       body={i.category}
       icon={<Icon name={CATEGORY_ICON[i.category] ?? 'grid'} />}
+      badge={isExperimentalIntegration(i.id) ? <ExperimentalChip /> : undefined}
       selected={selectedId === i.id}
       onSelect={() => pick(i.id)}
     />

@@ -1,10 +1,11 @@
 """Runtime-fetched MCP servers must pin an exact artifact, not registry HEAD.
 
-npx / uvx / docker entries in mcp-config.json download code at process start.
+npx / uvx entries in mcp-config.json download code at process start.
 An unpinned spec, a version range, @latest, or a git default branch makes two
 identical deploys diverge and is a supply-chain footgun. In-repo python3
 servers and joe-sandbox's local ``uv --directory`` clone are not registry
-resolves and are left alone.
+resolves and are left alone. ``docker`` is not a launcher at all: the backend
+image ships no Docker CLI or socket.
 """
 
 from __future__ import annotations
@@ -25,24 +26,8 @@ _MCP_CONFIG = _REPO_ROOT / "mcp-config.json"
 _EXACT_VERSION = re.compile(r"^[0-9]+(\.[0-9]+)*$")
 _EXACT_PYPI = re.compile(r"==([0-9]+(?:\.[0-9]+)*)$")
 _GIT_REF = re.compile(r"\.git@([^#]+)$")
-_SHA256 = re.compile(r"@sha256:[0-9a-f]{64}$")
 _MCP_REMOTE_PATCH = re.compile(r"^0\.1\.(\d+)$")
 _FLOATING_GIT_REFS = {"HEAD", "head", "main", "master", "latest", "dev", "develop"}
-
-_DOCKER_VALUE_FLAGS = {
-    "-e",
-    "--env",
-    "-v",
-    "--volume",
-    "-w",
-    "--workdir",
-    "--name",
-    "-u",
-    "--user",
-    "--platform",
-    "-p",
-    "--publish",
-}
 
 
 def _servers() -> dict[str, dict]:
@@ -75,22 +60,6 @@ def _uvx_unpinned(args: list[str]) -> list[str]:
     """Return package specs that are missing an exact pin."""
     spec, with_specs, _, _ = uvx_specs(args)
     return [s for s in [*with_specs, spec] if s and not _pypi_or_git_pinned(s)]
-
-
-def _docker_image(args: list[str]) -> str | None:
-    skip_next = False
-    images: list[str] = []
-    for arg in args:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg in _DOCKER_VALUE_FLAGS:
-            skip_next = True
-            continue
-        if arg.startswith("-") or arg == "run":
-            continue
-        images.append(arg)
-    return images[-1] if images else None
 
 
 def _mcp_remote_in_cve_window(version: str) -> bool:
@@ -153,21 +122,23 @@ def test_runtime_fetched_mcp_servers_are_pinned():
             leftover = _uvx_unpinned(args)
             if leftover:
                 unpinned[name] = ", ".join(leftover)
-        elif command == "docker":
-            inspected += 1
-            image = _docker_image(args)
-            if not image or not _SHA256.search(image):
-                unpinned[name] = image or "(missing docker image)"
 
     assert inspected >= 15, (
-        "expected to inspect npx/uvx/docker MCP servers; the ratchet is "
+        "expected to inspect npx/uvx MCP servers; the ratchet is "
         f"vacuous if launchers were renamed ({inspected} found)"
     )
     assert not unpinned, (
         "runtime-fetched MCP servers must pin an exact version, git tag/SHA, "
-        "or image digest — not @latest, a range, or git HEAD:\n"
+        "or git tag — not @latest, a range, or git HEAD:\n"
         + "\n".join(f"  {name}: {detail}" for name, detail in sorted(unpinned.items()))
     )
+
+
+@pytest.mark.unit
+def test_no_mcp_server_launches_through_docker():
+    """The backend image has no Docker CLI or socket, so a docker entry never starts."""
+    docker = sorted(n for n, c in _servers().items() if c.get("command") == "docker")
+    assert not docker, f"package these as npx/uvx pins instead: {docker}"
 
 
 @pytest.mark.unit
@@ -257,3 +228,76 @@ def test_image_uv_tool_list_matches_uvx_pins():
         f"only in mcp-config.json: {sorted(config - image, key=str)}; "
         f"only in infra/docker/mcp-packages/uv-tools.txt: {sorted(image - config, key=str)}"
     )
+
+
+# Entries pinned to a git commit because the upstream ref is a pre-release
+# tag that can be moved (W0.28: Okta's 02.0-beta).
+_COMMIT_PINNED = {"okta"}
+_COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+@pytest.mark.unit
+def test_pre_release_git_pins_name_a_commit():
+    servers = _servers()
+    for name in sorted(_COMMIT_PINNED):
+        spec, _, _, _ = uvx_specs(servers[name].get("args") or [])
+        match = _GIT_REF.search(spec or "")
+        assert match and _COMMIT_SHA.fullmatch(match.group(1)), (
+            f"{name} must pin a full commit SHA, not a movable tag: {spec}"
+        )
+
+
+# Baked tools whose own pins carry fixed advisories: the uv --overrides file
+# their uv-tools.txt line names must keep each package at or above the fix
+# (pip-audit of the Okta venv, 15 Oct 2026; W0.28 verifier finding 2).
+_ADVISORY_FLOORS = {
+    "okta-mcp-server": {
+        "fastmcp": "3.2.0",
+        "mcp": "1.28.1",
+        "starlette": "1.3.1",
+        "python-dotenv": "1.2.2",
+    },
+}
+_IMAGE_OVERRIDES = "/tmp/mcp-overrides/"
+
+
+def _version(text: str) -> tuple[int, ...]:
+    return tuple(int(p) for p in text.split("."))
+
+
+def _uv_tool_lines() -> dict[str, list[str]]:
+    lines = {}
+    for line in (_IMAGE_PACKAGES / "uv-tools.txt").read_text().splitlines():
+        tokens = line.split()
+        if tokens and not tokens[0].startswith("#"):
+            lines[tokens[0]] = tokens[1:]
+    return lines
+
+
+@pytest.mark.unit
+def test_baked_tool_overrides_stay_above_fixed_advisories():
+    lines = _uv_tool_lines()
+    dockerfile = (_REPO_ROOT / "infra" / "docker" / "Dockerfile.backend").read_text()
+    dockerignore = (_REPO_ROOT / ".dockerignore").read_text().splitlines()
+    assert "COPY infra/docker/mcp-packages/overrides/ /tmp/mcp-overrides/" in dockerfile
+    assert "!infra/docker/mcp-packages/overrides/*.txt" in dockerignore
+    for tool, floors in _ADVISORY_FLOORS.items():
+        matches = [spec for spec in lines if tool in spec]
+        assert len(matches) == 1, f"{tool}: expected one uv-tools.txt line, got {matches}"
+        rest = lines[matches[0]]
+        assert "--overrides" in rest, f"{tool} must install with --overrides"
+        path = rest[rest.index("--overrides") + 1]
+        assert path.startswith(_IMAGE_OVERRIDES), path
+        file = _IMAGE_PACKAGES / "overrides" / path[len(_IMAGE_OVERRIDES) :]
+        pins = {}
+        for raw in file.read_text().splitlines():
+            raw = raw.split("#", 1)[0].strip()
+            if raw:
+                name, sep, version = raw.partition("==")
+                assert sep, f"{file.name}: pin exactly, not a range: {raw}"
+                pins[name.strip().lower()] = version.strip()
+        for package, floor in floors.items():
+            assert package in pins, f"{file.name} lost its {package} override"
+            assert _version(pins[package]) >= _version(floor), (
+                f"{file.name}: {package}=={pins[package]} is below the fixed {floor}"
+            )

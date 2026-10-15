@@ -3,6 +3,7 @@
 # tests/unit/_ratchets/test_mcp_runtime_pins.py keeps the two in step.
 falcon-mcp==0.19.0
 git+https://github.com/Sentinel-One/purple-mcp.git@v0.7.0
+git+https://github.com/fctr-id/okta-mcp-server.git@e070a67aae706e2e6f71e44b380f494f6171b852 --overrides /tmp/mcp-overrides/okta.txt
 pagerduty-mcp==1.1.0
 google-secops-mcp==0.7.1 --with mcp==1.29.1
 gti-mcp==0.1.3 --with mcp==1.29.1

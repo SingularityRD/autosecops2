@@ -4071,6 +4071,8 @@
    }
 
    .int-wip { color: var(--fair); font-size: 10px; }
+   .int-exp { color: var(--fair); font-size: 10px; flex-shrink: 0; }
+   .int-exp-note { color: var(--fair); font-size: 12px; line-height: 1.5; margin: 0; }
 
    .int-sub {
       display: block;

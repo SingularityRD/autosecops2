@@ -44,6 +44,26 @@ function open(props: Partial<React.ComponentProps<typeof IntegrationWizard>> = {
 describe('IntegrationWizard drawer', () => {
   beforeEach(() => test.mockReset())
 
+  it('labels an experimental connector in the title and says why above the form', () => {
+    open({ integration: { ...okta, id: 'crowdstrike', name: 'CrowdStrike Falcon' } })
+    expect(screen.getByText('Experimental')).toBeInTheDocument()
+    expect(screen.getByRole('note')).toHaveTextContent(/not run this connector against a live instance/)
+    expect(screen.getByRole('note')).toHaveTextContent(/AutoSecOps support/)
+    // the status is not something the drawer can wave away
+    expect(screen.queryByRole('button', { name: /dismiss|supported/i })).toBeNull()
+  })
+
+  it('shows no experimental label for a supported connector', () => {
+    open()
+    expect(screen.queryByText('Experimental')).toBeNull()
+    expect(screen.queryByRole('note')).toBeNull()
+  })
+
+  it('shows the note in the first-run setup popup too', () => {
+    open({ variant: 'setup', integration: { ...okta, id: 'sentinelone', name: 'SentinelOne' } })
+    expect(screen.getByRole('note')).toHaveTextContent(/may not work/)
+  })
+
   it('empty: an integration with no fields has nothing to ask for and no secret copy', () => {
     open({ integration: bare, existingConfig: {}, secretsSet: {} })
     expect(screen.queryByLabelText('Domain')).toBeNull()

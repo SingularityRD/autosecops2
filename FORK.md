@@ -97,8 +97,8 @@ connectors, **W0.30** agent guards and OTel. Next radar starts from
 
 | Upstream | PR | Subject | Decision | Taken by / reason |
 |---|---|---|---|---|
-| `98ca1152` | #2197 | Experimental label for connectors never run live | UYARLA | W0.28 (pending): README text rebranded, support channel ours |
-| `596850b6` | #2198 | Weekly live connector runs; Okta MCP env fix | UYARLA | W0.28 (pending): Okta `OKTA_CLIENT_ORGURL` fix and Experimental entries only; `tests/live` and the workflow ERTELE (CI secrets, runner egress) |
+| `98ca1152` | #2197 | Experimental label for connectors never run live | UYARLA | W0.28 (taken, `5cacab10` + `7a595de5`): one support map (`wip` / `experimental`) replaces the parallel sets; chip and note on every enable surface (Add, Connected, setup drawer, first-run picker and form); README and UI text point to AutoSecOps support with a support bundle |
+| `596850b6` | #2198 | Weekly live connector runs; Okta MCP env fix | UYARLA | W0.28 (taken, manual port `ec638160`): Okta `OKTA_CLIENT_ORGURL` fix and the Atomic Red Team / CAPE Experimental entries only; `tests/live`, `connectors-live.yml` and its `.gitignore` line ERTELE (vendor secrets, OIDC, CI runner egress) |
 | `ceb46864` | #2199 | Forgot / reset password screens | UYARLA | W0.27 (taken): on top of the W1.9 SSO login, AutoSecOps branding, token removed from the URL, air-gap (no SMTP) wording |
 | `ac147719` | #2205 | Ask gets the run's live state; bounded `replay_hunt` | AL | W0.26 (taken) |
 | `2ecfbb2c` | #2206 | /hunt preview names the real state; one Approve path | AL | W0.26 (taken) (client only; four-eyes stays server side) |
@@ -127,7 +127,7 @@ connectors, **W0.30** agent guards and OTel. Next radar starts from
 | `59703064` | #2296 | /hunt proposes a PDF's own hypothesis; Ask keeps grounding | UYARLA (Python half), TS half ERTELE | W0.26 (taken, manual port): `hunt_claim.py` and `router.py` only; the Ask `exchange` grounding (TS) needs the kernel |
 | `c441a3fa` | #2297 | Hunt rules on the named host; evidence names its system | ERTELE | Search/entity chain (with e08ea09e, 265078af); deferred by W0.26's Non-goals, needs a hunt `linkFindings` port and keeps W1.7 `is_gated` / `effect_of` |
 | `2f8fdf42` | #2302 | Evidence store under the State Directory; OpenRouter; setup gate | UYARLA | W0.26 (taken, manual port): evidence path only (data loss); OpenRouter `*` allow-list ATLA; setup gate ERTELE with the MCP runner |
-| `5f132b81` | #2329 | Okta MCP as a pinned uv tool | UYARLA | W0.28 (pending): pin a commit SHA, egress `exec:uvx` + `UV_OFFLINE`, drop `tests/live` hunks |
+| `5f132b81` | #2329 | Okta MCP as a pinned uv tool | UYARLA | W0.28 (taken, `f9d2e449` + `b2539f0e`): pinned to commit `e070a67a` (tag `02.0-beta`), baked into the backend image via `uv-tools.txt` (starts offline), egress `exec:uvx` + `UV_OFFLINE`, verify_catalog fails on a missing launcher; `tests/live` hunks dropped |
 | `6c8533f6` | #2331 | Chat session ids fall back to `getRandomValues` | AL | W0.25 (taken) |
 | `9f2a4e52` | #2332 | Reset without mail; operator-issued link | UYARLA | W0.27 (taken): e-mail-bound token (W1.9), refuse SSO-only and service accounts, audit + SIEM event, TTL setting, branding |
 | `5a4bb2f1` | #2333 | Vertex API-key keys carry project and region | ATLA | Cloud Vertex only, no air-gap use; take cleanly if a customer runs Vertex |
