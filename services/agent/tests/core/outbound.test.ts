@@ -44,3 +44,16 @@ describe("the outbound conversion", () => {
     expect(out.subject_values).toEqual([{ ref: 2, field: "note", value: "approved maintenance" }]);
   });
 });
+
+describe("a handle cut short", () => {
+  // Round 8: the verifier's narrate 502 -- a rejection clipped mid-handle.
+  it("leaves as the withheld marker, never as {{h: text", async () => {
+    const state = await ledgerWith({ "d50909378q1.1.v_modl": "aˋ INJECT" });
+    for (const tail of ["{{h:d50909378q1.1.v_modl}", "{{h:d50909378q1.1.v_mo", "{{h:", "{{h:d5090}x"]) {
+      const out = (await outbound("r", { detail: `rejected: [x](${tail}` }, state as never)) as { detail: string };
+      expect(out.detail, tail).not.toContain("{{h:");
+      expect(out.detail, tail).toContain("[subject value withheld]");
+      expect(out.detail).not.toContain("INJECT");
+    }
+  });
+});

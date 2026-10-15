@@ -84,3 +84,29 @@ async def test_the_event_log_carries_the_subject_values_beside_it(monkeypatch):
 
     assert events[0]["payload"]["summary"] == "ran on [subject value 1]"
     assert values == rows
+
+
+def test_a_handle_cut_short_is_neutralised_too():
+    # Round 8: the verifier's narrate 502, clipped mid-handle.
+    for tail in ("{{h:d50909378q1.1.v_modl}", "{{h:d50909378q1.1.v_mo", "{{h:"):
+        out = projections.neutralise_handles(f"rejected: [x]({tail}")
+        assert "{{h:" not in out
+        assert projections.HANDLE_MARKER in out
+
+
+@pytest.mark.asyncio
+async def test_an_error_detail_is_neutralised_before_it_is_cut(monkeypatch):
+    monkeypatch.setattr(projections, "_headers", lambda: {"Authorization": "Bearer t"})
+    real = httpx.AsyncClient
+    body = '{"detail":"' + "x" * 380 + '{{h:d50909378q1.1.v_modl}} and more"}'
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kw: real(
+            transport=httpx.MockTransport(lambda _r: httpx.Response(502, text=body)),
+            **kw,
+        ),
+    )
+    with pytest.raises(RuntimeError) as raised:
+        await projections.read_replay(RUN)
+    assert "{{h:" not in str(raised.value)

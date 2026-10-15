@@ -17,7 +17,8 @@ renders literally; a value cannot end the fence, since it cannot start a line.
 from __future__ import annotations
 
 import json
-from typing import Iterable, List
+import re
+from typing import Any, Iterable, List
 
 from pydantic import BaseModel, Field
 
@@ -73,11 +74,33 @@ def as_dicts(values: Iterable[SubjectValue]) -> List[dict]:
     return [v.model_dump() for v in _rows(values)]
 
 
-def without_blocks(text: str) -> str:
-    """``text`` without the subject blocks appended above (plain or fenced): what
-    goes on into a model's context, which must carry the markers only (W0.30)."""
-    for start in (f"\n\n```text\n{HEADER}", f"\n\n{HEADER}"):
-        at = text.find(start)
-        if at >= 0:
-            text = text[:at]
-    return text
+# A block as this module writes it: optionally fenced, the header, then one
+# "[N] field = ..." line per value. Matched also when the text it trails was
+# flattened onto one line (header to end of line) or cut short (no closing fence).
+_BLOCK = re.compile(
+    r"[ \t]*\n*(?:```text\n)?"
+    + re.escape(HEADER)
+    + r"[^\n]*(?:\n\[\d+\] [^\n]*)*(?:\n```)?"
+)
+
+
+def for_model(text: Any) -> Any:
+    """``text`` as a model may read it: every subject block removed, so only the
+    ``[subject value N]`` markers remain (W0.30). People see the values in the
+    block or the console's box; models never do. Non-strings pass through."""
+    if not isinstance(text, str) or HEADER not in text:
+        return text
+    return _BLOCK.sub("", text)
+
+
+def for_model_deep(value: Any) -> Any:
+    """:func:`for_model` over every string in a JSON-shaped value."""
+    if isinstance(value, str):
+        return for_model(value)
+    if isinstance(value, list):
+        return [for_model_deep(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(for_model_deep(v) for v in value)
+    if isinstance(value, dict):
+        return {k: for_model_deep(v) for k, v in value.items()}
+    return value

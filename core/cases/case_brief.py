@@ -17,6 +17,7 @@ from core.cases.case_state import case_run_refs, combined_state
 from core.storage.database_data_service import DatabaseDataService
 from core.storage.unit_of_work import unit_of_work
 from core.workflows import catalog
+from core.workflows.subject_values import for_model
 from core.workflows.workflow_run_service import WorkflowRunService
 
 logger = logging.getLogger(__name__)
@@ -233,4 +234,6 @@ async def case_brief(case_id: str, workflows: Any) -> str:
     except Exception as exc:  # noqa: BLE001 — a brief is never worth the turn
         logger.warning("no case brief for %s: %s", case_id, exc)
         return ""
-    return f"{RULES}\n{OPEN}\n{body}\n{CLOSE}"
+    # A model's context (W0.30): stored run text carries the subject block for
+    # people; the composer sees the [subject value N] markers only.
+    return for_model(f"{RULES}\n{OPEN}\n{body}\n{CLOSE}")

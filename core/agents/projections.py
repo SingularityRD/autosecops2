@@ -39,7 +39,9 @@ def agent_route(path: str) -> str:
 # W0.30: a guarded agent run's handle ({{h:...}}) means something only inside that
 # run. The agent layer converts every response it serves; as defence in depth no
 # read here ever hands one on verbatim -- it becomes a neutral marker.
-_HANDLE = re.compile(r"\{\{h:[A-Za-z0-9_.:-]+\}\}")
+# A whole handle, or what is left of one a truncation cut short ("{{h:dabc" or
+# "{{h:dabc}" at the end of a clipped error).
+_HANDLE = re.compile(r"\{\{h:[A-Za-z0-9_.:-]*(?:\}\}|\}(?!\}))?")
 HANDLE_MARKER = "[a value the subject wrote, withheld]"
 
 
@@ -144,7 +146,7 @@ async def write_narrative(run_id: str) -> Dict[str, Any]:
         raise RuntimeError(f"could not reach the agent layer: {exc!r}") from None
 
     if response.status_code != 200:
-        detail = response.text[:400]
+        detail = neutralise_handles(response.text)[:400]
         raise RuntimeError(f"the agent layer answered {response.status_code}: {detail}")
     return neutralise_handles(response.json())
 
@@ -171,7 +173,7 @@ async def read_replay(
     if response.status_code == 404:
         return None
     if response.status_code != 200:
-        detail = response.text[:400]
+        detail = neutralise_handles(response.text)[:400]
         raise RuntimeError(f"the agent layer answered {response.status_code}: {detail}")
     return neutralise_handles(response.json())
 
@@ -204,7 +206,7 @@ async def read_event_log(
     if response.status_code == 404:
         return None
     if response.status_code != 200:
-        detail = response.text[:400]
+        detail = neutralise_handles(response.text)[:400]
         raise RuntimeError(f"the agent layer answered {response.status_code}: {detail}")
     body = neutralise_handles(response.json())
     events = body.get("events") if isinstance(body, dict) else None
@@ -234,7 +236,7 @@ async def read_verify(run_id: str) -> Optional[Dict[str, Any]]:
     if response.status_code == 404:
         return None
     if response.status_code != 200:
-        detail = response.text[:400]
+        detail = neutralise_handles(response.text)[:400]
         raise RuntimeError(f"the agent layer answered {response.status_code}: {detail}")
     return neutralise_handles(response.json())
 

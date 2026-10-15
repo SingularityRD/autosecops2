@@ -59,3 +59,28 @@ describe('the open checkpoint card, with two sources of values', () => {
     expect(rows).toEqual(['[1] host = WS01', '[2] note = maintenance'])
   })
 })
+
+describe('the open checkpoint card, with sources that overlap', () => {
+  it('keeps both rows that share a ref but differ, and shows an exact repeat once', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const question = 'Isolate? [subject value 1] and [subject value 2]'
+    const hunt = {
+      run_id: 'r1',
+      subject_values: [
+        { ref: 1, field: 'note', value: 'maintenance' },
+        { ref: 2, field: 'path', value: 'C:\\a.dll' },
+      ],
+      open_checkpoint: {
+        checkpoint_id: 'c1',
+        checkpoint_class: 'tool_approval',
+        question,
+        context: { subject_values: [{ ref: 1, field: 'host', value: 'WS01' }, { ref: 2, field: 'path', value: 'C:\\a.dll' }] },
+      },
+    } as unknown as HuntView
+    render(<OpenCheckpoint hunt={hunt} />)
+    const rows = [...screen.getByTestId('subject-values').querySelectorAll('li')].map((li) => li.textContent)
+    expect(rows).toEqual(['[1] note = maintenance', '[1] host = WS01', '[2] path = C:\\a.dll'])
+    expect(errors.mock.calls.flat().join(' ')).not.toMatch(/same key/)
+    errors.mockRestore()
+  })
+})

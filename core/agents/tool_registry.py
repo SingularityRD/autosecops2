@@ -609,6 +609,20 @@ async def execute_backend_tool(
     tool_input: Optional[Args],
     registry: Optional["MCPRegistry"] = None,
 ) -> Tuple[Any, bool]:
+    # Every backend tool's answer goes to a model (W0.30): a case description, a
+    # run's reason or a case record carries the subject block for people, and a
+    # model reads the [subject value N] markers only.
+    from core.workflows.subject_values import for_model_deep
+
+    result, handled = await _execute_backend_tool(tool_name, tool_input, registry)
+    return for_model_deep(result), handled
+
+
+async def _execute_backend_tool(
+    tool_name: str,
+    tool_input: Optional[Args],
+    registry: Optional["MCPRegistry"] = None,
+) -> Tuple[Any, bool]:
     args = dict(tool_input or {})
 
     if tool_name == FIND_INTEGRATION_TOOLS and registry is not None:

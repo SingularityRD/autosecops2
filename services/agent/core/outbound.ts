@@ -1,4 +1,4 @@
-import { displaySafe, forPeople, SubjectValues, type RunValues, type SubjectValueRow } from "./guards.js";
+import { displaySafe, forPeople, SubjectValues, WITHHELD_MARKER, type RunValues, type SubjectValueRow } from "./guards.js";
 import { errorFields, logger } from "./log.js";
 import type { State } from "./seams.js";
 
@@ -23,6 +23,8 @@ export function outboundLedger(state: State | null): void {
 }
 
 const HANDLE_TEXT = "{{h:";
+// What is left of a handle after forPeople: only a fragment ({{h: not closed by }}).
+const PARTIAL_HANDLE = /\{\{h:[A-Za-z0-9_.:-]*(?:\}(?!\}))?/g;
 
 // Single-line display fields: escaped whole (newlines too), as the backend's
 // display_safe does for a title. Other strings (markdown bodies) keep their layout;
@@ -61,7 +63,9 @@ function convert(value: unknown, values: RunValues, key: string | null, collecte
   if (key !== null && RAW_KEYS.has(key)) return value;
   if (typeof value === "string") {
     if (!value.includes(HANDLE_TEXT)) return value;
-    const filled = forPeople(value, values, collected);
+    // A handle cut short by a truncation inside the run ("{{h:dabc" at the end of a
+    // clipped rejection) is no handle to fill and still never leaves (round 8).
+    const filled = forPeople(value, values, collected).replace(PARTIAL_HANDLE, WITHHELD_MARKER);
     return key !== null && DISPLAY_KEYS.has(key) ? displaySafe(filled) : filled;
   }
   if (Array.isArray(value)) return value.map((one) => convert(one, values, key, collected));
