@@ -53,15 +53,21 @@ class TestPasswordReset:
         assert first == "user-abc"
         assert second is None
 
-    def test_redis_outage_is_fail_open(self, monkeypatch):
-        # If Redis raises, we lose single-use enforcement but still honor
-        # the signed TTL — verify the token is accepted.
+    def test_redis_outage_fails_closed(self, monkeypatch):
+        # W0.27: without the used-token store single use cannot be enforced,
+        # so the token is refused (the confirm route answers 503).
         client = AsyncMock()
         client.set = AsyncMock(side_effect=RuntimeError("redis down"))
         monkeypatch.setattr(password_reset, "_redis_client", lambda: client)
         token = password_reset.generate_reset_token("user-abc")
-        user_id = asyncio.run(password_reset.verify_reset_token(token))
-        assert user_id == "user-abc"
+        with pytest.raises(password_reset.ResetStoreUnavailable):
+            asyncio.run(password_reset.verify_reset_token(token))
+
+    def test_no_redis_client_fails_closed(self, monkeypatch):
+        monkeypatch.setattr(password_reset, "_redis_client", lambda: None)
+        token = password_reset.generate_reset_token("user-abc")
+        with pytest.raises(password_reset.ResetStoreUnavailable):
+            asyncio.run(password_reset.verify_reset_token(token))
 
     def test_expired_token_is_rejected(self, monkeypatch):
         # Force an already-elapsed TTL. itsdangerous raises SignatureExpired

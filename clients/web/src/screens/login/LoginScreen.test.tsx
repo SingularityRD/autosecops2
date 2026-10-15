@@ -3,9 +3,11 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { ColorSchemeProvider } from '../../contexts/ColorSchemeContext'
 import LoginScreen from './LoginScreen'
+import { RESET_ASK_ADMIN, RESET_SSO_NOTE } from './resetMessages'
 
 const login = vi.fn()
 const navigate = vi.fn()
+const requestPasswordReset = vi.fn()
 
 vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({ login }),
@@ -26,6 +28,7 @@ vi.mock('../../services/api', () => ({
     providers: () => ssoProviders(),
     loginUrl: (id: string) => `/api/auth/sso/${id}/login`,
   },
+  authApi: { requestPasswordReset: (email: string) => requestPasswordReset(email) },
 }))
 
 // Default: no single sign-on configured. Hoisted so the vi.mock factory sees it.
@@ -58,6 +61,7 @@ beforeEach(() => {
   login.mockReset()
   navigate.mockReset()
   ssoProviders.mockClear()
+  requestPasswordReset.mockReset()
 })
 
 describe('LoginScreen', () => {
@@ -117,6 +121,70 @@ describe('LoginScreen', () => {
     it('keeps the credentials message on a 401', async () => {
       login.mockRejectedValueOnce({ response: { status: 401, data: {} } })
       expect(await submit()).toHaveTextContent('Sign in failed. Check your credentials.')
+    })
+  })
+
+  describe('forgot password', () => {
+    const GENERIC = 'If that email matches an active account, a reset link has been sent.'
+
+    it('requests a reset and shows only the server message', async () => {
+      requestPasswordReset.mockResolvedValueOnce({ data: { message: GENERIC, delivery: 'email' } })
+      renderLogin()
+      fireEvent.click(screen.getByRole('button', { name: 'Forgot password?' }))
+      expect(screen.getByRole('heading', { name: 'Reset your password' })).toBeInTheDocument()
+      fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'a@b.co' } })
+      fireEvent.click(screen.getByRole('button', { name: /send reset link/i }))
+      expect(await screen.findByRole('alert')).toHaveTextContent(GENERIC)
+      expect(requestPasswordReset).toHaveBeenCalledWith('a@b.co')
+      expect(screen.queryByLabelText('Email')).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: /back to sign in/i }))
+      expect(screen.getByRole('heading', { name: 'Sign in' })).toBeInTheDocument()
+    })
+
+    it('without mail says to contact an administrator, not that a link was sent', async () => {
+      requestPasswordReset.mockResolvedValueOnce({
+        data: { message: 'anything the server says', delivery: 'administrator' },
+      })
+      renderLogin()
+      fireEvent.click(screen.getByRole('button', { name: 'Forgot password?' }))
+      fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'a@b.co' } })
+      fireEvent.click(screen.getByRole('button', { name: /send reset link/i }))
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent(RESET_ASK_ADMIN)
+      expect(alert).toHaveTextContent('Contact your AutoSecOps administrator')
+      expect(alert).not.toHaveTextContent('has been sent')
+    })
+
+    it('tells single-sign-on users to reset at their identity provider', async () => {
+      ssoProviders.mockResolvedValueOnce({
+        data: { providers: [{ id: 'kc', display_name: 'Keycloak' }], local_login_enabled: true },
+      })
+      renderLogin()
+      await screen.findByRole('link', { name: 'Sign in with Keycloak' })
+      fireEvent.click(screen.getByRole('button', { name: 'Forgot password?' }))
+      expect(screen.getByText(RESET_SSO_NOTE)).toBeInTheDocument()
+      // the forgot view hides the SSO buttons
+      expect(screen.queryByRole('link', { name: /sign in with/i })).not.toBeInTheDocument()
+    })
+
+    it('shows no SSO note when single sign-on is not configured', async () => {
+      renderLogin()
+      await waitFor(() => expect(ssoProviders).toHaveBeenCalled())
+      fireEvent.click(screen.getByRole('button', { name: 'Forgot password?' }))
+      expect(screen.queryByText(RESET_SSO_NOTE)).not.toBeInTheDocument()
+    })
+
+    it('explains a rate-limited request', async () => {
+      // slowapi's 429 body carries `error`, not `detail`
+      requestPasswordReset.mockRejectedValueOnce({
+        response: { status: 429, data: { error: 'Rate limit exceeded: 3 per 1 hour' } },
+      })
+      renderLogin()
+      fireEvent.click(screen.getByRole('button', { name: 'Forgot password?' }))
+      fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'a@b.co' } })
+      fireEvent.click(screen.getByRole('button', { name: /send reset link/i }))
+      expect(await screen.findByRole('alert')).toHaveTextContent('Too many attempts')
     })
   })
 
