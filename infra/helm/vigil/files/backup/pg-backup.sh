@@ -10,6 +10,12 @@
 # BACKUP_KEEP_LAST      newest dumps always kept (default 14, minimum 1)
 # BACKUP_RETENTION_DAYS older dumps beyond keep-last are deleted after this
 #                       many days; 0 deletes them at once (default 30)
+# EVIDENCE_DIR          optional: the case evidence store (mounted read-only).
+#                       When set, each run also writes evidence-<timestamp>.tar.gz
+#                       next to the dump (same timestamp, so a dump and the files
+#                       its case_evidence rows point at restore together), verified
+#                       by reading it back, with its own .sha256, LATEST_EVIDENCE,
+#                       and the same retention as the dumps.
 #
 # Output: <db>-<UTC timestamp>.dump (custom format) and <dump>.sha256, written
 # under a temporary name and renamed only after pg_restore reads the whole
@@ -30,7 +36,14 @@ cd "$BACKUP_DIR"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 name="${PGDATABASE}-${stamp}.dump"
 partial=".${name}.partial"
-trap 'rm -f "$partial"' EXIT
+evidence="evidence-${stamp}.tar.gz"
+evidence_partial=".${evidence}.partial"
+trap 'rm -f "$partial" "$evidence_partial"' EXIT
+
+if [ -n "${EVIDENCE_DIR:-}" ] && [ ! -d "$EVIDENCE_DIR" ]; then
+    echo "pg-backup: EVIDENCE_DIR ${EVIDENCE_DIR} is not a directory" >&2
+    exit 2
+fi
 
 echo "pg-backup: dumping ${PGDATABASE} on ${PGHOST:-local}:${PGPORT:-5432} to ${BACKUP_DIR}/${name}"
 pg_dump --format=custom --compress=6 --file="$partial" --dbname="$PGDATABASE"
@@ -54,16 +67,36 @@ printf '%s\n' "$name" > LATEST.tmp && mv LATEST.tmp LATEST
 size="$(wc -c < "$name" | tr -d ' ')"
 echo "pg-backup: ok ${name} (${size} bytes, ${entries} entries)"
 
-# Retention: the newest KEEP_LAST always stay; any other dump goes once it is
-# RETENTION_DAYS old (at once when RETENTION_DAYS is 0).
-prefix="${PGDATABASE}-"
-find . -maxdepth 1 -type f -name "${prefix}*.dump" | sed 's#^\./##' | sort -r |
-    tail -n "+$((KEEP_LAST + 1))" |
-    while IFS= read -r old; do
-        if [ "$RETENTION_DAYS" -eq 0 ] || [ -n "$(find "./$old" -mmin "+$((RETENTION_DAYS * 1440))")" ]; then
-            rm -f -- "$old" "$old.sha256"
-            echo "pg-backup: pruned ${old}"
-        fi
-    done
+# The evidence store, after the dump: a file attached in between is extra in
+# the archive, never missing from it.
+if [ -n "${EVIDENCE_DIR:-}" ]; then
+    tar -czf "$evidence_partial" -C "$EVIDENCE_DIR" .
+    if ! files="$(tar -tzf "$evidence_partial" | grep -vc '/$')"; then
+        files=0
+    fi
+    if ! gzip -t "$evidence_partial"; then
+        echo "pg-backup: ${evidence} failed the read-back" >&2
+        exit 1
+    fi
+    sha256sum "$evidence_partial" | sed "s#  ${evidence_partial}\$#  ${evidence}#" > "${evidence}.sha256"
+    mv "$evidence_partial" "$evidence"
+    printf '%s\n' "$evidence" > LATEST_EVIDENCE.tmp && mv LATEST_EVIDENCE.tmp LATEST_EVIDENCE
+    echo "pg-backup: ok ${evidence} ($(wc -c < "$evidence" | tr -d ' ') bytes, ${files} files)"
+fi
+
+# Retention: the newest KEEP_LAST always stay; any other dump (or evidence
+# archive) goes once it is RETENTION_DAYS old (at once when RETENTION_DAYS is 0).
+prune() {
+    find . -maxdepth 1 -type f -name "$1" | sed 's#^\./##' | sort -r |
+        tail -n "+$((KEEP_LAST + 1))" |
+        while IFS= read -r old; do
+            if [ "$RETENTION_DAYS" -eq 0 ] || [ -n "$(find "./$old" -mmin "+$((RETENTION_DAYS * 1440))")" ]; then
+                rm -f -- "$old" "$old.sha256"
+                echo "pg-backup: pruned ${old}"
+            fi
+        done
+}
+prune "${PGDATABASE}-*.dump"
+prune "evidence-*.tar.gz"
 # Leftovers of runs that died mid-dump.
-find . -maxdepth 1 -name '.*.dump.partial' -mmin +1440 -exec rm -f {} + 2>/dev/null || true
+find . -maxdepth 1 \( -name '.*.dump.partial' -o -name '.evidence-*.tar.gz.partial' \) -mmin +1440 -exec rm -f {} + 2>/dev/null || true
