@@ -370,6 +370,33 @@ link-local hedefler reddedilir, bulut metadata adresi her durumda reddedilir),
 `WEBHOOK_MAX_ATTEMPTS` (8), `CASE_AUTOMATION_ENABLED`, `CASE_NOTIFY_SLACK_ENABLED`,
 `CASE_NOTIFY_EMAIL_PRIORITIES`. Kanarya vakaları hiçbir dış kanala gitmez.
 
+### Bağlayıcı destek durumu
+
+Katalogdaki her MCP sunucusunun tek bir destek durumu vardır
+(`clients/web/src/screens/settings/integrationsData.ts`):
+
+| Durum | Bağlayıcılar | Konsolda |
+|---|---|---|
+| Destekli | Listede adı geçmeyen her bağlayıcı (ör. Splunk (Self-Hosted), Elastic, Okta, VirusTotal) | Etiketsiz |
+| Deneysel (**Experimental**) | CrowdStrike Falcon, SentinelOne, Microsoft Sentinel, resmî Splunk MCP sunucusu, Google SecOps, Google Threat Intelligence, Joe Sandbox, vStrike, Atomic Red Team, CAPE Sandbox | Bir bağlayıcıyı açan her ekranda etiket: Add integration kartı, Connected tablosu, Ayarlar kurulum çekmecesi, ilk kurulumdaki veri kaynağı seçimi ve formu (formda gerekçe metniyle) |
+| Sunulmuyor (WIP) | Carbon Black, Hybrid Analysis, ANY.RUN, AlienVault OTX, Palo Alto, Slack, MISP, IP Geolocation, URL Analysis, Microsoft Defender, Entra ID (Azure AD), Microsoft Teams | Add integration'da yok; önceden açılmışsa Connected tablosunda WIP etiketiyle |
+
+"Destekli", canlı bir ürün örneğine karşı test edilebilen bağlayıcı demektir:
+bunlar AutoSecOps'un temel aldığı açık kaynak projenin haftalık canlı testlerinde
+çalışır. Bu canlı test takımı AutoSecOps deposunda henüz yoktur (ertelendi:
+satıcı hesapları ve CI'dan dış erişim gerektirir). Deneysel bağlayıcılar ise canlı
+bir ürün örneğine karşı hiç çalıştırılmadı; çalışmayabilir. Etiket kapatılamaz ve kurulum tarafından
+"destekli" olarak işaretlenemez; bir bağlayıcı yalnızca canlı bir testi
+olduğunda bu durumdan çıkar. Birini kullanırsanız sonucu bir destek paketiyle
+birlikte AutoSecOps desteğine bildirin (bkz.
+[Loglar ve destek paketi](#loglar-ve-destek-paketi)).
+
+**Okta.** Okta MCP sunucusu backend imajına bir commit'e sabitlenmiş uv aracı
+olarak gömülüdür; başlatmak için internet gerekmez, air-gap kurulumda da açılır.
+Çağrılar müşterinin kendi Okta kuruluşuna gider: air-gap'te o adres
+`networkPolicies.egress.extraCIDRs` listesinde olmalıdır. Ayarlarda yalnızca alan
+adı (ör. acme.okta.com, `https://` olmadan) ve API belirteci girilir.
+
 ## Müdahale politikası ve onaylar
 
 ### Bir eylemin yaşam döngüsü (bu sürüm)
