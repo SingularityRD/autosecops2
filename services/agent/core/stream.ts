@@ -21,7 +21,7 @@ import {
 import { ProviderError, type Message, type ToolCall, type ToolSchema, type Turn, type TurnRequest } from "./provider.js";
 import { assemble, DEFAULT_FOLD, prefixOf, windowCeiling, type FoldPolicy, type Prefix } from "./context.js";
 import { scannerFor, wrap } from "./security.js";
-import { displaySafe, SubjectValues } from "./guards.js";
+import { displaySafe, SubjectValues, subjectPaths } from "./guards.js";
 import type { State } from "./seams.js";
 
 // Journaled from record without a checkpoint. An approvals entry would park
@@ -206,7 +206,7 @@ class Run<T, Kinds extends Record<string, unknown>> {
         // talking to itself and never see a handle filled.
         const args = tool.local ? call.args : (this.cfg.guards?.resolve(call.args) ?? call.args);
         const gate = this.gate(tool, args, fold);
-        if (gate.kind === "park") return await this.park(gate.checkpoint_id, tool.id, args, this.cfg.guards?.filled(call.args) ?? []);
+        if (gate.kind === "park") return await this.park(gate.checkpoint_id, tool.id, args, this.cfg.guards?.filled(call.args) ?? [], call.args);
         if (gate.kind === "rejected") {
           yield* this.record(call, refused("a reviewer rejected this call"), undefined, undefined, args);
           continue;
@@ -493,12 +493,16 @@ class Run<T, Kinds extends Record<string, unknown>> {
     tool: string,
     args: string,
     filled: readonly { handle: string; value: string }[] = [],
+    written: string = args,
   ): Promise<Outcome<T>> {
     // W0.30 round 6: no subject text in the question. The person reads the arguments
     // whole on the approval (args_canonical, plain text) and the values that came from
     // the subject as their own rows (subject_values), never inside this prose.
     const subject = new SubjectValues();
     for (const one of filled) subject.marker(one.handle.slice(4, -2), one.value);
+    // Which argument leaves came from handles, by position (round 11): read off the
+    // decider's own JSON, where the handles still stand.
+    const paths = subjectPaths(written, new Map(filled.map((one) => [one.handle.slice(4, -2), one.value])), subject);
     const question =
       filled.length === 0
         ? `${this.cfg.role} wants to call ${tool} with ${args}. Approve?`
@@ -513,7 +517,7 @@ class Run<T, Kinds extends Record<string, unknown>> {
       raised_at: new Date().toISOString(),
       context: {
         [TOOL_CALL]: { tool, args: parseArgs(args) ?? args },
-        ...(filled.length === 0 ? {} : { subject_values: subject.rows }),
+        ...(filled.length === 0 ? {} : { subject_values: subject.rows, subject_paths: paths }),
       },
     };
     await this.write({ run_id: this.cfg.run_id, run_kind: this.cfg.run_kind, kind: "checkpoint", payload });

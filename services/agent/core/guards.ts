@@ -363,6 +363,40 @@ export interface SubjectValueRow {
 }
 
 export const WITHHELD_MARKER = "[subject value withheld]";
+
+// Where in a gated call's arguments the subject's text sits (W0.30 round 11): every
+// JSON leaf the decider wrote a handle into, as a path from the root, and the refs
+// of the handles in it. A leaf with a handle embedded in a longer string is
+// subject-derived as a whole. The backend masks these leaves for a model by
+// position, whatever was done to the value on the way (display escaping, cuts).
+export interface SubjectPath {
+  path: (string | number)[];
+  refs: number[];
+}
+
+export function subjectPaths(rawArgs: string, values: ReadonlyMap<string, string>, collected: SubjectValues): SubjectPath[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawArgs);
+  } catch {
+    return [];
+  }
+  const out: SubjectPath[] = [];
+  const walk = (node: unknown, path: (string | number)[]): void => {
+    if (typeof node === "string") {
+      const refs = [...node.matchAll(HANDLE)]
+        .map((match) => match[1] as string)
+        .filter((key) => values.has(key))
+        .map((key) => collected.refOf(key, values.get(key) as string));
+      if (refs.length > 0) out.push({ path, refs: [...new Set(refs)] });
+      return;
+    }
+    if (Array.isArray(node)) node.forEach((item, at) => walk(item, [...path, at]));
+    else if (typeof node === "object" && node !== null) for (const [key, item] of Object.entries(node)) walk(item, [...path, key]);
+  };
+  walk(parsed, []);
+  return out;
+}
 const SUBJECT_VALUE_CAP = 500;
 
 // The field a handle names: its last segment, without a duplicate-field suffix.
@@ -379,6 +413,12 @@ export class SubjectValues {
 
   // Refs start after `after`, so rows already numbered in the same body keep theirs.
   constructor(private readonly after = 0) {}
+
+  // The ref a handle's value has in this body, numbering it if it is new.
+  refOf(key: string, value: string): number {
+    this.marker(key, value);
+    return this.refs.get(key) as number;
+  }
 
   marker(key: string, value: string): string {
     let ref = this.refs.get(key);

@@ -69,6 +69,7 @@ class _Action:
             "subject_values": SV,
             "args_canonical": ARGS,
             "args_sha256": "abc",
+            "subject_paths": [{"path": ["comment"], "refs": [1]}],
         }
     )
     created_at: str = "2026-10-15T00:00:00Z"

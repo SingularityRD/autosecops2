@@ -119,9 +119,19 @@ def _own_rows(value: dict) -> List[tuple]:
 
 
 # Long values are masked wherever they occur; short ones only as a whole token, so a
-# value "WS0" never turns "WS01" into "[subject value 1]1" (round 10).
+# value "WS0" never turns "WS01" into "[subject value 1]1" (round 10). A token is a
+# run of Unicode letters and digits: ".", "-", "_" and everything else are edges
+# (round 11). A short value is masked only when it is at least 3 characters and
+# holds a non-letter (a digit or punctuation) -- "WS0", "10.0", "a_b" -- so a short
+# dictionary or stop word ("the", "ok") the subject happened to write does not
+# blank out the same word in a model's prose; the position mask (subject_paths) is
+# what covers a gated call's arguments regardless.
 _SUBSTRING_MIN = 8
-_TOKEN_EDGE = r"A-Za-z0-9_.\-"
+_SHORT_MIN = 3
+
+
+def _short_maskable(value: str) -> bool:
+    return len(value) >= _SHORT_MIN and not value.isalpha()
 
 
 def _mask(text: str, known: List[tuple]) -> str:
@@ -134,12 +144,106 @@ def _mask(text: str, known: List[tuple]) -> str:
                 continue
             if len(spelled) >= _SUBSTRING_MIN:
                 text = text.replace(spelled, marker)
-            else:
-                pattern = (
-                    rf"(?<![{_TOKEN_EDGE}]){re.escape(spelled)}(?![{_TOKEN_EDGE}])"
-                )
+            elif _short_maskable(spelled):
+                pattern = rf"(?<![^\W_]){re.escape(spelled)}(?![^\W_])"
                 text = re.sub(pattern, marker, text)
     return text
+
+
+WITHHELD_NOTE = (
+    "[withheld from the model: this approval's arguments hold text the subject "
+    "wrote, and where in them it sits was not recorded]"
+)
+
+
+def _markers(refs: Any) -> str:
+    refs = [r for r in (refs or []) if isinstance(r, int)]
+    return " ".join(f"[subject value {r}]" for r in refs) or WITHHELD
+
+
+def _set_leaf(node: Any, path: List[Any], marker: str) -> bool:
+    """Replace the leaf at ``path`` with ``marker``; False when the path is not
+    there (the row is then not trusted to be masked)."""
+    if not path:
+        return False
+    for step in path[:-1]:
+        try:
+            node = node[step]
+        except (KeyError, IndexError, TypeError):
+            return False
+    last = path[-1]
+    try:
+        node[last]
+    except (KeyError, IndexError, TypeError):
+        return False
+    node[last] = marker
+    return True
+
+
+def _masked_args(params: dict) -> Any:
+    """The bound arguments with every subject-derived leaf replaced by its
+    marker, by position (``subject_paths``); None when that cannot be done."""
+    paths = params.get("subject_paths")
+    if not isinstance(paths, list) or not paths:
+        return None
+    try:
+        args = json.loads(params.get("args_canonical") or "")
+    except (TypeError, ValueError):
+        return None
+    for entry in paths:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), list):
+            return None
+        if not _set_leaf(args, entry["path"], _markers(entry.get("refs"))):
+            return None
+    return args
+
+
+def _approval_view(row: dict) -> dict:
+    """An approval row as a model may read it (W0.30 round 11).
+
+    A gated call whose arguments a guard filled with subject text carries
+    ``subject_paths``: those leaves are masked by position, and the model's
+    ``args_canonical``, ``args_targets`` and description are rebuilt from the
+    masked arguments -- the stored text, display-escaped and cut, is never
+    passed through. A row with subject values and arguments but no usable paths
+    fails closed: arguments, targets and description are withheld."""
+    params = row.get("parameters")
+    if not isinstance(params, dict) or not params.get("subject_values"):
+        return row
+    if "args_canonical" not in params:
+        return row
+    from core.response.checkpoints import (
+        canonical_args,
+        target_fields,
+        tool_call_prompt,
+    )
+
+    args = _masked_args(params)
+    if args is None:
+        kept = {
+            k: v
+            for k, v in params.items()
+            if k
+            not in ("args_canonical", "args_targets", "args_summary", "subject_paths")
+        }
+        kept["args_withheld"] = WITHHELD_NOTE
+        return {**row, "parameters": kept, "description": WITHHELD_NOTE}
+    tool = str(params.get("tool") or "")
+    question = str(row.get("description") or "").split("\n\nTool: ", 1)[0]
+    return {
+        **row,
+        "description": f"{question}\n\n{tool_call_prompt(tool, args)}",
+        "parameters": {
+            **params,
+            "args_canonical": canonical_args(args),
+            "args_targets": target_fields(args),
+        },
+    }
+
+
+def _looks_like_approval(value: dict) -> bool:
+    params = value.get("parameters")
+    return isinstance(params, dict) and "args_canonical" in params
 
 
 def _deep(value: Any, known: List[tuple], key: Any = None) -> Any:
@@ -154,7 +258,16 @@ def _deep(value: Any, known: List[tuple], key: Any = None) -> Any:
         return [_deep(v, known) for v in value]
     if isinstance(value, tuple):
         return tuple(_deep(v, known) for v in value)
+    if isinstance(value, bytes):
+        try:
+            return _deep(value.decode("utf-8"), known, key)
+        except UnicodeDecodeError:
+            return value
     if isinstance(value, dict):
+        # An approval row: masked by position first (round 11); value matching
+        # below stays as a second pass.
+        if _looks_like_approval(value):
+            value = _approval_view(value)
         # A dict that carries its own rows is its own scope (round 10): one
         # approval's refs never mask another's text, whatever their numbers.
         scoped = _own_rows(value) or known
