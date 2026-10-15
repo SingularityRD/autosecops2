@@ -174,6 +174,6 @@ describe("the outbound choke point, for a verdict_review question", () => {
     await announceOpen(state, runId, "verdict", "cp-1", httpAnnounce({ url: "http://backend.test/runs", token: "t", fetch }));
 
     const body = JSON.parse(sent[0]!) as { question: string };
-    expect(body.question).toBe("Mark h-1 proven? `WS\\u202eEVIL` (written by the subject) beacons");
+    expect(body.question).toBe('Mark h-1 proven? `"WS\\u202eEVIL"` (written by the subject) beacons');
   });
 });

@@ -1,3 +1,4 @@
+import { displaySafe } from "../../core/guards.js";
 import { resolutionOf, type Checkpoint, type Resolution } from "./checkpoints.js";
 import { suppressedEntities } from "./digest.js";
 import type { Projection } from "./ledger.js";
@@ -440,6 +441,12 @@ function restsOnLine(record: EvidenceRecord): string[] {
   return [`_Rests on: ${named}._`];
 }
 
+// Subject-written text inside an inline code span (W0.30 round 4): escaped, and a
+// backtick written \u0060, so it cannot close the span and add markdown of its own.
+function inlineCode(text: string): string {
+  return displaySafe(text).replace(/`/g, "\\u0060");
+}
+
 // What a responder has to re-run: the payload is the answer, this is the question.
 // An enriched record has no dispatch, and a chain is not a query anyone chose.
 function queriesBehind(projection: Projection, record: EvidenceRecord): string[] {
@@ -453,7 +460,7 @@ function queriesBehind(projection: Projection, record: EvidenceRecord): string[]
     ...dispatch.calls.map((call) =>
       call.dispatched_arguments === undefined
         ? `- \`${call.tool}\` — \`${call.arguments}\``
-        : `- \`${call.tool}\` — \`${call.dispatched_arguments}\` (some values written by the subject)`,
+        : `- \`${call.tool}\` — \`${inlineCode(call.dispatched_arguments)}\` (some values written by the subject)`,
     ),
     "",
   ];

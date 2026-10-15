@@ -13,6 +13,9 @@ import { InProcessDirectiveQueue } from "../../workflows/hunt/directives.js";
 import type { HuntKinds } from "../../workflows/hunt/journal.js";
 import { fold } from "../../workflows/hunt/ledger.js";
 import { huntProjection } from "../../workflows/hunt/projection.js";
+import { subjectValue } from "../../core/guards.js";
+import type { AddressInfo } from "node:net";
+import { chatServer } from "../../serve.js";
 import { runHunt } from "../../workflows/hunt/workflow.js";
 import { recallHuntSpec } from "../support/recall-hunt.js";
 
@@ -22,7 +25,7 @@ import { recallHuntSpec } from "../support/recall-hunt.js";
 // subject's reaches it as a handle, and the run fills it from the dispatch's journaled
 // values before linking. No {{h:...}} text leaves the agent layer.
 
-const RUN = "run-guarded-links";
+const RUN = "5a2c2d3e-0000-4000-8000-0000000003b1";
 const UUID_ID = "5a2c2d3e-1b4f-4c8d-9e0a-1234567890ab";
 const LEGACY_ID = "demo2-ts-009";
 
@@ -144,6 +147,28 @@ describe("a guarded hunt links the alerts it cites", () => {
     const served = JSON.stringify(huntProjection(RUN, events));
     expect(served).not.toContain("{{h:");
     // The real value, not a marker: a person reads the id the worker cited.
-    expect(served).toContain(`\`${LEGACY_ID}\` (written by the subject)`);
+    expect(served).toContain(JSON.stringify(subjectValue(LEGACY_ID)).slice(1, -1));
+    expect(subjectValue(LEGACY_ID)).toBe(`\`"${LEGACY_ID}"\` (written by the subject)`);
+
+    // Round 4: every serve.ts route that returns ledger content -- what the case
+    // record, the console and replay read -- answers through the same conversion.
+    vi.stubEnv("AGENT_INTERNAL_TOKEN", "t");
+    const server = chatServer(state as never, async () => true);
+    await new Promise<void>((ready) => server.listen(0, "127.0.0.1", ready));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      for (const route of ["projection", "distil", "replay", "events", "events?snapshots=1"]) {
+        const response = await fetch(`${base}/runs/${RUN}/${route}`, { headers: { authorization: "Bearer t" } });
+        const body = await response.text();
+        expect(response.status, route).toBe(200);
+        expect(body, route).not.toContain("{{h:");
+      }
+      const events = await (await fetch(`${base}/runs/${RUN}/events`, { headers: { authorization: "Bearer t" } })).text();
+      expect(events).toContain(JSON.stringify(subjectValue(LEGACY_ID)).slice(1, -1));
+    } finally {
+      server.close();
+    }
+    // The stored ledger is untouched, so it stays replayable.
+    expect(JSON.stringify(await state.read(RUN))).toContain("{{h:");
   });
 });

@@ -9,6 +9,7 @@ import { verifyLedger, type VerifyResult } from "./ledger/verify.js";
 import { poolConfig } from "./core/db.js";
 import { errorFields, logger } from "./core/log.js";
 import { failed, initTracing, shutdownTracing, traced } from "./core/tracing.js";
+import { outbound } from "./core/outbound.js";
 import type { RunKind } from "./contracts/events.js";
 import type { ToolPrincipal } from "./contracts/tool.js";
 import { FRESH } from "./core/budget.js";
@@ -167,6 +168,16 @@ function fail(res: ServerResponse, status: number, route: string, runId: string,
 
 // A run folded by the workflow that owns it. The events stay ours: a reader gets
 // what the run decided or what it saw, never how either was written down.
+// Every read route that returns ledger content answers through the outbound choke
+// point (W0.30 round 4): a guarded run's handles become their values, escaped and
+// marked as the subject's, in the response only. The stored ledger is not touched,
+// so it stays replayable.
+async function sendJson(state: State, res: ServerResponse, runId: string, body: unknown): Promise<void> {
+  const converted = await outbound(runId, body, state);
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify(converted));
+}
+
 async function foldedBy(state: State, runId: string, view: "projection" | "distil"): Promise<unknown | null> {
   const events = await state.read(runId);
   const opened = events[0];
@@ -186,8 +197,7 @@ async function readFold(state: State, runId: string, view: "projection" | "disti
     return fail(res, 502, view, runId, error);
   }
   if (folded === null) return refuse(res, 404, `no readable run: ${runId}`);
-  res.writeHead(200, { "content-type": "application/json" });
-  res.end(JSON.stringify(folded));
+  return sendJson(state, res, runId, folded);
 }
 
 // A fresh account of a run, on demand. Served here rather than queued as a directive
@@ -208,8 +218,7 @@ async function writeNarrative(state: State, runId: string, res: ServerResponse, 
 
   try {
     const narrative = await narrateRun(hunt, runId, written, build);
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(narrative));
+    await sendJson(state, res, runId, narrative);
   } catch (error) {
     return fail(res, 502, "narrate", runId, error);
   }
@@ -222,16 +231,8 @@ async function writeNarrative(state: State, runId: string, res: ServerResponse, 
 async function readReplay(state: State, runId: string, decisionId: string | null, res: ServerResponse): Promise<void> {
   const events = await state.read(runId);
   const opened = events[0];
-  if (opened?.run_kind === "investigate") {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(investigateReplay(runId, events)));
-    return;
-  }
-  if (opened?.run_kind === "root_cause") {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(rootCauseReplay(runId, events)));
-    return;
-  }
+  if (opened?.run_kind === "investigate") return sendJson(state, res, runId, investigateReplay(runId, events));
+  if (opened?.run_kind === "root_cause") return sendJson(state, res, runId, rootCauseReplay(runId, events));
   if (opened === undefined || !isHuntLike(opened.run_kind)) return refuse(res, 404, `no hunt to replay: ${runId}`);
 
   let report: ReplayReport;
@@ -250,14 +251,12 @@ async function readReplay(state: State, runId: string, decisionId: string | null
     report.reproduced = one.filter((decision) => decision.mismatch === null).length;
     report.inexact = one.filter((decision) => !decision.exact).length;
   }
-  res.writeHead(200, { "content-type": "application/json" });
-  res.end(JSON.stringify(report));
+  return sendJson(state, res, runId, report);
 }
 
 async function readEvents(state: State, runId: string, snapshots: boolean, res: ServerResponse): Promise<void> {
   const events = await state.read(runId, snapshots ? { snapshots: true } : {});
-  res.writeHead(200, { "content-type": "application/json" });
-  res.end(JSON.stringify({ events }));
+  return sendJson(state, res, runId, { events });
 }
 
 async function readVerify(runId: string, verify: VerifyRun | undefined, res: ServerResponse): Promise<void> {

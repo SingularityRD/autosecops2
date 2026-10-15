@@ -61,7 +61,8 @@ describe("text that leaves the run", () => {
   const values = runValues(calls);
 
   it("gives a person the value, marked as the subject's", () => {
-    expect(forPeople("the process {{h:q7.1.image}} beacons", values)).toBe("the process `C:\\Users\\a\\ctlhb.dll` (written by the subject) beacons");
+    // AutoSecOps (W0.30 round 4): the value is a JSON string literal in a code span.
+    expect(forPeople("the process {{h:q7.1.image}} beacons", values)).toBe('the process `"C:\\\\Users\\\\a\\\\ctlhb.dll"` (written by the subject) beacons');
   });
 
   it("gives another model a neutral marker, never the value", () => {
@@ -73,7 +74,7 @@ describe("text that leaves the run", () => {
 
   it("drops the decider's search hint when a person gets the value", () => {
     expect(forPeople("image = {{h:q7.1.image}} (written by the subject; put the handle in a query to search for this value)", values)).toBe(
-      "image = `C:\\Users\\a\\ctlhb.dll` (written by the subject)",
+      'image = `"C:\\\\Users\\\\a\\\\ctlhb.dll"` (written by the subject)',
     );
   });
 

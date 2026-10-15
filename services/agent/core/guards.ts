@@ -340,6 +340,21 @@ function plain(value: string): string {
   return flat.length <= PEOPLE_CAP ? flat : `${flat.slice(0, PEOPLE_CAP)}…`;
 }
 
+// A subject's value as a person reads it (W0.30 round 4): a JSON string literal, so
+// its own quotes cannot end it, with every control, bidi and zero-width character
+// escaped (displaySafe); inside an inline code span
+// that it cannot close, because a backtick is written \u0060; and with parentheses
+// written \u0028/\u0029, so a value carrying "(written by the subject)" cannot
+// print a second label that reads as ours. Markdown renders a code span literally, so
+// the value cannot add a link, a heading or emphasis around itself.
+export function subjectValue(value: string): string {
+  const literal = displaySafe(JSON.stringify(plain(value)))
+    .replace(/`/g, "\\u0060")
+    .replace(/\(/g, "\\u0028")
+    .replace(/\)/g, "\\u0029");
+  return `\`${literal}\` (written by the subject)`;
+}
+
 // The decider-facing hint that follows a handle in a guarded view: meaningless to a
 // person once the value is shown, so it goes with the handle.
 const HINT = / \((written by the subject|withheld); put the handle in a query to search for this value\)/g;
@@ -349,7 +364,7 @@ const HINT = / \((written by the subject|withheld); put the handle in a query to
 export function forPeople(text: string, values: RunValues): string {
   return text.replace(HINT, "").replace(HANDLE, (_whole, key: string) => {
     const value = values.byKey.get(key);
-    return value === undefined ? WITHHELD : `\`${displaySafe(plain(value))}\` (written by the subject)`;
+    return value === undefined ? WITHHELD : subjectValue(value);
   });
 }
 

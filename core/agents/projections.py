@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -33,6 +34,24 @@ def run_id_for(investigation_id: str) -> str:
 
 def agent_route(path: str) -> str:
     return f"{get_settings().agent_url.rstrip('/')}{path}"
+
+
+# W0.30: a guarded agent run's handle ({{h:...}}) means something only inside that
+# run. The agent layer converts every response it serves; as defence in depth no
+# read here ever hands one on verbatim -- it becomes a neutral marker.
+_HANDLE = re.compile(r"\{\{h:[A-Za-z0-9_.:-]+\}\}")
+HANDLE_MARKER = "[a value the subject wrote, withheld]"
+
+
+def neutralise_handles(value: Any) -> Any:
+    """``value`` with every ``{{h:...}}`` in its strings replaced by a marker."""
+    if isinstance(value, str):
+        return _HANDLE.sub(HANDLE_MARKER, value) if "{{h:" in value else value
+    if isinstance(value, list):
+        return [neutralise_handles(v) for v in value]
+    if isinstance(value, dict):
+        return {k: neutralise_handles(v) for k, v in value.items()}
+    return value
 
 
 def _headers() -> Dict[str, str]:
@@ -75,7 +94,7 @@ async def _read_fold(run_id: str, view: str) -> Optional[Dict[str, Any]]:
         _note_read(False, "%s for %s answered %s", view, run_id, response.status_code)
         return None
     _note_read(True, "")
-    return response.json()
+    return neutralise_handles(response.json())
 
 
 # None means "nothing to report yet" and is not an error: a run enqueued a moment
@@ -121,7 +140,7 @@ async def write_narrative(run_id: str) -> Dict[str, Any]:
     if response.status_code != 200:
         detail = response.text[:400]
         raise RuntimeError(f"the agent layer answered {response.status_code}: {detail}")
-    return response.json()
+    return neutralise_handles(response.json())
 
 
 async def read_replay(
@@ -148,7 +167,7 @@ async def read_replay(
     if response.status_code != 200:
         detail = response.text[:400]
         raise RuntimeError(f"the agent layer answered {response.status_code}: {detail}")
-    return response.json()
+    return neutralise_handles(response.json())
 
 
 async def read_events(run_id: str) -> Optional[List[Dict[str, Any]]]:
@@ -172,7 +191,7 @@ async def read_events(run_id: str) -> Optional[List[Dict[str, Any]]]:
     if response.status_code != 200:
         detail = response.text[:400]
         raise RuntimeError(f"the agent layer answered {response.status_code}: {detail}")
-    body = response.json()
+    body = neutralise_handles(response.json())
     events = body.get("events") if isinstance(body, dict) else None
     if not isinstance(events, list):
         raise RuntimeError("the agent layer returned no event list")
@@ -200,7 +219,7 @@ async def read_verify(run_id: str) -> Optional[Dict[str, Any]]:
     if response.status_code != 200:
         detail = response.text[:400]
         raise RuntimeError(f"the agent layer answered {response.status_code}: {detail}")
-    return response.json()
+    return neutralise_handles(response.json())
 
 
 THREAT_HUNT_WORKFLOW_ID = "threat-hunt"
