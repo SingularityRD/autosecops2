@@ -1,3 +1,4 @@
+import { outbound } from "../../core/outbound.js";
 import type { ResolutionPayload, RunOutcome, TerminalHandoff } from "../../contracts/events.js";
 import { httpAnswers } from "../../core/answers.js";
 import { errorFields, logger } from "../../core/log.js";
@@ -105,7 +106,9 @@ export function httpMirror(options: MirrorOptions): Mirror {
   // whether it landed, for the one caller that has to know.
   const post = async (path: string, body: unknown): Promise<boolean> => {
     try {
-      const response = await call(`${base}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
+      // Through the one outbound choke point (W0.30): no handle reaches the backend.
+      const runId = decodeURIComponent(path.split("/")[1] ?? "");
+      const response = await call(`${base}${path}`, { method: "POST", headers, body: JSON.stringify(await outbound(runId, body)) });
       if (!response.ok) log.warn("mirror was refused", { path, status: response.status });
       return response.ok;
     } catch (error) {

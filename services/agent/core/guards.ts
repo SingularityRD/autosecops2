@@ -161,14 +161,13 @@ export function isUuid(value: string): boolean {
   return UUID.test(value);
 }
 
-// An id the run itself fetched: a field named *_id / id that the reader says the
-// collecting system recorded, in an id's alphabet. The ids a workflow links records by
-// (finding_id, alert_id, event_id) are longer than the short-identifier shape.
+// An id field the collecting system recorded (round 3: capped to the SAFE shapes,
+// 32 characters for an identifier, so a long dotted "id" cannot carry a sentence).
+// A canonical UUID passes on its own (isUuid).
 const ID_FIELD = /(^|[_.-])id$/i;
-const ID_VALUE = /^[A-Za-z0-9._:-]{1,128}$/;
 
 export function observedId(field: string, value: string, authored: Authored): boolean {
-  return authored !== "subject" && ID_FIELD.test(field) && ID_VALUE.test(value) && !steeringIn(value);
+  return authored !== "subject" && ID_FIELD.test(field) && typeSafe(value);
 }
 
 // Phrases an injected note uses that the kernel's own scanner, built for prompt

@@ -10,7 +10,7 @@ import type { RunSpec } from "../../core/spec.js";
 import { InProcessState } from "../../core/state.js";
 import { workerDispatcher } from "../../workflows/hunt/adapters.js";
 import type { HuntKinds } from "../../workflows/hunt/ledger.js";
-import { DECIDER_GUIDANCE } from "../../workflows/hunt/quarantine.js";
+import { DECIDER_GUIDANCE, scopeToken } from "../../workflows/hunt/quarantine.js";
 import { scriptedProvider, type ScriptedTurn } from "../support/scripted-provider.js";
 
 // W0.30: the guarded reader wired into the hunt loop's workers -- the same adapters the
@@ -107,6 +107,23 @@ describe("a worker with guards on", () => {
     expect(call!.result).toContain("Maintenance approved");
     expect(call!.shown).toContain('guarded="true"');
     expect(call!.shown).not.toContain("Maintenance approved");
+  });
+
+  // Round 3: the adapters scope each worker's handles to its own dispatch. A fixed
+  // scope (or none) would mint the same handle in two dispatches for different values.
+  it("scopes each dispatch's handles to that dispatch", async () => {
+    vi.stubEnv("AUTOSECOPS_GUARDS", "on");
+    const views: string[] = [];
+    for (const dispatch_id of ["dsp-one", "dsp-two"]) {
+      const { harness } = harnessOf([{ calls: [{ tool: "edr_search", args: "{}" }] }, { emit: READ }, { content: "done" }, { emit: { results: [] } }]);
+      const result = await workerDispatcher({ harness, spec: SPEC, run_id: "run-scope", run_kind: "verdict", actions: [], recall_keys: [] }).dispatch({ ...(REQUEST as object), dispatch_id } as never);
+      const shown = result.calls![0]!.shown!;
+      expect(shown).toContain(`{{h:${scopeToken(dispatch_id)}q1.1.`);
+      expect(Object.keys(result.handles ?? {}).every((key) => key.startsWith(scopeToken(dispatch_id)))).toBe(true);
+      views.push(shown);
+    }
+    expect(scopeToken("dsp-one")).not.toBe(scopeToken("dsp-two"));
+    expect(views[0]).not.toBe(views[1]);
   });
 
   it("salvages the reader's view, not the rows, when the write-up dies", async () => {

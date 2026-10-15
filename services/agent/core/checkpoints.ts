@@ -1,5 +1,6 @@
 import type { AgentEvent, CheckpointPayload, RunKind } from "../contracts/events.js";
 import { errorFields, logger } from "./log.js";
+import { outbound } from "./outbound.js";
 import type { State } from "./seams.js";
 
 const log = logger("agent.checkpoints");
@@ -29,7 +30,8 @@ export function httpAnnounce(options: AnnounceOptions): Announce {
       const response = await call(`${base}/${encodeURIComponent(runId)}/checkpoints`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${options.token}` },
-        body: JSON.stringify({ ...payload, run_kind: runKind }),
+        // Through the one outbound choke point (W0.30): no handle reaches a person.
+        body: JSON.stringify(await outbound(runId, { ...payload, run_kind: runKind })),
       });
       if (!response.ok) log.warn("announcing a checkpoint was refused", { run_id: runId, checkpoint_id: payload.checkpoint_id, status: response.status });
     } catch (error) {

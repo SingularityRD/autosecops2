@@ -11,6 +11,7 @@ import { healthPort, healthServer } from "./core/health.js";
 import { GatewayExhausted } from "./core/limiter.js";
 import { errorFields, logger } from "./core/log.js";
 import { initTracing, shutdownTracing, traced } from "./core/tracing.js";
+import { outboundLedger } from "./core/outbound.js";
 import { jobIdFor, RUN_QUEUE, JOB_SCHEMA_VERSION, type RunJob } from "./contracts/job.js";
 import type { AgentEvent, CheckpointPayload, ResolutionPayload, RunPayload, TerminalHandoff } from "./contracts/events.js";
 import type { SpendPayload } from "./contracts/budget.js";
@@ -569,6 +570,8 @@ export async function sweepOnce(leases: Leases, queue: Enqueue, limit = 50): Pro
 // business, and advance() is driven without one by the tests and by run-once.ts.
 // advance() still throws the original error; this is the only place that wraps it.
 export async function handle(state: State, leases: Leases, job: RunJob, directives: DirectiveQueue, build: HarnessFactory = harnessFor): Promise<void> {
+  // Where the outbound choke point reads a guarded run's handle values (W0.30).
+  outboundLedger(state);
   // One span per job rather than per run: a run parked on an approval resumes as a
   // second job, hours later, and the run id is what ties the two together.
   const attributes = {

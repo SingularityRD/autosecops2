@@ -81,7 +81,7 @@ function provider(): Provider & { workerViews: string[] } {
           workerViews.push(seen);
           const cited = [...seen.matchAll(/finding_id = (\{\{h:[^}]+\}\}|[A-Za-z0-9-]+)/g)].map((match) => ({ finding_id: match[1] }));
           answer = {
-            results: [{ source_system: "findings", summary: "two alerts fired", salience: "notable", why_notable: "beaconing", payload: JSON.stringify({ cited }) }],
+            results: [{ source_system: "findings", summary: `alerts ${cited.map((one) => one.finding_id).join(" and ")} fired`, salience: "notable", why_notable: "beaconing", payload: JSON.stringify({ cited }) }],
           };
         }
         yield { type: "text_delta", text: JSON.stringify(answer) };
@@ -141,6 +141,9 @@ describe("a guarded hunt links the alerts it cites", () => {
     const events = await state.read(RUN);
     const evidence = JSON.stringify([...fold(events).evidence.values()].map((record) => record.payload));
     expect(evidence).toContain("{{h:");
-    expect(JSON.stringify(huntProjection(RUN, events))).not.toContain("{{h:");
+    const served = JSON.stringify(huntProjection(RUN, events));
+    expect(served).not.toContain("{{h:");
+    // The real value, not a marker: a person reads the id the worker cited.
+    expect(served).toContain(`\`${LEGACY_ID}\` (written by the subject)`);
   });
 });
