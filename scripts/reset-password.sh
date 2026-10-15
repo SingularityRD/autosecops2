@@ -1,6 +1,6 @@
 #!/bin/bash
 # Issue a password reset link on a native install, for when no mail backend is
-# set up. Usage: scripts/reset-password.sh --list | <username|email> [--base-url URL]
+# set up. Usage: scripts/reset-password.sh --list | <username|email> [--base-url URL] [--operator NAME]
 source "$(dirname "$0")/lib.sh"
 
 load_env
@@ -9,7 +9,7 @@ load_env
 if [ -z "${JWT_SECRET_KEY:-}" ]; then
     secret_file="${VIGIL_DIR:-$HOME/.vigil}/jwt_secret"
     [ -s "$secret_file" ] || {
-        echo "No JWT secret: set JWT_SECRET_KEY or start Vigil once with ./start.sh ($secret_file is missing)." >&2
+        echo "No JWT secret: set JWT_SECRET_KEY or start AutoSecOps once with ./start.sh ($secret_file is missing)." >&2
         exit 1
     }
     JWT_SECRET_KEY="$(cat "$secret_file")"

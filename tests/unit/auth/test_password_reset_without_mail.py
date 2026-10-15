@@ -33,6 +33,8 @@ ADMIN = SimpleNamespace(
     full_name="Admin",
     role_id="role-admin",
     is_active=True,
+    password_hash="pbkdf2$x",
+    service_account=False,
 )
 
 
@@ -68,7 +70,8 @@ def _request(user, settings):
 @pytest.mark.parametrize(
     "backend,dev_mode,expect",
     [
-        ("console", False, "scripts/reset-password.sh"),
+        # adapt: the requester is told to contact an administrator (air-gap)
+        ("console", False, "Contact your AutoSecOps administrator"),
         ("console", True, "server log"),
         ("smtp", False, "a reset link has been sent"),
     ],
@@ -92,26 +95,32 @@ def test_list_shows_every_account(capsys):
     ]
     assert script.list_users(session) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0].split() == ["admin", "admin@example.com", "role-admin", "active"]
+    assert lines[0].split() == [
+        "admin",
+        "admin@example.com",
+        "role-admin",
+        "local",
+        "active",
+    ]
     assert lines[1].split()[-1] == "inactive"
 
 
-def test_link_carries_a_token_for_that_user(capsys):
-    assert (
-        script.issue_link(_session(ADMIN), "admin", "https://soc.example/vigil/") == 0
+def test_link_carries_a_token_for_that_user():
+    code, issued = script.issue_link(
+        _session(ADMIN), "admin", "https://soc.example/vigil/", "ops"
     )
-    url = next(
-        line for line in capsys.readouterr().out.splitlines() if line.startswith("http")
-    )
-    parsed = urlparse(url)
+    assert code == 0
+    parsed = urlparse(issued[2])
     assert parsed.path == "/vigil/reset-password"
     token = parse_qs(parsed.query)["token"][0]
     assert asyncio.run(password_reset.verify_reset_token(token)) == "u-admin"
+    # adapt: bound to the address, so the confirm route accepts it (W1.9)
+    assert password_reset.token_matches_email(token, "admin@example.com")
 
 
 @pytest.mark.parametrize(
     "user", [None, SimpleNamespace(**{**vars(ADMIN), "is_active": False})]
 )
 def test_unknown_or_inactive_user_is_refused(user, capsys):
-    assert script.issue_link(_session(user), "admin", "http://x") == 1
+    assert script.issue_link(_session(user), "admin", "http://x", "ops") == (1, None)
     assert "http" not in capsys.readouterr().out

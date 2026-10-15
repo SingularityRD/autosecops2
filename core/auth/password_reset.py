@@ -22,7 +22,7 @@ If the account was deactivated in the meantime, the confirm handler rejects.
 
 import hashlib
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
@@ -97,6 +97,49 @@ def token_matches_email(token: str, email: Optional[str]) -> bool:
 def reset_link(base_url: str, token: str) -> str:
     """Console URL that opens the reset screen for ``token``."""
     return f"{base_url.rstrip('/')}/reset-password?token={token}"
+
+
+def ttl_text(seconds: Optional[int] = None) -> str:
+    """The reset-link lifetime in words ("1 hour", "30 minutes")."""
+    seconds = _ttl_seconds() if seconds is None else int(seconds)
+    if seconds >= 3600 and seconds % 3600 == 0:
+        n, unit = seconds // 3600, "hour"
+    elif seconds >= 60:
+        n, unit = max(1, seconds // 60), "minute"
+    else:
+        n, unit = max(1, seconds), "second"
+    return f"{n} {unit}{'' if n == 1 else 's'}"
+
+
+#: Why an account may not get a reset link (``reset_refusal``).
+REFUSED_INACTIVE = "inactive"
+REFUSED_SSO_ONLY = "sso_only"
+REFUSED_SERVICE_ACCOUNT = "service_account"
+
+
+def reset_refusal(user: Any) -> Optional[str]:
+    """Why ``user`` may not reset a password, or None when it may.
+
+    One rule for the request route, the confirm route and the operator tool
+    (``scripts/reset_password.py``):
+
+    * an inactive account is refused;
+    * an account single sign-on created (``password_hash == "!sso-only"``) has
+      no local password; giving it one would let it outlive its removal at the
+      identity provider (W1.9);
+    * a service account's password belongs to its gateway alone and is rotated
+      with ``python -m core.auth.service_account ensure`` (W0.13).
+    """
+    from core.auth.oidc_accounts import SSO_ONLY_PASSWORD_HASH
+
+    if user is None or not getattr(user, "is_active", False):
+        return REFUSED_INACTIVE
+    if getattr(user, "password_hash", None) == SSO_ONLY_PASSWORD_HASH:
+        return REFUSED_SSO_ONLY
+    # Same test as auth_service._is_service_account (the column is NOT NULL).
+    if getattr(user, "service_account", False) is True:
+        return REFUSED_SERVICE_ACCOUNT
+    return None
 
 
 async def verify_reset_token(token: str) -> Optional[str]:

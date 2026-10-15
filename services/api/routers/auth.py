@@ -7,7 +7,7 @@ Handles login, logout, token refresh, password management, and MFA.
 import asyncio
 import logging
 from datetime import datetime
-from typing import Annotated, List, Optional
+from typing import Annotated, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr
@@ -33,6 +33,7 @@ from core.auth.password_reset import (
     generate_reset_token,
     reset_link,
     token_matches_email,
+    ttl_text,
     verify_reset_token,
 )
 from core.auth.password_validator import (
@@ -168,6 +169,16 @@ class PasswordResetRequest(BaseModel):
     """Password reset initiation."""
 
     email: EmailStr
+
+
+class PasswordResetRequestResponse(BaseModel):
+    """What a reset request is told. Never depends on the account."""
+
+    message: str
+    # How a link reaches the person, from the mail configuration alone:
+    # "email" (SMTP), "server_log" (DEV_MODE console backend) or
+    # "administrator" (no mail: an administrator issues the link).
+    delivery: Literal["email", "server_log", "administrator"]
 
 
 class PasswordResetConfirm(BaseModel):
@@ -943,7 +954,7 @@ def disable_mfa(
 # which validates the requested role against the caller's privileges.
 
 
-@router.post("/password-reset/request")
+@router.post("/password-reset/request", response_model=PasswordResetRequestResponse)
 @limiter.limit("3/hour")
 def password_reset_request(
     request: Request,
@@ -951,20 +962,22 @@ def password_reset_request(
     session: UnitOfWorkSession,
 ):
     """
-    Begin a password reset. Always returns 200 regardless of whether the
-    email maps to an account — otherwise the response shape leaks which
-    emails are registered.
+    Begin a password reset. Always returns 200 with the same body whether
+    or not the email maps to an account — otherwise the response leaks which
+    emails are registered. The body depends only on the mail configuration.
 
-    The actual email (with the signed reset token) is sent asynchronously
-    via the configured email backend. The default ConsoleBackend sends nothing;
-    with DEV_MODE on it logs the link.
+    The email (with the signed reset token) goes through the configured
+    email backend. The default ConsoleBackend sends nothing; with DEV_MODE
+    on it logs the link. Without mail an administrator issues a link with
+    ``scripts/reset_password.py``.
     """
     settings = get_settings()
     user = session.query(User).filter(User.email == body.email).first()
     # An account single sign-on created has no password to reset; giving it one
     # would let it outlive its removal at the identity provider. A service
     # account's password belongs to its gateway alone; it is rotated with
-    # `python -m core.auth.service_account ensure`, never by email.
+    # `python -m core.auth.service_account ensure`, never by email. The
+    # operator tool applies the same rule (password_reset.reset_refusal).
     if (
         user
         and user.is_active
@@ -983,7 +996,8 @@ def password_reset_request(
         body_text = (
             f"Hello {user.full_name or user.username},\n\n"
             "A password reset was requested for this account. Use the link "
-            "below to choose a new password. The link is valid for one hour "
+            "below to choose a new password. The link is valid for "
+            f"{ttl_text()} "
             "and can only be used once.\n\n"
             f"{link}\n\n"
             "If you did not request this reset, you can ignore this email."
@@ -997,30 +1011,38 @@ def password_reset_request(
             actor_id=user.user_id,
         )
     else:
-        # Unknown address or inactive user — log for ops visibility but
+        # Unknown address or ineligible account — log for ops visibility but
         # return the same response. Constant-time comparison isn't needed
         # here because the DB lookup already dominates the timing.
-        logger.info("Password reset requested for unknown/inactive email")
+        logger.info("Password reset requested for unknown/ineligible email")
 
-    return {"message": _reset_request_message(settings)}
+    delivery = _reset_delivery(settings)
+    return {"message": _RESET_REQUEST_MESSAGES[delivery], "delivery": delivery}
 
 
-def _reset_request_message(settings) -> str:
-    """What the requester is told. Depends only on how mail is configured,
-    never on the account, so the reply still can't enumerate emails."""
+_RESET_REQUEST_MESSAGES = {
+    "email": "If that email matches an active account, a reset link has been sent.",
+    "server_log": (
+        "Email isn't set up on this AutoSecOps server. If that email matches an "
+        "active account, its reset link or token has been written to the server log."
+    ),
+    "administrator": (
+        "Email isn't set up on this AutoSecOps server, so no reset link was sent. "
+        "Contact your AutoSecOps administrator: they can issue you a one-time "
+        "reset link."
+    ),
+}
+
+
+def _reset_delivery(settings) -> str:
+    """How a reset link reaches the requester. Depends only on how mail is
+    configured, never on the account, so the reply can't enumerate emails."""
     # Any value but smtp falls back to the console backend (get_email_backend).
-    if settings.vigil_email_backend.strip().lower() == "smtp":
-        return "If that email matches an active account, a reset link has been sent."
+    if (settings.vigil_email_backend or "").strip().lower() == "smtp":
+        return "email"
     if settings.dev_mode:
-        return (
-            "Email isn't set up on this server. If that email matches an active "
-            "account, its reset link or token has been written to the server log."
-        )
-    return (
-        "Email isn't set up on this server, so no reset link was sent. Ask an "
-        "administrator to issue one with scripts/reset-password.sh (on a compose "
-        "install: docker exec deeptempo-backend python scripts/reset_password.py)."
-    )
+        return "server_log"
+    return "administrator"
 
 
 @router.post("/password-reset/confirm")
@@ -1043,6 +1065,14 @@ async def password_reset_confirm(
         )
 
     user = await asyncio.to_thread(_get_user, session, user_id)
+    if user is not None and user.is_active and is_sso_only(user):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "This account signs in with single sign-on and has no AutoSecOps "
+                "password to reset. Reset your password at your identity provider."
+            ),
+        )
     if not user or not user.is_active or _is_service_account(user):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

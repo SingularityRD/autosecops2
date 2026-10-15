@@ -183,7 +183,9 @@ def test_service_account_gets_no_reset_email():
         )
     send.assert_not_called()
     gen.assert_not_called()
-    assert "If that email matches" in out["message"]
+    # W0.27: the reply names the mail setup, never the account (see
+    # test_w027_password_reset_security.test_reply_is_the_same_for_every_account).
+    assert "reset link" in out["message"]
 
 
 def test_service_account_reset_confirm_is_refused():
