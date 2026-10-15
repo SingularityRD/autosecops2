@@ -1,6 +1,6 @@
 """Attack time heatmap over findings that have no timestamp.
 
-``findings.timestamp`` is nullable (LogLM parquet ingest leaves it NULL when a
+``findings.timestamp`` is nullable (sequence parquet ingest leaves it NULL when a
 row carries no ``event_start_time``). The heatmap loaded every finding in the
 window and called ``timestamp.weekday()`` on each, so one undated finding
 turned the whole ``/api/analytics`` response into a 500.
@@ -68,7 +68,7 @@ def _finding(
         finding_id=finding_id,
         timestamp=at,
         created_at=created_at,
-        data_source="loglm",
+        data_source="flow",
         severity=severity,
     )
 

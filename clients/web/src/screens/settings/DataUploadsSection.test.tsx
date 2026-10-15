@@ -3,7 +3,6 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import DataUploadsSection from './DataUploadsSection'
 
-vi.mock('./LoglmCard', () => ({ default: () => <section>LogLM card</section> }))
 vi.mock('./DataIngestion', () => ({
   UploadCard: () => <section>Upload card</section>,
   StreamsCard: () => <section>Streams card</section>,
@@ -35,7 +34,7 @@ describe('Data & uploads page', () => {
     renderAt('/settings?section=data')
 
     const text = document.body.textContent ?? ''
-    const order = ['LogLM card', 'Upload card', 'Streams card', 'Rules card', 'Demo card', 'Retention']
+    const order = ['Upload card', 'Streams card', 'Rules card', 'Demo card', 'Retention']
     const at = order.map((name) => text.indexOf(name))
     expect(at.every((i) => i >= 0)).toBe(true)
     expect([...at].sort((a, b) => a - b)).toEqual(at)

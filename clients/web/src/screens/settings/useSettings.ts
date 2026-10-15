@@ -966,10 +966,8 @@ export function useIntegrationsConfig() {
   const saveIntegration = useCallback(
     async (integrationId: string, fieldConfig: Record<string, unknown>) => {
       const integrations = { ...config.integrations, [integrationId]: fieldConfig }
-      // extensions keep configure/enable separate: saving must not flip the gate
-      const isExtension = Object.prototype.hasOwnProperty.call(fieldConfig, 'connectorUrl')
       const enabled_integrations =
-        isExtension || config.enabled_integrations.includes(integrationId)
+        config.enabled_integrations.includes(integrationId)
           ? config.enabled_integrations
           : [...config.enabled_integrations, integrationId]
       await configApi.setIntegrations({ enabled_integrations, integrations })

@@ -1,6 +1,6 @@
 """Pydantic schemas for the VStrike (CloudCurrent) integration.
 
-VStrike is a network-topology fusion layer that enriches DeepTempo LogLM
+VStrike is a network-topology fusion layer that enriches
 findings with operational context (asset, segment, site, mission system,
 adjacent nodes, attack path, blast radius) and pushes the enriched findings
 to Vigil via `POST /api/integrations/vstrike/findings`.
@@ -59,7 +59,7 @@ class VStrikeEnrichment(BaseModel):
 class VStrikeFinding(BaseModel):
     """A single finding pushed from VStrike.
 
-    `finding_id` must match a DeepTempo LogLM finding already known to AutoSecOps
+    `finding_id` must match a finding already known to AutoSecOps
     (update path). If it does not exist and `timestamp` + `anomaly_score` are
     supplied, a new finding is created with `data_source="vstrike"`.
     """

@@ -380,7 +380,7 @@ async def test_compose_trace_lists_and_exports_as_emulation(monkeypatch, tmp_pat
         "T1059.001": "both",
         "T1003.001": "missed",
         "T1021.002": "missed",
-        "T1047": "loglm",
+        "T1047": "anomaly",
     }
     missed = next(
         row

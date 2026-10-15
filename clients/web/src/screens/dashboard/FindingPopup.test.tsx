@@ -16,7 +16,7 @@ vi.mock('../../services/api', () => ({
 const baseFinding = {
   finding_id: 'f-source-1',
   severity: 'high',
-  data_source: 'loglm',
+  data_source: 'flow',
   timestamp: '2026-07-21T12:00:00Z',
   anomaly_score: 0.92,
   status: 'new',

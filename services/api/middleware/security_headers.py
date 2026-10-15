@@ -36,40 +36,6 @@ DEFAULT_CSP = (
 )
 
 
-# A connector origin needs script-src (its bundle is a module script) + connect-src
-# (its BFF calls); the rest are defensive for connector-served assets.
-_REQUIRED_CONNECTOR_DIRECTIVES = ("script-src", "connect-src")
-_OPTIONAL_CONNECTOR_DIRECTIVES = ("style-src", "img-src", "font-src")
-_CONNECTOR_CSP_DIRECTIVES = (
-    _REQUIRED_CONNECTOR_DIRECTIVES + _OPTIONAL_CONNECTOR_DIRECTIVES
-)
-
-
-def _augment_csp_with_origins(
-    policy: str, directives: tuple[str, ...], origins: list[str]
-) -> tuple[str, list[str]]:
-    """Append ``origins`` to each target directive present in ``policy``; return
-    (new_policy, missing). Absent directives are left alone — injecting one would
-    narrow whatever ``default-src`` already covers."""
-    if not origins:
-        return policy, []
-    extra = " ".join(origins)
-    targets = set(directives)
-    seen: set[str] = set()
-    out: list[str] = []
-    for chunk in policy.split(";"):
-        token = chunk.strip()
-        if not token:
-            continue
-        name = token.split()[0].lower()
-        if name in targets:
-            seen.add(name)
-            token = f"{token} {extra}"
-        out.append(token)
-    missing = [d for d in directives if d not in seen]
-    return "; ".join(out), missing
-
-
 def is_reset_password_page(path: str) -> bool:
     """The console's /reset-password screen, under any context path."""
     return path.rstrip("/").endswith("/reset-password")
@@ -111,29 +77,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             get_settings().vigil_csp_enabled if csp_enabled is None else csp_enabled
         )
         self.csp_policy = csp_policy or get_settings().vigil_csp_policy or DEFAULT_CSP
-        # Admit allowlisted connector origins so the browser may import their
-        # bundle + call their BFF. Read once at startup (restart to change).
-        try:
-            from core.integrations.extension.trust import connector_allowlist_origins
-
-            connector_origins = connector_allowlist_origins()
-        except Exception:  # pragma: no cover - defensive; never block startup
-            connector_origins = []
-        if connector_origins:
-            self.csp_policy, missing = _augment_csp_with_origins(
-                self.csp_policy, _CONNECTOR_CSP_DIRECTIVES, connector_origins
-            )
-            missing_required = [
-                d for d in missing if d in _REQUIRED_CONNECTOR_DIRECTIVES
-            ]
-            if missing_required:
-                logger.warning(
-                    "CSP policy has no %s directive(s); page-extension connector "
-                    "origins %s cannot be admitted and their bundle/BFF calls will "
-                    "be blocked. Add these directives to VIGIL_CSP_POLICY.",
-                    missing_required,
-                    connector_origins,
-                )
         self.hsts_max_age = (
             get_settings().vigil_hsts_max_age if hsts_max_age is None else hsts_max_age
         )

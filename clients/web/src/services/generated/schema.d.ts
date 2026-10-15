@@ -3248,11 +3248,9 @@ export interface paths {
         put?: never;
         /**
          * Test Integration
-         * @description Probe the MCP servers behind an integration, or its connector URL.
+         * @description Probe the MCP servers behind an integration.
          *
-         *     A UI-extension connector (stored ``connectorUrl``, no MCP server) is probed
-         *     over HTTP instead. Other catalog entries have no descriptor, so they are not
-         *     testable. A stored
+         *     Catalog entries with no descriptor are not testable. A stored
          *     config of ``{}`` is still configured — secret-only rows keep the secret
          *     outside this dict. The integration's enabled flag does not block the
          *     probe: enabled MCP servers are contacted, and if none are enabled every
@@ -4548,26 +4546,6 @@ export interface paths {
          * @description Proxy to VStrike asset-topology lookup (outbound).
          */
         get: operations["get_api_integrations_vstrike_topology_asset_asset_id"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/integrations/{integration_id}/session-token": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Extension Session Token
-         * @description Mint a short-lived session token for an extension's connector BFF.
-         */
-        get: operations["get_api_integrations_integration_id_session-token"];
         put?: never;
         post?: never;
         delete?: never;
@@ -13423,7 +13401,7 @@ export interface components {
          * VStrikeFinding
          * @description A single finding pushed from VStrike.
          *
-         *     `finding_id` must match a DeepTempo LogLM finding already known to AutoSecOps
+         *     `finding_id` must match a finding already known to AutoSecOps
          *     (update path). If it does not exist and `timestamp` + `anomaly_score` are
          *     supplied, a new finding is created with `data_source="vstrike"`.
          */
@@ -21809,39 +21787,6 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    "get_api_integrations_integration_id_session-token": {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                integration_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

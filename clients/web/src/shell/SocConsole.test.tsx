@@ -414,8 +414,6 @@ describe('SocConsole', () => {
 
   it('renders the 404 screen for an unknown path and routes home', async () => {
     renderConsole('/does-not-exist')
-    // an unknown path is probed as a page extension first, so the 404 body only
-    // lands once that resolution settles
     expect(await screen.findByText('404')).toBeInTheDocument()
     // the screen's own h2 is the only heading
     expect(screen.queryByRole('heading', { level: 1 })).not.toBeInTheDocument()

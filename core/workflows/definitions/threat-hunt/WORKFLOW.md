@@ -1,12 +1,12 @@
 ---
 name: threat-hunt
-version: 1
+version: 2
 description: "Proactive, hypothesis-driven threat hunting across all available data sources with network analysis, malware examination, and intelligence enrichment."
 use_case: "Proactive threat hunting -- start with a hypothesis or IOC and systematically search for evidence across network, endpoint, and threat intel sources."
 trigger_examples:
   - "Hunt for C2 beaconing activity across all network findings"
   - "Proactive hunt: look for lateral movement via RDP"
-  - "Validate whether this DeepTempo C2 alert is real by checking all available threat intel for the public IP"
+  - "Validate whether this C2 alert is real by checking all available threat intel for the public IP"
   - "Hunt for APT28 credential harvesting techniques"
   - "Search for signs of data exfiltration in the last 24 hours"
 # The hypothesis loop, not a phase chain: the lead decides what to test next from
@@ -140,7 +140,7 @@ Every hypothesis ends as proven, disproven or inconclusive. Inconclusive is a le
 ## When to Use
 
 - Proactive hunting for threats that haven't triggered alerts
-- Validating a flagged alert (e.g., DeepTempo C2 detection) against all available sources
+- Validating a flagged alert (e.g., an anomaly-model C2 detection) against all available sources
 - Hypothesis-driven hunting based on specific TTPs or threat actors
 - Searching for indicators of compromise across the environment
 - Periodic threat hunting exercises
@@ -148,7 +148,7 @@ Every hypothesis ends as proven, disproven or inconclusive. Inconclusive is a le
 ## Example Invocation
 
 ```
-User: "Validate whether this DeepTempo C2 alert is real by checking all threat intel for IP 185.220.101.1"
+User: "Validate whether this C2 alert is real by checking all threat intel for IP 185.220.101.1"
 ```
 
 ## Expected Output

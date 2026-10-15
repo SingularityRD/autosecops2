@@ -25,7 +25,7 @@ def check_catalog(root: Path) -> dict:
         raise RuntimeError("Packaged connector catalog is empty")
     service = MCPService(
         project_root=root,
-        integration_bridge=SimpleNamespace(derive_remote_mcp_env=lambda: {}),
+        integration_bridge=SimpleNamespace(),
         detection_rules=SimpleNamespace(get_mcp_env_vars=lambda: {}),
     )
     actual = set(service.list_servers())

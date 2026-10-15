@@ -4,7 +4,6 @@ import { NotMeasured } from '../../shared/NotMeasured'
 import { SettingsCard } from '../../shared/ui'
 import { DemoDataClear, StreamsCard, UploadCard } from './DataIngestion'
 import DetectionRulesPanel from './DetectionRulesPanel'
-import LoglmCard from './LoglmCard'
 import type { SectionProps } from './types'
 
 const RETENTION_NOTE =
@@ -40,7 +39,6 @@ export default function DataUploadsSection({ notify }: SectionProps) {
 
   return (
     <div ref={page} className="data-page">
-      <LoglmCard notify={notify} />
       <UploadCard notify={notify} />
       <StreamsCard notify={notify} />
       <div ref={rules} id="rule-sources" className="data-anchor">

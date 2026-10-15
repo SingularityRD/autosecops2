@@ -25,7 +25,7 @@ def service():
 
 
 def _parquet_classified(**overrides):
-    """LogLM row with a classification and embedding but no score/time/severity."""
+    """Sequence row with a classification and embedding but no score/time/severity."""
     row = {
         "sequence_id": "seq-null-fields",
         "mitre_pred": 7,

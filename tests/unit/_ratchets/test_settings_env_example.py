@@ -67,7 +67,6 @@ NOT_SETTINGS = ENV_CREDENTIAL_NAMES | {
     # Consumed outside the Python backend (shell scripts, compose, Vite).
     "BIFROST_IMAGE_TAG",
     "GRAFANA_PASSWORD",
-    "VITE_EXTENSION_ORIGIN_ALLOWLIST",
     # Read by the TypeScript agent processes themselves, not by Settings.
     "AGENT_HEALTH_PORT",
     "AGENT_HTTP_PORT",

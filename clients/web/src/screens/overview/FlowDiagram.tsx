@@ -36,7 +36,7 @@ const SLOTS: { label: string; sub: string; icon: IconName }[] = [
   { label: 'Connect a SIEM', sub: 'Splunk, Sentinel or Elastic', icon: 'search' },
   { label: 'Connect an EDR', sub: 'CrowdStrike or Defender', icon: 'shield' },
   { label: 'Connect identity', sub: 'Okta or Entra ID', icon: 'user' },
-  { label: 'Connect the LogLM pipeline', sub: 'Scores your network flows', icon: 'bolt' },
+  { label: 'Connect network data', sub: 'Firewall, NDR or flow logs', icon: 'bolt' },
 ]
 
 type Hover = { kind: 'src' | 'out'; key: string } | null

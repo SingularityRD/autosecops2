@@ -515,8 +515,8 @@ async def get_attack_time_heatmap(
 ) -> List[Dict[str, Any]]:
     """Get attack time heatmap data (hour of day x day of week).
 
-    Binned in SQL on ``Finding.timestamp``. That column is nullable (LogLM
-    ingest leaves it NULL when a row has no event time), and an undated
+    Binned in SQL on ``Finding.timestamp``. That column is nullable (sequence
+    parquet ingest leaves it NULL when a row has no event time), and an undated
     finding has no hour or weekday to land in, so it is left out of the grid.
     """
 

@@ -167,7 +167,6 @@ const DataSourceDialog = ({ onAdvance }: { onAdvance: () => void }) => {
       title={i.name}
       body={i.category}
       icon={<Icon name={CATEGORY_ICON[i.category] ?? 'grid'} />}
-      chip={i.id === 'loglm' ? 'DeepTempo' : undefined}
       selected={selectedId === i.id}
       onSelect={() => pick(i.id)}
     />

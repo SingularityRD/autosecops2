@@ -253,11 +253,13 @@ def normalize_source_evidence(
     return envelope
 
 
-def source_evidence_from_loglm_row(row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
-    """Build source evidence from optional LogLM Parquet columns.
+def source_evidence_from_sequence_row(
+    row: Mapping[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Build source evidence from optional scored-sequence Parquet columns.
 
     Preferred input is the canonical ``source_evidence`` object/JSON column.
-    For current LogLM artifacts, ``events_json`` and ``sequence`` are adapted
+    For sequence exports, ``events_json`` and ``sequence`` are adapted
     into the same envelope.  ``source_evidence_kind`` is the explicit renderer
     selector; without it, embedded events use the generic-log renderer.
     """

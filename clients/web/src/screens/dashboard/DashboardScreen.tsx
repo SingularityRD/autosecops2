@@ -351,8 +351,8 @@ function verdictLabel(verdict: LayerVerdict): string {
   switch (verdict) {
     case 'rule':
       return 'rule'
-    case 'loglm':
-      return 'LogLM'
+    case 'anomaly':
+      return 'anomaly'
     case 'both':
       return 'both'
     case 'missed':

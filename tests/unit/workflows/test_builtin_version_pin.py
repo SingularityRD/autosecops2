@@ -47,8 +47,8 @@ PINNED = {
         "af72161dab2da187b1a1c95ddf589723433e9641247b694dd59e9c2b8a01021f",
     ),
     "threat-hunt": (
-        1,
-        "925d2509a7a106ee3cc7ce9ff27e39f7bf75b355a36de12683c166b291bc120d",
+        2,
+        "3709f0a6bcd27b1ffca0c14bee429ee2c79b76e90aff89c3582d5f30ec7ffa0b",
     ),
 }
 

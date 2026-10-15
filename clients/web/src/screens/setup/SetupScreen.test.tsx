@@ -361,7 +361,6 @@ describe('SetupScreen', () => {
       'sentinelone',
       'carbon-black',
       'microsoft-defender',
-      'loglm',
       'splunk-selfhosted',
       'elastic',
       'opensearch',
@@ -409,20 +408,18 @@ describe('SetupScreen', () => {
           'SentinelOne',
           'VMware Carbon Black',
           'Microsoft Defender for Endpoint',
-          'LogLM',
           'Splunk',
+          'Elastic Security (SIEM)',
           'Upload a file',
           'Try demo data',
         ])
-        expect(screen.getByText('DeepTempo')).toBeInTheDocument()
         expect(screen.getByText('No setup')).toBeInTheDocument()
         expect(tiles()[0]).toHaveAttribute('aria-pressed', 'true')
       })
 
-      it('leave LogLM out when its server is absent', async () => {
+      it('leave a source out when its server is absent', async () => {
         await openStep(['crowdstrike', 'splunk-selfhosted'])
-        expect(screen.queryByText('LogLM')).not.toBeInTheDocument()
-        expect(screen.queryByText('DeepTempo')).not.toBeInTheDocument()
+        expect(screen.queryByText('SentinelOne')).not.toBeInTheDocument()
         expect(screen.queryByRole('button', { name: 'More sources' })).not.toBeInTheDocument()
       })
 
@@ -712,15 +709,14 @@ describe('SetupScreen', () => {
         expect(await screen.findByText(/Couldn.t load collection settings: boom/)).toBeInTheDocument()
       })
 
-      it('are left out for LogLM, which has no federation source', async () => {
-        await openStep(['loglm'])
-        fireEvent.change(screen.getByLabelText(/^Connector URL/), { target: { value: 'https://loglm.test' } })
-        fireEvent.change(screen.getByLabelText(/^Session Mint Secret/), { target: { value: 's1' } })
-        fireEvent.change(screen.getByLabelText(/^MCP Bearer Token/), { target: { value: 's2' } })
+      it('are left out for a source with no federation collector', async () => {
+        await openStep(['sentinelone'])
+        fireEvent.change(screen.getByLabelText(/^API URL/), { target: { value: 'https://s1.test' } })
+        fireEvent.change(screen.getByLabelText(/^API Token/), { target: { value: 's1' } })
         vi.mocked(federationApi.listSources).mockClear()
         testConnection()
-        expect(await screen.findByText('Connected to LogLM')).toBeInTheDocument()
-        expect(screen.getByText(/^Connected\. Alerts from LogLM/)).toBeInTheDocument()
+        expect(await screen.findByText('Connected to SentinelOne')).toBeInTheDocument()
+        expect(screen.getByText(/^Connected\. Alerts from SentinelOne/)).toBeInTheDocument()
         expect(screen.queryByRole('switch')).not.toBeInTheDocument()
         expect(federationApi.listSources).not.toHaveBeenCalled()
       })

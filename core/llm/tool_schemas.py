@@ -13,7 +13,7 @@ from core.skills.skill_library import READ_SKILL_TOOL
 SECURITY_DETECTION_TOOLS = [
     {
         "name": "analyze_coverage",
-        "description": "Analyze detection coverage for MITRE ATT&CK techniques, or report per-technique layer verdicts for a sanctioned run. Pass techniques for catalog counts (Sigma / Splunk / Elastic / KQL). Pass run_id or an action-trace steps list for the run report: reconstruct on read, group by technique_id, verdicts rule | loglm | both | missed. Do not mix the two.",
+        "description": "Analyze detection coverage for MITRE ATT&CK techniques, or report per-technique layer verdicts for a sanctioned run. Pass techniques for catalog counts (Sigma / Splunk / Elastic / KQL). Pass run_id or an action-trace steps list for the run report: reconstruct on read, group by technique_id, verdicts rule | anomaly | both | missed. Do not mix the two.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -161,7 +161,7 @@ SECURITY_DETECTION_TOOLS = [
     },
     {
         "name": "reconstruct_run",
-        "description": "Reconstruct a red-run action trace into per-step detection verdicts. Correlates each step to ingested Findings by host, entity, and time. Verdict is rule, loglm, both, or missed. Cite matching Finding ids. Unknown keys on a step are ignored.",
+        "description": "Reconstruct a red-run action trace into per-step detection verdicts. Correlates each step to ingested Findings by host, entity, and time. Verdict is rule, anomaly, both, or missed. Cite matching Finding ids. Unknown keys on a step are ignored.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -176,8 +176,8 @@ SECURITY_DETECTION_TOOLS = [
     },
 ]
 
-# DeepTempo Findings Tools (Already implemented in backend)
-DEEPTEMPO_FINDING_TOOLS = [
+# Findings Tools (Already implemented in backend)
+FINDING_TOOLS = [
     {
         "name": "list_findings",
         "description": "List security findings with server-side pagination and compact summaries. Returns compact finding summaries (use get_finding for full details). Supports filtering by severity, data_source, status, and pagination via offset/limit.",
@@ -793,7 +793,7 @@ SKILL_TOOLS = [
 # Combine all tools
 ALL_TOOLS = (
     SECURITY_DETECTION_TOOLS
-    + DEEPTEMPO_FINDING_TOOLS
+    + FINDING_TOOLS
     + ATTACK_LAYER_TOOLS
     + THREAT_INTEL_TOOLS
     + APPROVAL_TOOLS

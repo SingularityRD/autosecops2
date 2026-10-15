@@ -612,30 +612,6 @@ async def _startup(app: FastAPI):
     except Exception as e:
         logger.warning(f"Error loading secrets for MCP servers: {e}")
 
-    # A configured connector with no allowlisted origin will be blocked by the
-    # default CSP — warn rather than fail silently. Best-effort.
-    try:
-        from core.integrations.extension.trust import connector_allowlist_origins
-
-        if not connector_allowlist_origins():
-            cfg = app.state.integration_bridge.load_integration_config()
-            connectors = [
-                iid
-                for iid, c in (cfg.get("integrations") or {}).items()
-                if (c or {}).get("connectorUrl")
-            ]
-            if connectors:
-                logger.warning(
-                    "Page-extension connector(s) %s are configured but "
-                    "EXTENSION_CONNECTOR_ALLOWLIST is empty; their UI bundle "
-                    "import and BFF calls will be blocked by the "
-                    "Content-Security-Policy. Add each connector's origin to "
-                    "EXTENSION_CONNECTOR_ALLOWLIST.",
-                    connectors,
-                )
-    except Exception as e:  # pragma: no cover - defensive
-        logger.debug("Connector allowlist check skipped: %s", e)
-
     # Initialize data storage backend
     logger.info("Initializing data storage...")
     try:
@@ -994,22 +970,6 @@ if frontend_build_dir.exists() and (frontend_build_dir / "index.html").exists():
         if _index_html_cache is None:
             raw = (frontend_build_dir / "index.html").read_text()
             tags = [f'<meta name="vigil-base-path" content="{_CONTEXT_PATH}">']
-            # Expose the connector allowlist to the SPA (same source as the CSP +
-            # SSRF guard). A <meta>, not an inline <script>, because CSP is
-            # script-src 'self'.
-            try:
-                from core.integrations.extension.trust import (
-                    connector_allowlist_origins,
-                )
-
-                origins = connector_allowlist_origins()
-                if origins:
-                    allow = ",".join(origins)
-                    tags.append(
-                        f'<meta name="vigil-extension-allowlist" content="{allow}">'
-                    )
-            except Exception as e:  # pragma: no cover - defensive
-                logger.debug("extension allowlist meta injection skipped: %s", e)
             injected = "\n    ".join(tags)
             _index_html_cache = raw.replace("<head>", f"<head>\n    {injected}", 1)
         return _index_html_cache
