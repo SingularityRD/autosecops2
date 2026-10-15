@@ -46,6 +46,31 @@ write. Include all three together, or none.
 {{- end -}}
 
 {{/*
+Case evidence store: a persistent volume at <State Directory>/evidence, where
+CaseEvidenceService writes (vigil_path("evidence")). Mounted over the State
+Directory volume so no extra setting is needed. Include the mount and the
+volume together, or neither; both render nothing when persistence is off.
+*/}}
+{{- define "vigil.evidence.claimName" -}}
+{{- .Values.evidence.persistence.existingClaim | default (printf "%s-evidence" (include "vigil.fullname" .)) -}}
+{{- end -}}
+
+{{- define "vigil.evidenceVolumeMount" -}}
+{{- if .Values.evidence.persistence.enabled }}
+- name: vigil-evidence
+  mountPath: {{ printf "%s/evidence" (trimSuffix "/" .Values.stateDirectory.mountPath) }}
+{{- end }}
+{{- end -}}
+
+{{- define "vigil.evidenceVolume" -}}
+{{- if .Values.evidence.persistence.enabled }}
+- name: vigil-evidence
+  persistentVolumeClaim:
+    claimName: {{ include "vigil.evidence.claimName" . }}
+{{- end }}
+{{- end -}}
+
+{{/*
 Operator-supplied CA PEM for TLS-inspecting proxies. Include all three together
 (or none) on backend, daemon, llm-worker, agent-worker, and agent-serve only —
 the same rule as vigil.state*: env without the mount advertises a path the

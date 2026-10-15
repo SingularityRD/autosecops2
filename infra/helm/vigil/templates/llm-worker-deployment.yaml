@@ -88,9 +88,11 @@ spec:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           volumeMounts:
             {{- include "vigil.stateVolumeMount" . | nindent 12 }}
+            {{- include "vigil.evidenceVolumeMount" . | nindent 12 }}
             {{- include "vigil.caBundleVolumeMount" . | nindent 12 }}
       volumes:
         {{- include "vigil.stateVolume" . | nindent 8 }}
+        {{- include "vigil.evidenceVolume" . | nindent 8 }}
         {{- include "vigil.caBundleVolume" . | nindent 8 }}
       {{- with .Values.llmWorker.nodeSelector }}
       nodeSelector:

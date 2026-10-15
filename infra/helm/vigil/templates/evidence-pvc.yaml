@@ -1,0 +1,24 @@
+{{- /*
+Case evidence store (see evidence: in values.yaml). Created only when the chart
+owns the claim; kept on uninstall, since what is on it is case evidence.
+*/ -}}
+{{- if and .Values.evidence.persistence.enabled (not .Values.evidence.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "vigil.evidence.claimName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vigil.componentLabels" (dict "context" . "component" "evidence") | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    {{- toYaml .Values.evidence.persistence.accessModes | nindent 4 }}
+  {{- with .Values.evidence.persistence.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.evidence.persistence.size }}
+{{- end }}

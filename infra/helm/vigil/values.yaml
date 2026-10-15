@@ -587,6 +587,33 @@ stateDirectory:
     emptyDir: {}
 
 # -----------------------------------------------------------------------------
+# Case evidence store
+# -----------------------------------------------------------------------------
+# Files attached to cases (the /hunt document and other evidence) are written to
+# <stateDirectory.mountPath>/evidence. The State Directory above is an emptyDir
+# by default, which would lose them on every pod restart, so the store gets a
+# persistent volume of its own, mounted at that path in the backend, daemon
+# (retention) and llm-worker pods. podSecurityContext.fsGroup (1000) makes it
+# writable by the app's uid.
+#
+# The backend runs more than one replica, so the claim is ReadWriteMany. On a
+# cluster without ReadWriteMany storage, point existingClaim at a claim you
+# provision, or run one backend replica with accessModes [ReadWriteOnce].
+# enabled: false drops the mount and evidence falls back to the State Directory
+# volume (lost on restart while that is an emptyDir).
+#
+# The chart-created claim carries helm.sh/resource-policy: keep, so
+# `helm uninstall` leaves the evidence in place.
+evidence:
+  persistence:
+    enabled: true
+    existingClaim: ""
+    size: 20Gi
+    storageClassName: ""
+    accessModes:
+      - ReadWriteMany
+
+# -----------------------------------------------------------------------------
 # Custom CA bundle (TLS-inspecting proxies)
 # -----------------------------------------------------------------------------
 # Mount an operator-supplied PEM into backend, daemon, llm-worker, agent-worker,
