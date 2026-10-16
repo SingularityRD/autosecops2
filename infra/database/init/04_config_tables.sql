@@ -154,11 +154,13 @@ VALUES (
     'general'
 ) ON CONFLICT (key) DO NOTHING;
 
--- Approval workflow defaults
+-- Approval workflow defaults. Assist: a person approves every response action
+-- until someone chooses Act (W0.32; 63_approval_default_assist.sql moves an
+-- untouched pre-2.0 Act seed).
 INSERT INTO system_config (key, value, description, config_type)
 VALUES (
     'approval.force_manual_approval',
-    '{"enabled": false}',
+    '{"enabled": true}',
     'Force manual approval for all actions regardless of confidence score',
     'approval'
 ) ON CONFLICT (key) DO NOTHING;

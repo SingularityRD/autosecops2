@@ -68,6 +68,8 @@ class AutonomyMatrix(BaseModel):
     categories: list[str]
     action_classes: list[str]
     eligible: list[str]
+    #: Containment classes a person always approves, whatever the tier.
+    always_human: list[str] = Field(default_factory=list)
     max_ttl_seconds: int
     fn_bound_target: float
     fn_bound_min_reviews: int

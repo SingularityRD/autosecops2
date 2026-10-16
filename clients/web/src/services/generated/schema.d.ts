@@ -8327,17 +8327,34 @@ export interface components {
         };
         /**
          * AutonomyConfig
-         * @description The two flags the console chip folds into Assist or Act.
+         * @description What the console chip shows, and the inputs it is folded from.
          *
          *     Not stored. ``force_manual_approval`` is the env flag OR the
-         *     ``approval.force_manual_approval`` row. ``auto_response_enabled`` is
-         *     ``Settings.daemon_auto_response``.
+         *     ``approval.force_manual_approval`` row (no row is Assist).
+         *     ``auto_response_enabled`` is ``Settings.daemon_auto_response``.
+         *     ``autonomous_tiers`` counts the autonomy tiers set to Autonomous that the
+         *     controller could ever honour (eligible class, a named category); ``None``
+         *     when the tiers could not be read.
+         *
+         *     ``mode`` is the effective mode (W0.32). ``act`` only when approvals are
+         *     not forced, auto-response is on and at least one tier may run an action
+         *     without a person; otherwise every action waits for one and the mode is
+         *     ``assist``. Unreadable tiers count as possibly autonomous, so the chip
+         *     never understates autonomy.
          */
         AutonomyConfig: {
             /** Auto Response Enabled */
             auto_response_enabled: boolean;
+            /** Autonomous Tiers */
+            autonomous_tiers?: number | null;
             /** Force Manual Approval */
             force_manual_approval: boolean;
+            /**
+             * Mode
+             * @default assist
+             * @enum {string}
+             */
+            mode: "assist" | "act";
         };
         /** AutonomyDemotion */
         AutonomyDemotion: {
@@ -8356,6 +8373,8 @@ export interface components {
         AutonomyMatrix: {
             /** Action Classes */
             action_classes: string[];
+            /** Always Human */
+            always_human?: string[];
             /** Bounds */
             bounds?: {
                 [key: string]: components["schemas"]["BoundModel"];

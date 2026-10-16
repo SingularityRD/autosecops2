@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import WorkflowsStep from './WorkflowsStep'
 import { configApi, workflowApi } from '../../services/api'
+import { ALWAYS_HUMAN_SENTENCE } from '../../shared/autonomy'
 
 vi.mock('../../services/api', () => ({
   workflowApi: { listAll: vi.fn(), setEnabled: vi.fn() },
@@ -42,8 +43,9 @@ describe('WorkflowsStep', () => {
     vi.mocked(workflowApi.setEnabled).mockResolvedValue({ data: {} } as never)
     vi.mocked(configApi.getOrchestrator).mockResolvedValue({ data: orchestrator } as never)
     vi.mocked(configApi.setOrchestrator).mockResolvedValue({ data: {} } as never)
+    // The server's default: no stored choice reads Assist (W0.32).
     vi.mocked(configApi.getForceManualApproval).mockResolvedValue({
-      data: { enabled: false, environment_wins: false },
+      data: { enabled: true, environment_wins: false },
     } as never)
     vi.mocked(configApi.setForceManualApproval).mockImplementation(async (enabled: boolean) => ({
       data: { enabled, environment_wins: false },
@@ -179,10 +181,47 @@ describe('WorkflowsStep', () => {
   })
 
   it('selects Act when manual approval is off, without saving anything', async () => {
+    vi.mocked(configApi.getForceManualApproval).mockResolvedValue({
+      data: { enabled: false, environment_wins: false },
+    } as never)
     renderStep()
     expect(await screen.findByRole('button', { name: /Act/ })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByText('Recommended')).toBeInTheDocument()
     expect(configApi.setForceManualApproval).not.toHaveBeenCalled()
+  })
+
+  it('recommends Assist, the default, and says containment always needs a person', async () => {
+    // W0.32 (KS-20): a person approves containment, so the wizard recommends
+    // Assist and the server's default (no stored choice) arrives selected.
+    vi.mocked(configApi.getForceManualApproval).mockResolvedValue({
+      data: { enabled: true, environment_wins: false },
+    } as never)
+    renderStep()
+    const assist = await screen.findByRole('button', { name: /Assist/ })
+    expect(assist).toHaveAttribute('aria-pressed', 'true')
+    expect(assist).toHaveTextContent('Recommended')
+    expect(screen.getByRole('button', { name: /Act/ })).not.toHaveTextContent('Recommended')
+    expect(screen.getAllByText('Recommended')).toHaveLength(1)
+    expect(screen.getByText(ALWAYS_HUMAN_SENTENCE)).toBeInTheDocument()
+    for (const promise of [/isolating a host/i, /disabling or locking an account/, /blocking on a firewall/]) {
+      expect(screen.getByText(promise)).toBeInTheDocument()
+    }
+    expect(configApi.setForceManualApproval).not.toHaveBeenCalled()
+  })
+
+  it('shows Assist while the response mode is loading', async () => {
+    let resolve: (value: unknown) => void = () => {}
+    vi.mocked(configApi.getForceManualApproval).mockReturnValue(
+      new Promise((r) => {
+        resolve = r
+      }) as never,
+    )
+    renderStep()
+    expect(screen.getByText('Loading response mode…')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Act/ })).not.toBeInTheDocument()
+    await act(async () => {
+      resolve({ data: { enabled: true, environment_wins: false } })
+    })
+    expect(await screen.findByRole('button', { name: /Assist/ })).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('says the environment wins and leaves Act unsaved on 409', async () => {

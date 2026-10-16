@@ -54,6 +54,8 @@ x-intent-env: &intent-env
   DAEMON_MONITOR_THRESHOLD: ${DAEMON_MONITOR_THRESHOLD:-0.70}
   DAEMON_CRITICAL_ACTION_FLOOR: ${DAEMON_CRITICAL_ACTION_FLOOR:-0.70}
   DAEMON_HIGH_ACTION_FLOOR: ${DAEMON_HIGH_ACTION_FLOOR:-0.80}
+  # A lock: true holds every action for a person. false leaves it to Settings,
+  # whose default is Assist (a person approves every action).
   DAEMON_FORCE_APPROVAL: ${DAEMON_FORCE_APPROVAL:-false}
   DAEMON_ESCALATE_SEVERITIES: "${DAEMON_ESCALATE_SEVERITIES:-critical,high}"
   ORCHESTRATOR_ENABLED: ${ORCHESTRATOR_ENABLED:-false}

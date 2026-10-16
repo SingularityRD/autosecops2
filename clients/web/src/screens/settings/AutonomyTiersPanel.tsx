@@ -5,8 +5,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { autonomyApi } from '../../services/api'
 import type { Schema } from '../../services/apiTypes'
+import { ALWAYS_HUMAN_ACTIONS, ALWAYS_HUMAN_SUMMARY } from '../../shared/autonomy'
 import { Field, SettingsCard, TextInput } from '../../shared/ui'
 import type { SectionProps } from './types'
+
+const ALWAYS_HUMAN: ReadonlySet<string> = new Set(ALWAYS_HUMAN_ACTIONS.map((a) => a.id))
 
 type Matrix = Schema<'AutonomyMatrix'>
 type Entry = Schema<'TierEntryModel'>
@@ -132,7 +135,7 @@ export default function AutonomyTiersPanel({ notify }: SectionProps) {
   return (
     <SettingsCard
       title="Autonomy by alert category"
-      desc={`Approve is the default. Autonomous runs a reversible action without a person, undoes it after its TTL, and only while the category's sampled false-negative bound stays at or under ${(matrix.fn_bound_target * 100).toFixed(0)}% from at least ${matrix.fn_bound_min_reviews} reviews. Irreversible actions are never autonomous, and every action still passes the response policy.`}
+      desc={`Approve is the default. Autonomous runs a reversible action without a person, undoes it after its TTL, and only while the category's sampled false-negative bound stays at or under ${(matrix.fn_bound_target * 100).toFixed(0)}% from at least ${matrix.fn_bound_min_reviews} reviews. Containment (${ALWAYS_HUMAN_SUMMARY.toLowerCase()}) is never autonomous, and every action still passes the response policy.`}
       actions={<button className="btn ghost" onClick={runCheck}>Check bounds now</button>}
       wide
     >
@@ -187,6 +190,8 @@ export default function AutonomyTiersPanel({ notify }: SectionProps) {
                 {entry.tier === 'autonomous' && entry.max_ttl_seconds
                   ? ` · TTL ${Math.round(entry.max_ttl_seconds / 3600)}h · floor ${entry.min_confidence}`
                   : ''}
+                {ALWAYS_HUMAN.has(entry.action_type) ? ' · containment: always a person' : ''}
+                {entry.tier === 'autonomous' && !entry.eligible ? ' · not applied: a person approves' : ''}
               </td>
             </tr>
           ))}

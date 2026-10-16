@@ -35,7 +35,11 @@ from core.intent import (
     intent_file,
     read_intent,
 )
-from core.response.approval_service import APPROVAL_CONFIG_KEY, Reversibility
+from core.response.approval_service import (
+    APPROVAL_CONFIG_KEY,
+    Reversibility,
+    stored_force_manual,
+)
 from core.response.config import (
     ResponseConfig,
     approval_requirement,
@@ -58,15 +62,18 @@ def _overlay_force_manual_approval(
     """The one DB overlay ``from_env()`` does not apply.
 
     ``ApprovalService`` reads ``approval.force_manual_approval`` itself and the
-    env flag forces it on, so the effective value is env OR db. Same
-    try/except-and-continue as the orchestrator overlay: no DB, no overlay.
+    env flag forces it on, so the effective value is env OR db. A missing row
+    is Assist (``stored_force_manual``, W0.32), and so is an unreadable one:
+    ``ApprovalService`` then holds every action for a person, and the report
+    says what it does.
     """
     try:
-        row = get_config_service().get_system_config(APPROVAL_CONFIG_KEY)
+        row = get_config_service().read_system_config(APPROVAL_CONFIG_KEY)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Could not read approval config from DB: %s", exc)
+        effective["respond.force_manual_approval"] = True
         return
-    if not row or not isinstance(row, dict) or not row.get("enabled"):
+    if not stored_force_manual(row):
         return
     if not effective["respond.force_manual_approval"]:
         effective["respond.force_manual_approval"] = True

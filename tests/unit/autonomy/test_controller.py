@@ -49,7 +49,7 @@ pytestmark = pytest.mark.unit
 EVIDENCE = "https://console.example/scorecard?category=phishing"
 
 
-def _auto(category="phishing", action_type="waf_block", ttl=3600, floor=0.5):
+def _auto(category="phishing", action_type="gateway_block", ttl=3600, floor=0.5):
     return TierEntry(
         category=category,
         action_type=action_type,
@@ -189,7 +189,7 @@ class TestDefaults:
         controller = AutonomyController(store=Broken(), bound_reader=bounds(True))
         d = controller.decide(
             category="phishing",
-            action_type="waf_block",
+            action_type="gateway_block",
             reversibility="reversible",
             confidence=1.0,
         )
@@ -201,7 +201,7 @@ class TestAutonomousEligibility:
         controller, _ = _controller([_auto()])
         d = controller.decide(
             category="phishing",
-            action_type="waf_block",
+            action_type="gateway_block",
             reversibility="reversible",
             confidence=0.9,
         )
@@ -223,7 +223,7 @@ class TestAutonomousEligibility:
         controller, store = _controller([_auto()])
         args = dict(
             category="phishing",
-            action_type="waf_block",
+            action_type="gateway_block",
             reversibility="reversible",
             confidence=0.9,
         )
@@ -232,13 +232,13 @@ class TestAutonomousEligibility:
         assert d.effective == APPROVE
         assert any(why in r for r in d.reasons)
         # An ineligible action is not a broken bound: the tier stays.
-        assert store.rows[("phishing", "waf_block")].tier == AUTONOMOUS
+        assert store.rows[("phishing", "gateway_block")].tier == AUTONOMOUS
 
     def test_a_tier_without_a_ttl_is_never_autonomous(self):
         controller, _ = _controller([_auto(ttl=None)])
         d = controller.decide(
             category="phishing",
-            action_type="waf_block",
+            action_type="gateway_block",
             reversibility="reversible",
             confidence=0.9,
         )
@@ -248,7 +248,7 @@ class TestAutonomousEligibility:
         controller, _ = _controller([_auto(category=ANY_CATEGORY)])
         d = controller.decide(
             category="phishing",
-            action_type="waf_block",
+            action_type="gateway_block",
             reversibility="reversible",
             confidence=0.9,
         )
@@ -361,12 +361,12 @@ class TestCircuitBreaker:
         controller, store = _controller([_auto()], holds=False)
         d = controller.decide(
             category="phishing",
-            action_type="waf_block",
+            action_type="gateway_block",
             reversibility="reversible",
             confidence=0.9,
         )
         assert d.effective == APPROVE and d.demoted
-        assert store.rows[("phishing", "waf_block")].tier == APPROVE
+        assert store.rows[("phishing", "gateway_block")].tier == APPROVE
         (row,) = store.audit_rows
         assert row["action"] == "demote"
         assert row["changed_by"] == BREAKER_ACTOR
@@ -376,14 +376,14 @@ class TestCircuitBreaker:
         controller, store = _controller([_auto()], holds=False)
         controller.decide(
             category="phishing",
-            action_type="waf_block",
+            action_type="gateway_block",
             reversibility="reversible",
             confidence=0.9,
         )
         controller.bound_reader = bounds(True)
         d = controller.decide(
             category="phishing",
-            action_type="waf_block",
+            action_type="gateway_block",
             reversibility="reversible",
             confidence=0.9,
         )
@@ -397,12 +397,12 @@ class TestCircuitBreaker:
         controller = AutonomyController(store=store, bound_reader=broken)
         d = controller.decide(
             category="phishing",
-            action_type="waf_block",
+            action_type="gateway_block",
             reversibility="reversible",
             confidence=0.9,
         )
         assert d.effective == APPROVE and not d.demoted
-        assert store.rows[("phishing", "waf_block")].tier == AUTONOMOUS
+        assert store.rows[("phishing", "gateway_block")].tier == AUTONOMOUS
         assert controller.check_all() == []
 
     def test_check_all_demotes_only_the_broken_categories(self):
@@ -418,11 +418,11 @@ class TestCircuitBreaker:
         controller = AutonomyController(store=store, bound_reader=read)
         demoted = controller.check_all()
         assert {(d["category"], d["action_type"]) for d in demoted} == {
-            ("malware", "waf_block"),
+            ("malware", "gateway_block"),
             ("identity", "block_ip"),
         }
-        assert store.rows[("phishing", "waf_block")].tier == AUTONOMOUS
-        assert store.rows[("malware", "waf_block")].tier == APPROVE
+        assert store.rows[("phishing", "gateway_block")].tier == AUTONOMOUS
+        assert store.rows[("malware", "gateway_block")].tier == APPROVE
 
     def test_the_w16_bar(self):
         assert judge("phishing", 299, 0, 0.00997).holds
@@ -435,7 +435,7 @@ class TestPromotion:
     def _promote(self, controller, **over):
         args = dict(
             category="phishing",
-            action_type="waf_block",
+            action_type="gateway_block",
             tier=AUTONOMOUS,
             actor="alice",
             actor_is_human=True,
@@ -463,12 +463,12 @@ class TestPromotion:
                 self._promote(controller, tier=tier, actor_is_human=False)
             assert e.value.code == "actor"
         controller2, _ = _controller(
-            [TierEntry("phishing", "waf_block", WATCH, explicit=True)]
+            [TierEntry("phishing", "gateway_block", WATCH, explicit=True)]
         )
         with pytest.raises(PromotionRefused) as e:
             controller2.set_tier(
                 category="phishing",
-                action_type="waf_block",
+                action_type="gateway_block",
                 tier=SUGGEST,
                 actor="agent",
                 actor_is_human=False,
@@ -482,7 +482,7 @@ class TestPromotion:
         controller, store = _controller([_auto()])
         entry = controller.set_tier(
             category="phishing",
-            action_type="waf_block",
+            action_type="gateway_block",
             tier=WATCH,
             actor="system:x",
             actor_is_human=False,
@@ -533,12 +533,12 @@ class TestPromotion:
         assert store.rows == {}
 
     def test_raising_from_a_star_watch_needs_evidence(self):
-        star = TierEntry(ANY_CATEGORY, "waf_block", WATCH, explicit=True)
+        star = TierEntry(ANY_CATEGORY, "gateway_block", WATCH, explicit=True)
         controller, _ = _controller([star])
         with pytest.raises(PromotionRefused):
             controller.set_tier(
                 category="phishing",
-                action_type="waf_block",
+                action_type="gateway_block",
                 tier=APPROVE,
                 actor="alice",
                 actor_is_human=True,
@@ -552,7 +552,7 @@ class TestPromotion:
         row = next(
             e
             for e in m["entries"]
-            if e["category"] == "phishing" and e["action_type"] == "waf_block"
+            if e["category"] == "phishing" and e["action_type"] == "gateway_block"
         )
         assert row["tier"] == AUTONOMOUS and row["explicit"] and row["eligible"]
         assert m["default_tier"] == APPROVE
@@ -567,7 +567,7 @@ class TestOtherIsNeverAutonomous:
         for category in ("other", "ransomware", None, ""):
             d = controller.decide(
                 category=category,
-                action_type="waf_block",
+                action_type="gateway_block",
                 reversibility="reversible",
                 confidence=1.0,
             )
@@ -578,7 +578,7 @@ class TestOtherIsNeverAutonomous:
         controller, store = _controller([_auto(category="other")])
         (demoted,) = controller.check_all()
         assert demoted["category"] == "other" and demoted["to"] == APPROVE
-        assert store.rows[("other", "waf_block")].tier == APPROVE
+        assert store.rows[("other", "gateway_block")].tier == APPROVE
 
     def test_the_matrix_marks_other_ineligible(self):
         controller, _ = _controller()

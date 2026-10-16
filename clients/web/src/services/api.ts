@@ -642,9 +642,12 @@ export const configApi = {
   setTheme: (theme: string) => api.post('/config/theme', { theme }),
 
   getAutonomy: () =>
-    api.get<{ auto_response_enabled: boolean; force_manual_approval: boolean }>(
-      '/config/autonomy',
-    ),
+    api.get<{
+      auto_response_enabled: boolean
+      force_manual_approval: boolean
+      autonomous_tiers: number | null
+      mode: 'assist' | 'act'
+    }>('/config/autonomy'),
   
   getPostgreSQL: () => api.get('/config/postgresql'),
   setPostgreSQL: (connection_string: string) => api.post('/config/postgresql', { connection_string }),

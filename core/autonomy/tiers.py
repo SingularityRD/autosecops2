@@ -70,15 +70,35 @@ ACTION_CLASSES: tuple[str, ...] = (
     "custom",
 )
 
-#: The only classes that may ever be autonomous: reversible by their nature,
-#: undone by the TTL sweep. Everything else (access_revoke, disable_user,
-#: revoke_sessions, quarantine_file, execute_spl_query, the undo types
-#: unblock_ip/unisolate_host/enable_user, custom) is refused at
-#: configuration and at every decision. The row's and the executor's
-#: reversibility are checked on top of this list, never instead of it.
-AUTONOMOUS_ELIGIBLE = frozenset(
-    {"isolate_host", "block_ip", "block_domain", "waf_block", "gateway_block"}
+#: Containment that cuts a person or a machine off: isolating a host, disabling
+#: or locking an account (``disable_user``, ``revoke_sessions``,
+#: ``access_revoke``), blocking on a firewall (``block_ip`` on the network
+#: firewall, ``waf_block`` on the web application firewall) and quarantining a
+#: file. The product promise is that a person approves containment, so no
+#: tier, row or argument releases one of these without a person, reversible or
+#: not. The console words this list in ``clients/web/src/shared/autonomy.ts``
+#: and a ratchet (tests/unit/_ratchets/test_always_human_promise.py) holds the
+#: two, and the admin guide, together.
+ALWAYS_HUMAN = frozenset(
+    {
+        "isolate_host",
+        "disable_user",
+        "revoke_sessions",
+        "access_revoke",
+        "block_ip",
+        "waf_block",
+        "quarantine_file",
+    }
 )
+
+#: The only classes that may ever be autonomous: reversible by their nature,
+#: undone by the TTL sweep, and neither containment nor a firewall rule (a
+#: block on a domain indicator, in DNS or at the secure web gateway).
+#: Everything else (``ALWAYS_HUMAN``, execute_spl_query, the undo types
+#: unblock_ip/unisolate_host/enable_user, custom) is refused at configuration
+#: and at every decision. The row's and the executor's reversibility are
+#: checked on top of this list, never instead of it.
+AUTONOMOUS_ELIGIBLE = frozenset({"block_domain", "gateway_block"}) - ALWAYS_HUMAN
 
 #: The longest an autonomous change may stand before the TTL sweep undoes it.
 AUTONOMOUS_MAX_TTL_SECONDS = 7 * 24 * 3600
@@ -151,6 +171,7 @@ class TierEntry:
 
 __all__ = [
     "ACTION_CLASSES",
+    "ALWAYS_HUMAN",
     "ANY_CATEGORY",
     "APPROVE",
     "AUTONOMOUS",

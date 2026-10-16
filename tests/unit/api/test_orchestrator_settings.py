@@ -150,7 +150,8 @@ def test_assist_and_act_write_only_the_approval_flag():
         )
         act = set_force_manual_approval(ForceManualApprovalConfig(enabled=False), user)
 
-    assert missing.enabled is False
+    # No row is Assist: the GA default (W0.32).
+    assert missing.enabled is True
     assert missing.environment_wins is False
     assert assist.enabled is True
     assert act.enabled is False
