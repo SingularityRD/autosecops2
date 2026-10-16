@@ -204,6 +204,7 @@ ENV_CREDENTIAL_NAMES: frozenset[str] = frozenset(
         "SPLUNK_PASSWORD",
         "SPLUNK_USERNAME",
         "TEAMS_WEBHOOK_URL",
+        "VIGIL_DATA_KEY",
         "VIRUSTOTAL_API_KEY",
         "VSTRIKE_API_KEY",
         "VSTRIKE_INBOUND_API_KEY",
