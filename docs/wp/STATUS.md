@@ -4,7 +4,7 @@
 Hedef: düzenlenmiş sektör GA, 30 Ekim 2026 (31 Ekim tampon). Plan: `docs/wp/NORTHSTAR_PLAN.md`.
 Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) → yalnızca spec + diff gören bağımsız doğrulayıcı → PASS → `integration`'a merge → tam test + gates → `integration` ve `main` push.
 
-**`main` == `integration` == bu commit (W0.24–W0.29 sonrası)** (remote `target` = SingularityRD/autosecops2). Ürün sürümü **2.0.0** (`release_tool.py check-versions`); sürüm notları `docs/release/2.0.0.md` (58 dahil, 4 hariç: W0.8, W1.4, W2.9, W4.4). **`v2.0.0` etiketi yok.**
+**`main` == `integration` == bu commit (W0.24–W0.30 sonrası; upstream alımı tamam)** (remote `target` = SingularityRD/autosecops2). Ürün sürümü **2.0.0** (`release_tool.py check-versions`); sürüm notları `docs/release/2.0.0.md` (58 dahil, 4 hariç: W0.8, W1.4, W2.9, W4.4). **`v2.0.0` etiketi yok.**
 
 ## 1. main'de (doğrulandı, birleşti)
 
@@ -38,6 +38,7 @@ Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) → yalnızca spe
 | W0.26 hunt/vaka/konsol (init SQL 62) | PASS, tur 3 (Yüksek, insan onayı) | Helm kanıt birimi varsayılan kapalı (kalıcı değil); RWO + çoklu bağlayıcı şablonda reddedilir. Ertelenen: kanıt Postgres/nesne deposuna (seçenek d); `ReadWriteOncePod` kontrolü |
 | W0.29 LogLM kaldırma | PASS, tur 3 (Yüksek, insan onayı) | Uzantı barındırıcısı, session-token rotası, CSP eklentisi kaldırıldı; `17_loglm_setup.sql` etkisiz; eski LogLM sırları maskeli; ratchet. Kendi LogLM'imiz ayrı iş |
 | W0.28 bağlayıcılar (98ca1152, 596850b6 Okta, 5f132b81) | PASS, tur 2 (Normal) | Tek `SERVER_SUPPORT` haritası, Experimental etiketi; Okta imaja gömülü, SHA'ya pinli, açık bulgu yok (override'lar). Okta gerçek kiracıda sınanmadı |
+| W0.30 enjeksiyon korumaları + ajan OTel | PASS, tur 11 (Yüksek, insan onayı) | Düzyazıda yalnızca `[subject value N]`; değerler `subject_values` + markdown'sız kutu; modeller yalnızca işaretçi görür (araç kaydı sarmalayıcısı, `jdump`, onay satırları konuma göre maskeli, belirsizse saklı). Takip (DÜŞÜK): anahtar adında tutamaç, `["comment",0]` yolu TypeError, UTF-8 olmayan bytes, çözülmeyen yol mutasyon testi, ≤7 harfli kısa sözcükler düzyazıda |
 
 ## 1b. Sürüm adayı
 
@@ -50,7 +51,6 @@ Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) → yalnızca spe
 | WP | Durum | Sıradaki adım |
 |---|---|---|
 | W1.4 prompt-injection seti | Spec taslağı `wp/w1.4-injection-set` | İnsan kararı (aşağı §3). |
-| W0.30 enjeksiyon korumaları + ajan OTel | doğrulama tur 6 | Tur 3–5'te satır içi kaçış her seferinde aşıldı; tur 6'da yapısal tasarım: düzyazıda yalnızca `[subject value N]` işaretçisi, değerler ayrı `subject_values` alanında, UI'da markdown'sız kutu |
 | Ertelenen upstream | — | ajan çekirdeği yeniden yazımı (2027 Ç1 kararı), MCP runner zinciri, arama zinciri (e08ea09e, 265078af, c441a3fa) |
 
 ## 3. GA kontrol listesi (sahibiyle)

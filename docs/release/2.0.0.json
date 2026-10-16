@@ -362,6 +362,11 @@
       "id": "W0.29",
       "topic": "üçüncü taraf DeepTempo LogLM bağlayıcısının kaldırılması",
       "topic_en": "removal of the third-party DeepTempo LogLM connector"
+    },
+    {
+      "id": "W0.30",
+      "topic": "upstream enjeksiyon korumaları (öznenin yazdığı metin karara girmez; AUTOSECOPS_GUARDS varsayılan açık) ve ajan katmanı OTel izleme (yalnızca OTLP uç noktası ayarlıysa; içerik yakalama kapalı)",
+      "topic_en": "upstream injection guards (text a subject writes stays out of the verdict; AUTOSECOPS_GUARDS on by default) and agent-layer OTel tracing (only with an OTLP endpoint; content capture off)"
     }
   ],
   "highlights": [
@@ -614,6 +619,18 @@
         "W0.26"
       ],
       "text": "**Hunt ve vaka:** hunt koşusunun ilerlemesi canlı izlenir; vaka sayfasında öneri, incelenmeden onaylanamaz; Helm yedeği kanıt dizinini de alır ve geri yükleme bağlama noktasını yerinde değiştirir (W0.26)."
+    },
+    {
+      "when": [
+        "W0.30"
+      ],
+      "text": "**Enjeksiyon korumaları:** hunt ve karar koşularında öznenin (incelenen makinenin) yazdığı metin modelin kararına ham girmez; model yalnızca tutamaç ve süzülmüş özet görür. İnsanlara giden metinde bu değerler `[subject value N]` işaretçisi olarak geçer ve ayrı, markdown işlenmeyen \"Öznenin yazdığı — güvenilmez\" kutusunda gösterilir; modellere giden vaka, koşu ve onay kayıtlarında yalnızca işaretçi bulunur (onay satırları argüman konumuna göre maskelenir, belirsizse tamamen saklanır). Onaylanan argüman özeti değişmez. `AUTOSECOPS_GUARDS` (takma ad `VIGIL_GUARDS`) varsayılan açık (W0.30)."
+    },
+    {
+      "when": [
+        "W0.30"
+      ],
+      "text": "**Ajan izleme (OTel):** ajan katmanının koşuları, model ve araç çağrıları `VIGIL_OTEL_ENABLED` ve bir OTLP uç noktası ayarlandığında küme içi toplayıcıya izlenir; toplayıcı çökükse koşu etkilenmez. İstem ve içerik yakalama tüm gönderilen profillerde kapalıdır; hata izlerinde yalnızca hata türü yazılır (W0.30)."
     }
   ],
   "upgrade_notes": [
@@ -733,6 +750,12 @@
         "W0.26"
       ],
       "text": "**Helm kanıt birimi (W0.26):** `evidence.persistence.enabled` varsayılan olarak kapalıdır; kanıt pod yeniden başlarsa kalıcı değildir. Açmak için RWX destekleyen bir StorageClass ve açık `accessModes` gerekir; birden çok pod bağlıyken ReadWriteOnce şablon aşamasında reddedilir."
+    },
+    {
+      "when": [
+        "W0.30"
+      ],
+      "text": "**Enjeksiyon korumaları (W0.30):** varsayılan açıktır ve her araç sonucu için bir ek model çağrısı (okuyucu) yapar; karar bütçesi buna göre tükenebilir. Kapatmak için `AUTOSECOPS_GUARDS=off`. Python triyaj yolunun eşdeğeri (`core/llm/subject_guards.py`) varsayılan kapalıdır."
     }
   ],
   "known_issues": [
@@ -833,6 +856,10 @@
     {
       "wp": "W0.25",
       "text": "Yükseltmeden sonra yeniden triyaj edilen yüksek önem dereceli bir bulgu, onay satırı olmadığı için Slack/PagerDuty bildirimini bir kez daha gönderebilir."
+    },
+    {
+      "wp": "W0.30",
+      "text": "Korumaların bilinen sınırları: okuyucunun serbest özeti yeniden ifade edilmiş yönlendirmeyi kaçırabilir; zenginleştirme zincirleri (varsayılan boş) okuyucuyu atlar; kanıt paketi ve SIEM denetim dışa aktarımı hash zinciri için ham günlüğü taşır; kök neden ajanı işaretçiyle arama yapamaz; anahtar adında tutamaç kullanan bir araç çağrısı (katalogda böyle bir onaylı araç yok) onay görünümünde maskelenmez."
     }
   ],
   "sections": {
