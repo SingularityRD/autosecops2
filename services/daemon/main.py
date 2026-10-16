@@ -121,7 +121,7 @@ class SOCDaemon:
         )
         from core.response.approval_service import ApprovalService
         from core.response.autonomous_response_service import AutonomousResponseService
-        from core.response.executors.wiring import build_executor_registry
+        from core.response.executors.wiring import LiveExecutorRegistry
         from core.storage.connection import get_db_manager
         from services.daemon.kafka_ingestor import KafkaIngestor
         from services.daemon.metrics import MetricsServer
@@ -145,11 +145,13 @@ class SOCDaemon:
         self._mcp_client = build_mcp_client()
         set_process_mcp_client(self._mcp_client)
         approvals = ApprovalService(config=self.config.response)
-        # Built once for the daemon, as the API lifespan builds its own.
+        # The daemon's own, as the API lifespan builds its own. It re-reads the
+        # stored integration config, so an executor enabled in Settings needs no
+        # daemon restart (W0.37).
         response_service = AutonomousResponseService(
             approvals=approvals,
             config=self.config.response,
-            executors=build_executor_registry(),
+            executors=LiveExecutorRegistry(),
         )
 
         self._responder = AutonomousResponder(

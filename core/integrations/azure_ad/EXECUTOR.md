@@ -3,8 +3,9 @@
 `core/integrations/azure_ad/executor.py`, AutoSecOps müdahale eylemlerini
 Microsoft Graph v1.0 üzerinden Entra ID (Azure AD) kullanıcı hesaplarına
 uygular. `core/response/executors/base.py` içindeki `Executor` protokolünü
-gerçekler. Bu WP'de hiçbir yere kayıtlı değildir: `build_executor(config)` bir
-örnek döndürür, `ExecutorRegistry`'ye bağlamayı ayrı bir WP yapar.
+gerçekler. Kayıt: `core/response/executors/wiring.py` (`EXECUTOR_SOURCES`, `LiveExecutorRegistry`); entegrasyon açıkken API ve daemon
+`build_executor(config)` ile kurar ve yapılandırma değişince yeniden başlatma
+olmadan yeniden kurar (W0.37).
 
 ## Eylemler
 

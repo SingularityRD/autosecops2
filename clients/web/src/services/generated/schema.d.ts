@@ -3276,7 +3276,10 @@ export interface paths {
          *     probe: enabled MCP servers are contacted, and if none are enabled every
          *     declared server is probed with a temporary session. Splunk and Elastic are
          *     then also read with their saved URL and credentials (``credentials`` in the
-         *     answer), since a server starts whatever it is pointed at.
+         *     answer), since a server starts whatever it is pointed at; so are the
+         *     response executors (Defender, Entra ID, PAN-OS), with one read-only call
+         *     each. For those, ``executor`` says whether this process can run their
+         *     actions now (still behind the approval gate).
          */
         post: operations["post_api_config_integrations_integration_id_test"];
         delete?: never;

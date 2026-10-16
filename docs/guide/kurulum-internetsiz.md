@@ -181,6 +181,7 @@ ve bir SBOM eşlik etmez (Planlı — `wp/w4.7-release`, bu sürümde yok).
 | `secrets.postgresPassword` | Varsayılan değer (`change-me-before-production`) üretimde kullanılmamalı |
 | `stateDirectory.volume` | Varsayılan `emptyDir`'dir; konsoldan girilen sırlar (`secrets.enc`) ve `master.key` pod yeniden başlayınca kaybolur. Kalıcı ReadWriteMany birim verin ya da tüm kimlik bilgilerini Secret ile sağlayın |
 | `evidence.persistence` | Vaka kanıt dosyalarının kalıcı birimi; `values-airgap.yaml`'da **kapalıdır**, bu durumda kanıt dosyaları pod yeniden başlayınca kaybolur. Kümede ReadWriteMany sağlayan bir StorageClass varsa `enabled: true`, `accessModes: [ReadWriteMany]`, `storageClassName: <sınıf>` verin. `ReadWriteOnce` birden çok pod bağladığı için reddedilir (bkz. [yönetici kılavuzu](yonetici-kilavuzu.md#kubernetes)) |
+| `postgresql.external.*` (kendi PostgreSQL sunucunuz) | Kullanıcı adı serbesttir (`deeptempo` olması gerekmez) ve süper kullanıcı gerekmez. Bu kullanıcı veritabanının sahibi olmalı ve CREATEROLE yetkisine sahip olmalıdır: db-init Job'u uygulamaların bağlandığı `vigil_app` rolünü oluşturur ve parolasını ayarlar. `pg_trgm` ve `uuid-ossp` uzantılarını veritabanı sahibi kendisi oluşturabilir. Bitnami alt grafiğinin kullanıcısında CREATEROLE yoktur ve `vigil_app` oluşturulmaz: o kullanıcıya süper kullanıcıyla `ALTER ROLE <kullanıcı> CREATEROLE;` verip `helm upgrade` yapın ya da CREATEROLE yetkisi olan bir kullanıcı adı verin (bkz. [yönetici kılavuzu](yonetici-kilavuzu.md#kendi-postgresql-sunucunuz)) |
 | `networkPolicies.egress.extraCIDRs` | Kümenin dışındaki şirket içi hedefler (SIEM, EDR, güvenlik duvarı yönetim arayüzü, NodeLocal DNS `169.254.20.10/32`) |
 | `networkPolicies.daemon.webhookAllowFrom` | Daemon'un webhook portuna alarm itebilecek kaynak CIDR'leri; boşsa yalnız küme içi |
 | `caBundle.existingSecret` | TLS denetleyen bir vekil sunucu ya da kurum içi CA varsa |
@@ -319,6 +320,11 @@ Profil uygulandığında bile operatör eylemiyle dışarı çıkabilecek noktal
 - Helm'de db-init Job'u, hata veren bir SQL dosyasını uygulanmış saymaz; önceki
   sürümlerde uygulanmış sayılmış ama tablosu eksik kalan düzenleyici sayaç
   dosyalarını `helm upgrade` sırasında kendiliğinden yeniden uygular.
+- Veritabanı kullanıcısı `deeptempo` olmayan (ya da süper kullanıcı olmayan) bir
+  Helm kurulumunda önceki Job'lar 04, 07, 09, 10, 12, 13 ve 30 numaralı dosyaları
+  uygulanmış saymıyor ve her yükseltmede "not applied" uyarısı veriyordu. Bu
+  sürümde `helm upgrade` bu dosyaları uygular ve kaydeder; elle bir şey
+  yapmanız gerekmez.
 
 ## 10. Sorun giderme
 

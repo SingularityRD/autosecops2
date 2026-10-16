@@ -9,8 +9,9 @@ bir **Dynamic Address Group (DAG)** ve onu kullanan bir "deny" kuralı trafiği
 keser. Kayıt commit gerektirmez, `timeout` ile kendiliğinden sona erer ve
 `unregister` ile birebir geri alınır.
 
-> Bu modül hiçbir kayıt defterine (`ExecutorRegistry`) bağlı değildir; kablolama
-> ayrı bir iş paketidir. Tek başına hiçbir eylem çalıştırmaz.
+> Kayıt: `core/response/executors/wiring.py` (`EXECUTOR_SOURCES`, `LiveExecutorRegistry`). Entegrasyon açıkken API ve daemon bu executor'ı kurar;
+> yapılandırma değişince yeniden başlatma olmadan yeniden kurar (W0.37). Her
+> eylem yine onay kapısından ve müdahale politikasından geçer.
 
 ## Eylemler
 

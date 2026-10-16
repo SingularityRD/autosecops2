@@ -87,3 +87,154 @@ async def test_a_check_that_blows_up_is_a_failure_that_names_no_value(monkeypatc
         False,
         "Could not check the connection (RuntimeError)",
     )
+
+
+# ----------------------------------------------- response executors (W0.37)
+
+_ENTRA_SECRET = "entra-secret-not-real"
+_PAN_KEY = "pan-key-not-real"
+
+
+@pytest.fixture()
+def nothing_stored(monkeypatch):
+    monkeypatch.setattr(credential_check, "_stored", lambda integration_id: {})
+
+
+@pytest.fixture()
+def offline(monkeypatch):
+    """No route to Entra ID: the token request raises as it does with no network."""
+    import httpx
+
+    def refuse(*args, **kwargs):
+        raise httpx.ConnectError("[Errno -3] Temporary failure in name resolution")
+
+    monkeypatch.setattr("core.integrations._base.aad_token.httpx.post", refuse)
+
+
+@pytest.mark.parametrize(
+    "integration_id", ["microsoft-defender", "azure-ad", "palo-alto"]
+)
+async def test_every_executor_has_a_check(integration_id):
+    assert integration_id in credential_check._CHECKS
+
+
+@pytest.mark.parametrize("integration_id", ["microsoft-defender", "azure-ad"])
+async def test_entra_backed_executor_without_a_secret_says_what_is_missing(
+    monkeypatch, nothing_stored, integration_id
+):
+    _resolved(monkeypatch, tenant_id="t", client_id="c", client_secret=None)
+
+    assert await credential_check.check_credentials(integration_id) == (
+        False,
+        "Missing client_secret",
+    )
+
+
+@pytest.mark.parametrize("integration_id", ["microsoft-defender", "azure-ad"])
+async def test_entra_backed_executor_offline_fails_cleanly(
+    monkeypatch, nothing_stored, offline, integration_id
+):
+    _resolved(monkeypatch, tenant_id="t", client_id="c", client_secret=_ENTRA_SECRET)
+
+    ok, message = await credential_check.check_credentials(integration_id)
+
+    assert ok is False
+    assert "ConnectError" in message and "could not be reached" in message
+    assert _ENTRA_SECRET not in message
+
+
+async def test_defender_reads_one_machine_and_nothing_else(monkeypatch, nothing_stored):
+    _resolved(monkeypatch, tenant_id="t", client_id="c", client_secret=_ENTRA_SECRET)
+    calls = []
+
+    def request(self, method, path, *, params=None, json=None):
+        calls.append((method, path, dict(params or {}), json))
+        return {"value": []}
+
+    monkeypatch.setattr(
+        "core.integrations.microsoft_defender.client.MDEClient.request", request
+    )
+
+    ok, message = await credential_check.check_credentials("microsoft-defender")
+
+    assert ok is True, message
+    assert calls == [("GET", "machines", {"$top": 1}, None)]
+
+
+async def test_defender_refuses_a_stored_api_base_that_is_not_microsoft(monkeypatch):
+    _resolved(monkeypatch, tenant_id="t", client_id="c", client_secret=_ENTRA_SECRET)
+    monkeypatch.setattr(
+        credential_check, "_stored", lambda i: {"api_base": "https://evil.test/api"}
+    )
+
+    ok, message = await credential_check.check_credentials("microsoft-defender")
+
+    assert ok is False
+    assert message.startswith("api_base must be an official Microsoft")
+
+
+async def test_entra_reads_one_user_and_reports_a_refusal(monkeypatch, nothing_stored):
+    from core.integrations.azure_ad.client import GraphError
+
+    _resolved(monkeypatch, tenant_id="t", client_id="c", client_secret=_ENTRA_SECRET)
+    calls = []
+
+    def request(self, method, path, *, params=None, json=None, headers=None):
+        calls.append((method, path, dict(params or {})))
+        raise GraphError("Graph GET /users returned HTTP 403 (Authorization_RequestDenied)")
+
+    monkeypatch.setattr("core.integrations.azure_ad.client.GraphClient.request", request)
+
+    ok, message = await credential_check.check_credentials("azure-ad")
+
+    assert ok is False
+    assert "403" in message
+    assert calls == [("GET", "/users", {"$top": 1, "$select": "id"})]
+
+
+async def test_palo_alto_offline_fails_cleanly_without_the_key(
+    monkeypatch, nothing_stored
+):
+    # nothing listens on port 1: a real refused connection
+    _resolved(
+        monkeypatch,
+        hostname="https://127.0.0.1:1",
+        api_key=_PAN_KEY,
+        verify_ssl=False,
+        ca_cert_path=None,
+    )
+
+    ok, message = await credential_check.check_credentials("palo-alto")
+
+    assert ok is False
+    assert "transport error" in message
+    assert _PAN_KEY not in message
+
+
+async def test_palo_alto_runs_one_operational_read(monkeypatch, nothing_stored):
+    import xml.etree.ElementTree as ET
+
+    _resolved(
+        monkeypatch,
+        hostname="fw.example.test",
+        api_key=_PAN_KEY,
+        verify_ssl=True,
+        ca_cert_path=None,
+    )
+    calls = []
+
+    def call(self, method, fields, **kwargs):
+        calls.append((method, dict(fields)))
+        return ET.fromstring(
+            '<response status="success"><result><system><model>PA-440</model>'
+            "<sw-version>11.1.2</sw-version></system></result></response>"
+        )
+
+    monkeypatch.setattr("core.integrations.palo_alto.client.PanConnection.call", call)
+
+    ok, message = await credential_check.check_credentials("palo-alto")
+
+    assert (ok, message) == (True, "API key accepted (PA-440 PAN-OS 11.1.2)")
+    assert calls == [
+        ("GET", {"type": "op", "cmd": "<show><system><info></info></system></show>"})
+    ]
