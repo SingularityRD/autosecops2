@@ -159,13 +159,15 @@ def _check(sb: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _wait_for(pred, timeout: float = 20.0) -> None:
+def _wait_for(pred, timeout: float = 20.0, log: Path | None = None) -> None:
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         if pred():
             return
         time.sleep(0.1)
-    raise AssertionError("timed out")
+    # The loop's and Medic's own account (W0.31: what a slow macOS runner did).
+    told = log.read_text() if log is not None and log.exists() else ""
+    raise AssertionError(f"timed out after {timeout} s\n{told}")
 
 
 # --- Off by default (check 12, and "nothing changes for anyone who doesn't opt in")
@@ -360,7 +362,8 @@ def test_starts_medic_as_vigil_medic_from_its_own_venv(sb: Path) -> None:
 
     pidfile = sb / "repo" / "logs" / "medic.pid"
     assert pidfile.is_file()
-    _wait_for(lambda: _check(sb).returncode == 0)
+    medic_log = sb / "repo" / "logs" / "medic.log"
+    _wait_for(lambda: _check(sb).returncode == 0, log=medic_log)
 
     # Run as vigil-medic through the one sudo rule: the probe, then the loop.
     sudo = _calls(sb, "sudo.calls").splitlines()
@@ -382,10 +385,11 @@ def test_starts_medic_as_vigil_medic_from_its_own_venv(sb: Path) -> None:
     _wait_for(
         lambda: (
             subprocess.run(["kill", "-0", str(loop_pid)], check=False).returncode != 0
-        )
+        ),
+        log=medic_log,
     )
-    assert _check(sb).returncode != 0
-    assert "stopped" in (sb / "repo" / "logs" / "medic.log").read_text()
+    assert _check(sb).returncode != 0, medic_log.read_text()
+    assert "stopped" in medic_log.read_text()
 
 
 def test_worker_address_ignores_agent_health_port(sb: Path) -> None:
