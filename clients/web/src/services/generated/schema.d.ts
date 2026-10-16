@@ -2069,7 +2069,7 @@ export interface paths {
         put?: never;
         /**
          * Add Comment
-         * @description Add comment to case.
+         * @description Add comment to case, authored by the signed-in user.
          */
         post: operations["post_api_cases_case_id_comments"];
         delete?: never;
@@ -2157,7 +2157,7 @@ export interface paths {
         put?: never;
         /**
          * Add Evidence
-         * @description Add evidence to case.
+         * @description Add evidence to case, collected by the signed-in user.
          */
         post: operations["post_api_cases_case_id_evidence"];
         delete?: never;
@@ -2200,7 +2200,7 @@ export interface paths {
         put?: never;
         /**
          * Add Custody Entry
-         * @description Add chain of custody entry.
+         * @description Add chain of custody entry, made by the signed-in user.
          */
         post: operations["post_api_cases_case_id_evidence_evidence_id_chain-of-custody"];
         delete?: never;
@@ -7080,7 +7080,7 @@ export interface paths {
         put?: never;
         /**
          * Add Evidence
-         * @description Add evidence to case.
+         * @description Add evidence to case, collected by the signed-in user.
          */
         post: operations["post_api_v1_cases_case_id_evidence"];
         delete?: never;
@@ -7479,7 +7479,7 @@ export interface paths {
         put?: never;
         /**
          * Create Custom Workflow
-         * @description Create a new custom workflow.
+         * @description Create a new custom workflow. ``created_by`` is the signed-in user.
          */
         post: operations["post_api_workflows_custom"];
         delete?: never;
@@ -9598,8 +9598,11 @@ export interface components {
             action: string;
             /** Notes */
             notes?: string | null;
-            /** User */
-            user: string;
+            /**
+             * User
+             * @description Ignored: the entry is made by the signed-in user.
+             */
+            user?: string | null;
         };
         /** ChainResponse */
         ChainResponse: {
@@ -9798,10 +9801,16 @@ export interface components {
         /**
          * CommentAdd
          * @description Add comment to case.
+         *
+         *     The author is the signed-in user (W0.35). ``author`` is still accepted so
+         *     an older client keeps working, and ignored, as ``closed_by`` is on close.
          */
         CommentAdd: {
-            /** Author */
-            author: string;
+            /**
+             * Author
+             * @description Ignored: the author is the signed-in user.
+             */
+            author?: string | null;
             /** Content */
             content: string;
             /** Parent Comment Id */
@@ -10053,7 +10062,10 @@ export interface components {
         };
         /** CustomWorkflowCreate */
         CustomWorkflowCreate: {
-            /** Created By */
+            /**
+             * Created By
+             * @description Ignored: the workflow is created by the signed-in user.
+             */
             created_by?: string | null;
             /** Description */
             description: string;
@@ -10472,8 +10484,11 @@ export interface components {
          * @description Add evidence to case.
          */
         EvidenceAdd: {
-            /** Collected By */
-            collected_by: string;
+            /**
+             * Collected By
+             * @description Ignored: the collector is the signed-in user.
+             */
+            collected_by?: string | null;
             /** Description */
             description?: string | null;
             /** Evidence Type */

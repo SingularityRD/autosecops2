@@ -16,7 +16,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from core.auth import password_reset
-from core.storage.models import Base, Role, SystemConfig, User
+from core.storage.models import Base, CaseAuditLog, Role, SystemConfig, User
 from services.api.routers import users
 
 PERMS = {
@@ -398,7 +398,14 @@ def pg_maker(monkeypatch):
     engine = create_engine(_pg_url(name), pool_size=4)
     try:
         Base.metadata.create_all(
-            engine, tables=[Role.__table__, User.__table__, SystemConfig.__table__]
+            engine,
+            tables=[
+                Role.__table__,
+                User.__table__,
+                SystemConfig.__table__,
+                # The user change is recorded in the request's transaction (W0.35).
+                CaseAuditLog.__table__,
+            ],
         )
         maker = sessionmaker(bind=engine)
         with maker() as s:

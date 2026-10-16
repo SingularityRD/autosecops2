@@ -177,10 +177,10 @@
    "role-admin": "allow"
   },
   "DELETE /api/sla-policies/{policy_id}": {
-   "gate": "login + perm:cases.write",
+   "gate": "login + perm:settings.write",
    "role-viewer": "deny",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
@@ -2652,8 +2652,8 @@
    "role-admin": "allow"
   },
   "POST /api/findings/export": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:findings.write",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -2964,18 +2964,18 @@
    "role-admin": "allow"
   },
   "POST /api/sla-policies/": {
-   "gate": "login + perm:cases.write",
+   "gate": "login + perm:settings.write",
    "role-viewer": "deny",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/sla-policies/{policy_id}/set-default": {
-   "gate": "login + perm:cases.write",
+   "gate": "login + perm:settings.write",
    "role-viewer": "deny",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
@@ -3488,10 +3488,10 @@
    "role-admin": "allow"
   },
   "PUT /api/sla-policies/{policy_id}": {
-   "gate": "login + perm:cases.write",
+   "gate": "login + perm:settings.write",
    "role-viewer": "deny",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },

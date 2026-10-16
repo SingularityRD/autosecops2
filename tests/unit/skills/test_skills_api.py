@@ -627,3 +627,49 @@ def test_a_malformed_cases_file_is_refused_before_any_dispatch(
     assert resp.status_code == status
     assert (resp.json()["no_cases"] is True) if status == 200 else True
     assert calls == []
+
+
+@pytest.fixture()
+def audited(monkeypatch):
+    """config_audit_log rows the skills router commits (W0.35)."""
+    rows: list[dict] = []
+    monkeypatch.setattr(
+        skills_router, "record_change_now", lambda **row: rows.append(row) or True
+    )
+    return rows
+
+
+def test_every_skill_write_is_audited_as_the_signed_in_user(operator, audited):
+    """U-16 (W0.35): who created, changed and removed a skill, old -> new."""
+    client, _ = operator
+    assert _write(client, "audited-skill", body="# One\n").status_code == 200
+    assert (
+        _write(
+            client,
+            "audited-skill",
+            body="# Two\nkey: sk-live-0123456789abcdef\n",
+            version=1,
+        ).status_code
+        == 200
+    )
+    assert client.delete("/api/skills/audited-skill").status_code == 200
+
+    assert [(r["config_key"], r["action"], r["actor"]) for r in audited] == [
+        ("audited-skill", "create", "tester"),
+        ("audited-skill", "update", "tester"),
+        ("audited-skill", "delete", "tester"),
+    ]
+    create, update, delete = audited
+    assert create["config_type"] == "skill" and create["old"] is None
+    assert create["new"]["body"] == "# One\n" and create["new"]["version"] == 1
+    assert update["old"]["body_sha256"] == create["new"]["body_sha256"]
+    assert update["new"]["version"] == 2
+    assert update["new"]["body_sha256"] != update["old"]["body_sha256"]
+    assert delete["old"]["version"] == 2 and delete["new"] is None
+
+
+def test_a_refused_skill_write_is_not_audited(operator, audited):
+    client, _ = operator
+    _write(client, "once")
+    assert _write(client, "once", version=99).status_code == 409
+    assert [r["action"] for r in audited] == ["create"]

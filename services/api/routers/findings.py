@@ -7,14 +7,16 @@ enrichment generation and the destructive wipe. They remain under
 ``/api/findings`` only.
 """
 
+import json
 import logging
 from datetime import datetime
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from core.auth.permissions import permission_gate
+from core.auth.current_user import principal_name
+from core.auth.permissions import permission_gate, require_permission
 from core.config import vigil_path
 from core.findings.enrichment import (
     FindingNotFound,
@@ -234,11 +236,57 @@ def launch_finding_into_intake(
     )
 
 
+# A bulk export takes every finding off the console, personal data included
+# (KVKK art. 12), so it needs more than a login: findings.write, which Analyst
+# and above hold and Viewer does not (there is no separate export grant). Each
+# export is a case_audit_logs row (entity_type findings_export), so it is in
+# the W1.10 chain and the SIEM export: who, what was selected, how many rows.
+EXPORT_PERMISSION = "findings.write"
+EXPORT_AUDIT_ENTITY = "findings_export"
+
+
+def _record_export(
+    user: User, request: Request, fmt: str, rows: int, output_path
+) -> None:
+    """Commit the export's audit row on its own. Raises if it cannot."""
+    from core.storage.models import CaseAuditLog
+    from core.storage.unit_of_work import unit_of_work
+
+    client = getattr(request, "client", None)
+    with unit_of_work() as session:
+        session.add(
+            CaseAuditLog(
+                entity_type=EXPORT_AUDIT_ENTITY,
+                entity_id=output_path.name[:100],
+                action="export",
+                field_name=fmt,
+                new_value=json.dumps(
+                    {
+                        "format": fmt,
+                        # The route takes no filter: every finding but hidden canaries.
+                        "filter": {"scope": "all", "canaries": "excluded"},
+                        "rows": rows,
+                        "file": output_path.name,
+                    },
+                    sort_keys=True,
+                ),
+                change_summary=f"{rows} findings exported as {fmt}",
+                changed_by=principal_name(user)[:100],
+                user_agent=(request.headers.get("user-agent") or "")[:200] or None,
+                ip_address=getattr(client, "host", None),
+            )
+        )
+
+
 # Not in the frozen surface: this writes a file on the server and answers with
 # its path, which is nothing an external caller can open. It stays unversioned
 # until it answers with the export itself.
 @router.post("/export")
-def export_findings(output_format: str = "json"):
+def export_findings(
+    request: Request,
+    output_format: str = "json",
+    current_user: User = Depends(require_permission(EXPORT_PERMISSION)),
+):
     if output_format not in EXPORT_FORMATS:
         raise HTTPException(
             status_code=400,
@@ -253,9 +301,13 @@ def export_findings(output_format: str = "json"):
     ext = next(f for f in EXPORT_FORMATS if f == output_format)
     output_path = output_dir / f"findings_export_{timestamp}.{ext}"
 
-    success = data_service.export_findings(output_path, fmt=output_format)
-
-    if success:
-        return {"success": True, "file_path": str(output_path)}
-    else:
+    rows = data_service.export_findings(output_path, fmt=output_format)
+    if rows is None:
         raise HTTPException(status_code=500, detail="Export failed")
+    try:
+        _record_export(current_user, request, output_format, rows, output_path)
+    except Exception as exc:  # noqa: BLE001 - no export without its record
+        logger.error("Findings export not recorded, file removed: %s", exc)
+        output_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="Export failed") from None
+    return {"success": True, "file_path": str(output_path), "rows": rows}
