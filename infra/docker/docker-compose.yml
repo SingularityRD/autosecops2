@@ -202,7 +202,7 @@ services:
           done
           echo "autosecops: Redis 7.4 data moved to $$keep; starting empty. Queued jobs and sessions start over; every earlier login is revoked." >&2
           sock=/tmp/redis-epoch.sock
-          launch "$$@" --port 0 --unixsocket "$$sock" &
+          launch "$$@" --port 0 --unixsocket "$$sock" --requirepass "" &
           pid=$$!
           until redis-cli -s "$$sock" ping >/dev/null 2>&1; do
             kill -0 "$$pid" 2>/dev/null || exit 1
