@@ -33,19 +33,20 @@ DOC_NAMES = {
         "vstrike": "vStrike",
         "atomic-red-team": "Atomic Red Team",
         "cape-sandbox": "CAPE Sandbox",
+        # the response executors (W0.37)
+        "microsoft-defender": "Microsoft Defender",
+        "azure-ad": "Entra ID (Azure AD)",
+        "palo-alto": "Palo Alto",
     },
     "wip": {
         "carbon-black": "Carbon Black",
         "hybrid-analysis": "Hybrid Analysis",
         "anyrun": "ANY.RUN",
         "alienvault-otx": "AlienVault OTX",
-        "palo-alto": "Palo Alto",
         "slack": "Slack",
         "misp": "MISP",
         "ip-geolocation": "IP Geolocation",
         "url-analysis": "URL Analysis",
-        "microsoft-defender": "Microsoft Defender",
-        "azure-ad": "Entra ID (Azure AD)",
         "microsoft-teams": "Microsoft Teams",
     },
 }

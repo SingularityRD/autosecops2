@@ -51,6 +51,23 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   every screen that turns one on: the Add integration card, the Connected table,
   the Settings setup drawer and the first-run data source picker and form. The
   label cannot be dismissed; a connector loses it only when it gains a live test.
+* **response (W0.37):** the three response executors the product advertises,
+  Microsoft Defender for Endpoint, Entra ID and Palo Alto PAN-OS, can be
+  connected from Settings → Integrations → Add integration. They were hidden as
+  WIP; they are now **Experimental** (tested against recorded vendor answers,
+  never a live tenant or firewall). Their credential goes to the encrypted
+  secret store and no API response returns it. **Test** makes one read-only
+  call with the saved credential (Defender lists one machine, Entra ID reads one
+  user, PAN-OS runs `show system info`), with no retries, so it fails within
+  seconds when the service cannot be reached; its answer gains an `executor`
+  field (`available`, `action_types`) that the drawer shows as "Response
+  actions".
+* **response (W0.37):** enabling, disabling or re-keying an executor no longer
+  needs a restart. The API and the daemon build a `LiveExecutorRegistry` that
+  re-reads the stored integration config at most every 10 seconds when it is
+  used and rebuilds its executors when that config changed; the API process that
+  saved the change applies it at once. Every action still goes through the
+  response policy and the approval gate.
 * **integrations (W0.28, fix):** the Okta connector could never start. Its entry ran
   `docker run`, but the backend image has no Docker CLI or socket, and it passed
   `OKTA_DOMAIN`, which the server does not read. Okta is now baked into the
