@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -179,6 +181,44 @@ def test_a_setting_medic_cant_use_stops_it_without_echoing_the_value(
     assert var in caplog.text
     assert value not in caplog.text
     assert not heartbeat_path(tmp_path).exists()
+
+
+@pytest.mark.parametrize("attempt", range(3))
+def test_term_right_after_the_first_beat_still_marks_it_stopped(
+    tmp_path: Path, attempt: int
+) -> None:
+    """W0.31: TERM the moment the cycle-0 beat appears, before the loop's own
+    signal handlers exist. Medic used to die of the signal there, leaving a fresh
+    `running` beat that `check` called healthy for up to 300 s (the host-native
+    launcher test on macOS). Now it stops cleanly: exit 0 and a `stopped` beat."""
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "VIGIL_MEDIC_ENABLED": "true",
+        "VIGIL_MEDIC_DATA_DIR": str(tmp_path),
+        "VIGIL_MEDIC_INSTALL_SHAPE": "start_sh",
+    }
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "services.medic", "run"],
+        cwd=REPO_ROOT,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        beat = heartbeat_path(tmp_path)
+        deadline = time.monotonic() + 30
+        while not beat.exists():
+            assert proc.poll() is None and time.monotonic() < deadline
+            time.sleep(0.001)
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=30) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    assert json.loads(beat.read_text())["state"] == "stopped"
+    result = _module("check", env=env)
+    assert result.returncode == 1 and "stopped" in result.stdout
 
 
 def test_check_reports_a_stalled_medic_unhealthy(tmp_path: Path) -> None:

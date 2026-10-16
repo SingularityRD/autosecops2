@@ -8,6 +8,7 @@ import os
 import signal
 import sqlite3
 import sys
+import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -63,6 +64,41 @@ CONTROL_RETRY_S = 5.0
 TARGET_ATTEMPTS = 3
 TARGET_RETRY_S = 5.0
 _probe_wait = time.sleep
+
+
+class _StopSignals:
+    """SIGTERM/SIGINT as a request to stop, for the whole of a run.
+
+    The loop's own asyncio handlers cover only the time inside `asyncio.run`. A
+    signal before them (Medic still starting, its cycle-0 beat already written)
+    or after them took Python's default action and killed Medic before it wrote
+    its `stopped` beat, so `check` called a stopped Medic healthy for up to 300 s
+    (W0.31; seen on macOS, where start-up is slow). Here a signal only sets the
+    flag: the loop then stops before its first cycle, and the stopped beat is
+    written as on any clean stop. Main thread only: Python allows no other.
+    """
+
+    SIGNALS = (signal.SIGTERM, signal.SIGINT)
+
+    def __init__(self) -> None:
+        self.requested = False
+        self._saved: dict[int, object] = {}
+
+    def _on_signal(self, signum, frame) -> None:
+        self.requested = True
+
+    def install(self) -> None:
+        """(Re)install the flag handler; the first call saves what was there."""
+        if threading.current_thread() is not threading.main_thread():
+            return
+        for sig in self.SIGNALS:
+            old = signal.signal(sig, self._on_signal)
+            self._saved.setdefault(sig, old)
+
+    def restore(self) -> None:
+        for sig, old in self._saved.items():
+            signal.signal(sig, old)
+        self._saved.clear()
 
 
 @dataclass(frozen=True)
@@ -173,6 +209,8 @@ def run(
     # C4 §6.1: everything Medic creates is private to its own uid. Restored on
     # return, which only matters when run() is called in-process (tests).
     old_umask = os.umask(0o077)
+    stop_signals = _StopSignals()
+    stop_signals.install()
     try:
         return _run(
             data_dir,
@@ -184,8 +222,10 @@ def run(
             watchdog_exit=watchdog_exit,
             watchdog_poll_s=watchdog_poll_s,
             api=api,
+            stop_signals=stop_signals,
         )
     finally:
+        stop_signals.restore()
         os.umask(old_umask)
 
 
@@ -269,7 +309,9 @@ def _run(
     watchdog_exit: Callable[[int], None],
     watchdog_poll_s: float,
     api: ApiSettings | None = None,
+    stop_signals: _StopSignals | None = None,
 ) -> int:
+    stop_signals = stop_signals or _StopSignals()
     started_at = clock.wall()
     try:
         data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -333,6 +375,7 @@ def _run(
                     started_at,
                     max_cycles,
                     status.publish,
+                    lambda: stop_signals.requested,
                 )
             )
         # Logged here, through Medic's redaction, rather than as Python's own
@@ -342,6 +385,9 @@ def _run(
             log.exception("Medic stopped on an error: %s", type(exc).__name__)
             code = 1
         finally:
+            # asyncio put SIG_DFL back as it closed: a second TERM now must not
+            # kill Medic before the stopped beat below.
+            stop_signals.install()
             watchdog.stop()
             status.stop()
         record_exit(data_dir, now=clock.wall(), code=code)
@@ -402,12 +448,16 @@ async def _loop(
     started_at: float,
     max_cycles: int | None,
     after_cycle: Callable[..., None] = lambda **_: None,
+    stop_requested: Callable[[], bool] = lambda: False,
 ) -> int:
     """Run 15 s cycles until stopped; return the last completed cycle number."""
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
+    # A signal that came before these handlers (see _StopSignals): no cycle.
+    if stop_requested():
+        stop.set()
 
     cycle = 0
     while not stop.is_set() and (max_cycles is None or cycle < max_cycles):
