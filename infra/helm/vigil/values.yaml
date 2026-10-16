@@ -755,6 +755,15 @@ secrets:
   #   python -c "import secrets; print(secrets.token_urlsafe(48))"
   agentInternalToken: ""
 
+  # One-time setup token for creating the first administrator (W0.33). Leave it
+  # empty and the backend generates one on first start: read it with
+  #   kubectl logs -n <ns> -l app.kubernetes.io/component=backend --prefix | grep "setup token"
+  # or issue a fresh one with
+  #   kubectl exec -n <ns> deploy/<release>-backend -c backend -- python -m core.auth.setup_token regenerate
+  # Set it (24+ characters) only when automation creates the first admin. It is
+  # ignored once an account exists.
+  setupToken: ""
+
   # Optional data-source integrations.
   splunkPassword: ""
   crowdstrikeClientId: ""

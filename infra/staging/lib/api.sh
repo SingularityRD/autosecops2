@@ -56,6 +56,20 @@ api_wait_up() {
   done
 }
 
+# The one-time setup token the first-admin call needs (W0.33):
+# STAGING_SETUP_TOKEN when set, else a fresh one from the backend itself
+# (`setup_token regenerate` prints it; staging is this cluster's operator).
+# Printed on stdout for a $(...) capture, never put on a command line.
+api_setup_token() {
+  if [ -n "${STAGING_SETUP_TOKEN:-}" ]; then
+    printf '%s' "$STAGING_SETUP_TOKEN"
+    return 0
+  fi
+  command -v kubectl >/dev/null 2>&1 || return 1
+  kubectl -n "${STAGING_NAMESPACE:-autosecops}" exec "deploy/${STAGING_FULLNAME:-autosecops}-backend" \
+    -c backend -- python -m core.auth.setup_token regenerate 2>/dev/null
+}
+
 # Create the first admin from STAGING_ADMIN_* when the instance has no user.
 # A second run finds `required: false` and does nothing.
 api_ensure_admin() {
@@ -68,12 +82,18 @@ api_ensure_admin() {
     return 0
   fi
   log "ilk yönetici hesabı oluşturuluyor: $STAGING_ADMIN_USER"
-  local body
+  local body token
+  token="$(api_setup_token)" && [ -n "$token" ] || {
+    log "kurulum token'ı alınamadı (STAGING_SETUP_TOKEN ya da kubectl exec)"
+    return 1
+  }
   body="$(json_from_env username=STAGING_ADMIN_USER email=STAGING_ADMIN_EMAIL \
       password=STAGING_ADMIN_PASSWORD full_name=STAGING_ADMIN_USER)"
   # Here-string, not a pipe: a pipe would run api_call in a subshell and lose
-  # API_STATUS/API_BODY.
-  api_call POST /api/auth/bootstrap -H 'Content-Type: application/json' --data-binary @- <<<"$body"
+  # API_STATUS/API_BODY. The token header goes through a curl config, like the
+  # bearer token, so `ps` never shows it.
+  api_call POST /api/auth/bootstrap -H 'Content-Type: application/json' \
+    -K <(printf 'header = "X-Setup-Token: %s"\n' "$token") --data-binary @- <<<"$body"
   case "$API_STATUS" in
     201|200) return 0 ;;
     *) log "ilk yönetici oluşturulamadı (HTTP $API_STATUS)"; return 1 ;;

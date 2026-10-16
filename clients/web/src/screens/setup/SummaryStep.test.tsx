@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import SummaryStep from './SummaryStep'
 import { SETUP_DISMISSED_KEY } from './setupDismissed'
@@ -12,6 +12,8 @@ vi.mock('../../services/api', () => ({
     getAutonomy: vi.fn(),
     getOrchestrator: vi.fn(),
     getSetupSteps: vi.fn(),
+    getSetupReadiness: vi.fn(),
+    putSetupProgress: vi.fn(),
   },
   budgetsApi: { getQuota: vi.fn() },
   llmProviderApi: { list: vi.fn() },
@@ -28,6 +30,29 @@ const values = {
 }
 
 const step = (id: string, done: boolean) => ({ id, title: id, state_line: '', done, href: '/' })
+
+const item = (id: string, label: string, required: boolean, ready: boolean) => ({
+  id,
+  label,
+  required,
+  ready,
+  detail: `${label} detail`,
+  href: `/settings?section=${id}`,
+})
+const readiness = (items: ReturnType<typeof item>[]) => ({
+  data: {
+    ready: items.every((i) => !i.required || i.ready),
+    missing: items.filter((i) => i.required && !i.ready).map((i) => i.id),
+    recommended_missing: items.filter((i) => !i.required && !i.ready).map((i) => i.id),
+    items,
+  },
+})
+const EMPTY_INSTALL = [
+  item('data', 'Alert source', true, false),
+  item('model', 'AI model', true, false),
+  item('executor', 'Response actions', false, false),
+  item('notify', 'Notifications', false, true),
+]
 
 const Where = () => {
   const { pathname, search, state } = useLocation()
@@ -73,6 +98,65 @@ describe('SummaryStep', () => {
     vi.mocked(configApi.getSetupSteps).mockResolvedValue({
       data: { steps: [step('connect_tools', true), step('notify', true), step('rules', false), step('per_agent', false)] },
     } as never)
+    vi.mocked(configApi.getSetupReadiness).mockResolvedValue(
+      readiness([item('data', 'Alert source', true, true), item('model', 'AI model', true, true)]) as never,
+    )
+    vi.mocked(configApi.putSetupProgress).mockResolvedValue({ data: {} } as never)
+  })
+
+  describe('readiness (W0.33)', () => {
+    it('does not call an empty install ready, and names what is missing', async () => {
+      vi.mocked(configApi.getSetupReadiness).mockResolvedValue(readiness(EMPTY_INSTALL) as never)
+      renderDone()
+      expect(await screen.findByRole('heading', { name: 'AutoSecOps is not ready yet' })).toBeInTheDocument()
+      expect(screen.queryByText('AutoSecOps is ready')).not.toBeInTheDocument()
+      expect(screen.queryByText('Setup complete')).not.toBeInTheDocument()
+      const missing = within(screen.getByRole('region', { name: 'What is missing' }))
+      expect(missing.getByText('Alert source detail')).toBeInTheDocument()
+      expect(missing.getByText('AI model detail')).toBeInTheDocument()
+      expect(missing.getByText('Response actions detail')).toBeInTheDocument()
+      expect(missing.queryByText('Notifications detail')).not.toBeInTheDocument()
+      expect(missing.getAllByText('Required')).toHaveLength(2)
+      expect(screen.getByText('Not ready · 2 required items missing')).toBeInTheDocument()
+    })
+
+    it('opens the setting a missing item points at', async () => {
+      vi.mocked(configApi.getSetupReadiness).mockResolvedValue(readiness(EMPTY_INSTALL) as never)
+      renderDone()
+      fireEvent.click(await screen.findByRole('button', { name: 'Fix Alert source' }))
+      expect(screen.getByTestId('where')).toHaveTextContent('/settings?section=data')
+    })
+
+    it('says ready only when the server does', async () => {
+      renderDone()
+      expect(await screen.findByRole('heading', { name: 'AutoSecOps is ready' })).toBeInTheDocument()
+      expect(screen.queryByRole('region', { name: 'What is missing' })).not.toBeInTheDocument()
+    })
+
+    it('claims nothing when readiness cannot be read', async () => {
+      vi.mocked(configApi.getSetupReadiness).mockRejectedValue(new Error('down'))
+      renderDone()
+      expect(await screen.findByRole('heading', { name: 'Readiness could not be checked' })).toBeInTheDocument()
+      expect(screen.queryByText('AutoSecOps is ready')).not.toBeInTheDocument()
+    })
+
+    it('records "completed" when ready and "deferred" when not', async () => {
+      const first = renderDone()
+      await screen.findByRole('heading', { name: 'AutoSecOps is ready' })
+      fireEvent.click(screen.getByRole('button', { name: 'Go to Home' }))
+      expect(configApi.putSetupProgress).toHaveBeenLastCalledWith(
+        expect.objectContaining({ status: 'completed' }),
+      )
+      first.unmount()
+
+      vi.mocked(configApi.getSetupReadiness).mockResolvedValue(readiness(EMPTY_INSTALL) as never)
+      renderDone()
+      await screen.findByRole('heading', { name: 'AutoSecOps is not ready yet' })
+      fireEvent.click(screen.getByRole('button', { name: 'Go to Home' }))
+      expect(configApi.putSetupProgress).toHaveBeenLastCalledWith(
+        expect.objectContaining({ status: 'deferred' }),
+      )
+    })
   })
 
   it('recaps each step from its own API, with catalog names and the ceiling', async () => {
@@ -175,7 +259,7 @@ describe('SummaryStep', () => {
     // Notifications reads as unreadable, not as "Not set"
     expect(await screen.findByText('Could not read this.')).toBeInTheDocument()
     expect(screen.queryByText('Not set')).not.toBeInTheDocument()
-    expect(screen.getByText('Setup complete', { selector: '.su-foot-note' })).toBeInTheDocument()
+    expect(await screen.findByText('Setup complete', { selector: '.su-foot-note' })).toBeInTheDocument()
     expect(screen.queryByText(/optional step/)).not.toBeInTheDocument()
   })
 

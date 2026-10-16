@@ -220,6 +220,7 @@ app.add_middleware(
         "X-CSRF-Token",
         "X-MFA-Required",
         "X-Requested-With",
+        "X-Setup-Token",
     ],
     expose_headers=["X-MFA-Required"],
 )
@@ -682,6 +683,14 @@ async def _startup(app: FastAPI):
         logger.warning(f"Database modules not available: {e}")
     except Exception as e:
         logger.error(f"Error during storage initialization: {e}")
+
+    # A fresh install's first-admin setup token (W0.33): issued and printed
+    # once here, so the operator has it before anyone opens the login screen.
+    # Never raises; GET /api/auth/bootstrap issues it if this could not.
+    from core.auth.setup_token import issue_on_startup
+    from core.storage.connection import get_db_manager
+
+    await asyncio.to_thread(issue_on_startup, get_db_manager().session_scope)
 
     if _testing:
         logger.info(

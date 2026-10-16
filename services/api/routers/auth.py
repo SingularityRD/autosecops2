@@ -11,9 +11,9 @@ from typing import Annotated, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from core.auth import setup_token
 from core.auth.auth_cookies import (
     ACCESS_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
@@ -82,9 +82,6 @@ ROUTER_META = RouterMeta(
 # The role the first account gets: it has to be able to create every other one.
 ADMIN_ROLE_ID = "role-admin"
 
-# Arbitrary constant identifying the bootstrap advisory lock.
-_BOOTSTRAP_LOCK = 8_274_119
-
 
 # Request/Response Models
 class BootstrapStatusResponse(BaseModel):
@@ -94,7 +91,9 @@ class BootstrapStatusResponse(BaseModel):
 
 
 class BootstrapRequest(BaseModel):
-    """First-admin details."""
+    """First-admin details. The setup token travels in the ``X-Setup-Token``
+    header, not here: a 422 echoes the request body back, and a header is
+    never in a response or an access-log line."""
 
     username: str
     email: EmailStr
@@ -219,13 +218,7 @@ def _get_user(session: Session, user_id: str) -> Optional[User]:
 
 
 def _has_any_user(session: Session) -> bool:
-    # A service account (Medic's gateway) can't sign anyone in, so it must not
-    # close bootstrap: enabling Medic before the first sign-in would otherwise
-    # leave the install with no way to make an admin.
-    return (
-        session.query(User.user_id).filter(User.service_account.is_(False)).first()
-        is not None
-    )
+    return setup_token.has_sign_in_account(session)
 
 
 def _user_payload(user: User, session: Session) -> dict:
@@ -244,8 +237,19 @@ def bootstrap_status(session: UnitOfWorkSession):
     There is no self-service signup and creating a user needs users.write, so
     an instance with an empty user table cannot be signed into at all. The
     login screen asks this to offer first-account creation instead.
+
+    An install that needs its first account and has no setup token yet (the
+    database was not reachable at startup) gets one issued here; the token
+    itself goes to the backend log and State Directory, never this response.
     """
-    return BootstrapStatusResponse(required=not _has_any_user(session))
+    if _has_any_user(session):
+        return BootstrapStatusResponse(required=False)
+    issued = setup_token.ensure(session)
+    if issued:
+        # Before the commit: a commit that fails leaves no row, so the next
+        # check issues (and prints) another; nothing is lost but a log line.
+        setup_token.announce(issued)
+    return BootstrapStatusResponse(required=True)
 
 
 @router.post("/bootstrap", status_code=status.HTTP_201_CREATED)
@@ -254,25 +258,46 @@ def bootstrap_admin(
     request: Request,
     payload: BootstrapRequest,
     session: UnitOfWorkSession,
+    presented_token: Annotated[
+        Optional[str], Header(alias=setup_token.HEADER_NAME)
+    ] = None,
 ):
     """Create the first admin account. Only ever available on an empty instance.
 
     Unauthenticated by necessity — it is the only way to obtain the account
     every other user-creating path requires. It closes permanently as soon as
-    one user exists, so it is not a signup endpoint.
+    one user exists, so it is not a signup endpoint. It also demands the
+    one-time setup token (core/auth/setup_token.py): reaching the instance
+    first over the network is not enough.
     """
     # Serialize bootstrap attempts. Without this two callers both read an empty
     # table and both create an admin; there is no row yet to lock instead. The
     # lock is held to the end of the request's transaction, so it covers
-    # check-and-create.
-    session.execute(
-        text("SELECT pg_advisory_xact_lock(:key)"), {"key": _BOOTSTRAP_LOCK}
-    )
+    # check, create and retiring the token.
+    setup_token.lock(session)
 
     if _has_any_user(session):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="An account already exists. Ask an administrator to create yours.",
+        )
+
+    if not setup_token.matches(session, presented_token):
+        reason = "missing" if not presented_token else "mismatch"
+        logger.warning("First-admin creation refused: setup token %s", reason)
+        record_auth_event(
+            request,
+            "setup_token",
+            outcome="failure",
+            details={"reason": reason},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=(
+                "Setup token missing or wrong. It is in the backend log and in "
+                "the setup-token file in the State Directory; "
+                f"`{setup_token.REGENERATE_COMMAND}` issues a new one."
+            ),
         )
 
     try:
@@ -300,7 +325,19 @@ def bootstrap_admin(
             detail="Could not create the account. Try again.",
         )
 
+    # Same transaction as the account: a token works exactly once.
+    setup_token.consume(session, actor=user.username)
+    setup_token.remove_file()
+
     logger.info("First admin account created: %s", user.username)
+    record_auth_event(
+        request,
+        "setup_token",
+        actor=user.username,
+        actor_id=user.user_id,
+        target_id=user.user_id,
+        details={"used_for": "first_admin"},
+    )
     record_auth_event(
         request,
         "user_create",

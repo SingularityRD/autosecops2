@@ -62,6 +62,7 @@ export default function LoginScreen() {
   // account yet, so show first-account creation instead of sign-in.
   const [needsBootstrap, setNeedsBootstrap] = useState<boolean | null>(null)
   const [email, setEmail] = useState('')
+  const [setupToken, setSetupToken] = useState('')
 
   useEffect(() => {
     if (showMfa) setTimeout(() => mfaInputRef.current?.focus(), 80)
@@ -86,7 +87,7 @@ export default function LoginScreen() {
     setError('')
     setLoading(true)
     try {
-      await bootstrapApi.create({ username: usernameOrEmail, email, password })
+      await bootstrapApi.create({ username: usernameOrEmail, email, password }, setupToken.trim())
       await login(usernameOrEmail, password)
       navigate('/')
     } catch (err: any) {
@@ -169,7 +170,7 @@ export default function LoginScreen() {
         ? 'Two-factor authentication'
         : 'Sign in'
   const subtitle = needsBootstrap
-    ? 'No account exists yet. Set up the first administrator.'
+    ? 'No account exists yet. Set up the first administrator with the setup token from the server.'
     : forgot
       ? 'Enter the email on your account to request a reset link.'
       : showMfa
@@ -188,6 +189,30 @@ export default function LoginScreen() {
       {needsBootstrap ? (
         <form onSubmit={handleBootstrap} autoComplete="on" noValidate>
           <div className="field">
+            <label htmlFor="bs-token">Setup token</label>
+            <div className="ctrl">
+              <Icon name="lock" className="lead" />
+              <input
+                id="bs-token"
+                name="setup-token"
+                type="password"
+                placeholder="From the backend log or the setup-token file"
+                autoComplete="off"
+                spellCheck={false}
+                autoFocus
+                disabled={loading}
+                value={setupToken}
+                onChange={(e) => setSetupToken(e.target.value)}
+              />
+            </div>
+            <p className="field-hint">
+              The backend printed a one-time setup token when it first started and wrote it to
+              the setup-token file in its State Directory. Run{' '}
+              <code>python -m core.auth.setup_token regenerate</code> in the backend for a new one.
+            </p>
+          </div>
+
+          <div className="field">
             <label htmlFor="bs-user">Username</label>
             <div className="ctrl">
               <Icon name="user" className="lead" />
@@ -197,7 +222,6 @@ export default function LoginScreen() {
                 type="text"
                 placeholder="admin"
                 autoComplete="username"
-                autoFocus
                 disabled={loading}
                 value={usernameOrEmail}
                 onChange={(e) => setUsernameOrEmail(e.target.value)}
@@ -251,7 +275,7 @@ export default function LoginScreen() {
           <button
             className="btn-signin"
             type="submit"
-            disabled={loading || !usernameOrEmail || !email || !password}
+            disabled={loading || !setupToken.trim() || !usernameOrEmail || !email || !password}
           >
             {loading ? (
               <span className="spin" aria-hidden="true" />

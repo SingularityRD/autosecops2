@@ -203,6 +203,11 @@ services:
       # start.sh. DEV_MODE=true is the opt-in auth bypass for a developer machine.
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
       DEV_MODE: ${DEV_MODE:-false}
+      # First-admin setup token. Unset: the backend generates one on first start
+      # and prints it once (`docker compose logs backend | grep "setup token"`;
+      # also /home/vigil/.vigil/setup-token). New one: `docker compose exec
+      # backend python -m core.auth.setup_token regenerate`.
+      VIGIL_SETUP_TOKEN: ${VIGIL_SETUP_TOKEN:-}
       # Chat and run projections. core/config.py defaults this to localhost:6989,
       # which was the agent layer's address while it shared the backend process.
       AGENT_URL: http://agent-serve:6989

@@ -236,8 +236,23 @@ değeri taşıdığı `tests/unit/airgap` testleriyle denetlenir.
 
 2. **İlk yönetici hesabı.** Varsayılan bir yönetici tohumlanmaz. Kullanıcı tablosu
    boşken giriş ekranı ilk hesabı oluşturmayı önerir (`POST /api/auth/bootstrap`);
-   bu uç ilk hesap oluştuğu anda kalıcı olarak kapanır. Hemen ardından bu hesapta
-   MFA'yı açın (bkz. [yönetici kılavuzu](yonetici-kilavuzu.md#kimlik-doğrulama)).
+   bu uç ilk hesap oluştuğu anda kalıcı olarak kapanır. Hesabı oluşturmak tek
+   kullanımlık **kurulum token'ı** ister. Backend bu token'ı ilk açılışta günlüğüne
+   bir kez yazar. Okuyun ya da yenisini üretin (internet gerekmez):
+
+   ```bash
+   kubectl -n autosecops logs -l app.kubernetes.io/component=backend --prefix --tail=-1 \
+     | grep "setup token"
+   # ya da yeni bir token (eskisi geçersiz olur):
+   kubectl -n autosecops exec deploy/<release>-vigil-backend -c backend -- \
+     python -m core.auth.setup_token regenerate
+   ```
+
+   Token'ı giriş ekranındaki **Setup token** alanına yapıştırın. Betikli kurulumda
+   `secrets.setupToken` (en az 24 karakter) değeri token'ı belirler. Ayrıntı:
+   [yönetici kılavuzu — ilk yönetici](yonetici-kilavuzu.md#ilk-yönetici-ve-acil-erişim).
+   Hemen ardından bu hesapta MFA'yı açın (bkz.
+   [yönetici kılavuzu](yonetici-kilavuzu.md#kimlik-doğrulama)).
 3. **Model sağlayıcısı.** Konsolda Ayarlar → AI models altında Bifrost üzerinden
    Ollama modelini (`ollama/<model>`) ekleyip varsayılan yapın. Bulut sağlayıcı
    anahtarları bu ortamda işe yaramaz ve egress politikası tarafından düşürülür.

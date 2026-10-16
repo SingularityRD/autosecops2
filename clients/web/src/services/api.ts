@@ -607,6 +607,11 @@ export interface IntegrationTestResult {
   executor?: { available: boolean; action_types: string[] }
 }
 
+export type SetupReadiness = Schema<'SetupReadiness'>
+export type SetupReadinessItem = Schema<'SetupReadinessItem'>
+export type SetupProgressRead = Schema<'SetupProgress'>
+export type SetupProgressWrite = Schema<'SetupProgressWrite'>
+
 export const configApi = {
   
   getS3: () => api.get('/config/s3'),
@@ -630,6 +635,12 @@ export const configApi = {
       demo_enabled: boolean
     }>('/config/setup-steps'),
   resetDemoData: () => api.post('/config/demo-mode/reset'),
+  // What the install still lacks, server-side (setup wizard summary, W0.33)
+  getSetupReadiness: () => api.get<SetupReadiness>('/config/setup-readiness'),
+  // The wizard's progress for the whole install, not per browser
+  getSetupProgress: () => api.get<SetupProgressRead>('/config/setup-progress'),
+  putSetupProgress: (body: SetupProgressWrite) =>
+    api.put<SetupProgressRead>('/config/setup-progress', body),
   
   getIntegrations: () => api.get('/config/integrations'),
   setIntegrations: (data: {
@@ -1446,7 +1457,10 @@ export const triageApi = {
 
 export const bootstrapApi = {
   status: () => api.get<BootstrapStatus>('/auth/bootstrap'),
-  create: (payload: BootstrapPayload) => api.post('/auth/bootstrap', payload),
+  // The one-time setup token goes in a header, never the body: the backend
+  // prints it to its log and State Directory, and a 422 echoes the body back.
+  create: (payload: BootstrapPayload, setupToken: string) =>
+    api.post('/auth/bootstrap', payload, { headers: { 'X-Setup-Token': setupToken } }),
 }
 
 export type SsoProviders = Schema<'PublicProvidersResponse'>
