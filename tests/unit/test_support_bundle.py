@@ -140,7 +140,7 @@ def run(env, tmp_path, *args, timeout=60):
 
 
 def bundles(tmp_path: Path) -> list[Path]:
-    return sorted((tmp_path / "out").glob("vigil-support-*"))
+    return sorted((tmp_path / "out").glob("autosecops-support-*"))
 
 
 def unpack(path: Path, dest: Path) -> Path:
@@ -174,7 +174,7 @@ def test_host_only_bundle(env, tmp_path):
     proc = run(env, tmp_path)
     assert proc.returncode == 0, proc.stderr
     (bundle,) = bundles(tmp_path)
-    assert bundle.name.startswith("vigil-support-host-")
+    assert bundle.name.startswith("autosecops-support-host-")
     assert oct(bundle.stat().st_mode & 0o777) == "0o600"
     # notice at start and end, then path, size, SHA-256
     assert proc.stdout.count("DATA NOTICE") == 2
@@ -184,7 +184,7 @@ def test_host_only_bundle(env, tmp_path):
     root = unpack(bundle, tmp_path / "x")
     for part in ("configuration", "health", "logs", "system"):
         assert (root / part).is_dir()
-    assert "no Vigil install found" in (root / "SUMMARY.txt").read_text()
+    assert "no AutoSecOps install found" in (root / "SUMMARY.txt").read_text()
     for path in root.rglob("*"):
         if path.is_file():
             path.read_text(encoding="utf-8")  # plain text only
@@ -280,7 +280,7 @@ def test_simultaneous_runs_get_distinct_names(env, tmp_path):
     assert [p.wait(timeout=60) for p in procs] == [0, 0]
     names = {b.name for b in bundles(tmp_path)}
     assert len(names) == 2
-    assert all(n.startswith("vigil-support-host-") for n in names)
+    assert all(n.startswith("autosecops-support-host-") for n in names)
 
 
 def test_slow_source_times_out_and_the_rest_is_kept(env, tmp_path):

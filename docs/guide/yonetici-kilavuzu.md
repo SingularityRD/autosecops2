@@ -864,8 +864,57 @@ ileri yönlüdür; geri dönüş yedeğin geri yüklenmesidir. Adım adım prose
 Helm, kurulum dışı), doğrulama ve geri alma:
 [docs/upgrade-0.7-to-2.0.md](../upgrade-0.7-to-2.0.md). 2.0 içindeki sonraki
 sürümler için bkz. [kurulum kılavuzu §9](kurulum-internetsiz.md#9-güncelleme-ve-geri-alma).
-Her sürümle birlikte SBOM, imzalı imajlar ve sürüm notları verilmesi
-(Planlı — `wp/w4.7-release`, bu sürümde yok).
+Her sürümle birlikte CycloneDX SBOM'lar, imzalı imajlar, SLSA provenance,
+`THIRD_PARTY_LICENSES`, `LICENSE`, `NOTICE` ve sürüm notları verilir; doğrulama:
+[docs/release/dogrulama.md](../release/dogrulama.md).
+
+**Redis 7.4 verisi (W0.38).** Önceki sürümler kayan `redis:7-alpine` etiketini
+kullanıyordu; bu etiket Redis 7.4'e (RSALv2/SSPL lisanslı) gelmişti. Bu sürüm BSD
+lisanslı 7.2 hattına sabitlenir. Redis 7.2, 7.4'ün yazdığı veriyi (RDB biçimi 12)
+okuyamaz. Compose, masaüstü ve Helm'deki Redis bunu açılışta kendisi çözer: eski
+veriyi silmeden `/data/redis-7.4-data-<UTC>/` altına taşır, boş başlar ve
+`revocation_epoch` anahtarını yazar. API bu andan önce verilmiş her oturumu
+reddeder, çünkü Redis'te tutulan çıkış ve iptal kayıtları da eski veriyle gitmiştir.
+Sonuç olarak yükseltmeden sonra herkes bir kez yeniden oturum açar; kuyrukta bekleyen
+işler (iş akışı koşuları, LLM istekleri) yeniden başlatılmalıdır. Konteyner logunda
+`autosecops: Redis 7.4 data moved to …` satırı görünür. Taşınan dizin geri dönüş
+içindir (eski imajla); ihtiyaç kalmadığında silinebilir. Kendi Redis'ini kullanan
+kurulumlar (`redis.enabled=false`) etkilenmez.
+
+## Lisanslar ve üçüncü taraf bileşenler
+
+AutoSecOps Apache-2.0 lisanslıdır ve Apache-2.0 lisanslı bir açık kaynak upstream
+projeden türetilmiştir (atıf `NOTICE` dosyasında). Lisans
+yükümlülükleri (Apache-2.0 §4) her dağıtımla birlikte gelen üç dosyayla karşılanır:
+
+| Dosya | İçerik |
+|---|---|
+| `LICENSE` | Apache-2.0 metni; telif sahipleri: upstream projenin yazarları ve SingularityRD |
+| `NOTICE` | Upstream atfı ve dosyaların değiştirildiği beyanı; birlikte çalışan bileşenler (Redis, PostgreSQL, Bifrost, Ollama), Llama ve kural korpusu lisansları |
+| `THIRD_PARTY_LICENSES` | Her Python ve Node paketi, sürümü ve beyan ettiği lisans; her sürümde kilit dosyalarından üretilir |
+
+Nerede bulunurlar: her imajda `/licenses/` altında
+(`docker run --rm --entrypoint cat ghcr.io/singularityrd/autosecops-backend:<V> /licenses/NOTICE`),
+masaüstü uygulamasının kaynak dizininde `licenses/` altında, internetsiz kurulum
+paketinde `licenses/` altında, destek aracı arşivinde (`autosecops-support-<V>.tar.gz`)
+ve sürüm dosyaları arasında (`autosecops-<V>-THIRD_PARTY_LICENSES.txt`,
+`-LICENSE.txt`, `-NOTICE.txt`). İmajlardaki işletim sistemi paketleri imaj SBOM'larında
+listelenir.
+
+- **Redis** BSD lisanslı 7.2 hattına özetle sabitlenmiştir; 7.4 ve sonrası açık kaynak
+  lisanslı değildir (RSALv2/SSPL).
+- **Llama.** İnternetsiz paket varsayılan olarak `llama3.1:8b` modelini içerebilir.
+  Model Llama 3.1 Community License ve Kabul Edilebilir Kullanım Politikası'na
+  tabidir; paket yanında `models/LLAMA_NOTICE.txt` taşır ("Built with Llama").
+- **Kural korpusları.** İnternetsiz paket Sigma (DRL 1.1), Elastic detection-rules
+  (Elastic License 2.0), Splunk ESCU (Apache-2.0) ve KQL (BSD-3-Clause) kurallarının
+  anlık görüntülerini taşıyabilir; her birinin lisansı yanındadır. DRL 1.1, Sigma
+  kuralı eşleşmesinden doğan uyarılarda kural yazarının korunmasını ister; Elastic
+  License 2.0 kuralların üçüncü taraflara barındırılan ya da yönetilen hizmet olarak
+  sunulmasına izin vermez.
+- **Düzeltmesi olmayan imaj açıkları** için değerlendirme ve risk kabulü:
+  [docs/security/vex.md](../security/vex.md) (OpenVEX dosyasıyla).
+- **Güvenlik açığı bildirimi** ve destek süresi: [SECURITY.md](../../SECURITY.md).
 
 ## Yedekleme ve geri yükleme
 
@@ -1027,7 +1076,7 @@ taşımaz; cosign imzası ve `SHA256SUMS` yine de vardır.
    - `ghcr.io/singularityrd/autosecops-backend:<V>`
    - `ghcr.io/singularityrd/autosecops-agent:<V>`
    - `postgres:16-alpine`
-   - `redis:7-alpine`
+   - `redis:7.2.16-alpine` (özetle, `@sha256:…`, sabitlenmiş)
    - `maximhq/bifrost:v2.2.1`
 
    Kayıt defterlerine erişimi olmayan bir makinede beşini de önceden
@@ -1101,8 +1150,10 @@ gösterir ve kopyalar, örneğin macOS'ta:
 sh "/Applications/AutoSecOps.app/Contents/Resources/vigil-support/vigil-support.sh"
 ```
 
-Komut bir terminalde çalıştırılır, maskelenmiş tek bir `.tar.gz` yazar ve hiçbir
-şey yüklemez ([destek aracının belgesi](../../scripts/vigil-support/README.md)).
+Komut bir terminalde çalıştırılır, maskelenmiş tek bir `.tar.gz` yazar
+(`autosecops-support-<install|host>-<sürüm>-<UTC zaman>.tar.gz`) ve hiçbir şey
+yüklemez ([destek aracının belgesi](../../scripts/vigil-support/README.md)). Betiğin
+dosya adı (`vigil-support.sh`) iç tanımlayıcıdır ve değişmedi.
 Betik POSIX `sh` ister; Windows'ta WSL ya da Git Bash içinden çalıştırın.
 
 ### Doğrulama

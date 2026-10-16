@@ -1,0 +1,30 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/SingularityRD/autosecops2/blob/main/docs/security/autosecops.openvex.json",
+  "author": "SingularityRD AutoSecOps security",
+  "role": "Document Creator",
+  "timestamp": "2026-10-16T00:00:00Z",
+  "version": 1,
+  "tooling": "hand-written; process in docs/security/vex.md",
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "CVE-2023-45853",
+        "description": "zlib minizip zipOpenNewFileInZip4_64 integer overflow"
+      },
+      "products": [
+        {
+          "@id": "pkg:oci/autosecops-agent?repository_url=ghcr.io/singularityrd/autosecops-agent",
+          "subcomponents": [
+            {
+              "@id": "pkg:deb/debian/zlib1g?distro=debian-12"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The flaw is in minizip (contrib/minizip), which the Debian zlib1g binary package does not contain; Debian tracks it as will-not-fix for that reason. Nothing in the image links or ships minizip."
+    }
+  ]
+}

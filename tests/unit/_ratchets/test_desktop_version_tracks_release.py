@@ -76,15 +76,15 @@ def test_release_attaches_support_tarball() -> None:
     assert (
         'scripts/build-support-tarball.sh "${{ needs.version.outputs.version }}"' in job
     )
-    assert "vigil-support-${{ needs.version.outputs.version }}.tar.gz\n" in job
-    assert "vigil-support-${{ needs.version.outputs.version }}.tar.gz.sha256" in job
+    assert "autosecops-support-${{ needs.version.outputs.version }}.tar.gz\n" in job
+    assert "autosecops-support-${{ needs.version.outputs.version }}.tar.gz.sha256" in job
     assert "actions/checkout" in job
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh script")
 def test_support_tarball_is_stamped_runnable_and_verifiable(tmp_path: Path) -> None:
     subprocess.run(["sh", str(BUILD_TARBALL), "9.8.7", str(tmp_path)], check=True)
-    name = "vigil-support-9.8.7.tar.gz"
+    name = "autosecops-support-9.8.7.tar.gz"
     assert (tmp_path / f"{name}.sha256").read_text().split()[1] == name
 
     for check in (["sha256sum", "-c"], ["shasum", "-a", "256", "-c"]):
@@ -93,8 +93,11 @@ def test_support_tarball_is_stamped_runnable_and_verifiable(tmp_path: Path) -> N
 
     with tarfile.open(tmp_path / name) as tar:
         tar.extractall(tmp_path / "x")
-    root = tmp_path / "x" / "vigil-support"
+    root = tmp_path / "x" / "autosecops-support"
     assert (root / "VERSION").read_text() == "9.8.7\n"
+    # Apache-2.0 section 4 (W0.38): the licence and NOTICE travel with the tool.
+    for lic in ("LICENSE", "NOTICE"):
+        assert (root / lic).read_bytes() == (REPO / lic).read_bytes(), lic
     out = subprocess.run(
         ["sh", str(root / "vigil-support.sh"), "--help"], capture_output=True, text=True
     )

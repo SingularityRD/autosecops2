@@ -1,7 +1,7 @@
-# vigil-support
+# AutoSecOps support bundle (vigil-support.sh)
 
 `vigil-support.sh` writes one redacted `tar.gz` that a person can attach to a
-support request. It is POSIX `sh` using baseline tools only (no `jq`, no Vigil
+support request. It is POSIX `sh` using baseline tools only (no `jq`, no AutoSecOps
 Python), and runs on Linux and macOS. This file is the record of the bundle
 format.
 
@@ -13,19 +13,19 @@ sh scripts/vigil-support/vigil-support.sh [--mode native|compose|desktop|helm] [
 | Option | Meaning |
 | --- | --- |
 | `--mode` | Only look for that kind of install. `native` and `compose` mean a checkout, `desktop` means Desktop standalone, `helm` means a Helm release read from the administrator's machine (see [Helm](#helm)). |
-| `--state-dir` | Vigil's State Directory. Default `$VIGIL_DIR`, else `~/.vigil` (Desktop: its app-data directory). |
+| `--state-dir` | AutoSecOps's State Directory. Default `$VIGIL_DIR`, else `~/.vigil` (Desktop: its app-data directory). |
 | `--release`, `--namespace` | `--mode helm` only: pick the Helm release and its namespace. Either one without `--mode helm` is an error. |
 | `--since DAYS` | How far back journal and macOS log sources reach. Default 7. macOS `log show` uses 24 h unless `--since` is given. |
 
 The bundle is written to the current directory as
-`vigil-support-<install|host>-<version>-<UTC yyyymmddThhmmssZ>.tar.gz`
+`autosecops-support-<install|host>-<version>-<UTC yyyymmddThhmmssZ>.tar.gz`
 (`install` when one install was found, `host` otherwise). If that name is taken
 by a concurrent run, `-1`, `-2`, ... is appended. An earlier bundle is never
 collected into a new one.
 
 ## Detection
 
-- **Native and Compose from source**: a Vigil checkout (the one holding the
+- **Native and Compose from source**: an AutoSecOps checkout (the one holding the
   script, `$VIGIL_REPO_ROOT`, or the current directory) plus running
   `deeptempo-*` containers. `compose` when `deeptempo-backend` runs, else `native`.
 - **Desktop standalone**: running containers of Compose project `vigil`.
@@ -162,12 +162,12 @@ in `secrets.enc`.
 | `timezone-sync.txt` | `timedatectl` (Linux) or `systemsetup` (macOS) |
 | `processes.txt` | `ps -ef`, the full list |
 | `processes-vigil.txt` | the same list filtered to `vigil` and `deeptempo` |
-| `disk.txt` | one `df -Pk` per Vigil write location that exists, each headed by its path |
+| `disk.txt` | one `df -Pk` per AutoSecOps write location that exists, each headed by its path |
 | `os-release.txt` | `/etc/os-release` or `sw_vers` |
 | `journal.txt` | Linux: `journalctl --since "<DAYS> days ago"` |
 | `syslog.txt` | Linux: `/var/log/syslog`, else `/var/log/messages` |
 | `kernel.txt` | Linux: `dmesg` |
-| `macos-log.txt` | macOS: `log show`, Docker and Vigil entries only |
+| `macos-log.txt` | macOS: `log show`, Docker and AutoSecOps entries only |
 
 Logs a normal user cannot read are `not collected` with the reason
 `needs elevation`; the final output says that running with `sudo` includes them.
@@ -191,7 +191,7 @@ State Directory needs `--state-dir` (or `sudo --preserve-env=VIGIL_DIR`).
   "created_utc": "2026-10-05T19:14:56Z",
   "mode": "host",
   "host_os": "Linux 6.12.94",
-  "install": {"found": false, "description": "no Vigil install found", "api_version": null},
+  "install": {"found": false, "description": "no AutoSecOps install found", "api_version": null},
   "looked": ["checkout: none at /tmp", "docker: not installed"],
   "entries": [
     {"path": "system/processes.txt", "state": "collected", "reason": "ok",
@@ -227,8 +227,8 @@ items with reasons; the never-included entries under their own heading
 manifest records them as `not collected`, reason `never included; ...`); a
 short paragraph on container logs (`logs/docker/` reaches back to each
 container's creation, a hand-recreated container starts its log afresh, and
-the snapshots Vigil saves before its own teardowns live under
-`logs/checkout/containers/` or `logs/desktop/containers/`, while Vigil's own
+the snapshots AutoSecOps saves before its own teardowns live under
+`logs/checkout/containers/` or `logs/desktop/containers/`, while AutoSecOps's own
 services also log to `logs/state/vigil.log`); per-file redaction counts; the sentence that credentials in
 free log text matching no known format cannot be guaranteed caught; and the data
 notice.
@@ -290,7 +290,7 @@ or `shasum -a 256`), then the not-collected items and the never-included entries
 
 ## `VERSION`
 
-`VERSION` ships beside the script and follows the Vigil release (release-please
+`VERSION` ships beside the script and follows the AutoSecOps release (release-please
 bumps it). Its first word is the version; the rest of the line is ignored.
 
 ## Tests

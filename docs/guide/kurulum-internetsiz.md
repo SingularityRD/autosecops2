@@ -95,6 +95,15 @@ Ollama), model ağırlıkları, kural korpusları, çevrimdışı belgeler, `ins
 normal dosya ve dizin girer; ağaç dışına çıkan ya da kırık bir sembolik bağ derlemeyi
 durdurur.
 
+Lisanslar da paketle gider (Apache-2.0 §4): `licenses/` dizininde AutoSecOps'un
+`LICENSE`, `NOTICE` ve `THIRD_PARTY_LICENSES` dosyaları; her kural korpusunun yanında
+kendi lisans dosyası (`rules/<klon>.LICENSE`; Sigma DRL 1.1, Elastic Elastic License
+2.0) ile `rules/README-LICENSES.md` ve `rules/DRL-1.1.md`; Llama modeli pakete
+girdiyse `models/LLAMA_NOTICE.txt` ("Built with Llama", Llama 3.1 Community License
+ve Kabul Edilebilir Kullanım Politikası). Paketi üçüncü bir tarafa dağıtmadan önce bu
+koşulları okuyun. Redis imajı BSD lisanslı 7.2 hattına özetle (`@sha256:…`)
+sabitlenmiştir; derleme o özeti çeker.
+
 ## 4. Hedef ortamda doğrulama
 
 1. Dış tar'ı **açmadan önce listeleyin**; yalnızca `autosecops-airgap-<sürüm>/`

@@ -1,16 +1,16 @@
 apiVersion: v2
 name: vigil
-description: Vigil SOC — open-source, AI-native Security Operations Center
+description: AutoSecOps — AI-assisted Security Operations Center with human approval
 type: application
 version: 2.0.0
 appVersion: 2.0.0
 kubeVersion: '>=1.25.0-0'
-home: https://vigilsoc.org
+home: https://github.com/SingularityRD/autosecops2
 sources:
-  - https://github.com/Vigil-SOC/vigil
+  - https://github.com/SingularityRD/autosecops2
 maintainers:
-  - name: Vigil-SOC
-    url: https://github.com/Vigil-SOC
+  - name: SingularityRD
+    url: https://github.com/SingularityRD
 keywords:
   - security
   - soc
@@ -19,7 +19,6 @@ keywords:
   - claude
   - anthropic
   - mcp
-icon: https://vigilsoc.org/logo.png
 annotations:
   artifacthub.io/category: security
   artifacthub.io/license: Apache-2.0

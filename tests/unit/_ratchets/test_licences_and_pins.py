@@ -128,3 +128,86 @@ def test_runners_are_pinned_images() -> None:
             if re.search(r"\b(ubuntu|macos|windows)-latest\b", line):
                 hits.append(f"{wf.name}:{n}: {line.strip()}")
     assert not hits, "\n".join(hits)
+
+
+JUSTIFICATIONS = {
+    "component_not_present",
+    "vulnerable_code_not_present",
+    "vulnerable_code_not_in_execute_path",
+    "vulnerable_code_cannot_be_controlled_by_adversary",
+    "inline_mitigations_already_exist",
+}
+
+
+def test_openvex_document_is_well_formed_and_matches_the_doc() -> None:
+    import json
+
+    doc = json.loads(
+        (REPO / "docs/security/autosecops.openvex.json").read_text("utf-8")
+    )
+    assert doc["@context"] == "https://openvex.dev/ns/v0.2.0"
+    for key in ("@id", "author", "timestamp", "version", "statements"):
+        assert doc.get(key), key
+    vex_md = (REPO / "docs/security/vex.md").read_text(encoding="utf-8")
+    assert doc["statements"]
+    for st in doc["statements"]:
+        cve = st["vulnerability"]["name"]
+        assert st["products"] and all(
+            p["@id"].startswith("pkg:") for p in st["products"]
+        )
+        assert st["status"] in {
+            "not_affected",
+            "affected",
+            "fixed",
+            "under_investigation",
+        }
+        if st["status"] == "not_affected":
+            assert st["justification"] in JUSTIFICATIONS and st["impact_statement"]
+        assert cve in vex_md, f"{cve} is in the OpenVEX file but not in vex.md"
+
+
+REDIS_START = REPO / "infra/helm/vigil/files/redis-start.sh"
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "infra/docker/docker-compose.yml",
+        "clients/desktop/standalone/docker-compose.yml",
+    ],
+)
+def test_compose_redis_starts_through_the_same_wrapper(rel: str) -> None:
+    """Redis 7.4 data must not stop the 7.2 pin from starting (W0.38)."""
+    command = yaml.safe_load((REPO / rel).read_text(encoding="utf-8"))["services"][
+        "redis"
+    ]["command"]
+    assert command[:2] == ["sh", "-c"]
+    # Compose writes $ as $$; the script is otherwise the chart's file.
+    assert command[2].replace("$$", "$") == REDIS_START.read_text(encoding="utf-8")
+    # $0: through the image's entrypoint, which drops to the redis user.
+    assert command[3] == "docker-entrypoint.sh"
+    assert command[4:] == [
+        "--appendonly",
+        "yes",
+        "--maxmemory",
+        "512mb",
+        "--maxmemory-policy",
+        "noeviction",
+    ]
+
+
+def test_helm_redis_starts_through_the_wrapper() -> None:
+    tpl = (REPO / "infra/helm/vigil/templates/redis-statefulset.yaml").read_text(
+        "utf-8"
+    )
+    assert (
+        '- {{ .Files.Get "files/redis-start.sh" | quote }}\n            - redis-server'
+        in tpl
+    )
+
+
+def test_the_wrapper_only_moves_data_newer_than_7_2_reads() -> None:
+    script = REDIS_START.read_text(encoding="utf-8")
+    assert '[ "$v" -gt 11 ]' in script  # 7.2 reads RDB <= 11; 7.4 writes 12
+    assert "rm " not in script  # moved aside, never deleted
+    assert script.rstrip().endswith('exec redis-server "$@"')

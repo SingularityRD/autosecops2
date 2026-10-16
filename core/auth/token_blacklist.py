@@ -13,6 +13,13 @@ Two revocation strategies, used together:
    one write invalidates every token the user holds, without having to
    enumerate them.
 
+3. **Epoch** — `revocation_epoch`, when present, is a unix timestamp before
+   which every token is rejected. Redis's start wrapper
+   (infra/helm/vigil/files/redis-start.sh) sets it when it had to discard
+   Redis data it could not read (Redis 7.4 data on the pinned 7.2, W0.38):
+   the logouts and cutoffs above went with that data. Absent, it changes
+   nothing.
+
 Verify-path failures (Redis unreachable during `is_token_revoked`) default to
 **fail-closed** (reject the request). Set `REVOCATION_FAIL_OPEN=true` only if
 you deliberately prefer availability over security during Redis outages.
@@ -33,6 +40,7 @@ logger = logging.getLogger(__name__)
 _JTI_PREFIX = "blacklist:jti:"
 _USER_CUTOFF_PREFIX = "user_revoked_before:"
 _REFRESH_USED_PREFIX = "refresh_used:"
+_EPOCH_KEY = "revocation_epoch"
 
 # A browser with several tabs or parallel requests can present one refresh
 # cookie to /refresh more than once before the rotated cookie lands; a replay
@@ -225,6 +233,17 @@ async def _lookup_revoked(client, payload: dict) -> bool:
     """Raises on Redis errors; the caller decides fail-open/closed."""
     jti = payload.get("jti")
     user_id = payload.get("user_id")
+
+    epoch_raw = await client.get(_EPOCH_KEY)
+    if epoch_raw is not None:
+        try:
+            epoch = int(epoch_raw)
+        except (TypeError, ValueError):
+            logger.warning("Malformed %s: %r", _EPOCH_KEY, epoch_raw)
+            return not _FAIL_OPEN
+        iat = payload.get("iat")
+        if iat is None or int(iat) < epoch:
+            return True
 
     if jti:
         exists = await client.exists(f"{_JTI_PREFIX}{jti}")

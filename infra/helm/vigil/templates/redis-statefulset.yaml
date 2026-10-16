@@ -26,7 +26,12 @@ spec:
         - name: redis
           image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}"
           imagePullPolicy: {{ .Values.redis.image.pullPolicy | default "IfNotPresent" }}
+          # files/redis-start.sh: plain redis-server, except that Redis 7.4
+          # data (unreadable by the pinned 7.2) is moved aside first (W0.38).
           command:
+            - sh
+            - -c
+            - {{ .Files.Get "files/redis-start.sh" | quote }}
             - redis-server
           args:
             {{- toYaml .Values.redis.args | nindent 12 }}

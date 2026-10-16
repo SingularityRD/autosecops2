@@ -262,3 +262,12 @@ describe('LoginScreen', () => {
     })
   })
 })
+
+describe('brand panel (W0.38)', () => {
+  it('names AutoSecOps and none of the upstream identity', async () => {
+    const { container } = renderLogin()
+    await screen.findByRole('heading', { name: 'Autonomy you can audit.' })
+    expect(screen.getByRole('img', { name: 'AutoSecOps' })).toBeInTheDocument()
+    expect(container.textContent).not.toMatch(/Vigil|Deep ?Tempo/)
+  })
+})

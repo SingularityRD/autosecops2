@@ -1,5 +1,5 @@
 #!/bin/sh
-# Collect a support bundle for Vigil: one redacted tar.gz in the current
+# Collect a support bundle for AutoSecOps: one redacted tar.gz in the current
 # directory. Portable POSIX sh, baseline tools only. Format: README.md.
 #
 #   vigil-support.sh [--mode native|compose|desktop|helm] [--state-dir DIR] [--since DAYS]
@@ -42,7 +42,7 @@ RESERVED=
 KEEP=0
 
 die() {
-    printf 'vigil-support: %s\n' "$*" >&2
+    printf 'autosecops-support: %s\n' "$*" >&2
     exit 1
 }
 
@@ -378,7 +378,7 @@ collect_file() {
         _path=$_t
     fi
     case ${_path##*/} in
-    vigil-support-*.tar.gz)
+    autosecops-support-*.tar.gz | vigil-support-*.tar.gz)
         skip "$_dest" "an earlier support bundle is never nested" "$_path"
         return
         ;;
@@ -551,7 +551,7 @@ if [ "$HELM_REQ" = 1 ]; then detect_helm; else detect; fi
 N_INSTALLS=$(wc -l <"$INSTALLS" | tr -d ' ')
 if [ "$N_INSTALLS" -gt 1 ]; then
     echo
-    echo "More than one Vigil install was found, so nothing was written:"
+    echo "More than one AutoSecOps install was found, so nothing was written:"
     sed 's/^[^	]*	/  - /' "$INSTALLS"
     if [ "$HELM_REQ" = 1 ]; then
         echo "Pick one with --release NAME --namespace NS and run again."
@@ -561,7 +561,7 @@ if [ "$N_INSTALLS" -gt 1 ]; then
     exit 1
 fi
 MODE=host
-INSTALL_NOTE="no Vigil install found"
+INSTALL_NOTE="no AutoSecOps install found"
 if [ "$N_INSTALLS" = 1 ]; then
     IFS='	' read -r MODE INSTALL_NOTE <"$INSTALLS"
     KIND=install
@@ -594,7 +594,7 @@ if [ "$HELM_REQ" = 0 ]; then
     printf "state dir: %s at %s\n" "$_found" "$STATE_DIR" >>"$LOOKED"
 fi
 
-NAME=vigil-support-$KIND-$VERSION-$STAMP
+NAME=autosecops-support-$KIND-$VERSION-$STAMP
 STAGE=$WORK/bundle/$NAME
 mkdir -p "$STAGE/configuration" "$STAGE/health" "$STAGE/logs" "$STAGE/system"
 
@@ -771,7 +771,7 @@ find_compose_files() {
 collect_compose_config() {
     _dest=configuration/compose-config.yml
     if [ "$MODE" = native ]; then
-        skip "$_dest" "native install: Compose is not what runs Vigil"
+        skip "$_dest" "native install: Compose is not what runs AutoSecOps"
         return
     fi
     if ! has docker; then
@@ -1084,7 +1084,7 @@ helm_logs() {
 
 collect_helm() {
     if [ "$N_INSTALLS" != 1 ]; then
-        for _p in configuration health logs; do skip "$_p/" "${HELM_WHY:-no Vigil install found}"; done
+        for _p in configuration health logs; do skip "$_p/" "${HELM_WHY:-no AutoSecOps install found}"; done
         return
     fi
     _sel="app.kubernetes.io/instance=$HELM_REL,app.kubernetes.io/component notin ($(echo "$HELM_LAB" | tr '|' ','))"
@@ -1105,7 +1105,7 @@ collect_helm_system() {
         collect_cmd system/events.txt "$SRC_SECS" "kubectl get events" 2 \
             kubectl -n "$HELM_NS" get events --sort-by=.lastTimestamp
     else
-        for _f in nodes events; do skip "system/$_f.txt" "${HELM_WHY:-no Vigil install found}"; done
+        for _f in nodes events; do skip "system/$_f.txt" "${HELM_WHY:-no AutoSecOps install found}"; done
     fi
     for _f in timezone-sync processes processes-vigil disk journal syslog kernel macos-log; do
         skip "system/$_f.txt" "$HELM_HOST_WHY"
@@ -1126,7 +1126,7 @@ elif [ "$N_INSTALLS" = 1 ]; then
         skip "logs/docker/$_n.log" "excluded: lab/demo container; state $_s" "docker ps -a"
     done <"$EXCLUDED"
 else
-    for _p in configuration health logs; do skip "$_p/" "no Vigil install found"; done
+    for _p in configuration health logs; do skip "$_p/" "no AutoSecOps install found"; done
 fi
 
 # --- system ------------------------------------------------------------------
@@ -1145,7 +1145,7 @@ else
 fi
 if [ "$HELM_REQ" = 0 ]; then
     collect_cmd system/processes.txt "$SRC_SECS" "ps -ef" 0 ps -ef
-    collect_cmd system/processes-vigil.txt "$SRC_SECS" "ps -ef, Vigil entries" 0 \
+    collect_cmd system/processes-vigil.txt "$SRC_SECS" "ps -ef, AutoSecOps entries" 0 \
         sh -c "ps -ef | awk 'NR == 1 || /[v]igil|[d]eeptempo/'"
 fi
 
@@ -1163,7 +1163,7 @@ collect_disk() {
             [ -d "$_d" ] && set -- "$@" "$_d"
         done
     fi
-    collect_cmd system/disk.txt "$SRC_SECS" "df -Pk, Vigil write locations" 0 sh -c \
+    collect_cmd system/disk.txt "$SRC_SECS" "df -Pk, AutoSecOps write locations" 0 sh -c \
         'for d; do echo "$d"; df -Pk "$d"; done' _ "$@"
 }
 [ "$HELM_REQ" = 0 ] && collect_disk
@@ -1181,7 +1181,7 @@ if [ "$HELM_REQ" = 1 ]; then
 elif [ "$OS_KIND" = Darwin ]; then
     _last=24h
     [ "$SINCE_SET" = 1 ] && _last=${SINCE}d
-    collect_cmd system/macos-log.txt "$LOG_SECS" "log show --last $_last, Docker, AutoSecOps and Vigil entries" 1 \
+    collect_cmd system/macos-log.txt "$LOG_SECS" "log show --last $_last, Docker and AutoSecOps entries" 1 \
         log show --style compact --last "$_last" --predicate \
         'process CONTAINS[c] "docker" OR process CONTAINS[c] "vigil" OR process CONTAINS[c] "autosecops" OR eventMessage CONTAINS[c] "docker" OR eventMessage CONTAINS[c] "vigil" OR eventMessage CONTAINS[c] "autosecops"'
     for _f in journal syslog kernel; do skip "system/$_f.txt" "Linux only"; done
@@ -1230,7 +1230,7 @@ M_VERSION=$VERSION M_CREATED=$CREATED M_MODE=$MODE M_OS=$HOST_OS M_NOTE=$INSTALL
     END { printf "\n  ]\n}\n" }' "$ITEMS" >"$STAGE/manifest.json" || die "cannot write manifest.json"
 
 {
-    echo "Vigil support bundle"
+    echo "AutoSecOps support bundle"
     printf 'Version:  %s\nMode:     %s (%s)\nHost OS:  %s\nCreated:  %s (UTC)\n' \
         "$VERSION" "$MODE" "$INSTALL_NOTE" "$HOST_OS" "$CREATED"
     if [ -n "$HEALTH_VERSION" ] && [ "$HEALTH_VERSION" != "$VERSION" ]; then
@@ -1245,7 +1245,7 @@ M_VERSION=$VERSION M_CREATED=$CREATED M_MODE=$MODE M_OS=$HOST_OS M_NOTE=$INSTALL
             if (v) printf "\nNever included (existence only)\n%s", vl }' "$ITEMS"
     echo
     if [ "$MODE" != helm ] && [ "$N_INSTALLS" = 1 ]; then
-        echo "Container logs: logs/docker/ reaches back to each container's creation (see created= in health/containers.txt). A container recreated by hand (docker compose up -d after an image change, say) starts its log afresh. The snapshots Vigil saves before its own teardowns are under logs/checkout/containers/ (Native, Compose) or logs/desktop/containers/ (Desktop). Vigil's own services also log to logs/state/vigil.log, which lives in the State Directory volume and survives a recreate."
+        echo "Container logs: logs/docker/ reaches back to each container's creation (see created= in health/containers.txt). A container recreated by hand (docker compose up -d after an image change, say) starts its log afresh. The snapshots AutoSecOps saves before its own teardowns are under logs/checkout/containers/ (Native, Compose) or logs/desktop/containers/ (Desktop). AutoSecOps's own services also log to logs/state/vigil.log, which lives in the State Directory volume and survives a recreate."
         echo
     fi
     awk -F '\t' '$2 == "collected" { t += $7; if ($7 > 0) { l = l "  " $1 ": " $7 "\n"; k++ } }
