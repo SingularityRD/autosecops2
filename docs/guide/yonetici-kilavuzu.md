@@ -11,7 +11,9 @@
 > segregation-of-duties report; models cannot approve, approvals are bound to
 > the tool call's arguments (refused above 64 KB), people decide on the
 > AI Decisions → Pending Approvals screen, approved agent MCP tools still bypass the response
-> policy, an open risk), the Assist/Act switch and the recommended
+> policy, an open risk), the Assist/Act switch (Assist, human approval of
+> every action, is the default; containment such as host isolation, account
+> disable and firewall blocks is never autonomous) and the recommended
 > regulated-sector setting `DAEMON_FORCE_APPROVAL=true`, the local model lane
 > and lessons, retention policies, KVKK purge and legal hold, which audit
 > records exist and how to verify them (`python -m core.audit.verify`, signed
@@ -409,7 +411,11 @@ adı (ör. acme.okta.com, `https://` olmadan) ve API belirteci girilir.
 2. **Onay kapısı ve otonomi katmanı.** Satırın insan beklemesi gerekip
    gerekmediğine kod karar verir ve kararı veren kuralı satıra yazar
    (ör. `autonomy.tier=approve`):
-   - `DAEMON_FORCE_APPROVAL=true` ya da konsolda Assist → her eylem insan bekler;
+   - `DAEMON_FORCE_APPROVAL=true` ya da konsolda Assist (varsayılan) → her eylem
+     insan bekler;
+   - çevreleme eylemi (ana makine izolasyonu, hesabı devre dışı bırakma ya da
+     kilitleme, güvenlik duvarında engelleme, dosya karantinası) → katmandan bağımsız
+     olarak her zaman insan bekler;
    - geri alınamaz eylem → her zaman insan bekler, hiçbir zaman otomatik onaylanmaz;
    - dört göz onayı isteyen eylem → her zaman insan bekler;
    - güven `DAEMON_CONFIDENCE_THRESHOLD` (0.90) altındaysa → insan bekler;
@@ -552,23 +558,39 @@ kullanılır ve satır bunu `role_source` ile söyler. Denetçiye vermek için
 ## Otonomi
 
 Otonomi iki düzeyde belirlenir. Genel anahtarlar her eylem için geçerlidir ve
-otonomi katmanlarının üstündedir. Konsolun üst çubuğundaki çip bunları **Assist**
-(değişiklikten önce sorar) ya da **Act** olarak gösterir
-(`GET /api/config/autonomy`):
+otonomi katmanlarının üstündedir. **GA varsayılanı insan onayıdır:** yeni kurulumda
+her müdahale eylemi bir kişinin onayını bekler (Assist). Konsolun üst çubuğundaki
+çip etkin kipi gösterir (`GET /api/config/autonomy`, `mode` alanı): **Act** yalnızca
+onay zorlanmıyorsa, `DAEMON_AUTO_RESPONSE` açıksa ve en az bir otonomi katmanı
+Autonomous ise görünür; aksi halde **Assist** (değişiklikten önce sorar) görünür.
+Konsolda Act seçilmiş olsa bile hiçbir katman Autonomous değilse her eylem yine
+kişi bekler ve çip bunu Assist olarak gösterir. Katmanlar okunamıyorsa çip otonomiyi
+olduğundan az göstermemek için Act der.
 
 | Anahtar | Varsayılan | Etki |
 |---|---|---|
 | `DAEMON_AUTO_RESPONSE` | `true` | `false` ise daemon hiçbir müdahale eylemi önermez ve **onaylanmış** eylemleri de uygulamaz |
-| `DAEMON_FORCE_APPROVAL` | `false` | `true` ise her eylem insan onayı bekler (Assist) |
-| `approval.force_manual_approval` (konsoldan, `POST /api/config/force-manual-approval`, `settings.write`) | kayıt yok = Act | Assist'i kalıcı yapar; ortam değişkeni Assist'i zorluyorsa Act kaydı 409 ile reddedilir |
+| `DAEMON_FORCE_APPROVAL` | `false` (kilit yok) | Bir kilittir, kipin kendisi değildir: `true` ise her eylem insan onayı bekler ve konsoldan Act seçilemez (409). `false` ise seçim konsoldadır |
+| `approval.force_manual_approval` (konsoldan, `POST /api/config/force-manual-approval`, `settings.write`) | Assist (`{"enabled": true}`; kayıt yoksa ya da okunamazsa da Assist) | Kurulum sihirbazı ve **Ayarlar → Limits & autonomy** Assist'i (önerilen) ya da Act'i buraya yazar |
 
 **Düzenlenmiş sektör için önerilen ayar:** `DAEMON_FORCE_APPROVAL=true` (Helm:
 `config.DAEMON_FORCE_APPROVAL`) ve `DAEMON_AUTO_RESPONSE=true` (aksi halde onaylanan
-eylemler de uygulanmaz). Böylece "ortam kazanır" ve konsoldan Act'e geçilemez.
-Kodun varsayılanı Act görünür. Yine de otonomi katmanlarının varsayılanı Approve
-olduğu için, bir yönetici bir katmanı Autonomous yapmadıkça bir kişinin onaylamadığı
-eylem uygulanmaz. Assist bunu yapılandırma düzeyinde sabitler: Autonomous katmanlar
-da insan bekler. Böylece kural denetçiye gösterilebilir olur.
+eylemler de uygulanmaz). Böylece "ortam kazanır" ve konsoldan Act'e geçilemez;
+kural yapılandırma düzeyinde sabitlenir ve denetçiye gösterilebilir olur. Act'e
+geçmek tek başına hiçbir eylemi kişisiz bırakmaz: bunun için bir yöneticinin ayrıca
+bir katmanı Autonomous yapması gerekir (aşağıda). Assist açıkken Autonomous katmanlar
+da insan bekler.
+
+**Her zaman kişi onaylar.** Çevreleme (containment) eylemleri hangi katmanda olursa
+olsun, Assist ya da Act fark etmeksizin, hiçbir zaman kişisiz çalışmaz; bu
+değiştirilemez (`core/autonomy/tiers.py` `ALWAYS_HUMAN`). Konsol bunu "isolating a
+host, disabling or locking an account, blocking on a firewall, quarantining a file"
+diye anlatır. Sınıflar:
+
+- Her zaman kişi: `isolate_host`, `disable_user`, `revoke_sessions`, `access_revoke`, `block_ip`, `waf_block`, `quarantine_file`
+
+Geri alınamayan her eylem (`execute_spl_query`, `custom`) ve geri alma tipleri
+(`unblock_ip`, `unisolate_host`, `enable_user`) de hiçbir zaman Autonomous olamaz.
 
 ### Otonomi katmanları
 
@@ -586,8 +608,10 @@ eylem sınıfı için bir katman tutar (`autonomy_tiers` tablosu):
 Autonomous yalnızca şu koşulların hepsi doğruysa uygulanır, aksi halde eylem
 Approve gibi işlenir:
 
-- Sınıf `isolate_host`, `block_ip`, `block_domain`, `waf_block` ya da
-  `gateway_block`'tur. Eylem hem satırda hem yürütücü kaydında geri alınabilirdir.
+- Otonom olabilen sınıflar: `block_domain`, `gateway_block` (bir alan adı göstergesinin
+  DNS'te ya da güvenli web geçidinde engellenmesi). Eylem hem satırda hem yürütücü
+  kaydında geri alınabilirdir. Yukarıdaki "her zaman kişi" sınıfları için Autonomous
+  yazımı 422 ile reddedilir.
 - Sınıf dört göz onayı istemez. Kategori `*` ya da `other` değildir.
 - Katmanda bir süre (`max_ttl_seconds`, en çok 7 gün) ve bir güven tabanı
   (`min_confidence`) vardır. Eylemin güveni bu tabana ve
@@ -609,6 +633,11 @@ Kategori koddan gelir. Önce sensörün yazdığı alanlar (MITRE tekniği,
 Gönderenin yükte yazdığı kategori alanı okunmaz; eşlenemeyen her alarm `other`'a
 düşer ve `other` hiçbir zaman Autonomous olamaz. Autonomous bir eylem de müdahale
 politikasından (korunan varlıklar, saatlik sınır) geçer.
+
+2.0.0'dan önce `isolate_host`, `block_ip` ya da `waf_block` için Autonomous yazılmış
+bir satır silinmez ve matriste "not applied: a person approves" notuyla görünür; karar
+anında Approve gibi işlenir ve satıra `... is containment; a person approves it`
+gerekçesi yazılır.
 
 **Düzenlenmiş sektör için öneri:** `DAEMON_FORCE_APPROVAL=true` ile tüm katmanları
 insan onayında tutun. Autonomous'u yalnızca değişiklik yönetimi kaydıyla ve Karne

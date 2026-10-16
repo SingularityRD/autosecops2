@@ -372,6 +372,11 @@
       "id": "W0.31",
       "topic": "Medic iş akışının yeşile dönmesi; Medic API'si bağlanırken ters DNS aramaz, başlangıçta gelen TERM Medic'i temiz durdurur",
       "topic_en": "Medic workflow green again; the Medic API does no reverse DNS lookup when it binds, and a TERM during start-up stops Medic cleanly"
+    },
+    {
+      "id": "W0.32",
+      "topic": "otonomi varsayılanları plana uyar: varsayılan kip Assist (her müdahale eylemini bir kişi onaylar), başlık çipi etkin kipi gösterir, çevreleme (izolasyon, hesap kapatma, güvenlik duvarı engeli) hiçbir katmanda kişisiz çalışmaz",
+      "topic_en": "autonomy defaults match the plan: Assist is the default (a person approves every response action), the header chip shows the effective mode, and containment (host isolation, account disable, firewall blocks) is never autonomous at any tier"
     }
   ],
   "highlights": [
@@ -761,6 +766,12 @@
         "W0.30"
       ],
       "text": "**Enjeksiyon korumaları (W0.30):** varsayılan açıktır ve her araç sonucu için bir ek model çağrısı (okuyucu) yapar; karar bütçesi buna göre tükenebilir. Kapatmak için `AUTOSECOPS_GUARDS=off`. Python triyaj yolunun eşdeğeri (`core/llm/subject_guards.py`) varsayılan kapalıdır."
+    },
+    {
+      "when": [
+        "W0.32"
+      ],
+      "text": "**Otonomi varsayılanı (W0.32):** yeni kurulumda kip Assist'tir: her müdahale eylemini bir kişi onaylar. Yükseltmede `approval.force_manual_approval` satırı yalnızca hiç dokunulmamış eski Act tohumuysa (kimse yazmamış, `config_audit_log`'da kaydı yok) Assist'e alınır ve bu değişiklik `system:w0.32-upgrade` adıyla denetim kaydına yazılır (`63_approval_default_assist.sql`). Konsoldan seçilmiş Act ya da Assist ve `DAEMON_FORCE_APPROVAL` olduğu gibi kalır; Act'i sürdürmek isteyen ve daha önce hiç seçmemiş kurulum onu Ayarlar → Limits & autonomy'de yeniden seçer. Çevreleme sınıfları (`isolate_host`, `disable_user`, `revoke_sessions`, `access_revoke`, `block_ip`, `waf_block`, `quarantine_file`) artık hiçbir katmanda Autonomous olamaz; bunlar için önceden yazılmış Autonomous satırı silinmez, matriste \"not applied\" notuyla görünür ve karar anında Approve gibi işlenir. Otonom olabilen sınıflar `block_domain` ve `gateway_block`'tur. `GET /api/config/autonomy` yeni `mode` ve `autonomous_tiers` alanlarını döner; çip Act'i yalnızca bir katman gerçekten Autonomous iken gösterir."
     }
   ],
   "known_issues": [

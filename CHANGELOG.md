@@ -70,9 +70,9 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
 
 W0.1 upstream sync and hard fork; W0.2 brand; W0.3 CI; W0.4 agent factory and gates; W0.4b gates fixes; W0.5 contracts (init SQL 46–49); W0.6 staging environment; W0.7 eval corpus v1; W0.9 cleanups; W0.10 follow-up fixes of merged WPs (init SQL 58); W0.11 security hotfix (detection-rules git source, clock chain head, Viewer write routes); W0.12 ingest durability (webhook spool); W0.12b spool hardening (W0.12 verifier findings); W0.13 history review: auth API, data/infra/CI, response integrations, triage agents; W0.14 verifier follow-ups (W1.7b, W0.11, W0.13); W0.15 Redis outage no longer re-triages decided findings; W0.16 approval argument bounds (64 KB), escaping and git directory check; W0.17 pre-existing integration test fixes; W0.18 GA follow-ups (W0.15, W3.10, W0.16); W0.19 CI green: Bandit false positives annotated, SSO admin routes check permissions before opening a DB session, Medic redaction list synced with W3.7, test fixes; W0.20 docs merged-list check against the documented base (tests only); W0.21 air-gap image names (ghcr.io/singularityrd/autosecops-*), image download and verification documented, bundle cleanup, model-pull proxy and --ollama-image fixes; W0.22 backend and daemon images scanned in CI before any tag, disabled ghcr push jobs removed; W0.23 scan hardening: PyJWT 2.15.1 (security), Agent Image Trivy pinned by SHA and version, every image fails on a secret finding of any severity; W0.24 desktop app GA readiness: AutoSecOps identity, macOS dmg / Linux AppImage / Windows (preview) installers in the release pipeline, Electron 44 and hardening; W0.25 upstream core and data fixes (10 commits): UTC approval times, Postgres findings in the orchestrator, a re-queued finding joins its open case, CSPRNG session ids, token caps, per-writer ai_enrichment keys; FORK.md upstream radar log; W0.26 upstream hunt, case and console improvements: hunt progress (init SQL 62), case review gating, evidence backup and in-place restore; W0.27 upstream password reset flow and operator-issued reset links; W0.28 upstream connector honesty: Experimental label, Okta connector fixed (baked into the image, pinned to a commit); W0.29 removal of the third-party DeepTempo LogLM connector; W0.30 upstream injection guards (text a subject writes stays out of the verdict; AUTOSECOPS_GUARDS on by default) and agent-layer OTel tracing (only with an OTLP endpoint; content capture off); W0.31 Medic workflow green again; the Medic API does no reverse DNS lookup when it binds, and a TERM during start-up stops Medic cleanly; W1.1 eval harness; W1.2 structured triage and field provenance; W1.3 field provenance (seven adapters, shipped with W1.2); W1.5 canary replays; W1.6 QA sampling and scorecard; W1.7 tool effect classes; W1.7b no model can approve, approvals bound to arguments; W1.8 outbound webhooks and notification dispatch; W1.9 OIDC SSO; W1.10 audit chain extension; W2.1 verdict run; W2.2 alert lanes (init SQL 56); W2.3 local model lane; W2.4 executor registry and action policy; W2.5 Microsoft Defender executor; W2.6 Entra ID executor; W2.7 Palo Alto PAN-OS executor; W2.8 action timeline and revert; W3.1 autonomy controller; W3.2 four-eyes approval (second half; init SQL 61); W3.3 air-gap bundle; W3.4 zero-egress test; W3.5 retention and disposal (KVKK); W3.6 audit export to SIEM; W3.7 per-case evidence pack; W3.8 DORA/NIS2 notification clocks (init SQL 50); W3.9 daemon hot standby; W3.10 FIPS mode; W3.11 lessons; W4.1 load test; W4.2 chaos tests; W4.3 agent red team; W4.5 0.7.1 → 2.0 upgrade path; W4.6 documentation.
 
-### Not included (4)
+### Not included (5)
 
-W0.8 external dependencies (human work); W1.4 injection test set; W2.9 phishing pipeline (optional); W4.4 external pentest.
+W0.8 external dependencies (human work); W1.4 injection test set; W2.9 phishing pipeline (optional); W4.4 external pentest; W0.32 autonomy defaults match the plan: Assist is the default (a person approves every response action), the header chip shows the effective mode, and containment (host isolation, account disable, firewall blocks) is never autonomous at any tier.
 
 The 0.7.1 → 2.0 database upgrade path is W4.5: when it is not in the included
 list above, it is not verified in this release.
@@ -96,6 +96,26 @@ New init SQL files in 2.0.0: 46–51, 55–56, 58, 61–62.
   [docs/release/dogrulama.md](docs/release/dogrulama.md).
 
 ## Upgrade notes (unreleased upstream changes carried into 2.0.0)
+
+* **autonomy (W0.32, every deployment):** human approval is the default.
+  A new database is seeded with Assist (`approval.force_manual_approval`
+  `{"enabled": true}`): a person approves every response action until an admin
+  chooses Act. On upgrade, `63_approval_default_assist.sql` moves the row to
+  Assist **only** while it is still the untouched pre-2.0 Act seed (no
+  `updated_by`, no `config_audit_log` entry for the key) and audits the move as
+  `system:w0.32-upgrade`. Act or Assist that a person chose in the console is
+  kept, and `DAEMON_FORCE_APPROVAL` (a lock, still `false` by default in Helm,
+  compose and `env.example`) is read as before. An install that relied on the
+  old Act seed and wants Act selects it again in Settings › Limits & autonomy.
+  Containment is never autonomous at any tier: `isolate_host`, `disable_user`,
+  `revoke_sessions`, `access_revoke`, `block_ip`, `waf_block` and
+  `quarantine_file` always wait for a person, and `PUT /api/autonomy/tiers/...`
+  answers 422 for Autonomous on them. Only `block_domain` and `gateway_block` can
+  be Autonomous. An Autonomous row stored earlier for a containment class is kept
+  but no longer applied (the matrix marks it "not applied"; each decision
+  records `... is containment; a person approves it`). `GET /api/config/autonomy`
+  adds `mode` and `autonomous_tiers`; the header chip shows Act only when a tier
+  can actually release an action.
 
 * **integrations (W0.29):** a configured LogLM connector stops: its card, MCP
   server and console tab are gone and nothing calls the connector any more.
