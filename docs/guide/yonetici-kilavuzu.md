@@ -97,9 +97,11 @@ bunu değişiklik yönetimi sürecinize alın.
 | Kural kaynağı ekleme, silme, güncelleme, yeniden yükleme (`POST /api/detection-rules/sources`, `DELETE /api/detection-rules/sources/{source_id}`, `.../update`, `POST /api/detection-rules/update-all`, `POST /api/detection-rules/reload`) | `settings.write` |
 | AI bileşen yapılandırması, Kafka ayarı, federasyon ayarı, ajan ve iş akışı açma/kapama, iş akışı koşusu silme, maliyet yeniden hesabı (`POST /api/analytics/recalculate-cost`) | `settings.write` |
 | Federasyon kaynağını düzenleme ve hemen çekme (`PATCH /api/federation/sources/{source_id}`, `.../poll-now`) | `integrations.write` |
-| Dosya/metin/S3 alımı (`POST /api/ingest/upload`, `POST /api/ingest/ingest-string`, `.../sync-s3-folder`, `.../s3-file`), gürültü işaretleme (`/api/findings/{finding_id}/noise`), soruşturma incelemesi, AI kararına geri bildirim (`POST /api/ai/decisions/{decision_id}/feedback`) | `findings.write` |
+| Dosya/metin/S3 alımı (`POST /api/ingest/upload`, `POST /api/ingest/ingest-string`, `.../sync-s3-folder`, `.../s3-file`), gürültü işaretleme (`/api/findings/{finding_id}/noise`), soruşturma incelemesi, AI kararına geri bildirim (`POST /api/ai/decisions/{decision_id}/feedback`), toplu bulgu dışa aktarımı (`POST /api/findings/export`; Viewer alamaz, her aktarım kayda geçer) | `findings.write` |
 | Beceriler, özel ajanlar, özel iş akışları, iş akışı üretme, sohbet içe aktarma, bulgu alımı, vaka raporu üretme, soruşturma başlatma/durdurma, AI karar kaydı oluşturma (`POST /api/ai/decisions`) | `ai_chat.use` |
-| SLA politikaları (`/api/sla-policies`), vaka şablonları (`/api/cases/templates`) | `cases.write` |
+| SLA politikası oluşturma, değiştirme, silme, varsayılan yapma (`/api/sla-policies`; W0.35'e kadar `cases.write`, yani Analyst de yapabiliyordu) | `settings.write` |
+| LLM sağlayıcı ekleme, değiştirme, silme (`/api/llm/providers`), bütçe ayarı (`PUT /api/analytics/budget`) | `settings.write` (Analyst ve Senior Analyst alamaz) |
+| Vaka şablonları (`/api/cases/templates`) | `cases.write` |
 
 CI'daki `tests/security/test_route_permissions.py` iki şeyi sınar. Birincisi,
 testin rota listesindeki her rota, izni olmayan bir kullanıcıya 403 döner. Bu
@@ -115,8 +117,7 @@ listedeki rotalar yalnızca oturum ister. W0.11 bu listeyi küçülttü; kalanla
 bilinçlidir: kimlik ve kendi hesabı (`/api/auth/...`, `PUT /api/auth/me`), kendi
 sohbetleri, izni yardımcı işlevde denetlenenler (`PUT /api/users/{user_id}`,
 `/api/services/...`, `/api/exclusions`), POST ile yapılan okumalar
-(`POST /api/cases/search`, `POST /api/findings/export`,
-`POST /api/analytics/estimate-cost`) ve bulgu açılınca üretilen zenginleştirme
+(`POST /api/cases/search`, `POST /api/analytics/estimate-cost`) ve bulgu açılınca üretilen zenginleştirme
 (bkz. [tehdit modeli R28](tehdit-modeli.md#açık-riskler)).
 Ayrıca `tests/security/test_route_role_matrix.py`, API'nin **her** rotası için
 her yerleşik rolün sonucunu (`allow`, `deny`, `conditional`)
@@ -735,8 +736,8 @@ imhayı yalnızca imha işiyle yapın.
 
 | Kayıt | İçerik | Bütünlük | Nasıl okunur / doğrulanır |
 |---|---|---|---|
-| `config_audit_log` | Her ayar değişikliği: anahtar, eski/yeni değer, değiştiren kullanıcı, gerekçe, zaman; otonomi katmanı değişiklikleri (`config_type='autonomy_tier'`), saklama/imha | zincirsiz | veritabanı; ilgili ekranlar; `GET /api/autonomy/audit` |
-| `case_audit_logs` | Vaka alanı değişiklikleri, düzenleyici an kayıtları, taslaklar | `audit_chain`'de zincirli | Vaka sayfası → Record sekmesi; `python -m core.audit.verify` |
+| `config_audit_log` | Her ayar değişikliği: anahtar, eski/yeni değer (sırlar maskeli), değiştiren kullanıcı, gerekçe, zaman; otonomi katmanı değişiklikleri (`config_type='autonomy_tier'`), saklama/imha; LLM sağlayıcı, beceri, özel iş akışı, kural kaynağı ve SLA politikası değişiklikleri (W0.35) | zincirsiz | veritabanı; ilgili ekranlar; `GET /api/autonomy/audit` |
+| `case_audit_logs` | Vaka alanı değişiklikleri, düzenleyici an kayıtları, taslaklar; kimlik ve kullanıcı yönetimi olayları (`entity_type='auth'`) ve toplu bulgu dışa aktarımları (`entity_type='findings_export'`, W0.35) | `audit_chain`'de zincirli | Vaka sayfası → Record sekmesi; veritabanı; `python -m core.audit.verify` |
 | `approval_actions` | Önerilen her eylem, kararı veren kural, uygulanan otonomi katmanı, araç çağrısının argüman özeti, onaylayan/reddeden, uygulama sonucu | `audit_chain`'de zincirli | onay kuyruğu, vaka Actions sekmesi, `GET /api/v1/approvals`; `python -m core.audit.verify` |
 | `approval_decisions` | Her onay kararı (onay, ilk onay, ikinci onay, red), karar veren ve o anki rolü | yalnızca eklenir, değiştirilemez; zincirsiz | görevler ayrılığı raporu, `GET /api/response/segregation` |
 | `agent_events` (ajan defteri) | Her ajan koşusunun olayları | koşu başına SHA-256 hash zinciri; başı imzalı kontrol noktasında | `GET /api/workflows/runs/{run_id}/verify`, `npm run ledger:verify`, `python -m core.audit.verify --agent-events` |
@@ -812,6 +813,9 @@ Bu sürümde **olmayanlar**:
 
 AutoSecOps güvenlikle ilgili olayları kurumun SIEM'ine akıtabilir. Aktarım
 **varsayılan olarak kapalıdır**; kapalıyken dosya yazılmaz, bağlantı açılmaz.
+Kimlik olayları aktarım kapalıyken de veritabanına kaydedilir (bkz. "Kimlik ve
+ayar değişikliği kaydı"); aktarım bunların kurum dışında da bir kopyasıdır.
+Banka ve benzeri denetimli kurumlarda aktarımın açık olması önerilir.
 Yönetici API'si (konsol ekranı yoktur):
 
 - `GET /api/compliance/audit-export/config` ve `.../status` (`settings.read`):
@@ -845,11 +849,54 @@ geçmeyen bir kişi adı) olduğu gibi aktarır. Aktör alanı denetim izinin am
 gereği maskelenmez.
 
 **Çok kopyalı kurulum.** Aktarımı Postgres danışma kilidini alan tek süreç yapar.
-Kimlik doğrulama olayları API sürecinde yerel bir biriktiriciye
-(`$VIGIL_DIR/audit_export/`) yazılır; birden çok API kopyası varsa bu dizin tüm
-kopyaların paylaştığı bir birimde olmalıdır, yoksa lider olmayan kopyaların olayları
-aktarılmaz. Mantıksal geri yüklemeden sonra imleç dosyasını (`cursors.json`)
-silin.
+Kimlik doğrulama olayları veritabanında tutulur (aşağıdaki "Kimlik ve ayar
+değişikliği kaydı"), bu yüzden kopyalar arasında paylaşılan bir disk gerekmez;
+yalnızca başarısız girişlerdeki tanımlayıcı özetinin anahtarı
+(`$VIGIL_DIR/audit_export/identifier.key`) kopyalar arasında aynı olmalıdır ki
+özetler eşleşsin. Mantıksal geri yüklemeden sonra imleç dosyasını
+(`cursors.json`) silin.
+
+### Kimlik ve ayar değişikliği kaydı
+
+W0.35'ten beri aşağıdakiler, SIEM aktarımı açık olsun olmasın, veritabanında
+kalıcı olarak kaydedilir:
+
+- **Kimlik ve kullanıcı yönetimi olayları:** giriş (başarılı, başarısız,
+  kilitleme, MFA hatası), SSO girişi (başarılı, reddedilen), çıkış, MFA kurma,
+  açma, kapatma ve kurtarma kodları, parola değişikliği, parola sıfırlama isteği
+  ve sıfırlama, kullanıcı oluşturma, güncelleme, devre dışı bırakma/etkinleştirme,
+  silme ve rol değişikliği. `case_audit_logs` tablosuna `entity_type = 'auth'`
+  satırı olarak yazılır (`field_name` olay, `action` sonuç, `changed_by` kişi,
+  `ip_address`, `user_agent`; ayrıntı `new_value`'da). Tablo W1.10 zincirindedir:
+  `python -m core.audit.verify` bu satırları da doğrular. Bilinmeyen bir
+  kullanıcı adıyla başarısız girişte yazılan ad saklanmaz, yalnızca anahtarlı
+  özeti ve uzunluğu saklanır. SIEM aktarımında bu olaylar `auth` kaynağıyla
+  gider.
+- **Ayar değişiklikleri** `config_audit_log` tablosuna kim, ne, eski → yeni
+  değer olarak yazılır; sırlar (`api_key`, `password`, `token`, `secret` …
+  anahtarları, URL içindeki kullanıcı:parola, tanınan anahtar biçimleri)
+  `[REDACTED]` olarak saklanır. Yeni kapsananlar (`config_type`):
+  `llm_provider` (LLM sağlayıcı ekleme/değiştirme/silme; bulut sağlayıcı
+  seçimi yurt dışı aktarımın başladığı andır, KVKK md. 9; anahtarın kendisi
+  değil, değişip değişmediği yazılır), `skill` (beceri; gövde 16 000 karaktere
+  kadar ve SHA-256 özeti), `custom_workflow`, `detection_rules` (kaynak ekleme,
+  silme, eşitleme, yeniden yükleme) ve `sla_policy`. Bütçe ayarı ve iş akışı
+  açma/kapama zaten `system_config` değişikliği olarak yazılıyordu.
+  `config_audit_log` W1.10 zincirinde değildir (tehdit modeli R6).
+- **Toplu bulgu dışa aktarımı** (`POST /api/findings/export`): kim, hangi biçim
+  ve seçim (tüm bulgular, gizli kanaryalar hariç), kaç satır ve dosya adı;
+  `case_audit_logs` içinde `entity_type = 'findings_export'` (zincirli). Kayıt
+  yazılamazsa dışa aktarım dosyası silinir ve istek 500 döner.
+- **Vaka yorumu, kanıt ve gözetim zinciri kaydının yazarı** oturumdaki
+  kullanıcıdır; istemcinin gönderdiği `author`, `collected_by` ya da `user`
+  alanı kabul edilir ama yok sayılır. **W0.35'ten önce yazılmış yorum ve kanıt
+  satırlarındaki yazar adı istemcinin gönderdiği metindir** (konsol her zaman
+  `SOC Analyst` gönderiyordu) ve güvenilir değildir; bu satırlar
+  değiştirilmedi. Kimin yazdığını o satırlar için vaka Record sekmesindeki
+  zincirli kayıtlardan ya da erişim kayıtlarından doğrulayın.
+
+Sorgu örneği (psql):
+`SELECT timestamp, field_name, action, changed_by, ip_address FROM case_audit_logs WHERE entity_type = 'auth' ORDER BY audit_id DESC LIMIT 50;`
 
 Alan eşlemesi, biçimler, metrikler (`autosecops_audit_export_*`) ve bilinen sınırlar:
 [core/compliance/AUDIT_EXPORT.md](../../core/compliance/AUDIT_EXPORT.md).
