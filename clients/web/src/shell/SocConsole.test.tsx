@@ -1089,6 +1089,14 @@ describe('SocConsole', () => {
     expect(await screen.findByText('Assist · asks before changes')).toBeInTheDocument()
     noTier.unmount()
 
+    // tiers unreadable: the gate holds every action, so the chip says so
+    vi.mocked(configApi.getAutonomy).mockResolvedValueOnce({
+      data: { auto_response_enabled: true, force_manual_approval: false, autonomous_tiers: null, mode: 'unknown' },
+    } as never)
+    const unknown = renderConsole()
+    expect(await screen.findByText('Unknown · approvals held')).toBeInTheDocument()
+    unknown.unmount()
+
     // an older API without a mode reads Assist, never Act
     vi.mocked(configApi.getAutonomy).mockResolvedValueOnce({
       data: { auto_response_enabled: true, force_manual_approval: false },

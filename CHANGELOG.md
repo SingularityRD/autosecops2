@@ -98,12 +98,13 @@ New init SQL files in 2.0.0: 46–51, 55–56, 58, 61–62.
 ## Upgrade notes (unreleased upstream changes carried into 2.0.0)
 
 * **autonomy (W0.32, every deployment):** human approval is the default.
-  A new database is seeded with Assist (`approval.force_manual_approval`
-  `{"enabled": true}`): a person approves every response action until an admin
-  chooses Act. On upgrade, `63_approval_default_assist.sql` moves the row to
-  Assist **only** while it is still the untouched pre-2.0 Act seed (no
-  `updated_by`, no `config_audit_log` entry for the key) and audits the move as
-  `system:w0.32-upgrade`. Act or Assist that a person chose in the console is
+  A person approves every response action until an admin chooses Act.
+  `04_config_tables.sql` (frozen since 0.7.1) still seeds
+  `approval.force_manual_approval` as Act; `63_approval_default_assist.sql`,
+  run after it on new and upgraded databases, moves the row to Assist **only**
+  while it is still that untouched seed (no `updated_by`, no
+  `config_audit_log` entry for the key) and audits the move as
+  `system:w0.32-default`, so a new install's audit log starts with that row. Act or Assist that a person chose in the console is
   kept, and `DAEMON_FORCE_APPROVAL` (a lock, still `false` by default in Helm,
   compose and `env.example`) is read as before. An install that relied on the
   old Act seed and wants Act selects it again in Settings › Limits & autonomy.
@@ -114,8 +115,9 @@ New init SQL files in 2.0.0: 46–51, 55–56, 58, 61–62.
   be Autonomous. An Autonomous row stored earlier for a containment class is kept
   but no longer applied (the matrix marks it "not applied"; each decision
   records `... is containment; a person approves it`). `GET /api/config/autonomy`
-  adds `mode` and `autonomous_tiers`; the header chip shows Act only when a tier
-  can actually release an action.
+  adds `mode` (`assist`, `act`, or `unknown` when the tiers cannot be read and
+  every action is held) and `autonomous_tiers`; the header chip shows Act only
+  when a tier can actually release an action.
 
 * **integrations (W0.29):** a configured LogLM connector stops: its card, MCP
   server and console tab are gone and nothing calls the connector any more.

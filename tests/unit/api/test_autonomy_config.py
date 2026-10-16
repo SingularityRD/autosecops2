@@ -135,14 +135,14 @@ def test_act_with_an_eligible_autonomous_tier_is_act(monkeypatch):
     assert (result.autonomous_tiers, result.mode) == (1, "act")
 
 
-def test_unreadable_tiers_never_understate_autonomy(monkeypatch):
+def test_unreadable_tiers_read_unknown(monkeypatch):
     _act_flags(monkeypatch)
     monkeypatch.setattr(
         "core.autonomy.AutonomyController",
         lambda: _Controller(error=RuntimeError("db down")),
     )
     result = get_autonomy_config()
-    assert (result.autonomous_tiers, result.mode) == (None, "act")
+    assert (result.autonomous_tiers, result.mode) == (None, "unknown")
 
 
 def test_forced_approval_is_assist_whatever_the_tiers(monkeypatch):

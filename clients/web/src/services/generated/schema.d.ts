@@ -8339,8 +8339,9 @@ export interface components {
          *     ``mode`` is the effective mode (W0.32). ``act`` only when approvals are
          *     not forced, auto-response is on and at least one tier may run an action
          *     without a person; otherwise every action waits for one and the mode is
-         *     ``assist``. Unreadable tiers count as possibly autonomous, so the chip
-         *     never understates autonomy.
+         *     ``assist``. ``unknown`` when the flags would allow Act but the tiers could
+         *     not be read: the gate then holds every action (a tier read failure decides
+         *     approve), but the chip cannot say which tiers would release one.
          */
         AutonomyConfig: {
             /** Auto Response Enabled */
@@ -8354,7 +8355,7 @@ export interface components {
              * @default assist
              * @enum {string}
              */
-            mode: "assist" | "act";
+            mode: "assist" | "act" | "unknown";
         };
         /** AutonomyDemotion */
         AutonomyDemotion: {

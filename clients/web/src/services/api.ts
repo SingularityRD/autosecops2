@@ -646,7 +646,7 @@ export const configApi = {
       auto_response_enabled: boolean
       force_manual_approval: boolean
       autonomous_tiers: number | null
-      mode: 'assist' | 'act'
+      mode: 'assist' | 'act' | 'unknown'
     }>('/config/autonomy'),
   
   getPostgreSQL: () => api.get('/config/postgresql'),

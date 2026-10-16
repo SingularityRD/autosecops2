@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getAllIntegrations } from '../../config/integrations'
 import { aiConfigApi, budgetsApi, configApi, llmProviderApi, workflowApi } from '../../services/api'
-import { AUTONOMY_ACT, AUTONOMY_ASSIST, autonomyIsAct } from '../../shared/autonomy'
+import { autonomyLabel } from '../../shared/autonomy'
 import { Icon, type IconName } from '../../shared/icons'
 import { markConsoleTourSeen } from '../../shell/consoleTourSeen'
 import { matchesProfile, type InvestigationProfiles } from '../settings/useSettings'
@@ -89,7 +89,7 @@ export default function SummaryStep({ onChange }: { onChange: (target: SummaryTa
     })
     read('autonomy', async () => {
       const { data } = await configApi.getAutonomy()
-      return autonomyIsAct(data) ? AUTONOMY_ACT : AUTONOMY_ASSIST
+      return autonomyLabel(data)
     })
     read('limits', async () => {
       const [{ data }, quota] = await Promise.all([

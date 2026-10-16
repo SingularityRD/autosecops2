@@ -1504,14 +1504,15 @@ class AutonomyConfig(BaseModel):
     ``mode`` is the effective mode (W0.32). ``act`` only when approvals are
     not forced, auto-response is on and at least one tier may run an action
     without a person; otherwise every action waits for one and the mode is
-    ``assist``. Unreadable tiers count as possibly autonomous, so the chip
-    never understates autonomy.
+    ``assist``. ``unknown`` when the flags would allow Act but the tiers could
+    not be read: the gate then holds every action (a tier read failure decides
+    approve), but the chip cannot say which tiers would release one.
     """
 
     auto_response_enabled: bool
     force_manual_approval: bool
     autonomous_tiers: Optional[int] = None
-    mode: Literal["assist", "act"] = "assist"
+    mode: Literal["assist", "act", "unknown"] = "assist"
 
 
 def _autonomous_tier_count() -> Optional[int]:
@@ -1537,12 +1538,17 @@ def get_autonomy_config() -> AutonomyConfig:
     auto = effective.response.auto_response_enabled
     forced = effective.response.force_manual_approval
     tiers = _autonomous_tier_count()
-    act = auto and not forced and (tiers is None or tiers > 0)
+    if not auto or forced:
+        mode = "assist"
+    elif tiers is None:
+        mode = "unknown"
+    else:
+        mode = "act" if tiers > 0 else "assist"
     return AutonomyConfig(
         auto_response_enabled=auto,
         force_manual_approval=forced,
         autonomous_tiers=tiers,
-        mode="act" if act else "assist",
+        mode=mode,
     )
 
 

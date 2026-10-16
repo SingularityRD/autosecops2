@@ -23,15 +23,24 @@ export const ALWAYS_HUMAN_SENTENCE = `${ALWAYS_HUMAN_SUMMARY} always need a pers
 
 export const AUTONOMY_ASSIST = 'Assist · asks before changes'
 export const AUTONOMY_ACT = 'Act · reversible changes on its own'
+/** The flags allow Act but the tiers could not be read; the gate holds every action. */
+export const AUTONOMY_UNKNOWN = 'Unknown · approvals held'
 
 export interface AutonomyRead {
   auto_response_enabled?: boolean
   force_manual_approval?: boolean
   autonomous_tiers?: number | null
-  mode?: 'assist' | 'act'
+  mode?: 'assist' | 'act' | 'unknown'
 }
 
 /** The effective mode the API reports; Assist when it says nothing else. */
 export function autonomyIsAct(data: AutonomyRead | null | undefined): boolean {
   return data?.mode === 'act'
+}
+
+/** The chip's words for the effective mode. */
+export function autonomyLabel(data: AutonomyRead | null | undefined): string {
+  if (data?.mode === 'act') return AUTONOMY_ACT
+  if (data?.mode === 'unknown') return AUTONOMY_UNKNOWN
+  return AUTONOMY_ASSIST
 }

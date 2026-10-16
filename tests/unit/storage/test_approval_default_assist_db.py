@@ -1,9 +1,9 @@
 """Human approval is the default response mode, new and upgraded (W0.32), DB-backed.
 
-04_config_tables.sql seeds Assist for a new database. 63_approval_default_assist.sql
-moves an existing install from the old Act seed to Assist only while nobody has
-touched the row, audits the move, and is a no-op on every later run (compose
-re-applies every init file on `up`). A row a person wrote is never changed.
+04_config_tables.sql (frozen since 0.7.1) still seeds Act. 63_approval_default_assist.sql
+moves that seed to Assist, on a new database and an upgraded one alike, only while
+nobody has touched the row; it audits the move and is a no-op on every later run
+(compose re-applies every init file on `up`). A row a person wrote is never changed.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ REPO = Path(__file__).resolve().parents[3]
 INIT = REPO / "infra" / "database" / "init"
 HELM_INIT = REPO / "infra" / "helm" / "vigil" / "files" / "database-init"
 MIGRATION = "63_approval_default_assist.sql"
-UPGRADE_ACTOR = "system:w0.32-upgrade"
+UPGRADE_ACTOR = "system:w0.32-default"
 
 
 def _engine():
@@ -89,17 +89,26 @@ def _state():
     return value, list(audit)
 
 
-def test_new_databases_are_seeded_with_assist():
-    for directory in (INIT, HELM_INIT):
-        sql = (directory / "04_config_tables.sql").read_text(encoding="utf-8")
-        seed = re.search(
-            r"'approval\.force_manual_approval',\s*'(\{[^']*\})'", sql
-        )
-        assert seed, directory
-        assert json.loads(seed.group(1)) == {"enabled": True}, directory
+def _seed_04() -> dict:
+    sql = (INIT / "04_config_tables.sql").read_text(encoding="utf-8")
+    seed = re.search(r"'approval\.force_manual_approval',\s*'(\{[^']*\})'", sql)
+    assert seed
+    return json.loads(seed.group(1))
+
+
+def test_the_bundled_copies_match():
     assert (HELM_INIT / MIGRATION).read_text(encoding="utf-8") == (
         INIT / MIGRATION
     ).read_text(encoding="utf-8")
+
+
+def test_a_new_database_ends_in_assist(clean):
+    # 04 (frozen) seeds Act; 63 runs after it in the same init pass.
+    assert _seed_04() == {"enabled": False}
+    _row(_seed_04())
+    _migrate()
+    assert _state() == ({"enabled": True}, [UPGRADE_ACTOR])
+    assert ApprovalService()._stored_force_manual_approval() is True
 
 
 def test_no_row_holds_every_action_for_a_person(clean):

@@ -285,7 +285,7 @@ def test_seeded_rows_and_data_corrections(dbs):
                       "WHERE key='approval.force_manual_approval'") == [({"enabled": True},)]
     assert _query(db, "SELECT changed_by FROM config_audit_log "
                       "WHERE config_key='approval.force_manual_approval'") == [
-        ("system:w0.32-upgrade",)]
+        ("system:w0.32-default",)]
 
 
 def test_ledger_chain_still_verifies(dbs):

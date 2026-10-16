@@ -30,11 +30,18 @@ MIGRATION = "63_approval_default_assist.sql"
 
 
 def _effective_force(config: dict, sql_files: dict) -> bool:
-    """env OR the seeded row, as ApprovalService decides it."""
+    """env OR the row the init pass leaves, as ApprovalService decides it.
+
+    04 (frozen) seeds Act; 63 then moves that untouched seed to Assist, which
+    tests/unit/storage/test_approval_default_assist_db.py runs against Postgres.
+    """
     lock = Settings(daemon_force_approval=config.get("DAEMON_FORCE_APPROVAL", "false"))
     seed = SEED.search(sql_files["04_config_tables.sql"])
     assert seed, "04_config_tables.sql seeds no approval row"
-    return bool(lock.daemon_force_approval) or stored_force_manual(json.loads(seed.group(1)))
+    row = json.loads(seed.group(1))
+    if MIGRATION in sql_files and row == {"enabled": False}:
+        row = {"enabled": True}
+    return bool(lock.daemon_force_approval) or stored_force_manual(row)
 
 
 # -- static -------------------------------------------------------------------------
@@ -47,7 +54,8 @@ def test_default_values_and_bundled_sql_hold_every_action_for_a_person():
         for p in (CHART / "files" / "database-init").glob("*.sql")
     }
     assert _effective_force(values["config"], sql) is True
-    assert MIGRATION in values["dbInit"]["sqlFiles"]
+    files = values["dbInit"]["sqlFiles"]
+    assert files.index("04_config_tables.sql") < files.index(MIGRATION)
 
 
 # -- rendered -----------------------------------------------------------------------

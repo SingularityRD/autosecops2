@@ -564,14 +564,14 @@ her müdahale eylemi bir kişinin onayını bekler (Assist). Konsolun üst çubu
 onay zorlanmıyorsa, `DAEMON_AUTO_RESPONSE` açıksa ve en az bir otonomi katmanı
 Autonomous ise görünür; aksi halde **Assist** (değişiklikten önce sorar) görünür.
 Konsolda Act seçilmiş olsa bile hiçbir katman Autonomous değilse her eylem yine
-kişi bekler ve çip bunu Assist olarak gösterir. Katmanlar okunamıyorsa çip otonomiyi
-olduğundan az göstermemek için Act der.
+kişi bekler ve çip bunu Assist olarak gösterir. Katmanlar okunamıyorsa çip **Unknown · approvals
+held** der (`mode: unknown`): kapı o durumda her eylemi bir kişiye bekletir.
 
 | Anahtar | Varsayılan | Etki |
 |---|---|---|
 | `DAEMON_AUTO_RESPONSE` | `true` | `false` ise daemon hiçbir müdahale eylemi önermez ve **onaylanmış** eylemleri de uygulamaz |
 | `DAEMON_FORCE_APPROVAL` | `false` (kilit yok) | Bir kilittir, kipin kendisi değildir: `true` ise her eylem insan onayı bekler ve konsoldan Act seçilemez (409). `false` ise seçim konsoldadır |
-| `approval.force_manual_approval` (konsoldan, `POST /api/config/force-manual-approval`, `settings.write`) | Assist (`{"enabled": true}`; kayıt yoksa ya da okunamazsa da Assist) | Kurulum sihirbazı ve **Ayarlar → Limits & autonomy** Assist'i (önerilen) ya da Act'i buraya yazar |
+| `approval.force_manual_approval` (konsoldan, `POST /api/config/force-manual-approval`, `settings.write`) | Assist (`{"enabled": true}`; kayıt yoksa ya da okunamazsa da Assist). 0.7.1'den donmuş `04_config_tables.sql` satırı Act olarak tohumlar; `63_approval_default_assist.sql` dokunulmamış tohumu yeni ve yükseltilen kurulumda Assist'e çevirir ve `config_audit_log`'a `system:w0.32-default` adıyla bir satır yazar | Kurulum sihirbazı ve **Ayarlar → Limits & autonomy** Assist'i (önerilen) ya da Act'i buraya yazar |
 
 **Düzenlenmiş sektör için önerilen ayar:** `DAEMON_FORCE_APPROVAL=true` (Helm:
 `config.DAEMON_FORCE_APPROVAL`) ve `DAEMON_AUTO_RESPONSE=true` (aksi halde onaylanan
