@@ -885,6 +885,24 @@ sürümler için bkz. [kurulum kılavuzu §9](kurulum-internetsiz.md#9-güncelle
 Her sürümle birlikte SBOM, imzalı imajlar ve sürüm notları verilmesi
 (Planlı — `wp/w4.7-release`, bu sürümde yok).
 
+### Kendi PostgreSQL sunucunuz
+
+Helm'de veritabanı kullanıcısının adı serbesttir (`postgresql.external.username`
+ya da `postgresql.auth.username`); `deeptempo` olması gerekmez. Bu kullanıcının
+süper kullanıcı olması da gerekmez. Ancak veritabanının sahibi olmalı ve
+CREATEROLE yetkisine sahip olmalıdır. db-init Job'u bu kullanıcıyla bağlanır,
+şemayı kurar ve uygulamaların bağlandığı sahip olmayan `vigil_app` rolünü
+oluşturup parolasını ayarlar. Job bunu her kurulumda ve yükseltmede yaptığı için
+yetki kalıcı olarak gerekir. `pg_trgm` ve `uuid-ossp` uzantılarını veritabanı
+sahibi kendisi oluşturabilir.
+
+**Bitnami alt grafiği (`postgresql.bitnami.enabled=true`).** Alt grafiğin
+oluşturduğu kullanıcının (`postgresql.bitnami.auth.username`) CREATEROLE yetkisi
+yoktur. Bu yüzden `vigil_app` oluşturulmaz ve uygulamalar veritabanına
+bağlanamaz. İki çözüm vardır: bu kullanıcıya bir kez süper kullanıcıyla
+`ALTER ROLE <kullanıcı> CREATEROLE;` verin ve ardından `helm upgrade` yapın, ya da
+kullanıcı adı olarak CREATEROLE yetkisi olan bir kullanıcı verin.
+
 ## Yedekleme ve geri yükleme
 
 `python -m core.backup` şunları **şifreli bir restic deposuna** yazar:

@@ -20,9 +20,21 @@
 : "${PGDATABASE:=${POSTGRES_DB}}"
 export PGUSER PGDATABASE
 
+# Two frozen statements assume the default superuser deeptempo and are
+# rewritten as the Helm db-init Job does (its comment says why), so the files
+# also apply for a POSTGRES_USER of another name that is not a superuser:
+# GRANT ... TO deeptempo goes to CURRENT_USER (the tables' owner), and only a
+# superuser runs 30's ALTER ROLE vigil_app NOSUPERUSER. With the default user
+# nothing changes.
+init_sql() {
+    sed -e 's/^\(GRANT .*[[:space:]]TO[[:space:]]*\)deeptempo;/\1CURRENT_USER;/' \
+        -e 's/^ALTER ROLE vigil_app NOSUPERUSER LOGIN;$/DO $w$ BEGIN IF (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN ALTER ROLE vigil_app NOSUPERUSER; END IF; END $w$; ALTER ROLE vigil_app LOGIN;/' \
+        "$1"
+}
+
 for f in /db-init/*.sql; do
     echo "applying $(basename "$f")"
-    psql -v ON_ERROR_STOP=0 -q -f "$f" || true
+    init_sql "$f" | psql -v ON_ERROR_STOP=0 -q -f - || true
 done
 
 # vigil_app logs in with the password the apps already hold; the SQL file
