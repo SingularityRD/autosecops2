@@ -18,6 +18,7 @@ from core.config import (
 from core.deps import (
     provide_demo_data,
     provide_detection_rules,
+    provide_executors,
     provide_integration_bridge,
     provide_mcp_client,
 )
@@ -810,6 +811,7 @@ def set_integrations_config(
     config: IntegrationsConfig,
     current_user: User = Depends(get_current_active_user),
     bridge: IntegrationBridgeService = Depends(provide_integration_bridge),
+    executors: Any = Depends(provide_executors),
 ):
     """
     Set integrations configuration.
@@ -904,8 +906,35 @@ def set_integrations_config(
             "integrations": sanitized_integrations,
         },
     )
+    # This process's executors follow the save at once; the daemon's re-read
+    # within RELOAD_SECONDS (core.response.executors.wiring).
+    _invalidate_executors(executors)
 
     return {"success": True, "message": "Integrations configuration saved"}
+
+
+def _invalidate_executors(executors: Any) -> None:
+    invalidate = getattr(executors, "invalidate", None)
+    if callable(invalidate):
+        invalidate()
+
+
+def _executor_status(executors: Any, integration_id: str) -> Optional[Dict[str, Any]]:
+    """Whether this integration's response executor is live in this process.
+
+    None for an integration that has no executor. Reads the stored config
+    afresh, so the answer reflects the latest save, not the start-up state.
+    """
+    from core.response.executors.wiring import EXECUTOR_SOURCES
+
+    if not any(s.integration_id == integration_id for s in EXECUTOR_SOURCES):
+        return None
+    action_types_for = getattr(executors, "action_types_for", None)
+    if not callable(action_types_for):
+        return None
+    _invalidate_executors(executors)
+    types = sorted(action_types_for(integration_id))
+    return {"available": bool(types), "action_types": types}
 
 
 def _connected_session(mcp_client: Any, server_name: str) -> Any:
@@ -978,6 +1007,7 @@ async def test_integration(
     current_user: User = Depends(get_current_active_user),
     bridge: IntegrationBridgeService = Depends(provide_integration_bridge),
     mcp_client=Depends(provide_mcp_client),
+    executors: Any = Depends(provide_executors),
 ):
     """Probe the MCP servers behind an integration.
 
@@ -987,7 +1017,10 @@ async def test_integration(
     probe: enabled MCP servers are contacted, and if none are enabled every
     declared server is probed with a temporary session. Splunk and Elastic are
     then also read with their saved URL and credentials (``credentials`` in the
-    answer), since a server starts whatever it is pointed at.
+    answer), since a server starts whatever it is pointed at; so are the
+    response executors (Defender, Entra ID, PAN-OS), with one read-only call
+    each. For those, ``executor`` says whether this process can run their
+    actions now (still behind the approval gate).
     """
     require_integrations_admin(current_user)
 
@@ -1077,6 +1110,9 @@ async def test_integration(
     }
     if credentials is not None:
         result["credentials"] = credentials
+    executor = _executor_status(executors, integration_id)
+    if executor is not None:
+        result["executor"] = executor
     return result
 
 

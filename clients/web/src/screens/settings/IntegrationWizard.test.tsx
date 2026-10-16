@@ -126,6 +126,36 @@ describe('IntegrationWizard drawer', () => {
     expect(screen.getByText('Poor')).toBeInTheDocument()
   })
 
+  it('says whether an executor can act now, with no restart (W0.37)', async () => {
+    const defender = { ...okta, id: 'microsoft-defender', name: 'Microsoft Defender for Endpoint' }
+    test.mockResolvedValueOnce({
+      data: {
+        success: true,
+        servers: [{ name: 'microsoft-defender', success: true }],
+        credentials: { success: true, message: 'Token issued; machines readable' },
+        executor: { available: true, action_types: ['isolate_host'] },
+      },
+    } as never)
+    open({ integration: defender })
+    expect(screen.getByText('Experimental')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save and verify' }))
+    expect(await screen.findByText('Response actions')).toBeInTheDocument()
+    expect(screen.getByText('Available now, after approval: isolate_host')).toBeInTheDocument()
+
+    test.mockResolvedValueOnce({
+      data: {
+        success: false,
+        message: 'Microsoft Defender token request failed (ConnectError); Entra ID could not be reached',
+        servers: [{ name: 'microsoft-defender', success: true }],
+        credentials: { success: false, message: 'Microsoft Defender token request failed (ConnectError); Entra ID could not be reached' },
+        executor: { available: false, action_types: [] },
+      },
+    } as never)
+    fireEvent.click(screen.getByRole('button', { name: 'Run the test again' }))
+    expect(await screen.findByText(/Not available: enable the integration/)).toBeInTheDocument()
+    expect(screen.getByText(/Entra ID could not be reached/)).toBeInTheDocument()
+  })
+
   it('error: a 400 says to save first; an unavailable MCP client is its own state', async () => {
     test.mockRejectedValueOnce({ response: { status: 400, data: { detail: 'Integration not configured' } } })
     open()
