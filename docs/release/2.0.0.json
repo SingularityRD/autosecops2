@@ -367,6 +367,11 @@
       "id": "W0.30",
       "topic": "upstream enjeksiyon korumaları (öznenin yazdığı metin karara girmez; AUTOSECOPS_GUARDS varsayılan açık) ve ajan katmanı OTel izleme (yalnızca OTLP uç noktası ayarlıysa; içerik yakalama kapalı)",
       "topic_en": "upstream injection guards (text a subject writes stays out of the verdict; AUTOSECOPS_GUARDS on by default) and agent-layer OTel tracing (only with an OTLP endpoint; content capture off)"
+    },
+    {
+      "id": "W0.31",
+      "topic": "Medic iş akışının yeşile dönmesi; Medic API'si bağlanırken ters DNS aramaz, başlangıçta gelen TERM Medic'i temiz durdurur",
+      "topic_en": "Medic workflow green again; the Medic API does no reverse DNS lookup when it binds, and a TERM during start-up stops Medic cleanly"
     }
   ],
   "highlights": [
