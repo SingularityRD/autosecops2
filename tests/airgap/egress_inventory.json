@@ -241,6 +241,17 @@
       "note": "Vendor connector; runs only when the 'cloudflare' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none."
     },
     {
+      "site": "core/integrations/credential_check.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 1
+      },
+      "gates": [
+        "integration:microsoft_defender"
+      ],
+      "note": "Settings › Integrations › Test for the Microsoft Defender for Endpoint executor (W0.37): one read-only `GET machines?$top=1` to the allowlisted Defender API base; runs only when an admin presses Test. The air-gap profile enables no executor."
+    },
+    {
       "site": "core/integrations/crowdstrike/client.py",
       "category": "gated",
       "kinds": {
