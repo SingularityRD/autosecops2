@@ -22,7 +22,7 @@ permissions:
 jobs:
   lint:
     name: Lint and Template
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -97,7 +97,7 @@ jobs:
 
   chart-testing:
     name: chart-testing
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: lint
     steps:
       - uses: actions/checkout@v7

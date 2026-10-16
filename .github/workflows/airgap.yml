@@ -27,7 +27,7 @@ jobs:
   airgap-static:
     name: Air-gap - egress inventory
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -51,7 +51,7 @@ jobs:
   airgap-runtime:
     name: Air-gap - runtime socket guard
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
       postgres:
@@ -68,7 +68,7 @@ jobs:
         ports:
           - 5432:5432
       redis:
-        image: redis:7-alpine
+        image: redis:7.2.16-alpine@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s

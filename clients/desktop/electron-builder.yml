@@ -30,6 +30,15 @@ extraResources:
   # vigil-support (tests/unit/_ratchets/test_desktop_version_tracks_release.py).
   - from: ../../scripts/vigil-support
     to: vigil-support
+  # Apache-2.0 section 4: the licence, NOTICE and the third-party inventory
+  # travel with the app, in <resources>/licenses (W0.38). Electron adds its own
+  # LICENSE.electron.txt and LICENSES.chromium.html next to the executable.
+  - from: ../../LICENSE
+    to: licenses/LICENSE
+  - from: ../../NOTICE
+    to: licenses/NOTICE
+  - from: ../../THIRD_PARTY_LICENSES
+    to: licenses/THIRD_PARTY_LICENSES
 # Two ways to run: against a checkout (live source, development) or against
 # published images (no source tree, Docker only) — see Mode in src/main.ts.
 # scripts/after-pack.js flips the Electron fuses and, without a Developer ID,

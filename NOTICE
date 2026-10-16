@@ -1,0 +1,89 @@
+AutoSecOps
+Copyright 2026 SingularityRD
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+
+Upstream: Vigil
+---------------
+
+AutoSecOps is based on Vigil (Apache-2.0), an open source AI SOC by the
+Vigil-SOC project: https://github.com/Vigil-SOC/vigil
+Copyright 2026 The Vigil-SOC authors.
+
+AutoSecOps is a modified version of Vigil. It was forked from upstream main at
+8813f24a (Vigil 0.7.0) on 2026-10-11 and synced for the last time at 58736836
+(git tag fork-point-2026-10). SingularityRD has modified files of the original
+work and added new ones since then: product name and branding, database init
+files, Federation, Medic, setup screens, the approval and audit model, release
+and air-gap tooling, and more. The git history records every change
+(git log fork-point-2026-10..HEAD), and FORK.md lists where this product
+deliberately differs from upstream.
+
+"Vigil" and "DeepTempo" are names of their respective owners. This product is
+not endorsed by them, and the Apache License grants no rights to their names or
+marks (section 6).
+
+
+Third-party software
+--------------------
+
+THIRD_PARTY_LICENSES lists every Python and Node package this product is built
+from, with its licence, as declared by the package. It is generated from the
+lockfiles at release time (scripts/release/release_tool.py third-party-licenses).
+Operating-system packages inside the container images are listed in each
+image's CycloneDX SBOM (autosecops-<version>-image-<component>-<arch>.cdx.json,
+attached to every release and to the image itself as an attestation).
+
+The base images are Debian (python:3.12-slim, node:22-bookworm-slim) and
+contain GPL and LGPL licensed programs and libraries. The corresponding source
+code is available from Debian (https://sources.debian.org/) for the package
+versions the image SBOMs list; SingularityRD will also provide it on request
+through the contact in SECURITY.md for three years from the release.
+
+Components run next to AutoSecOps and shipped unmodified (container images, in
+the air-gap bundle and pulled by Compose, Helm and the desktop app):
+
+  Redis 7.2.16 (redis:7.2.16-alpine)       BSD-3-Clause
+  PostgreSQL 16 (postgres:16-alpine)        PostgreSQL License
+  Bifrost (maximhq/bifrost)                 Apache-2.0
+  Ollama (ollama/ollama)                    MIT
+  curl (curlimages/curl)                    curl License
+
+Redis is pinned to 7.2.x on purpose: Redis 7.4 and later are not under an open
+source licence (RSALv2 / SSPLv1).
+
+
+Llama
+-----
+
+Built with Llama.
+
+The air-gap bundle can include the llama3.1:8b model (the default of
+infra/airgap/build-bundle.sh --ollama-model). Llama 3.1 is licensed under the
+Llama 3.1 Community License, Copyright (c) Meta Platforms, Inc. All Rights
+Reserved. Its use is subject to the Llama 3.1 Acceptable Use Policy.
+
+  Licence:               https://github.com/meta-llama/llama-models/blob/main/models/llama3_1/LICENSE
+  Acceptable Use Policy: https://llama.meta.com/llama3_1/use-policy
+
+The bundle carries this notice as models/LLAMA_NOTICE.txt next to the model.
+AutoSecOps does not modify the model.
+
+
+Detection rule corpora
+----------------------
+
+The air-gap bundle can include snapshots of these community rule repositories
+(rules/<clone>.tar.gz). They are unmodified copies, each under its own licence,
+and each snapshot is shipped with that repository's own licence file next to it
+(rules/<clone>.LICENSE). That file prevails over this summary.
+
+  Sigma (SigmaHQ/sigma)                                   Detection Rule License (DRL) 1.1
+  Elastic detection-rules (elastic/detection-rules)       Elastic License 2.0
+  Splunk ESCU (splunk/security_content)                   Apache-2.0
+  KQL queries (Bert-JanP/Hunting-Queries-Detection-Rules) BSD-3-Clause
+
+The DRL 1.1 asks that rule authors be credited when rules are used or shared;
+the author field of each Sigma rule is kept. The Elastic License 2.0 does not
+allow providing the rules to third parties as a hosted or managed service.

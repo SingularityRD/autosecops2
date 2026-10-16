@@ -20,6 +20,9 @@ Subcommands
   sbom-npm        CycloneDX SBOM from an npm package-lock.json (v2/v3)
   sboms           all lockfile SBOMs of the repository into one directory
   validate-sbom   structural CycloneDX check (format, refs, purls)
+  third-party-licenses  THIRD_PARTY_LICENSES: every lockfile component with its
+                  declared licence (the checked-in snapshot at the repository
+                  root is this output; --check fails when it is stale)
   provenance      SLSA v1 provenance predicate for one subject (GitHub env)
   images-manifest images.json (+ .tsv) from the build job's digests and indexes
   image-refs      repository@digest rows of an images.json (index or platforms)
@@ -834,6 +837,163 @@ def build_lockfile_sboms(out: Path, version: str, repo: Path = REPO) -> list[Pat
     return written
 
 
+# --------------------------------------------------------------------------- third-party licences
+
+THIRD_PARTY_FILE = "THIRD_PARTY_LICENSES"
+THIRD_PARTY_HEADER = """AutoSecOps - third-party licences
+
+Every Python and Node package AutoSecOps is built from, with the licence the
+package declares. Generated from the lockfiles by
+  python3 scripts/release/release_tool.py third-party-licenses --write
+(the release attaches the same file). Columns: name, version, scope, licence.
+Scope "runtime" ships in an image, the web console or the desktop app; "dev"
+is build and test tooling only; "platform" is installed only on the platform
+its lock marker names (not on the Linux images). Licence texts are in each
+package's distribution. Operating-system packages of the container images are
+in the image SBOMs; components run next to AutoSecOps (Redis, PostgreSQL,
+Bifrost, Ollama, Llama, rule corpora) are listed in NOTICE.
+"""
+_TP_ROW = re.compile(r"^  (\S+)  (\S+)  (runtime|dev|platform)  (.+)$")
+_TP_SECTION = re.compile(r"^== (\S+) ==$")
+_CLASSIFIER_PREFIX = "License :: "
+# Packages whose lockfile entry and installed metadata declare no licence, each
+# checked by hand (registry metadata or the package's own LICENSE file). The
+# Python four are Windows/emscripten-only and never in a Linux image.
+LICENSE_OVERRIDES = {
+    "@remix-run/router": "MIT",  # npm registry
+    "react-router": "MIT",  # npm registry
+    "react-router-dom": "MIT",  # npm registry
+    "pipenet": "MIT",  # package/LICENSE of pipenet-1.4.3.tgz
+    "colorama": "BSD-3-Clause",  # PyPI classifier: BSD License
+    "httpx2-jsfetch": "BSD-3-Clause",  # PyPI License-Expression
+    "pywin32": "PSF-2.0",  # PyPI license field
+    "tzdata": "Apache-2.0",  # PyPI license field
+}
+
+
+def _python_license(name: str) -> Optional[str]:
+    """The licence an installed distribution declares, or None if not installed."""
+    import importlib.metadata as md
+
+    try:
+        meta = md.distribution(name).metadata
+    except md.PackageNotFoundError:
+        return None
+    expr = (meta.get("License-Expression") or "").strip()
+    if expr:
+        return expr
+    field = (meta.get("License") or "").strip()
+    if field and "\n" not in field and len(field) <= 64 and field.upper() != "UNKNOWN":
+        return field
+    classes = [
+        c.split(" :: ")[-1]
+        for c in meta.get_all("Classifier") or []
+        if c.startswith(_CLASSIFIER_PREFIX) and c.count(" :: ") >= 2
+    ]
+    return " OR ".join(sorted(set(classes))) or None
+
+
+def _npm_installed_license(lock: Path, key: str) -> Optional[str]:
+    """licence in node_modules/<key>/package.json next to the lockfile, if installed."""
+    if not key:
+        return None
+    try:
+        lic = json.loads((lock.parent / key / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    lic = lic.get("license") if isinstance(lic, dict) else None
+    return lic if isinstance(lic, str) and lic else None
+
+
+def parse_third_party(text: str) -> dict[tuple[str, str, str], str]:
+    """(lockfile, name, version) -> licence, from a THIRD_PARTY_LICENSES text."""
+    out: dict[tuple[str, str, str], str] = {}
+    section = None
+    for line in text.splitlines():
+        m = _TP_SECTION.match(line)
+        if m:
+            section = m.group(1)
+            continue
+        m = _TP_ROW.match(line)
+        if m and section:
+            out[(section, m.group(1), m.group(2))] = m.group(4)
+    return out
+
+
+def third_party_rows(repo: Path = REPO, known: Optional[dict] = None) -> list[tuple[str, list]]:
+    """[(lockfile, [(name, version, scope, licence)])] for every LOCKFILES entry.
+
+    Licence, first found: the npm lockfile entry; LICENSE_OVERRIDES; `known`
+    (the snapshot, so a release without the packages installed reproduces it);
+    the installed distribution or node_modules package.json; "UNKNOWN".
+    """
+    known = known or {}
+    sections = []
+    for _suffix, kind, rel, _name in LOCKFILES:
+        lock = repo / rel
+        if not lock.is_file():
+            raise ReleaseError(f"missing lockfile {rel}")
+        rows = []
+        if kind == "python":
+            for comp in python_components(lock):
+                props = comp.get("properties", [])
+                marker = any(p["name"] == "autosecops:python-marker" for p in props)
+                lic = (
+                    LICENSE_OVERRIDES.get(comp["name"])
+                    or known.get((rel, comp["name"], comp["version"]))
+                    or _python_license(comp["name"])
+                    or "UNKNOWN"
+                )
+                scope = "platform" if marker else "runtime"
+                rows.append((comp["name"], comp["version"], scope, lic))
+        else:
+            doc = json.loads(lock.read_text(encoding="utf-8"))
+            keys: dict[tuple[str, str], str] = {}
+            for k, e in doc["packages"].items():
+                n = _npm_name(k, e) if k else None
+                if n and e.get("version"):
+                    keys.setdefault((n, str(e["version"])), k)
+            for comp in npm_components(lock):
+                nv = (comp["name"], comp["version"])
+                declared = (comp.get("licenses") or [{}])[0].get("license", {}).get("name")
+                lic = (
+                    declared
+                    or LICENSE_OVERRIDES.get(comp["name"])
+                    or known.get((rel, *nv))
+                    or _npm_installed_license(lock, keys.get(nv, ""))
+                    or "UNKNOWN"
+                )
+                scope = "dev" if comp.get("scope") == "excluded" else "runtime"
+                rows.append((*nv, scope, lic))
+        rows.sort()
+        sections.append((rel, rows))
+    return sections
+
+
+def render_third_party(sections: list[tuple[str, list]]) -> str:
+    out = [THIRD_PARTY_HEADER]
+    counts: dict[str, int] = {}
+    for rel, rows in sections:
+        out.append(f"\n== {rel} ==\n")
+        for name, version, scope, lic in rows:
+            out.append(f"  {name}  {version}  {scope}  {lic}\n")
+            if scope == "runtime":
+                counts[lic] = counts.get(lic, 0) + 1
+    out.append("\n== runtime licence summary ==\n")
+    for lic, n in sorted(counts.items(), key=lambda x: (-x[1], x[0])):
+        out.append(f"  {n:5d}  {lic}\n")
+    return "".join(out)
+
+
+def third_party_licenses(repo: Path = REPO, refresh: bool = False) -> str:
+    """THIRD_PARTY_LICENSES text; licences come from the snapshot unless refresh."""
+    snap = repo / THIRD_PARTY_FILE
+    known = {}
+    if snap.is_file() and not refresh:
+        known = parse_third_party(snap.read_text(encoding="utf-8"))
+    return render_third_party(third_party_rows(repo, known))
+
+
 # --------------------------------------------------------------------------- provenance
 
 
@@ -1084,6 +1244,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     s.add_argument("--out", required=True)
     s.add_argument("--version")
 
+    s = sub.add_parser("third-party-licenses")
+    s.add_argument("--out", help="also write the text here")
+    s.add_argument("--write", action="store_true", help=f"update ./{THIRD_PARTY_FILE}")
+    s.add_argument("--check", action="store_true", help=f"fail when ./{THIRD_PARTY_FILE} is stale")
+    s.add_argument(
+        "--refresh",
+        action="store_true",
+        help="ignore the snapshot's licences and re-read the installed packages",
+    )
+
     s = sub.add_parser("validate-sbom")
     s.add_argument("files", nargs="+")
 
@@ -1164,6 +1334,25 @@ def main(argv: Optional[list[str]] = None) -> int:
             for path in build_lockfile_sboms(Path(a.out), version, repo):
                 n = len(json.loads(path.read_text(encoding="utf-8"))["components"])
                 print(f"{path.name}: {n} components")
+        elif a.cmd == "third-party-licenses":
+            text = third_party_licenses(repo, a.refresh)
+            snap = repo / THIRD_PARTY_FILE
+            if a.check:
+                if not snap.is_file() or snap.read_text(encoding="utf-8") != text:
+                    raise ReleaseError(
+                        f"{THIRD_PARTY_FILE} is stale: run release_tool.py "
+                        "third-party-licenses --write and review the licence changes"
+                    )
+                print(f"{THIRD_PARTY_FILE} is current")
+            if a.write:
+                snap.write_text(text, encoding="utf-8")
+                print(f"wrote {snap}")
+            if a.out:
+                Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+                Path(a.out).write_text(text, encoding="utf-8")
+                print(a.out)
+            if not (a.check or a.write or a.out):
+                sys.stdout.write(text)
         elif a.cmd == "validate-sbom":
             for f in a.files:
                 n = validate_bom(json.loads(Path(f).read_text(encoding="utf-8")))

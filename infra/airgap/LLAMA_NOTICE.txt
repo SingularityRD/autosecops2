@@ -1,0 +1,17 @@
+Built with Llama.
+
+This bundle contains a Llama model (default: llama3.1:8b, from the Ollama
+library) in models/ollama-models.tar.
+
+Llama 3.1 is licensed under the Llama 3.1 Community License, Copyright (c) Meta
+Platforms, Inc. All Rights Reserved.
+
+  Licence:               https://github.com/meta-llama/llama-models/blob/main/models/llama3_1/LICENSE
+  Acceptable Use Policy: https://llama.meta.com/llama3_1/use-policy
+
+The model store also holds the licence text the model was published with
+(Ollama keeps it as a "license" layer; `ollama show --license <model>` prints
+it). Using the model means accepting that licence and the Acceptable Use
+Policy. AutoSecOps does not modify the model. A different model passed with
+--ollama-model or --ollama-models-dir carries its own licence; check it before
+distributing the bundle.

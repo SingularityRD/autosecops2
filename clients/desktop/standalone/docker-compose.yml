@@ -54,7 +54,9 @@ services:
       - vigil
 
   redis:
-    image: redis:7-alpine
+    # 7.2.x is the last BSD-3-Clause Redis line (7.4+ is RSALv2/SSPL); pinned by
+    # index digest, same as the Helm chart and CI (NOTICE, W0.38).
+    image: redis:7.2.16-alpine@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy noeviction

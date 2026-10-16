@@ -45,7 +45,8 @@ redis:
     enabled: false
   image:
     repository: registry.airgap.local:5000/library/redis
-    tag: "7-alpine"
+    # Tag only: build-bundle.sh pulled values.yaml's digest and pushed it here.
+    tag: "7.2.16-alpine"
     pullPolicy: IfNotPresent
 
 dbInit:

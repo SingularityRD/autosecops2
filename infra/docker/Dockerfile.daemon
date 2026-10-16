@@ -72,6 +72,10 @@ RUN mkdir -p /app/data/investigations /home/vigil/.vigil/evidence \
 
 RUN if [ -n "${VIGIL_VERSION}" ]; then echo "${VIGIL_VERSION}" > /app/VERSION; fi
 
+# Apache-2.0 section 4: the licence, NOTICE and the third-party inventory
+# travel with every image (W0.38).
+COPY LICENSE NOTICE THIRD_PARTY_LICENSES /licenses/
+
 USER vigil
 
 ENV HOME=/home/vigil \

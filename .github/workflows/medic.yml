@@ -56,7 +56,7 @@ jobs:
   # tests gate here, together with Medic's own and its import fence (A3-1).
   medic-contracts:
     name: Medic contracts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -84,7 +84,7 @@ jobs:
 
   medic-image:
     name: Medic image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -137,7 +137,7 @@ jobs:
   # and 11 in its tests, then the image it ships in.
   medic-gateway:
     name: Medic gateway
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -224,7 +224,7 @@ jobs:
   # (test_live_docker.py: SP2's 43 with the negative control). Then the image.
   medic-dockerproxy:
     name: Medic Docker proxy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -327,7 +327,7 @@ jobs:
   # image builds) runs on a manual dispatch.
   medic-compose:
     name: Medic on Compose
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -364,7 +364,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-24.04, macos-15]
     steps:
       - uses: actions/checkout@v7
 
