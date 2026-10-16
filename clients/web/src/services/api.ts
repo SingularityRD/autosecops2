@@ -216,6 +216,14 @@ export const segregationApi = {
     api.put<Schema<'FourEyesConfig'>>(`/response/four-eyes/${encodeURIComponent(actionType)}`, data),
 }
 
+/** response policy: protected assets, hourly limits, four-eyes types (W0.36) */
+export const responsePolicyApi = {
+  get: () => api.get<Schema<'ResponsePolicyView'>>('/response/policy'),
+
+  update: (data: Schema<'ResponsePolicyUpdate'>) =>
+    api.put<Schema<'ResponsePolicyView'>>('/response/policy', data),
+}
+
 /** autonomy tiers per (alert category x action class), W3.1 */
 export const autonomyApi = {
   tiers: () => api.get<Schema<'AutonomyMatrix'>>('/autonomy/tiers'),

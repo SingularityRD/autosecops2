@@ -2,6 +2,7 @@
 # AutoSecOps operator CLI (subset).
 #   autosecops verify-bundle PACK [--public-key KEY] [--json]   verify an evidence pack offline
 #   autosecops evidence-keygen                                  new evidence-pack signing key
+#   autosecops signing-keys {provision|status|export} [args]   install-time signing keys (W0.36)
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="${PYTHON:-python3}"
@@ -17,8 +18,13 @@ case "$cmd" in
     cd "$HERE"
     exec "$PY" -m core.compliance.evidence_bundle keygen "$@"
     ;;
+  signing-keys)
+    shift
+    cd "$HERE"
+    exec "$PY" -m core.audit.signing_keys "$@"
+    ;;
   *)
-    echo "usage: autosecops {verify-bundle PACK [--public-key KEY] [--json] | evidence-keygen}" >&2
+    echo "usage: autosecops {verify-bundle PACK [--public-key KEY] [--json] | evidence-keygen | signing-keys {provision|status|export}}" >&2
     exit 2
     ;;
 esac

@@ -20,6 +20,24 @@ Vigil SOC has been installed in namespace {{ .Release.Namespace }} as release "{
    # Then open http://localhost:{{ .Values.backend.service.port }}
 {{- end }}
 
+{{- if or .Values.signingKeys.generate .Values.signingKeys.existingSecret }}
+
+SIGNING KEYS: audit checkpoints and evidence packs are signed with the keys in
+   {{ include "vigil.signingKeys.secretName" (dict "context" . "key" "AUDIT_CHECKPOINT_SIGNING_KEY") }} and {{ include "vigil.signingKeys.secretName" (dict "context" . "key" "EVIDENCE_PACK_SIGNING_KEY") }}.
+   Give whoever verifies offline the public halves (no private key is printed):
+
+{{- if .Values.daemon.enabled }}
+   kubectl -n {{ .Release.Namespace }} exec statefulset/{{ include "vigil.daemon.fullname" . }} -- python -m core.audit.signing_keys export --purpose audit_checkpoints
+{{- end }}
+   kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "vigil.backend.fullname" . }} -- python -m core.audit.signing_keys export --purpose evidence_packs
+{{- else }}
+
+⚠️  SIGNING KEYS ARE NOT PROVISIONED BY THIS CHART (signingKeys.generate=false):
+   supply AUDIT_CHECKPOINT_SIGNING_KEY and EVIDENCE_PACK_SIGNING_KEY through
+   secrets.existingSecret / ExternalSecrets, or audit checkpoints are not written
+   and evidence packs carry a one-off key. /api/health lists the warning.
+{{- end }}
+
 {{- if not .Values.evidence.persistence.enabled }}
 
 ⚠️  EVIDENCE IS NOT PERSISTENT: evidence.persistence.enabled is false, so files

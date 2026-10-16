@@ -89,7 +89,7 @@ Tablolarda kısaltılarak anılan kanıtlar:
 | Md. 19 — büyük olayların süreli bildirimi (ilk bildirim, ara rapor, nihai rapor) | DORA sayaçları: ilk bildirim `min(sınıflandırma + 4 saat, farkına varma + 24 saat)`, ara rapor bildirim + 72 saat, nihai rapor son ara rapor + 1 ay; süreler kiracı başına ayarlanabilir; an kayıtları zincirli; rapor taslakları vakanın kanıtından | K10 | Karşılanıyor (resmî bildirimin gönderimi kurumun) |
 | Kayıtların bütünlüğü | Defter zinciri, onay ve vaka denetim zinciri, imzalı kontrol noktaları, düzenleyici an zinciri ve zincir başı çapası | K8, K10 | Kısmi — ayar kayıtları ve onay kararları zincirsiz; tablo sahibi düzenleyici zinciri yeniden yazabilir (tehdit modeli R6, R27) |
 | Md. 28–30 — üçüncü taraf BİT riski | Yerel model; dış entegrasyonların varsayılan kapalı olması; egress envanteri | K1 | Kısmi |
-| Kanıt paketi | Vaka başına imzalı, kendi doğrulayıcısını taşıyan ZIP: kayıtlar, eylemler, defter olayları, AI karar kökeni, düzenleyici anlar | K18 | Karşılanıyor (`EVIDENCE_PACK_SIGNING_KEY` verilmelidir; yoksa paket geçici anahtarla imzalanır) |
+| Kanıt paketi | Vaka başına imzalı, kendi doğrulayıcısını taşıyan ZIP: kayıtlar, eylemler, defter olayları, AI karar kökeni, düzenleyici anlar | K18 | Karşılanıyor (`EVIDENCE_PACK_SIGNING_KEY` kurulumda üretilir; yoksa paket geçici anahtarla imzalanır ve `/api/health` uyarı verir) |
 
 ## NIS2 — (AB) 2022/2555
 

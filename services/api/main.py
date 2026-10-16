@@ -586,6 +586,20 @@ async def _startup(app: FastAPI):
     except Exception as e:  # pragma: no cover - probe is best-effort
         logger.warning("SecretsManager startup probe failed: %s", e)
 
+    # W0.36: an install provisions EVIDENCE_PACK_SIGNING_KEY; say so when it did not.
+    try:
+        from core.audit.signing_keys import EVIDENCE_PACKS, key_status
+
+        if not key_status(EVIDENCE_PACKS).usable:
+            logger.warning(
+                "%s is not configured: evidence packs are signed with a one-off "
+                "key (python -m core.audit.signing_keys provision); "
+                "/api/health reports this under warnings",
+                EVIDENCE_PACKS.secret,
+            )
+    except Exception as e:  # pragma: no cover - best-effort
+        logger.warning("Signing-key startup check failed: %s", e)
+
     # Load secrets into environment for MCP servers
     try:
         from core.secrets_manager import get_secret
@@ -846,6 +860,19 @@ async def _health_payload(request: Request) -> dict:
         }
     if schema_block is not None:
         payload["schema"] = schema_block
+    # W0.36: unsigned checkpoints or one-off evidence-pack keys are a warning,
+    # not "degraded": readiness must not pull every pod over a missing key.
+    try:
+        from core.audit.signing_keys import signing_health
+
+        signing = await asyncio.to_thread(signing_health)
+        payload["signing"] = {
+            "audit_checkpoints": signing["audit_checkpoints"],
+            "evidence_packs": signing["evidence_packs"],
+        }
+        payload["warnings"] = list(signing["warnings"])
+    except Exception:
+        logger.exception("Health check could not read the signing-key status")
     return payload
 
 

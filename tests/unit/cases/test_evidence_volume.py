@@ -228,7 +228,25 @@ def test_default_pods_match_main_before_w026(chart, tmp_path):
     _strip_dependencies(base)
     for name in PODS:
         for extra in ((), ("--set", "backup.enabled=true")):
-            assert _render(chart, name, *extra) == _render(base, name, *extra), name
+            assert _without_later_changes(
+                _render(chart, name, *extra)
+            ) == _without_later_changes(_render(base, name, *extra)), name
+
+
+# W0.36 later gave the backend and the daemon one signing-key envFrom source each.
+_SIGNING_KEY_ENV = re.compile(
+    r"^( +)- secretRef:\n\1    name: rc-vigil-signing-key-\w+\n\1    optional: true\n",
+    re.MULTILINE,
+)
+
+
+# The ConfigMap gained keys after the base (W0.30's AUTOSECOPS_GUARDS and others),
+# which changes every pod's checksum/config annotation and nothing else here.
+_CONFIG_CHECKSUM = re.compile(r"^ +checksum/config: [0-9a-f]+\n", re.MULTILINE)
+
+
+def _without_later_changes(rendered: str) -> str:
+    return _CONFIG_CHECKSUM.sub("", _SIGNING_KEY_ENV.sub("", rendered))
 
 
 def test_enabled_rwx_renders_an_rwx_claim_and_mounts_it(chart):

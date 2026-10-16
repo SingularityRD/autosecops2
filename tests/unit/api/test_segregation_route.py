@@ -123,19 +123,14 @@ def client(monkeypatch):
 
     saved = {}
 
-    class _Config:
-        def read_system_config(self, key):
-            return dict(saved.get(key) or {"protected_targets": ["dc01"]})
+    def fake_update(actor, reason, change, expected_version=None):
+        key = "response.policy"
+        new = change(dict(saved.get(key) or {"protected_targets": ["dc01"]}))
+        saved[key] = new
+        saved["reason"] = reason
+        return new, "v", True
 
-        def set_system_config(self, key, value, **kw):
-            saved[key] = value
-            saved["reason"] = kw.get("change_reason")
-            return True
-
-    monkeypatch.setattr(
-        "core.storage.config_service.get_config_service",
-        lambda user_id="system": _Config(),
-    )
+    monkeypatch.setattr("core.response.policy_store.update_policy", fake_update)
     approvals = _Approvals()
     app = backend_main.app
     app.dependency_overrides[auth_module.get_current_active_user] = lambda: user

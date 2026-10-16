@@ -35,6 +35,10 @@
 #   --rules-into-backend  stream the rule corpora into the backend pod's
 #                         ~/security-detections after the install
 #   --skip-model          do not copy the bundled Ollama model into the ollama pod
+#   --signing-keys-out F  after the install, write the public signing keys (audit
+#                         checkpoints, evidence packs) for the auditor to F
+#                         [default: print them]. The chart mints the private
+#                         keys into a Secret (W0.36); they never leave the cluster.
 #   --dry-run             verify, then print the commands instead of running them
 #   -- ARGS               extra arguments for `helm upgrade --install`
 #
@@ -57,6 +61,7 @@ esac
 bundle="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 pubkey="" registry="" loader=registry namespace=autosecops release=autosecops
 rules_dir="" rules_into_backend=0 skip_model=0 dry=0
+signing_keys_out=""
 helm_args=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -69,6 +74,7 @@ while [ $# -gt 0 ]; do
     --rules-dir) rules_dir="${2:?}"; shift 2 ;;
     --rules-into-backend) rules_into_backend=1; shift ;;
     --skip-model) skip_model=1; shift ;;
+    --signing-keys-out) signing_keys_out="${2:?--signing-keys-out needs a file}"; shift 2 ;;
     --dry-run) dry=1; shift ;;
     --) shift; helm_args=("$@"); break ;;
     -h|--help) usage 0 ;;
@@ -333,4 +339,29 @@ if [ -n "$rules_dir" ] || [ "$rules_into_backend" = 1 ]; then
     fi
   done
 fi
+# W0.36: the public halves of the signing keys the chart minted, for the auditor.
+# Best effort: a pod that is not up yet leaves a warning, not a failed install.
+export_signing_keys() {
+  local fullname="$release" target purpose out="${signing_keys_out:-/dev/stdout}"
+  [[ "$release" == *vigil* ]] || fullname="$release-vigil"
+  if [ "$dry" = 1 ]; then
+    printf '+ kubectl -n %q exec statefulset/%q -- python -m core.audit.signing_keys export --purpose audit_checkpoints\n' \
+      "$namespace" "$fullname-daemon"
+    printf '+ kubectl -n %q exec deployment/%q -- python -m core.audit.signing_keys export --purpose evidence_packs\n' \
+      "$namespace" "$fullname-backend"
+    return 0
+  fi
+  if [ -n "$signing_keys_out" ]; then
+    : >"$signing_keys_out" || { log "WARNING: cannot write $signing_keys_out"; return 0; }
+  fi
+  for target in "statefulset/$fullname-daemon audit_checkpoints" "deployment/$fullname-backend evidence_packs"; do
+    purpose="${target#* }" target="${target%% *}"
+    kubectl -n "$namespace" exec "$target" -- python -m core.audit.signing_keys export \
+      --purpose "$purpose" >>"$out" 2>/dev/null \
+      || log "WARNING: could not read the $purpose public key from $target; later: kubectl -n $namespace exec $target -- python -m core.audit.signing_keys export"
+  done
+  log "public signing keys ${signing_keys_out:+written to $signing_keys_out }(give them to the auditor out of band)"
+}
+export_signing_keys
+
 log "done: release $release in namespace $namespace"

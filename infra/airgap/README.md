@@ -241,6 +241,10 @@ Adımlar, doğrulamadan sonra sırasıyla:
    dizinine (hostPath / Compose kurulumu) açar.
    Not: backend pod'unun ev dizini kalıcı değilse pod yeniden başladığında bu
    adımı tekrarlayın veya `--rules-dir` ile kalıcı bir birime açın.
+6. İmza anahtarlarının açık yarıları (W0.36): grafik anahtarları üretmiştir;
+   `install.sh` daemon ve backend pod'larında `python -m core.audit.signing_keys
+   export` çalıştırıp yazdırır (`--signing-keys-out FILE` ile dosyaya). Gizli
+   anahtar küme dışına çıkmaz.
 
 ---
 

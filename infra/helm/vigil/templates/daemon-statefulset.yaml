@@ -61,6 +61,7 @@ spec:
               containerPort: {{ .Values.daemon.ports.health }}
               protocol: TCP
           envFrom:
+            {{- include "vigil.signingKeyEnvFrom" (dict "context" . "key" "AUDIT_CHECKPOINT_SIGNING_KEY") | nindent 12 }}
             {{- include "vigil.envFrom" . | nindent 12 }}
           env:
             - name: POSTGRES_PASSWORD
