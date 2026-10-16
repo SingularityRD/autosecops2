@@ -206,3 +206,17 @@ def test_a_row_nobody_has_written_for_three_polls_is_unknown():
     assert ms.medic_status(_on(), seen, _at(270)) is ms.MedicStatus.UNKNOWN
     fresh = ms.LastSeen(T0, _at(60), "refused", updated_at=_at(269))
     assert ms.medic_status(_on(), fresh, _at(270)) is ms.MedicStatus.DOWN
+
+
+def test_timings_module_is_import_free_and_re_exported():
+    """W0.31: the Medic on Compose CI job imports DOWN_AFTER_S with only pytest and
+    PyYAML installed, so medic_timing must import nothing, and medic_status must
+    serve the very same values."""
+    import ast
+    import importlib
+
+    timing = importlib.import_module("core.platform.medic_timing")
+    tree = ast.parse(open(timing.__file__, encoding="utf-8").read())
+    assert not [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+    for name in ("POLL_INTERVAL_S", "POLL_TIMEOUT_S", "DOWN_AFTER_S"):
+        assert getattr(ms, name) == getattr(timing, name)

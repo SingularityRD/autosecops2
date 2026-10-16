@@ -19,18 +19,15 @@ from enum import Enum
 from typing import Optional
 
 from core.config import Settings, get_settings
+from core.platform.medic_timing import DOWN_AFTER_S, POLL_INTERVAL_S, POLL_TIMEOUT_S
 from core.time import utcnow
 
 # Exactly Medic's "on" spellings. Anything else, unrecognised values included,
 # is off: the same fail-safe reading Medic makes.
 _TRUE = frozenset({"true", "1", "yes", "on"})
 
-# C5 §5.3: one poll a minute. PRD US-05: a dead Medic shows Down within 5 min.
-# 270 s, not 300, leaves a poll's slack: at 300 the live Down landed at 298-301 s
-# (V2-2).
-POLL_INTERVAL_S = 60
-POLL_TIMEOUT_S = 10
-DOWN_AFTER_S = 270
+# POLL_INTERVAL_S, POLL_TIMEOUT_S and DOWN_AFTER_S live in medic_timing
+# (import-free, so the dependency-light Compose tests can read them).
 _POLL = timedelta(seconds=POLL_INTERVAL_S)
 # How far before the first failure an outage may have begun: one interval, plus
 # a margin for a replica's skipped tick. A conservative bound; it only matters
