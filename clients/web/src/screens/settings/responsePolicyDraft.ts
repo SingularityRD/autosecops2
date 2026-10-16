@@ -54,7 +54,7 @@ export function toDraft(p: Policy): Draft {
   }
 }
 
-export function toUpdate(d: Draft, reason: string): Update | string {
+export function toUpdate(d: Draft, reason: string, version: string): Update | string {
   const limits: Record<string, number> = {}
   for (const [k, v] of Object.entries(d.limits)) {
     if (v.trim() === '') continue
@@ -72,5 +72,6 @@ export function toUpdate(d: Draft, reason: string): Update | string {
     default_hourly_limit: def,
     four_eyes_types: [...d.fourEyes].sort(),
     reason,
+    version,
   }
 }

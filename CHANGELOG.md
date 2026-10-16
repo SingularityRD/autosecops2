@@ -62,7 +62,12 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   Admin; Analyst gets 403): protected targets, asset tags, extra protected tags,
   hourly limits per action type and the default limit, and four-eyes action
   types. Input is validated (422, nothing written); built-in protected tags and
-  four-eyes types can only be added to. Every change writes a
+  four-eyes types can only be added to. Lists and strings are bounded (32 tags
+  per asset) and the body is capped at 1 MiB (413). `GET` returns a `version`
+  that `PUT` must send back: a policy changed in between answers 409 (the
+  console reloads it), and every writer of the row, `PUT
+  /api/response/four-eyes/{type}` included, now changes it in one transaction
+  under a row lock. Every change writes a
   `config_audit_log` row (`config_type` `response_policy`) with the user, the
   reason and the old and new policy. `distinct_role_types` keeps its own route.
 

@@ -12,6 +12,9 @@ import { type Draft, pretty, toDraft, toUpdate } from './responsePolicyDraft'
 
 type Policy = Schema<'ResponsePolicyView'>
 
+export const CONFLICT_TEXT =
+  'Someone else changed the response policy after you opened it. It has been reloaded with their change; your edits were not saved. Review and save again.'
+
 function errText(e: unknown, fallback: string): string {
   const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
   if (typeof detail === 'string') return detail
@@ -68,7 +71,7 @@ export default function ResponsePolicySection({ notify }: SectionProps) {
       notify('err', 'Give a reason before changing the response policy')
       return
     }
-    const body = toUpdate(draft, reason.trim())
+    const body = toUpdate(draft, reason.trim(), policy.version)
     if (typeof body === 'string') {
       notify('err', body)
       return
@@ -81,7 +84,14 @@ export default function ResponsePolicySection({ notify }: SectionProps) {
       setReason('')
       notify('ok', 'Response policy saved')
     } catch (e) {
-      notify('err', errText(e, 'Could not save the response policy'))
+      if ((e as { response?: { status?: number } })?.response?.status === 409) {
+        // Someone saved in between (here or under Segregation of duties).
+        // Show theirs rather than let a stale copy overwrite it.
+        notify('err', CONFLICT_TEXT)
+        await load()
+      } else {
+        notify('err', errText(e, 'Could not save the response policy'))
+      }
     } finally {
       setSaving(false)
     }

@@ -500,8 +500,16 @@ varsayılanına döner. `distinct_role_types`, `subdomain_matching_types` ve
 Doğrulama: hedefler boş, kontrol karakterli, 253 karakterden uzun ya da hiçbir şey
 adlandırmayan (`unknown`, `none` …) olamaz; etiketler `a-z 0-9 _ . : -` ve en çok
 64 karakterdir; saatlik sınır 0 ile 1000 arasında bir tam sayıdır (`0` o türü
-otomatik yürütmeye kapatır); tür adları bilinen eylem türleridir. Hatalı istek 422
-döner ve hiçbir şey yazılmaz. Varsayılan korunan etiketler ve varsayılan dört göz
+otomatik yürütmeye kapatır); tür adları bilinen eylem türleridir. En çok 5000
+korunan hedef, 5000 varlık (varlık başına en çok 32 etiket) ve 200 ek etiket;
+istek gövdesi en çok 1 MiB'dir (aşılırsa 413). Hatalı istek 422 döner ve hiçbir
+şey yazılmaz.
+
+**Eşzamanlı düzenleme:** `GET` bir `version` döner; `PUT` bunu geri göndermek
+zorundadır. Politika bu arada değiştiyse (başka bir yönetici ya da görevler
+ayrılığı ekranındaki farklı rol değişikliği) yanıt 409 olur ve hiçbir şey
+yazılmaz; konsol bunu söyler ve güncel politikayı yeniden yükler. Değişiklik tek
+işlemde, satır kilidiyle yazılır. Varsayılan korunan etiketler ve varsayılan dört göz
 türleri kaldırılamaz: istek yalnızca onlara ekler.
 
 **Denetim:** her kabul edilen değişiklik `config_audit_log`'a

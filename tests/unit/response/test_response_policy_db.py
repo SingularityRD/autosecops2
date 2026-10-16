@@ -93,7 +93,8 @@ def http(decisions_table, monkeypatch):
 
 
 def _put(client, reason, **kw):
-    body = {"reason": reason, "default_hourly_limit": 20, **kw}
+    version = client.get("/api/response/policy").json()["version"]
+    body = {"reason": reason, "default_hourly_limit": 20, "version": version, **kw}
     response = client.put("/api/response/policy", json=body)
     assert response.status_code == 200, response.text
     return response.json()
@@ -134,7 +135,7 @@ def test_a_refused_change_leaves_no_row(http):
     client, _ = http
     response = client.put(
         "/api/response/policy",
-        json={"reason": "x", "hourly_limits": {"nope": 1}},
+        json={"reason": "x", "hourly_limits": {"nope": 1}, "version": "x"},
     )
     assert response.status_code == 422
     assert _audit_rows() == []
@@ -203,3 +204,98 @@ def test_the_approval_flow_needs_a_second_approver_for_an_added_type(http):
         svc.approve_action(other.action_id, f"alice-{TAG}").status
         == ActionStatus.APPROVED.value
     )
+
+
+# --- concurrent writers (W0.36 verifier: lost update) -------------------------
+
+
+def test_two_interleaved_puts_the_second_gets_409(http):
+    client, user = http
+    v0 = client.get("/api/response/policy").json()["version"]
+    first = {"reason": "a", "default_hourly_limit": 20, "version": v0}
+    second = {"reason": "b", "default_hourly_limit": 20, "version": v0}
+    a = client.put(
+        "/api/response/policy", json={**first, "protected_targets": ["dc01"]}
+    )
+    assert a.status_code == 200, a.text
+    b = client.put(
+        "/api/response/policy", json={**second, "protected_targets": ["dc02"]}
+    )
+    assert b.status_code == 409
+    assert client.get("/api/response/policy").json()["protected_targets"] == ["dc01"]
+    assert [r[2] for r in _audit_rows()] == ["a"]
+
+
+def test_a_four_eyes_change_in_between_is_not_lost(http):
+    client, _ = http
+    _put(client, "base", protected_targets=["dc01"])
+    stale = client.get("/api/response/policy").json()["version"]
+    r = client.put(
+        "/api/response/four-eyes/block_ip",
+        json={"distinct_role": True, "reason": "SoD"},
+    )
+    assert r.status_code == 200, r.text
+    body = {
+        "reason": "stale editor",
+        "default_hourly_limit": 20,
+        "version": stale,
+        "protected_targets": [],
+    }
+    assert client.put("/api/response/policy", json=body).status_code == 409
+    after = client.get("/api/response/policy").json()
+    assert after["effective"]["distinct_role_types"] == ["block_ip"]
+    assert after["protected_targets"] == ["dc01"]
+    # Re-read and saved again: the four-eyes change survives the full PUT.
+    _put(client, "fresh editor", protected_targets=[])
+    assert client.get("/api/response/policy").json()["effective"][
+        "distinct_role_types"
+    ] == ["block_ip"]
+
+
+def test_writers_serialise_on_the_row_lock(http):
+    """A second writer waits for the first and applies its change on top."""
+    import threading
+
+    from core.response.policy_store import read_policy, update_policy
+
+    client, _ = http
+    _put(client, "base", protected_targets=["dc01"])
+    inside, release = threading.Event(), threading.Event()
+    errors = []
+
+    def slow(raw):
+        inside.set()
+        assert release.wait(10)
+        raw["protected_targets"] = ["dc01", "dc02"]
+        return raw
+
+    def first():
+        try:
+            update_policy("alice", "slow", slow)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    def second():
+        try:
+            update_policy(
+                "bob",
+                "four eyes",
+                lambda raw: {**raw, "distinct_role_types": ["block_ip"]},
+            )
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    t1 = threading.Thread(target=first)
+    t1.start()
+    assert inside.wait(10)
+    t2 = threading.Thread(target=second)
+    t2.start()
+    t2.join(0.5)
+    assert t2.is_alive(), "the second writer must wait for the row lock"
+    release.set()
+    t1.join(10)
+    t2.join(10)
+    assert errors == []
+    raw, _ = read_policy()
+    assert raw["protected_targets"] == ["dc01", "dc02"]
+    assert raw["distinct_role_types"] == ["block_ip"]

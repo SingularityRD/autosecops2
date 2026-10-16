@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import ResponsePolicySection from './ResponsePolicySection'
+import ResponsePolicySection, { CONFLICT_TEXT } from './ResponsePolicySection'
 import { parseAssetTags } from './responsePolicyDraft'
 import { responsePolicyApi } from '../../services/api'
 
@@ -29,6 +29,7 @@ const policy = {
     default_hourly_limit: 20,
   },
   action_types: ['block_ip', 'disable_user', 'isolate_host'],
+  version: 'v1',
 }
 
 describe('response policy section', () => {
@@ -70,6 +71,7 @@ describe('response policy section', () => {
         default_hourly_limit: 20,
         four_eyes_types: ['block_ip'],
         reason: 'tier0 list',
+        version: 'v1',
       })
     )
     expect(notify).toHaveBeenCalledWith('ok', 'Response policy saved')
@@ -92,6 +94,20 @@ describe('response policy section', () => {
     fireEvent.change(await screen.findByPlaceholderText(/Why the policy changes/), { target: { value: 'x' } })
     fireEvent.click(screen.getByText('Save policy'))
     await waitFor(() => expect(notify).toHaveBeenCalledWith('err', 'Permission denied: settings.write required'))
+  })
+
+  it('on 409 says someone else changed it and reloads their version', async () => {
+    vi.mocked(responsePolicyApi.update).mockRejectedValue({ response: { status: 409, data: { detail: 'x' } } })
+    vi.mocked(responsePolicyApi.get)
+      .mockResolvedValueOnce({ data: policy } as never)
+      .mockResolvedValueOnce({ data: { ...policy, protected_targets: ['theirs.corp.local'], version: 'v2' } } as never)
+    render(<ResponsePolicySection notify={notify} />)
+    fireEvent.change(await screen.findByLabelText('Protected targets'), { target: { value: 'mine.corp.local' } })
+    fireEvent.change(screen.getByPlaceholderText(/Why the policy changes/), { target: { value: 'x' } })
+    fireEvent.click(screen.getByText('Save policy'))
+    await waitFor(() => expect(notify).toHaveBeenCalledWith('err', CONFLICT_TEXT))
+    await waitFor(() => expect(screen.getByLabelText('Protected targets')).toHaveValue('theirs.corp.local'))
+    expect(responsePolicyApi.update).toHaveBeenCalledWith(expect.objectContaining({ version: 'v1' }))
   })
 
   it('parses asset tag lines, IPv6 included', () => {

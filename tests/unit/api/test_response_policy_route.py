@@ -14,7 +14,13 @@ from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-only-secret-not-for-prod")
 
+from core.response import policy_router  # noqa: E402
 from core.response.policy import PolicyConfig  # noqa: E402
+from core.response.policy_store import (  # noqa: E402
+    CONFIG_TYPE,
+    PolicyConflict,
+    policy_version,
+)
 from core.storage.models import User  # noqa: E402
 from services.api import main as backend_main  # noqa: E402
 from services.api.middleware import auth as auth_module  # noqa: E402
@@ -39,6 +45,7 @@ def _body(**kw):
         "default_hourly_limit": 15,
         "four_eyes_types": ["isolate_host"],
         "reason": "tier0 inventory",
+        "version": "current",
     }
     body.update(kw)
     return body
@@ -63,26 +70,35 @@ def client(monkeypatch):
         ),
     )
 
-    class _Config:
-        def __init__(self, user_id):
-            self.user_id = user_id
+    def fake_read():
+        if state.get("unreadable"):
+            raise RuntimeError("db down")
+        return dict(state["raw"] or {}), policy_version(state["raw"])
 
-        def read_system_config(self, key):
-            if state.get("unreadable"):
-                raise RuntimeError("db down")
-            return dict(state["raw"]) if state["raw"] is not None else None
+    def fake_update(actor, reason, change, expected_version=None):
+        if state.get("unreadable"):
+            raise RuntimeError("db down")
+        current = policy_version(state["raw"])
+        # "current" is this file's shorthand for "the version I just read".
+        if expected_version not in (None, "current", current):
+            raise PolicyConflict("stale")
+        old = dict(state["raw"] or {})
+        new = change(dict(old))
+        if new == old:
+            return old, current, False
+        state["writes"].append(
+            {
+                "value": new,
+                "by": actor,
+                "change_reason": reason,
+                "config_type": CONFIG_TYPE,
+            }
+        )
+        state["raw"] = new
+        return new, policy_version(new), True
 
-        def set_system_config(self, key, value, **kw):
-            state["writes"].append(
-                {"key": key, "value": value, "by": self.user_id, **kw}
-            )
-            state["raw"] = value
-            return True
-
-    monkeypatch.setattr(
-        "core.storage.config_service.get_config_service",
-        lambda user_id="system": _Config(user_id),
-    )
+    monkeypatch.setattr(policy_router, "read_policy", fake_read)
+    monkeypatch.setattr(policy_router, "update_policy", fake_update)
     app = backend_main.app
     app.dependency_overrides[auth_module.get_current_active_user] = lambda: user
     app.dependency_overrides[auth_module.get_current_user] = lambda: user
@@ -116,6 +132,7 @@ def test_settings_write_holders_save_with_an_audited_reason(client, role):
     response = http.put("/api/response/policy", json=_body())
     assert response.status_code == 200, response.text
     [write] = state["writes"]
+    assert response.json()["version"] == policy_version(write["value"])
     assert write["by"] == "carol"
     assert write["change_reason"] == "tier0 inventory"
     assert write["config_type"] == "response_policy"
@@ -159,7 +176,7 @@ def test_built_in_protection_cannot_be_removed(client):
     http, state = client
     response = http.put(
         "/api/response/policy",
-        json={"reason": "clear", "default_hourly_limit": 20},
+        json={"reason": "clear", "default_hourly_limit": 20, "version": "current"},
     )
     assert response.status_code == 200, response.text
     eff = response.json()["effective"]
@@ -186,6 +203,16 @@ def test_built_in_protection_cannot_be_removed(client):
         ({"default_hourly_limit": 1001}, ""),
         ({"four_eyes_types": ["workflow_phase"]}, "unknown action type"),
         ({"distinct_role_types": ["block_ip"]}, ""),  # not this route's key
+        # Bounds (W0.36 verifier D3): tags per asset, tag and name length.
+        ({"asset_tags": {"fs01": [f"t{i}" for i in range(33)]}}, ""),
+        ({"asset_tags": {"fs01": ["x" * 300]}}, ""),
+        ({"asset_tags": {"x" * 2000: ["tier0"]}}, ""),
+        ({"protected_tags": [f"t{i}" for i in range(201)]}, ""),
+        ({"protected_targets": ["x" * 2000]}, ""),
+        ({"four_eyes_types": ["x" * 2000]}, ""),
+        ({"hourly_limits": {"x" * 2000: 1}}, ""),
+        ({"version": ""}, ""),
+        ({"version": None}, ""),
     ],
 )
 def test_invalid_input_is_refused_and_nothing_is_written(client, patch, needle):
@@ -213,3 +240,40 @@ def test_get_shows_stored_values_and_defaults(client):
     assert body["effective"]["distinct_role_types"] == ["disable_user"]
     assert "workflow_phase" not in body["action_types"]
     assert "isolate_host" in body["action_types"]
+
+
+def test_a_body_over_the_cap_is_413_and_nothing_is_written(client):
+    """200 000 tags on one asset (the verifier's probe) never reach validation."""
+    http, state = client
+    body = _body(asset_tags={"fs01": [f"t{i}" for i in range(200_000)]})
+    response = http.put("/api/response/policy", json=body)
+    assert response.status_code == 413
+    assert state["writes"] == []
+
+
+def test_the_largest_valid_policy_fits_the_cap():
+    import json
+
+    body = _body(
+        protected_targets=[f"h{i:05d}.corp.example" for i in range(5000)],
+        asset_tags={f"a{i:04d}.corp.example": ["tier0"] for i in range(2000)},
+    )
+    assert len(json.dumps(body)) < policy_router.MAX_BODY_BYTES
+
+
+def test_a_stale_version_is_409_and_nothing_is_written(client):
+    http, state = client
+    stale = http.get("/api/response/policy").json()["version"]
+    state["raw"] = {**state["raw"], "distinct_role_types": ["block_ip"]}
+    response = http.put("/api/response/policy", json=_body(version=stale))
+    assert response.status_code == 409
+    assert "changed by someone else" in response.json()["detail"]
+    assert state["writes"] == []
+
+
+def test_the_version_is_required(client):
+    http, state = client
+    body = _body()
+    del body["version"]
+    assert http.put("/api/response/policy", json=body).status_code == 422
+    assert state["writes"] == []

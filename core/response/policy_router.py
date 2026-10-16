@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 from typing import Annotated, Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.auth.permissions import require_permission
@@ -35,10 +35,10 @@ from core.response.policy import (
     DEFAULT_HOURLY_LIMIT,
     DEFAULT_HOURLY_LIMITS,
     DEFAULT_PROTECTED_TAGS,
-    POLICY_CONFIG_KEY,
     PolicyConfig,
     identify,
 )
+from core.response.policy_store import PolicyConflict, read_policy, update_policy
 from core.routing import Auth, RouterMeta
 from core.storage.models import User
 
@@ -62,10 +62,19 @@ ACTION_TYPES = sorted(t.value for t in ActionType if t is not ActionType.WORKFLO
 MAX_ENTRIES = 5000
 MAX_TARGET_LENGTH = 253
 MAX_HOURLY_LIMIT = 1000
+MAX_TAGS = 200  # protected_tags
+MAX_TAGS_PER_ASSET = 32
+# The whole request body. The policy row is read at every response decision,
+# so it stays small whatever the per-field bounds would allow together.
+MAX_BODY_BYTES = 1024 * 1024
 _TAG = re.compile(r"^[a-z0-9][a-z0-9_.:-]{0,63}$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 Limit = Annotated[int, Field(strict=True, ge=0, le=MAX_HOURLY_LIMIT)]
+# Generous outer bounds so a huge string is refused before it is parsed; the
+# exact rules (253-character names, 64-character tags) give the clearer 422.
+Name = Annotated[str, Field(max_length=1024)]
+Tag = Annotated[str, Field(max_length=256)]
 
 
 class PolicyDefaults(BaseModel):
@@ -95,6 +104,8 @@ class ResponsePolicyView(BaseModel):
     defaults: PolicyDefaults
     effective: EffectivePolicy
     action_types: List[str]
+    # Send it back with PUT: a policy changed since it was read answers 409.
+    version: str
 
 
 class ResponsePolicyUpdate(BaseModel):
@@ -102,15 +113,17 @@ class ResponsePolicyUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    protected_targets: List[str] = Field(default_factory=list, max_length=MAX_ENTRIES)
-    protected_tags: List[str] = Field(default_factory=list, max_length=200)
-    asset_tags: Dict[str, List[str]] = Field(
-        default_factory=dict, max_length=MAX_ENTRIES
-    )
-    hourly_limits: Dict[str, Limit] = Field(default_factory=dict, max_length=100)
+    protected_targets: List[Name] = Field(default_factory=list, max_length=MAX_ENTRIES)
+    protected_tags: List[Tag] = Field(default_factory=list, max_length=MAX_TAGS)
+    asset_tags: Dict[
+        Name, Annotated[List[Tag], Field(max_length=MAX_TAGS_PER_ASSET)]
+    ] = Field(default_factory=dict, max_length=MAX_ENTRIES)
+    hourly_limits: Dict[Name, Limit] = Field(default_factory=dict, max_length=100)
     default_hourly_limit: Limit = DEFAULT_HOURLY_LIMIT
-    four_eyes_types: List[str] = Field(default_factory=list, max_length=100)
+    four_eyes_types: List[Name] = Field(default_factory=list, max_length=100)
     reason: str = Field(..., min_length=1, max_length=2000)
+    # The version GET returned; required so a stale copy cannot overwrite.
+    version: str = Field(..., min_length=1, max_length=128)
 
 
 def _invalid(message: str) -> HTTPException:
@@ -220,9 +233,9 @@ def view(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def _read(service) -> Dict[str, Any]:
+def _read() -> tuple[Dict[str, Any], str]:
     try:
-        return dict(service.read_system_config(POLICY_CONFIG_KEY) or {})
+        return read_policy()
     except Exception:  # noqa: BLE001
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -230,16 +243,9 @@ def _read(service) -> Dict[str, Any]:
         ) from None
 
 
-@router.get("/policy", response_model=ResponsePolicyView)
-def get_response_policy(
-    user: User = Depends(require_permission("settings.read")),
-) -> Dict[str, Any]:
-    """Protected assets, hourly limits and four-eyes types, stored and in effect."""
-    from core.storage.config_service import get_config_service
-
-    raw = _read(get_config_service(user.username))
+def _view(raw: Dict[str, Any], version: str) -> Dict[str, Any]:
     try:
-        return view(raw)
+        return {**view(raw), "version": version}
     except (TypeError, ValueError, AttributeError):
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -248,32 +254,60 @@ def get_response_policy(
         ) from None
 
 
-@router.put("/policy", response_model=ResponsePolicyView)
+async def body_cap(request: Request) -> None:
+    """413 for a body over ``MAX_BODY_BYTES`` (declared or actual)."""
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+        raise HTTPException(413, f"The policy is limited to {MAX_BODY_BYTES} bytes")
+    if len(await request.body()) > MAX_BODY_BYTES:
+        raise HTTPException(413, f"The policy is limited to {MAX_BODY_BYTES} bytes")
+
+
+CONFLICT = (
+    "The response policy was changed by someone else since you loaded it. "
+    "Reload it, review the change and save again."
+)
+
+
+@router.get("/policy", response_model=ResponsePolicyView)
+def get_response_policy(
+    user: User = Depends(require_permission("settings.read")),
+) -> Dict[str, Any]:
+    """Protected assets, hourly limits and four-eyes types, stored and in effect."""
+    return _view(*_read())
+
+
+@router.put(
+    "/policy", response_model=ResponsePolicyView, dependencies=[Depends(body_cap)]
+)
 def put_response_policy(
     body: ResponsePolicyUpdate,
     user: User = Depends(require_permission("settings.write")),
 ) -> Dict[str, Any]:
-    """Replace the editable keys. Audited (who, reason, old and new value)."""
-    from core.storage.config_service import get_config_service
+    """Replace the editable keys. Audited (who, reason, old and new value).
 
+    Read, compared with ``version``, changed and written in one transaction
+    under a row lock: 409 when the policy changed since the caller read it.
+    """
     reason = body.reason.strip()
     if not reason:
         raise _invalid("A reason is required")
     updates = normalise_update(body)
-    service = get_config_service(user.username)
-    raw = _read(service)
-    new = {k: v for k, v in raw.items() if k not in EDITABLE_KEYS}
-    new.update(updates)
-    if new == raw:
-        return view(raw)
-    if not service.set_system_config(
-        POLICY_CONFIG_KEY,
-        new,
-        description="Response action policy (W2.4, W3.2)",
-        config_type="response_policy",
-        change_reason=reason,
-    ):
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR, "Could not save the response policy"
+
+    def change(raw: Dict[str, Any]) -> Dict[str, Any]:
+        new = {k: v for k, v in raw.items() if k not in EDITABLE_KEYS}
+        new.update(updates)
+        return new
+
+    try:
+        new, version, _written = update_policy(
+            user.username, reason, change, expected_version=body.version
         )
-    return view(new)
+    except PolicyConflict:
+        raise HTTPException(status.HTTP_409_CONFLICT, CONFLICT) from None
+    except Exception:  # noqa: BLE001
+        # The database refused the read or the write: unavailable, not "saved".
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Could not save the response policy"
+        ) from None
+    return _view(new, version)

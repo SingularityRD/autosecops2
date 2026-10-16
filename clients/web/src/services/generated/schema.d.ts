@@ -5661,6 +5661,9 @@ export interface paths {
         /**
          * Put Response Policy
          * @description Replace the editable keys. Audited (who, reason, old and new value).
+         *
+         *     Read, compared with ``version``, changed and written in one transaction
+         *     under a row lock: 409 when the policy changed since the caller read it.
          */
         put: operations["put_api_response_policy"];
         post?: never;
@@ -12545,6 +12548,8 @@ export interface components {
             protected_targets?: string[];
             /** Reason */
             reason: string;
+            /** Version */
+            version: string;
         };
         /** ResponsePolicyView */
         ResponsePolicyView: {
@@ -12568,6 +12573,8 @@ export interface components {
             protected_tags: string[];
             /** Protected Targets */
             protected_targets: string[];
+            /** Version */
+            version: string;
         };
         /** RevertRequest */
         RevertRequest: {

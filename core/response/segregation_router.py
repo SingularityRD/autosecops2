@@ -7,8 +7,9 @@
 
 The report names people and their roles, so reading it takes ``users.read``.
 Changing the condition changes who may release an identity action, so it
-takes ``settings.write`` and a reason; it writes the ``response.policy``
-system config row, which ``config_audit_log`` audits.
+takes ``settings.write`` and a reason; it changes the ``response.policy``
+system config row under a row lock (``policy_store``), with its
+``config_audit_log`` row in the same transaction.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from core.auth.permissions import permission_gate
 from core.deps import provide_approvals
 from core.response import segregation
 from core.response.approval_service import ActionType, ApprovalService
-from core.response.policy import POLICY_CONFIG_KEY, PolicyConfig
+from core.response.policy import PolicyConfig
 from core.routing import Auth, RouterMeta
 from core.storage.connection import get_db_manager
 from core.storage.models import User
@@ -196,7 +197,7 @@ def put_distinct_role(
     Turning it on also puts the class under the two-person rule. Turning it off
     leaves the two-person rule as it was.
     """
-    from core.storage.config_service import get_config_service
+    from core.response.policy_store import update_policy
 
     if action_type not in _ACTION_TYPES:
         raise HTTPException(
@@ -206,30 +207,26 @@ def put_distinct_role(
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "A reason is required"
         )
-    service = get_config_service(current_user.username)
+
+    def change(raw: dict[str, Any]) -> dict[str, Any]:
+        # Under the row lock (W0.36): a concurrent policy edit is not lost.
+        distinct = set(raw.get("distinct_role_types") or [])
+        if body.distinct_role:
+            distinct.add(action_type)
+        else:
+            distinct.discard(action_type)
+        raw["distinct_role_types"] = sorted(distinct)
+        return raw
+
     try:
-        raw = dict(service.read_system_config(POLICY_CONFIG_KEY) or {})
+        raw, _version, _written = update_policy(
+            current_user.username, body.reason.strip(), change
+        )
     except Exception:  # noqa: BLE001
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "The response policy could not be read",
-        )
-    distinct = set(raw.get("distinct_role_types") or [])
-    if body.distinct_role:
-        distinct.add(action_type)
-    else:
-        distinct.discard(action_type)
-    raw["distinct_role_types"] = sorted(distinct)
-    if not service.set_system_config(
-        POLICY_CONFIG_KEY,
-        raw,
-        description="Response action policy (W2.4, W3.2)",
-        config_type="response_policy",
-        change_reason=body.reason.strip(),
-    ):
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR, "Could not save the response policy"
-        )
+            "The response policy could not be saved",
+        ) from None
     policy = PolicyConfig.from_mapping(raw)
     return {
         "four_eyes_types": sorted(policy.four_eyes_types),
