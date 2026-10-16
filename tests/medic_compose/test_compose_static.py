@@ -199,10 +199,28 @@ def test_only_the_proxy_mounts_the_docker_socket_read_only(on) -> None:
                 assert m["type"] == "bind" and m.get("read_only") is True
                 assert m["target"] == "/var/run/docker.sock"
                 # A missing socket must fail, not become an empty directory.
-                assert m["bind"]["create_host_path"] is False
+                # Compose versions render this key differently (W0.31): v2.38
+                # writes `true` for the short form and omits `false`, v5 omits
+                # the default and writes `false`. Rendered, it must never be
+                # true; the declaration itself is checked in the source below.
+                assert m.get("bind", {}).get("create_host_path") is not True
     sock = [m for m in on["services"]["medic-dockerproxy"].get("volumes") or []]
     assert len(sock) == 1 and "docker.sock" in sock[0]["source"]
     assert on["services"]["medic-gateway"].get("volumes") in (None, [])
+
+
+def test_the_socket_mount_declares_create_host_path_false() -> None:
+    """The long form, in the file itself: independent of how a Compose version
+    renders the default (see the rendered check above)."""
+    spec = yaml.safe_load(BASE.read_text())["services"]["medic-dockerproxy"]
+    socks = [
+        v
+        for v in spec["volumes"]
+        if isinstance(v, dict) and v.get("target") == "/var/run/docker.sock"
+    ]
+    assert len(socks) == 1 and len(spec["volumes"]) == 1, spec["volumes"]
+    assert socks[0]["type"] == "bind" and socks[0]["read_only"] is True
+    assert socks[0]["bind"]["create_host_path"] is False
 
 
 def test_no_vigil_home_on_any_medic_service(on) -> None:
