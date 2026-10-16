@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { DurationPicker } from '../../shared/DurationPicker'
 import { formatDuration } from '../../shared/duration'
+import { ALWAYS_HUMAN_SUMMARY } from '../../shared/autonomy'
 import { Icon } from '../../shared/icons'
 import { InfoTip } from '../../shared/InfoTip'
 import { ScrubField } from '../../shared/ScrubField'
@@ -45,7 +46,7 @@ const pendingCopy = (pending: PendingSave): { title: string; body: string } => {
     case 'act':
       return {
         title: 'Let tools act on their own?',
-        body: 'Tools that change something will stop waiting for a person when the agent is confident enough.',
+        body: 'Tools an autonomy tier allows will stop waiting for a person when the agent is confident enough. Containment still waits for one.',
       }
     default: {
       const _exhaustive: never = pending
@@ -63,7 +64,7 @@ function errorText(err: unknown, fallback: string): string {
 }
 
 const ACT_TIP =
-  'A tool that can be undone runs on its own when the agent’s confidence is at or above the response confidence threshold, and waits for a person below it. Ask first makes every one of them wait.'
+  'On their own: a tool that can be undone runs without a person only where an autonomy tier for its alert category is Autonomous and the agent’s confidence reaches the tier’s floor and the response threshold. Everything else waits for a person. Ask first, the default, makes every one of them wait.'
 
 const money = (v: number) => `$${v}`
 
@@ -419,15 +420,15 @@ export default function AutoInvestigateSection({ notify }: SectionProps) {
                 <h4>
                   Tools that change something <InfoTip label="About tools that change something" text={ACT_TIP} align="start" />
                 </h4>
-                <span>Reversible, such as revoking a session</span>
+                <span>Reversible, such as blocking a domain</span>
                 <div className="lim-seg" role="group" aria-label="Tools that change something">
                   <button type="button" aria-pressed={!askFirst} onClick={selectAct}>On their own</button>
                   <button type="button" aria-pressed={askFirst} onClick={selectAsk}>Ask first</button>
                 </div>
               </div>
               <div className="lim-class poor">
-                <h4>Tools that cannot be undone</h4>
-                <span>Such as isolating a host</span>
+                <h4>Containment and tools that cannot be undone</h4>
+                <span>{ALWAYS_HUMAN_SUMMARY}</span>
                 <span className="lim-class-note">
                   <Icon name="lock" size={13} /> Always a person. This cannot be changed.
                 </span>

@@ -249,8 +249,11 @@ def test_every_071_row_survived(dbs):
     base, upgraded = dbs["names"]["base"], dbs["names"]["up"]
     tables = sorted(_listing(base))
     before, after = _row_counts(base, tables), _row_counts(upgraded, tables)
-    # The run adds its upgrade.history row; nothing else may appear or vanish.
+    # The run adds its upgrade.history row, and 63_approval_default_assist.sql
+    # audits moving the untouched Act seed to Assist (W0.32); nothing else may
+    # appear or vanish.
     after["system_config"] -= 1
+    after["config_audit_log"] -= 1
     assert after == before
 
 
@@ -277,6 +280,12 @@ def test_seeded_rows_and_data_corrections(dbs):
         ({"from": "0.7.1"},)]
     perms = dict(_query(db, "SELECT role_id, permissions ? 'medic.read' FROM roles"))
     assert perms["role-admin"] and perms["role-manager"] and not perms["role-viewer"]
+    # Nobody chose the 0.7.1 Act seed, so the upgrade makes it Assist (W0.32).
+    assert _query(db, "SELECT value FROM system_config "
+                      "WHERE key='approval.force_manual_approval'") == [({"enabled": True},)]
+    assert _query(db, "SELECT changed_by FROM config_audit_log "
+                      "WHERE config_key='approval.force_manual_approval'") == [
+        ("system:w0.32-default",)]
 
 
 def test_ledger_chain_still_verifies(dbs):

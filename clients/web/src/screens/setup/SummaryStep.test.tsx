@@ -62,7 +62,7 @@ describe('SummaryStep', () => {
       data: { workflows: [{ enabled: true }, { enabled: true }, { enabled: false }] },
     } as never)
     vi.mocked(configApi.getAutonomy).mockResolvedValue({
-      data: { auto_response_enabled: true, force_manual_approval: false },
+      data: { auto_response_enabled: true, force_manual_approval: false, autonomous_tiers: 2, mode: 'act' },
     } as never)
     vi.mocked(configApi.getOrchestrator).mockResolvedValue({
       data: { enabled: true, ...values, profiles: { balanced: { label: 'Balanced', values } } },
@@ -91,7 +91,7 @@ describe('SummaryStep', () => {
     vi.mocked(configApi.getIntegrations).mockResolvedValue({ data: { enabled_integrations: [] } } as never)
     vi.mocked(llmProviderApi.list).mockResolvedValue({ data: [] } as never)
     vi.mocked(configApi.getAutonomy).mockResolvedValue({
-      data: { auto_response_enabled: false, force_manual_approval: true },
+      data: { auto_response_enabled: false, force_manual_approval: true, autonomous_tiers: 0, mode: 'assist' },
     } as never)
     vi.mocked(configApi.getOrchestrator).mockResolvedValue({
       data: { enabled: false, ...values, max_concurrent_agents: 9, profiles: { balanced: { label: 'Balanced', values } } },

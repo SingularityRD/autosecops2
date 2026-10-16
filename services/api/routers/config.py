@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, create_model
@@ -34,7 +34,7 @@ from core.integrations.integration_secrets import (
 )
 from core.intent import intent_file
 from core.llm.defaults import DEFAULT_MODEL
-from core.response.approval_service import APPROVAL_CONFIG_KEY
+from core.response.approval_service import APPROVAL_CONFIG_KEY, stored_force_manual
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
 from core.secrets import get_secret, set_secret
 from core.secrets_manager import get_secrets_manager
@@ -1528,24 +1528,63 @@ def get_intent_report() -> IntentReportResponse:
 
 
 class AutonomyConfig(BaseModel):
-    """The two flags the console chip folds into Assist or Act.
+    """What the console chip shows, and the inputs it is folded from.
 
     Not stored. ``force_manual_approval`` is the env flag OR the
-    ``approval.force_manual_approval`` row. ``auto_response_enabled`` is
-    ``Settings.daemon_auto_response``.
+    ``approval.force_manual_approval`` row (no row is Assist).
+    ``auto_response_enabled`` is ``Settings.daemon_auto_response``.
+    ``autonomous_tiers`` counts the autonomy tiers set to Autonomous that the
+    controller could ever honour (eligible class, a named category); ``None``
+    when the tiers could not be read.
+
+    ``mode`` is the effective mode (W0.32). ``act`` only when approvals are
+    not forced, auto-response is on and at least one tier may run an action
+    without a person; otherwise every action waits for one and the mode is
+    ``assist``. ``unknown`` when the flags would allow Act but the tiers could
+    not be read: the gate then holds every action (a tier read failure decides
+    approve), but the chip cannot say which tiers would release one.
     """
 
     auto_response_enabled: bool
     force_manual_approval: bool
+    autonomous_tiers: Optional[int] = None
+    mode: Literal["assist", "act", "unknown"] = "assist"
+
+
+def _autonomous_tier_count() -> Optional[int]:
+    """Tiers set to Autonomous on a cell the controller may honour; None if unreadable."""
+    try:
+        from core.autonomy import AutonomyController
+
+        matrix = AutonomyController().matrix()
+    except Exception as e:  # noqa: BLE001
+        logger.error("Cannot read autonomy tiers for the console chip: %s", e)
+        return None
+    return sum(
+        1
+        for entry in matrix.get("entries", [])
+        if entry.get("tier") == "autonomous" and entry.get("eligible")
+    )
 
 
 @router.get("/autonomy", response_model=AutonomyConfig)
 def get_autonomy_config() -> AutonomyConfig:
     """Effective response autonomy for the console chip."""
     effective = effective_daemon_config(DaemonConfig.from_env())
+    auto = effective.response.auto_response_enabled
+    forced = effective.response.force_manual_approval
+    tiers = _autonomous_tier_count()
+    if not auto or forced:
+        mode = "assist"
+    elif tiers is None:
+        mode = "unknown"
+    else:
+        mode = "act" if tiers > 0 else "assist"
     return AutonomyConfig(
-        auto_response_enabled=effective.response.auto_response_enabled,
-        force_manual_approval=effective.response.force_manual_approval,
+        auto_response_enabled=auto,
+        force_manual_approval=forced,
+        autonomous_tiers=tiers,
+        mode=mode,
     )
 
 
@@ -1631,10 +1670,8 @@ def _environment_wins() -> bool:
 
 
 def _stored_force_manual(config_service) -> bool:
-    value = config_service.read_system_config(APPROVAL_CONFIG_KEY)
-    if isinstance(value, dict):
-        return bool(value.get("enabled", False))
-    return False
+    """The stored flag; no row is Assist (W0.32)."""
+    return stored_force_manual(config_service.read_system_config(APPROVAL_CONFIG_KEY))
 
 
 @router.get("/force-manual-approval", response_model=ForceManualApprovalResponse)

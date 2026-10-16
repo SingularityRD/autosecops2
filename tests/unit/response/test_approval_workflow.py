@@ -47,11 +47,12 @@ def no_db():
 
 
 def _create(svc: ApprovalService, confidence: float, **kwargs):
+    # An autonomous-eligible class, so the confidence band is what decides.
     return svc.create_action(
-        action_type=ActionType.BLOCK_IP,
+        action_type=ActionType.GATEWAY_BLOCK,
         title="block",
         description="test",
-        target="1.2.3.4",
+        target="evil.example",
         confidence=confidence,
         reason="test",
         evidence=[],

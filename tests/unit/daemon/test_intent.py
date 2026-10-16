@@ -22,7 +22,11 @@ from core.intent import (
 )
 from core.response.config import ResponseConfig
 from services.daemon.config import DaemonConfig
-from services.daemon.intent import intent_report, report_intent
+from services.daemon.intent import (
+    _overlay_force_manual_approval,
+    intent_report,
+    report_intent,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -54,11 +58,18 @@ def _write(tmp_path: Path, frontmatter: str) -> Path:
 # --- shipped manifest --------------------------------------------------------
 
 
-def test_shipped_manifest_declares_every_field_at_default():
+def test_shipped_manifest_declares_every_field_at_default(monkeypatch):
+    # The default a fresh install runs with: env defaults plus a database with
+    # no approval row, which reads Assist (W0.32).
+    monkeypatch.setattr(
+        "services.daemon.intent.get_config_service", lambda: _FakeConfigService({})
+    )
     declared = read_intent(DEFAULT_INTENT_FILE)
     assert declared is not None
     assert set(declared) == {f.key for f in INTENT_FIELDS}
-    assert diff_intent(declared, effective_values(DaemonConfig()), {}) == []
+    effective = effective_values(DaemonConfig())
+    _overlay_force_manual_approval(effective, {})
+    assert diff_intent(declared, effective, {}) == []
 
 
 def test_every_response_knob_has_a_manifest_key():
@@ -254,6 +265,9 @@ class _FakeConfigService:
 
     def get_system_config(self, key, default=None):
         return self.rows.get(key, default)
+
+    def read_system_config(self, key):
+        return self.rows.get(key)
 
 
 def test_db_overlays_report_source_db(tmp_path, monkeypatch):

@@ -44,6 +44,20 @@ logger = logging.getLogger(__name__)
 
 APPROVAL_CONFIG_KEY = "approval.force_manual_approval"
 
+
+def stored_force_manual(value: Any) -> bool:
+    """Assist (True) or Act (False) from the ``approval.force_manual_approval`` row.
+
+    No row, or one without a boolean ``enabled``, is Assist: a person approves
+    every response action until someone chooses Act (W0.32). Every reader of
+    the row (the gate, the dispatch stop, the console, the intent report)
+    folds it here so they cannot disagree.
+    """
+    if isinstance(value, dict) and isinstance(value.get("enabled"), bool):
+        return value["enabled"]
+    return True
+
+
 # A reversal claim (``begin_reversal``) still pending after this long was
 # abandoned: the process died, or recording the outcome failed, between the
 # claim and ``finish_reversal``. Executors' vendor calls are bounded far below
@@ -429,11 +443,15 @@ class ApprovalService:
     # ``self.force_manual_approval`` is this process forcing approval on
     # (the daemon does when DAEMON_FORCE_APPROVAL is set) and is never
     # written to the row. The row is what Settings writes and the SQL seed
-    # creates (Act); it is read at each decision so a long-lived service sees
-    # a change without a restart. Nothing here writes it.
+    # creates (Assist, W0.32); it is read at each decision so a long-lived
+    # service sees a change without a restart. Nothing here writes it.
 
     def _stored_force_manual_approval(self) -> bool:
-        """The stored flag; Act when no row exists, Assist when the read fails."""
+        """The stored flag; Assist when no row exists or the read fails.
+
+        A person approves every response action until someone chooses Act
+        (W0.32): a missing row is the GA default, not a licence to act.
+        """
         try:
             value = get_config_service().read_system_config(APPROVAL_CONFIG_KEY)
         except Exception as e:  # noqa: BLE001
@@ -441,7 +459,7 @@ class ApprovalService:
                 "Cannot read the approval setting; requiring manual approval: %s", e
             )
             return True
-        return bool(value.get("enabled", False)) if value else False
+        return stored_force_manual(value)
 
     def set_force_manual_approval(self, force: bool):
         """Force manual approval for this process; the stored row is left as is."""

@@ -193,8 +193,10 @@ kaydedilir, bir kişi serbest bırakır), **Approve** (kişi onaylar) ve **Auton
 Yapılandırılmamış her çiftin katmanı Approve'dur. Autonomous ancak şunların hepsi
 doğruysa uygulanır:
 
-- sınıf `isolate_host`, `block_ip`, `block_domain`, `waf_block` ya da
-  `gateway_block`'tur ve eylem hem satırda hem yürütücü kaydında geri alınabilirdir;
+- sınıf `block_domain` ya da `gateway_block`'tur ve eylem hem satırda hem yürütücü
+  kaydında geri alınabilirdir. Çevreleme sınıfları (`isolate_host`, `disable_user`,
+  `revoke_sessions`, `access_revoke`, `block_ip`, `waf_block`, `quarantine_file`)
+  hangi katmanda olursa olsun her zaman kişi onayı bekler;
 - sınıf dört göz onayı istemez; kategori `*` ya da `other` değildir;
 - katmanda süre (en çok 7 gün) ve güven tabanı vardır, eylemin güveni tabana ve
   `DAEMON_CONFIDENCE_THRESHOLD`'a ulaşır; Assist kipi açık değildir;
