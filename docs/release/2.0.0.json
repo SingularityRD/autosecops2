@@ -377,6 +377,21 @@
       "id": "W0.32",
       "topic": "otonomi varsayılanları plana uyar: varsayılan kip Assist (her müdahale eylemini bir kişi onaylar), başlık çipi etkin kipi gösterir, çevreleme (izolasyon, hesap kapatma, güvenlik duvarı engeli) hiçbir katmanda kişisiz çalışmaz",
       "topic_en": "autonomy defaults match the plan: Assist is the default (a person approves every response action), the header chip shows the effective mode, and containment (host isolation, account disable, firewall blocks) is never autonomous at any tier"
+    },
+    {
+      "id": "W0.35",
+      "topic": "kimlik ve ayar olaylarının denetimi: giriş/kullanıcı yönetimi zincirli denetim kaydında, LLM sağlayıcı/skill/iş akışı/kural kaynağı/SLA değişiklikleri kayıtlı, vaka yorumu ve kanıt yazarı sunucudan, bulgu dışa aktarımı yetkili ve kayıtlı",
+      "topic_en": "identity and settings audit: login and user-management events in the chained audit log, LLM provider/skill/workflow/rule source/SLA changes recorded, case comment and evidence author from the server, findings export permissioned and audited"
+    },
+    {
+      "id": "W0.37",
+      "topic": "Defender, Entra ID ve Palo Alto yürütücüleri konsoldan bağlanır (Deneysel), salt okunur Test çağrısı; yürütücü ayarı yeniden başlatmadan uygulanır",
+      "topic_en": "Defender, Entra ID and Palo Alto executors connect from the console (Experimental) with a read-only Test call; executor config applies without a restart"
+    },
+    {
+      "id": "W0.39",
+      "topic": "init SQL her adlı veritabanı kullanıcısıyla uygulanır (Helm db-init ve compose)",
+      "topic_en": "init SQL applies for a database user of any name (Helm db-init and compose)"
     }
   ],
   "highlights": [
