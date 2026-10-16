@@ -98,7 +98,7 @@ W0.8 external dependencies (human work); W1.4 injection test set; W2.9 phishing 
 The 0.7.1 → 2.0 database upgrade path is W4.5: when it is not in the included
 list above, it is not verified in this release.
 
-New init SQL files in 2.0.0: 46–51, 55–56, 58, 61–62.
+New init SQL files in 2.0.0: 46–51, 55–56, 58, 61–62, 64.
 <!-- /release-notes 2.0.0 -->
 
 ### Release engineering (W4.7)
