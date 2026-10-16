@@ -98,6 +98,29 @@ spec:
                 return 1
               }
 
+              # Two statements in files frozen since 0.7.1 assume the default
+              # superuser `deeptempo` and are rewritten on the way to psql, so
+              # every file applies for a user of any name (postgresql.*.username):
+              #  - 04/07/09/10/12/13 GRANT to the role `deeptempo` by name. The
+              #    Job's user owns those tables, so the GRANTs go to CURRENT_USER
+              #    (they add nothing; the role need not exist). vigil_app gets
+              #    its own grants from 30_vigil_app_role.sql.
+              #  - 30's ALTER ROLE vigil_app NOSUPERUSER fails for a user that is
+              #    not a superuser (a managed or bank Postgres); such a user
+              #    cannot have made vigil_app one, so only a superuser says it.
+              # With the default superuser deeptempo nothing changes.
+              init_sql() {
+                sed -e 's/^\(GRANT .*[[:space:]]TO[[:space:]]*\)deeptempo;/\1CURRENT_USER;/' \
+                  -e 's/^ALTER ROLE vigil_app NOSUPERUSER LOGIN;$/DO $$ BEGIN IF (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN ALTER ROLE vigil_app NOSUPERUSER; END IF; END $$; ALTER ROLE vigil_app LOGIN;/' \
+                  "$1"
+              }
+
+              frozen() {
+                local n="${1%%_*}"
+                case "$n" in ''|*[!0-9]*) return 1 ;; esac
+                [ "$n" -le 40 ]
+              }
+
               apply() {
                 local f="$1"
                 # Marker-table check goes FIRST so already-applied filenames
@@ -156,10 +179,24 @@ spec:
                 # has built its tables, and on every later upgrade until they
                 # apply cleanly; the files are rerunnable (compose's db-seed
                 # re-applies all of them on every `up`).
-                local out
-                out=$(psql -v ON_ERROR_STOP=0 -f "/sql/$f" 2>&1) || true
+                #
+                # Files frozen since 0.7.1 (NN <= 40) are not all rerunnable: run
+                # again where they already ran, 04's CREATE TRIGGERs say "already
+                # exists" and 12's COMMENT names the column 34 dropped. A file
+                # whose only errors are those has its effect in place and is
+                # recorded; an install whose user is not called deeptempo left
+                # 04-13 unrecorded before W0.39 and gets them recorded this way.
+                local out errors
+                out=$(init_sql "/sql/$f" | psql -v ON_ERROR_STOP=0 -f - 2>&1) || true
                 [ -z "$out" ] || printf '%s\n' "$out"
-                if printf '%s\n' "$out" | grep -q '^psql:.*ERROR:'; then
+                errors=$(printf '%s\n' "$out" | grep '^psql:.*ERROR:' || true)
+                if [ -n "$errors" ] && frozen "$f"; then
+                  errors=$(printf '%s\n' "$errors" | grep -v \
+                    -e 'already exists$' \
+                    -e 'column "skill_tools_available" of relation "workflow_runs" does not exist$' || true)
+                  [ -n "$errors" ] || echo "  objects already in place (errors above are from a re-run)"
+                fi
+                if [ -n "$errors" ]; then
                   echo "  NOT recorded: errors above; retried later"
                   pending="$pending $f"
                   return 0
