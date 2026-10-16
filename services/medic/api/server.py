@@ -20,6 +20,7 @@ import json
 import logging
 import re
 import socket
+import socketserver
 import threading
 import uuid
 from collections.abc import Callable
@@ -203,6 +204,15 @@ class _Server(ThreadingHTTPServer):
         super().__init__(*args)
         self.conn_slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
         self.in_flight = threading.BoundedSemaphore(MAX_IN_FLIGHT)
+
+    def server_bind(self) -> None:
+        """HTTPServer's own, without `socket.getfqdn(host)`: a reverse lookup of the
+        bind address that nothing here uses. On a macOS runner it blocked Medic's
+        start-up for longer than the launcher test's 20 s, before the main loop and
+        its first cycle (W0.31). No name lookup at all, so none can leave the host."""
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name, self.server_port = host, port
 
     def process_request(self, request, client_address) -> None:
         if not self.conn_slots.acquire(blocking=False):  # over the cap: close at once

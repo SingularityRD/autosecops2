@@ -29,7 +29,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from core.platform.medic_status import DOWN_AFTER_S
+# medic_timing, not medic_status: this job has no pydantic (core.config).
+from core.platform.medic_timing import DOWN_AFTER_S
 from tests.medic_compose.compose import ENABLE, HAVE_COMPOSE
 from tests.medic_compose.test_enable_live import INSTALL, OVERRIDE, Stack
 

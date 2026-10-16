@@ -429,3 +429,26 @@ def test_the_listener_tick_is_the_loops() -> None:
     from services.medic.app.wiring import TICK_S
 
     assert server.TICK_S == TICK_S
+
+
+def test_listening_looks_up_no_name(key_file, clock, monkeypatch) -> None:
+    """W0.31: HTTPServer's own bind does `socket.getfqdn(host)`, a reverse lookup
+    that held Medic's start-up past 20 s on a macOS runner. The listener must come
+    up, and serve, with every name lookup failing."""
+
+    def no_lookup(*_a, **_k):
+        raise AssertionError("the Medic API looked up a name")
+
+    for name in ("getfqdn", "gethostbyaddr", "getnameinfo"):
+        monkeypatch.setattr(socket, name, no_lookup)
+    srv = make_server(
+        ("127.0.0.1", 0), key_file=key_file, board=StatusBoard(), wall=clock.wall
+    )
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        assert srv.server_name == "127.0.0.1"
+        assert srv.server_port == srv.server_address[1]
+        assert_problem(*call(srv, headers={"X-Medic-Key": KEY}), 503, "busy")
+    finally:
+        srv.shutdown()
+        srv.server_close()
