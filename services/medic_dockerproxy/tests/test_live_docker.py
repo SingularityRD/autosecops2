@@ -59,6 +59,20 @@ def raw_docker(path: str) -> bytes:
     return buf
 
 
+def api_version() -> str:
+    """The engine's own API version, from its `/_ping` reply (`Api-Version`).
+
+    A hardcoded `/v1.NN/` path breaks on an engine older than 1.NN (400 "client
+    version is too new"), so the versioned case asks the engine which it speaks.
+    """
+    head = raw_docker("/_ping").split(b"\r\n\r\n", 1)[0].decode("latin-1")
+    for line in head.split("\r\n")[1:]:
+        name, _, value = line.partition(":")
+        if name.strip().lower() == "api-version":
+            return value.strip()
+    raise AssertionError(f"no Api-Version in the engine's /_ping reply: {head!r}")
+
+
 @pytest.fixture(scope="module")
 def live():
     subprocess.run(["docker", "rm", "-f", NAME], capture_output=True, check=False)
@@ -109,12 +123,18 @@ def body(resp: bytes) -> bytes:
     [
         "/_ping",
         "/containers/json",
-        "/v1.54/containers/json",
+        "/v{api}/containers/json",
         "/containers/json?all=1&filters=%7B%7D",
     ],
 )
 def test_allowed_reads(live, t):
-    assert get(live, t)[0] == 200
+    if "{api}" in t:
+        # A versioned path, at the version this engine speaks (not a fixed one).
+        api = api_version()
+        assert api.count(".") == 1, api
+        t = t.format(api=api)
+    st, resp = get(live, t)
+    assert st == 200, resp[:300]
 
 
 def test_list_with_encoded_label_filter(live):
@@ -154,13 +174,32 @@ def test_logs_non_follow(live):
 
 
 def test_events_type_forced_to_container(live):
-    now = int(time.time())
-    window = f"since={now - 600}&until={now}"
-    # Negative control: the fixture's `docker run` raised network events.
-    assert b'"Type":"network"' in raw_docker(f"/events?{window}")
+    # Negative control, made deterministic: a network created and removed here
+    # raises `network create` / `network destroy` events. Both actions are on the
+    # proxy's own allowed list, so only the forced type can keep them out. (A
+    # container's `docker run` raises network connect events on some engines and
+    # not on others, so the fixture's run is not relied on.)
+    since = int(time.time()) - 600
+    net = f"medic-s5p-net-{os.getpid()}"
+    subprocess.run(["docker", "network", "rm", net], capture_output=True, check=False)
+    subprocess.run(
+        ["docker", "network", "create", net], capture_output=True, check=True
+    )
+    subprocess.run(["docker", "network", "rm", net], capture_output=True, check=True)
+    deadline = time.monotonic() + 10
+    while True:
+        window = f"since={since}&until={int(time.time()) + 1}"
+        raw = raw_docker(f"/events?{window}")
+        if f'"name":"{net}"'.encode() in raw or time.monotonic() > deadline:
+            break
+        time.sleep(0.2)
+    assert b'"Type":"network"' in raw and f'"name":"{net}"'.encode() in raw
     st, resp = get(live, f"/events?{window}")
     assert st == 200
+    # Not vacuous: the fixture's container events still come through.
+    assert b'"Type":"container"' in body(resp)
     assert b'"Type":"image"' not in body(resp) and b'"Type":"network"' not in body(resp)
+    assert net.encode() not in body(resp)
 
 
 # ---- refused (C3 §7 check 4 + bypass shapes): SP2's 32 rows -----------------
