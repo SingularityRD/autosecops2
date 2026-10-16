@@ -27,9 +27,9 @@ export type ConnectorSupport = 'supported' | 'experimental' | 'wip'
 
 const SERVER_SUPPORT: Record<string, Exclude<ConnectorSupport, 'supported'>> = {
   'carbon-black': 'wip', 'hybrid-analysis': 'wip', 'anyrun': 'wip',
-  'alienvault-otx': 'wip', 'palo-alto': 'wip',
+  'alienvault-otx': 'wip',
   'slack': 'wip', 'misp': 'wip', 'ip-geolocation': 'wip', 'url-analysis': 'wip',
-  'microsoft-defender': 'wip', 'azure-ad': 'wip', 'microsoft-teams': 'wip',
+  'microsoft-teams': 'wip',
 
   'crowdstrike': 'experimental', 'sentinelone': 'experimental',
   'azure-sentinel': 'experimental', 'splunk': 'experimental',
@@ -38,6 +38,9 @@ const SERVER_SUPPORT: Record<string, Exclude<ConnectorSupport, 'supported'>> = {
   // no read-only call to probe (Atomic Red Team runs the operator's own runner);
   // CAPE needs a KVM host with analysis VMs
   'atomic-red-team': 'experimental', 'cape-sandbox': 'experimental',
+  // the response executors: unit-tested against recorded vendor answers, never
+  // against a live tenant or firewall (W0.37)
+  'microsoft-defender': 'experimental', 'azure-ad': 'experimental', 'palo-alto': 'experimental',
 }
 
 export function connectorSupport(server: string): ConnectorSupport {
