@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from core.agents.projections import read_projection, read_replay, read_verify
 from core.auth.current_user import get_current_user
-from core.auth.permissions import permission_gate
+from core.auth.permissions import permission_gate, require_permission
 from core.deps import (
     provide_approvals,
     provide_custom_workflows,
@@ -115,7 +115,10 @@ class CustomWorkflowCreate(BaseModel):
     use_case: Optional[str] = ""
     trigger_examples: List[str] = Field(default_factory=list)
     phases: List[WorkflowPhaseSchema] = Field(default_factory=list)
-    created_by: Optional[str] = None
+    created_by: Optional[str] = Field(
+        None,
+        description="Ignored: the workflow is created by the signed-in user.",
+    )
 
 
 class CustomWorkflowUpdate(BaseModel):
@@ -223,16 +226,24 @@ async def list_custom_workflows(
     return {"workflows": rows, "count": len(rows)}
 
 
-@router.post(
-    "/workflows/custom", status_code=201, dependencies=[permission_gate("ai_chat.use")]
-)
+# Custom workflow writes are audited as the signed-in user (W0.35): who
+# created, changed or removed a workflow, with its definition before and after.
+_workflow_writer = require_permission("ai_chat.use")
+
+
+def _actor(user: User) -> str:
+    return user.username or str(user.user_id)
+
+
+@router.post("/workflows/custom", status_code=201)
 async def create_custom_workflow(
     payload: CustomWorkflowCreate,
+    current_user: User = Depends(_workflow_writer),
     service: CustomWorkflowService = Depends(provide_custom_workflows),
 ):
-    """Create a new custom workflow."""
+    """Create a new custom workflow. ``created_by`` is the signed-in user."""
     try:
-        created = service.create(payload.model_dump())
+        created = service.create(payload.model_dump(), actor=_actor(current_user))
         return created
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -253,18 +264,17 @@ async def get_custom_workflow(
     return wf
 
 
-@router.put(
-    "/workflows/custom/{workflow_id}", dependencies=[permission_gate("ai_chat.use")]
-)
+@router.put("/workflows/custom/{workflow_id}")
 async def update_custom_workflow(
     workflow_id: str,
     payload: CustomWorkflowUpdate,
+    current_user: User = Depends(_workflow_writer),
     service: CustomWorkflowService = Depends(provide_custom_workflows),
 ):
     """Update an existing custom workflow. Increments version only when its definition changes."""
     try:
         updates = {k: v for k, v in payload.model_dump().items() if v is not None}
-        updated = service.update(workflow_id, updates)
+        updated = service.update(workflow_id, updates, actor=_actor(current_user))
         if not updated:
             raise HTTPException(
                 status_code=404,
@@ -277,15 +287,14 @@ async def update_custom_workflow(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.delete(
-    "/workflows/custom/{workflow_id}", dependencies=[permission_gate("ai_chat.use")]
-)
+@router.delete("/workflows/custom/{workflow_id}")
 async def delete_custom_workflow(
     workflow_id: str,
+    current_user: User = Depends(_workflow_writer),
     service: CustomWorkflowService = Depends(provide_custom_workflows),
 ):
     """Soft-delete a custom workflow (sets is_active=False)."""
-    ok = service.delete(workflow_id)
+    ok = service.delete(workflow_id, actor=_actor(current_user))
     if not ok:
         raise HTTPException(
             status_code=404,

@@ -5,13 +5,16 @@ optional ``VIGIL_SKILLS_PATH`` root; see ``core.skills.skill_library``. Writes
 go only to that operator root. The bundled library is never modified.
 """
 
+import asyncio
+import hashlib
 import logging
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, field_validator
 
-from core.auth.permissions import permission_gate
+from core.audit.config_changes import record_change_now
+from core.auth.permissions import permission_gate, require_permission
 from core.llm.cost.budget import BudgetExceeded
 from core.llm.providers.registry import get_registry
 from core.llm.router.router import LLMRouter, get_provider_spec
@@ -38,6 +41,7 @@ from core.skills.skill_library import (
     write_operator_skill,
 )
 from core.skills.skill_usage import skill_usage
+from core.storage.models import User
 from services.api.routers.claude import NO_PROVIDER_DETAIL
 
 logger = logging.getLogger(__name__)
@@ -149,6 +153,47 @@ def _loaded(name: str) -> Skill:
     return skill
 
 
+# A skill's steps go into agent prompts, so who changed one, and from what to
+# what, is kept in config_audit_log (W0.35). The body is kept up to this many
+# characters, with its digest and length always, secrets redacted.
+AUDIT_CONFIG_TYPE = "skill"
+_AUDIT_BODY_MAX = 16_000
+_writer = require_permission("ai_chat.use")
+
+
+def _audit_snapshot(name: str) -> Optional[Dict[str, Any]]:
+    """The loaded skill ``name`` as the audit row records it, or None if absent."""
+    try:
+        skill = _loaded(name)
+        body = skill_body(skill)
+        version = skill_version(skill)
+        files = len(skill_files(skill))
+    except (SkillError, OSError, ValueError):
+        return None
+    return {
+        "description": skill.description,
+        "version": version,
+        "bundled": is_bundled(skill),
+        "file_count": files,
+        "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        "body_length": len(body),
+        "body": body[:_AUDIT_BODY_MAX],
+    }
+
+
+async def _audit(name: str, action: str, old, new, user: User) -> None:
+    # The change is on disk, outside any transaction: committed on its own.
+    await asyncio.to_thread(
+        record_change_now,
+        config_type=AUDIT_CONFIG_TYPE,
+        config_key=name,
+        action=action,
+        old=old,
+        new=new,
+        actor=user.username or str(user.user_id),
+    )
+
+
 def _http(exc: SkillError) -> HTTPException:
     status = (
         404
@@ -205,21 +250,15 @@ async def get_skill_file(name: str, path: str):
     return SkillFileContent(path=path, content=content)
 
 
-@router.post(
-    "", response_model=SkillResponse, dependencies=[permission_gate("ai_chat.use")]
-)
-@router.post(
-    "/",
-    response_model=SkillResponse,
-    include_in_schema=False,
-    dependencies=[permission_gate("ai_chat.use")],
-)
-async def save_skill(req: SkillWriteRequest):
+@router.post("", response_model=SkillResponse)
+@router.post("/", response_model=SkillResponse, include_in_schema=False)
+async def save_skill(req: SkillWriteRequest, current_user: User = Depends(_writer)):
     """Write ``<vigil_skills_path>/<name>/SKILL.md``, bumping its version.
 
     An existing operator skill is overwritten when ``version`` is the one on disk
     (409 otherwise); ``source`` copies that skill's folder.
     """
+    before = _audit_snapshot(req.name)
     try:
         skill = write_operator_skill(
             req.name,
@@ -230,15 +269,19 @@ async def save_skill(req: SkillWriteRequest):
         )
     except SkillError as exc:
         raise _http(exc) from exc
+    after = _audit_snapshot(skill.name)
+    if after is not None and req.source:
+        after["copied_from"] = req.source
+    await _audit(
+        skill.name, "update" if before else "create", before, after, current_user
+    )
     return _response(skill)
 
 
-@router.post(
-    "/upload",
-    response_model=SkillResponse,
-    dependencies=[permission_gate("ai_chat.use")],
-)
-async def upload_skill(file: UploadFile = File(...)):
+@router.post("/upload", response_model=SkillResponse)
+async def upload_skill(
+    file: UploadFile = File(...), current_user: User = Depends(_writer)
+):
     """Install a ``SKILL.md`` or a skill ``.zip`` under the operator root.
 
     A name already taken is refused (409); nothing is overwritten.
@@ -248,16 +291,26 @@ async def upload_skill(file: UploadFile = File(...)):
         skill = install_uploaded_skill(file.filename or "", data)
     except SkillError as exc:
         raise _http(exc) from exc
+    after = _audit_snapshot(skill.name)
+    if after is not None:
+        after["upload"] = {
+            "filename": (file.filename or "")[:200],
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "bytes": len(data),
+        }
+    await _audit(skill.name, "create", None, after, current_user)
     return _response(skill)
 
 
-@router.delete("/{name}", dependencies=[permission_gate("ai_chat.use")])
-async def remove_skill(name: str):
+@router.delete("/{name}")
+async def remove_skill(name: str, current_user: User = Depends(_writer)):
     """Delete an operator skill directory. A bundled skill is refused."""
+    before = _audit_snapshot(name)
     try:
         delete_operator_skill(name)
     except SkillError as exc:
         raise _http(exc) from exc
+    await _audit(name, "delete", before, None, current_user)
     return {"deleted": name}
 
 

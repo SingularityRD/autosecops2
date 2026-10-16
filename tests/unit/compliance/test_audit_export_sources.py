@@ -16,11 +16,14 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from core.audit.auth_events import build_row
 from core.compliance.audit_export import (
     AgentEventsSource,
     ApprovalTransitionSource,
     AuditExportConfig,
+    AuthAuditSource,
     CaseAuditSource,
+    auth_record,
     ConfigAuditSource,
     build_sources,
 )
@@ -128,6 +131,60 @@ def test_case_audit_source(db):
     assert a.message == "closed the case" and a.src_ip == "203.0.113.9"
     assert b.message == "case c-1 delete" and b.severity == 4
     assert cb == {"id": 2}
+
+
+def _auth_rows(db, *records):
+    with db() as session:
+        for record in records:
+            session.add(build_row(record))
+
+
+def test_auth_source_reads_auth_rows_and_case_audit_skips_them(db):
+    """K1 (W0.35): auth events are case_audit_logs rows, exported once, as auth."""
+    _exec(
+        db,
+        "INSERT INTO case_audit_logs (entity_type, entity_id, action, changed_by,"
+        " timestamp) VALUES ('case', 'c-1', 'update', 'bob', :ts)",
+        [{"ts": _ts(4)}],
+    )
+    _auth_rows(
+        db,
+        auth_record(
+            "login",
+            outcome="failure",
+            actor=None,
+            src_ip="198.51.100.4",
+            user_agent="pytest",
+            details={"unknown_identifier": True, "identifier_digest": "ab"},
+            now=NOW - timedelta(minutes=3),
+        ),
+        auth_record(
+            "role_change",
+            actor="admin",
+            actor_id="u-admin",
+            target_id="u-bob",
+            details={"old_role_id": "role-viewer", "new_role_id": "role-admin"},
+            now=NOW - timedelta(minutes=2),
+        ),
+    )
+    auth = AuthAuditSource(db, settle_s=1, clock=_clock)
+    events = auth.fetch(auth.initial_cursor("beginning"), 10)
+    assert [c for _, c in events] == [{"id": 2}, {"id": 3}]
+    (failed, _), (role, _) = events
+    assert failed.source == "auth" and failed.action == "auth.login"
+    assert failed.outcome == "failure" and failed.actor is None
+    assert failed.src_ip == "198.51.100.4" and failed.user_agent == "pytest"
+    assert failed.id.startswith("auth:") and failed.severity == 5
+    assert failed.details["identifier_digest"] == "ab"
+    assert role.action == "auth.role_change" and role.severity == 7
+    assert role.actor == "admin" and role.actor_id == "u-admin"
+    assert role.target_type == "user" and role.target_id == "u-bob"
+    assert role.details["new_role_id"] == "role-admin"
+    assert role.timestamp == NOW - timedelta(minutes=2)
+    # Stable ids: a re-read sends the same event ids.
+    assert [e.id for e, _ in auth.fetch({"id": 0}, 10)] == [failed.id, role.id]
+    case = CaseAuditSource(db, settle_s=1, clock=_clock)
+    assert [c for _, c in case.fetch({"id": 0}, 10)] == [{"id": 1}]
 
 
 def test_approval_transitions_each_get_an_event_and_cursor(db):
@@ -241,7 +298,8 @@ def test_build_sources_honours_toggles():
     cfg = AuditExportConfig.model_validate(
         {"sources": {"approvals": False, "auth": False}}
     )
-    names = [s.name for s in build_sources(cfg, lambda: None, None)]
+    names = [s.name for s in build_sources(cfg, lambda: None)]
     assert names == ["agent_events", "config", "case_audit", "audit_checkpoints"]
-    every = [s.name for s in build_sources(AuditExportConfig(), lambda: None, None)]
+    every = [s.name for s in build_sources(AuditExportConfig(), lambda: None)]
     assert "approvals.decided" in every and "approvals.reversed" in every
+    assert every[-1] == "auth"  # read from the database (W0.35)

@@ -7,6 +7,8 @@ Kod: `core/compliance/audit_export.py`; yönetici API'si:
 
 Aktarım **varsayılan olarak kapalıdır.** Yapılandırma yokken ya da
 `enabled: false` iken hiçbir dosya yazılmaz, kilit alınmaz, bağlantı açılmaz.
+Kimlik ve kullanıcı yönetimi olayları yine de veritabanında kalıcı olarak
+tutulur (W0.35); aktarım yalnızca onların SIEM'e gönderilmesidir.
 
 ## Ne aktarılır
 
@@ -14,14 +16,14 @@ Aktarım **varsayılan olarak kapalıdır.** Yapılandırma yokken ya da
 |---|---|---|
 | `agent_events` | ajan defteri tablosu `agent_events` (yalnız-ekleme, hash zincirli) | her defter olayı: `agent.<kind>` (ör. `agent.tool_call`, `agent.terminal`) |
 | `approvals` | `approval_actions` satırındaki zaman damgası geçişleri | `approval.requested`, `approval.approved`, `approval.rejected`, `response.executed`, `response.verified`, `response.reversed` |
-| `auth` | API sürecinin yazdığı yerel biriktirici (`$VIGIL_DIR/audit_export/auth_spool/`) | `auth.login` (başarılı / `failure` / `locked` / `mfa_failure`), `auth.logout`, `auth.password_change`, `auth.password_reset_request`, `auth.password_reset`, `auth.mfa_setup`, `auth.mfa_enable`, `auth.mfa_disable`, `auth.mfa_recovery_codes`, `auth.user_create`, `auth.user_update`, `auth.user_delete`, `auth.role_change`, `auth.user_activate`, `auth.user_deactivate` |
+| `auth` | `case_audit_logs`, `entity_type = 'auth'` satırları (W0.35; aktarım kapalıyken de yazılır ve W1.10 zincirindedir) | `auth.login` (başarılı / `failure` / `locked` / `mfa_failure`), `auth.sso_login` (başarılı / `failure`), `auth.logout`, `auth.password_change`, `auth.password_reset_request`, `auth.password_reset`, `auth.mfa_setup`, `auth.mfa_enable`, `auth.mfa_disable`, `auth.mfa_recovery_codes`, `auth.user_create`, `auth.user_update`, `auth.user_delete`, `auth.role_change`, `auth.user_activate`, `auth.user_deactivate` |
 | `config` | `config_audit_log` | `config.create` / `config.update` / `config.delete` (aktarım yapılandırmasının kendisindeki değişiklikler de dahil, önem 6) |
-| `case_audit` | `case_audit_logs` | `case.<entity_type>.<action>` |
+| `case_audit` | `case_audit_logs` (`entity_type = 'auth'` satırları hariç; onlar `auth` kaynağıyla gider) | `case.<entity_type>.<action>`; toplu bulgu dışa aktarımı `case.findings_export.export` |
 | `audit_checkpoints` | W1.10 imzalı zincir başları (`audit_checkpoints`) | `audit.checkpoint` (önem 3), `audit.checkpoint.rebaseline` (önem 5); `details`: `key_id`, `public_key`, `body` (imzalanan kanonik JSON), `body_hash`, `prev_body_hash`, `signature`, `tsa_token`, `audit_chain_head` (`seq`, `hash`), `schema_change`; `hash` = `body_hash` |
 
 **W1.10 denetim zinciri ile ilişki.** `audit_chain` satırları aktarılmaz:
 bunlar `approval_actions` ve `case_audit_logs` değişikliklerinin zincirlenmiş
-kopyasıdır ve o tablolar zaten `approvals` / `case_audit` kaynaklarıyla
+kopyasıdır ve o tablolar zaten `approvals` / `case_audit` / `auth` kaynaklarıyla
 aktarılır (aynı olay iki kez gitmez). Aktarım bu tabloları yalnızca okur;
 W1.10'un ertelenmiş tetikleyicileri, kilitleri ve `vigil_app` izinleriyle
 çakışmaz. SIEM'e eklenen, her imzalı kontrol noktasıdır: gövde, imza ve
@@ -277,6 +279,9 @@ yeniden kullanılır.
   başına anahtarlı bir HMAC özeti (`identifier_digest`, tekrarlanan denemeleri
   ilişkilendirmeye yeter, tahminle doğrulanamaz; anahtar
   `$VIGIL_DIR/audit_export/identifier.key`, 0600) ile uzunluğu aktarılır.
+  Veritabanındaki `auth` satırı da yalnızca bunları tutar (W0.35); anahtar
+  dosyası aktarım kapalıyken de ilk böyle denemede oluşturulur. Birden çok API
+  kopyasında özetlerin kopyalar arasında eşleşmesi için bu dosya paylaşılmalıdır.
 - **Round 5 (ikinci doğrulama):** araç bilen argv kesimi (`curl -u u:[REDACTED]`,
   `redis-cli -a`, `docker|podman login -p`, `sqlcmd -P`, `ldapsearch -w`,
   `mongo -p`, `psexec -p`, `smbclient -U u%…`, `zip -P`, `openssl -k`,
@@ -582,7 +587,7 @@ düşer ve kendisi de aktarılır).
 | `batch_size` / `queue_max` | 100 / 1000 | Parti boyutu / kuyruk sınırı |
 | `poll_interval_s` / `settle_s` | 5 / 5 | Yoklama aralığı / oturma penceresi (yalnız Postgres dışı; Postgres'te imleç en eski açık işlemle sınırlanır) |
 | `max_backoff_s` | 60 | Yeniden deneme bekleme üst sınırı |
-| `spool_max_bytes` | 256 MiB | Auth biriktiricisinin disk sınırı; dolunca yeni auth olayları atılır ve `spool_dropped` artar |
+| `spool_max_bytes` | 256 MiB | Yok sayılır (W0.35): auth olayları artık diskteki bir biriktiricide değil, veritabanında tutulur. Kayıtlı yapılandırmalar yüklenebilsin diye kabul edilir |
 
 Hedef alanları: `name` (küçük harf, rakam, `-`, `_`; ≤32), `tls_verify`
 (varsayılan **`true`**), `ca_pem` (sistem deposu yerine güvenilecek CA),
@@ -651,16 +656,22 @@ canlı olmasını ister) `last_error` `task_died:<read|send>` olur, denetçi hem
 uyandırılır ve hat yeniden başlatılır; commit edilmemiş kuyruk yeniden okunur.
 
 Auth olayları istek işleyicilerinde (`services/api/routers/auth.py`,
-`users.py`) `record_auth_event` ile biriktiriciye yazılır (`async def`
-işleyicilerde `arecord_auth_event`: `flock` ve `fsync` olay döngüsünü
-bloklamasın diye bir iş parçacığında çalışır): kanca tüm
-istisnaları yutar (oturum açma asla denetim yüzünden bozulmaz) ve
-aktarım kapalıyken hiçbir şey yapmaz. Olay, isteğin veritabanı işlemi commit
-edilmeden önce yazılır; bu nedenle nadiren, sonradan geri alınan bir işlem
-(ör. 500 ile biten bir kullanıcı güncellemesi) için de olay görülebilir.
-**Birden çok API kopyası varsa `$VIGIL_DIR/audit_export/` tüm kopyalar
-arasında paylaşılan bir birimde olmalıdır**; aksi halde lider olmayan
-kopyaların auth olayları aktarılmaz.
+`users.py`, `core/auth/oidc_router.py`) `record_auth_event` ile
+`case_audit_logs` tablosuna `entity_type = 'auth'` satırı olarak yazılır
+(`core/audit/auth_events.py`; `async def` işleyicilerde `arecord_auth_event`
+yazımı bir iş parçacığında yapar). Yazım **aktarım açık olsun olmasın** yapılır
+(W0.35, K1) ve satırlar W1.10 zincirine girer; `auth` kaynağı onları oradan
+okur, bu yüzden sonradan eklenen bir hedef `start_from: beginning` ile geçmişi
+de alır. Kullanıcı oluşturma / güncelleme / silme ve rol değişikliği isteğin
+işlemine katılır (değişiklik geri alınırsa kayıt da yoktur; kayıt yazılamazsa
+değişiklik de yapılmaz). Giriş, başarısız giriş, kilitleme, MFA, parola ve SSO
+olayları kendi işleminde commit edilir, böylece 401 ile biten bir giriş denemesi
+de kalır; bu yazım başarısız olursa ERROR düzeyinde loglanır, oturum açma
+bozulmaz. Satır sütunları: `field_name` olay, `action` sonuç, `changed_by`
+kişi (bilinmeyen tanımlayıcıda `anonymous`), `ip_address`, `user_agent`;
+`new_value` JSON'u `id`, `event`, `outcome`, `actor_id`, `target_id`,
+`details` taşır. Yazılan tanımlayıcı başarısız girişlerde yalnızca anahtarlı
+özettir (aşağıya bakın). Birden çok API kopyasında paylaşılan disk gerekmez.
 
 ## Metrikler
 
@@ -680,7 +691,6 @@ Prometheus (`/metrics`):
 | `autosecops_audit_export_events_sent_total` | counter | `destination`, `source` |
 | `autosecops_audit_export_delivery_failures_total` | counter | `destination` |
 | `autosecops_audit_export_events_dropped_total` | counter | `destination` |
-| `autosecops_audit_export_spool_dropped_total` | counter | — |
 | `autosecops_audit_export_queue_depth` | gauge | `destination` |
 | `autosecops_audit_export_last_success_timestamp_seconds` | gauge | `destination` |
 | `autosecops_audit_export_cursor_commit_failures_total` | counter | `destination` |
@@ -690,7 +700,7 @@ Prometheus (`/metrics`):
 | `autosecops_audit_export_xid_horizon_stalled` | gauge | `reason` |
 
 Önerilen alarmlar: `time() - last_success_timestamp_seconds > 600` (aktarım
-durdu), `delivery_failures_total` artışı, `spool_dropped_total > 0`,
+durdu), `delivery_failures_total` artışı,
 `cursor_commit_stalled == 1` (teslim edildi ama imleç diske yazılamıyor),
 `xid_horizon_stalled == 1` (aktarım gecikmesi; aşağıya bakın).
 

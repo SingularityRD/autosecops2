@@ -15,10 +15,11 @@ from fastapi import (
     HTTPException,
     UploadFile,
 )
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from core.agents.projections import read_event_log
 from core.auth.auth_service import AuthService
+from core.auth.current_user import principal_name
 from core.auth.permissions import permission_gate
 from core.cases import case_journal_service, case_records_service
 from core.cases.case_attachment_service import attach_document
@@ -385,9 +386,15 @@ async def resume_sla(case_id: str):
 
 # Comments and Collaboration
 class CommentAdd(BaseModel):
-    """Add comment to case."""
+    """Add comment to case.
 
-    author: str
+    The author is the signed-in user (W0.35). ``author`` is still accepted so
+    an older client keeps working, and ignored, as ``closed_by`` is on close.
+    """
+
+    author: Optional[str] = Field(
+        None, description="Ignored: the author is the signed-in user."
+    )
     content: str
     parent_comment_id: Optional[int] = None
 
@@ -403,11 +410,15 @@ async def get_comments(case_id: str):
 @router.post(
     "/{case_id}/comments", dependencies=_CASES_WRITE, response_model=CaseCommentSchema
 )
-async def add_comment(case_id: str, data: CommentAdd):
-    """Add comment to case."""
+async def add_comment(
+    case_id: str,
+    data: CommentAdd,
+    current_user: User = Depends(get_current_user),
+):
+    """Add comment to case, authored by the signed-in user."""
     collab_service = CaseCollaborationService()
     comment = collab_service.add_comment(
-        case_id, data.author, data.content, data.parent_comment_id
+        case_id, principal_name(current_user), data.content, data.parent_comment_id
     )
     if not comment:
         raise HTTPException(status_code=500, detail="Failed to add comment")
@@ -516,7 +527,9 @@ class ChainOfCustodyAdd(BaseModel):
     """Add chain of custody entry."""
 
     action: str
-    user: str
+    user: Optional[str] = Field(
+        None, description="Ignored: the entry is made by the signed-in user."
+    )
     notes: Optional[str] = None
 
 
@@ -525,11 +538,16 @@ class ChainOfCustodyAdd(BaseModel):
     dependencies=_CASES_WRITE,
     response_model=CaseSuccessResponse,
 )
-async def add_custody_entry(case_id: str, evidence_id: int, data: ChainOfCustodyAdd):
-    """Add chain of custody entry."""
+async def add_custody_entry(
+    case_id: str,
+    evidence_id: int,
+    data: ChainOfCustodyAdd,
+    current_user: User = Depends(get_current_user),
+):
+    """Add chain of custody entry, made by the signed-in user."""
     evidence_service = CaseEvidenceService()
     success = evidence_service.add_chain_of_custody_entry(
-        evidence_id, data.action, data.user, data.notes
+        evidence_id, data.action, principal_name(current_user), data.notes
     )
     if not success:
         raise HTTPException(status_code=500, detail="Failed to add custody entry")
@@ -776,7 +794,7 @@ async def attach_case_document(
             filename,
             name=name,
             pages=pages,
-            collected_by=current_user.username or current_user.user_id,
+            collected_by=principal_name(current_user),
         )
     except Exception as exc:  # noqa: BLE001 -- the reason is in the log
         logger.error("could not attach a document to %s: %s", case_id, exc)

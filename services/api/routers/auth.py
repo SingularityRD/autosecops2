@@ -49,7 +49,6 @@ from core.auth.token_blacklist import (
 )
 from core.compliance.audit_export import (
     arecord_auth_event,
-    audit_export_on,
     failed_login_fields,
     record_auth_event,
 )
@@ -309,6 +308,7 @@ def bootstrap_admin(
         actor_id=user.user_id,
         target_id=user.user_id,
         details={"role_id": ADMIN_ROLE_ID, "bootstrap": True},
+        session=session,
     )
     return UserSchema.dump(user)
 
@@ -345,13 +345,12 @@ def login(
             payload.username_or_email, payload.password, session
         )
     except AccountLockedError as exc:
-        if audit_export_on(request):
-            record_auth_event(
-                request,
-                "login",
-                outcome="locked",
-                **failed_login_fields(request, payload.username_or_email, session),
-            )
+        record_auth_event(
+            request,
+            "login",
+            outcome="locked",
+            **failed_login_fields(request, payload.username_or_email, session),
+        )
         retry_after = max(1, int((exc.locked_until - utcnow()).total_seconds()))
         raise HTTPException(
             status_code=status.HTTP_423_LOCKED,
@@ -360,13 +359,12 @@ def login(
         )
 
     if not user:
-        if audit_export_on(request):
-            record_auth_event(
-                request,
-                "login",
-                outcome="failure",
-                **failed_login_fields(request, payload.username_or_email, session),
-            )
+        record_auth_event(
+            request,
+            "login",
+            outcome="failure",
+            **failed_login_fields(request, payload.username_or_email, session),
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username/email or password",

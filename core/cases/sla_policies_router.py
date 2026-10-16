@@ -3,17 +3,70 @@
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
-from core.auth.permissions import permission_gate
+from core.audit.config_changes import record_change
+from core.auth.permissions import require_permission
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
-from core.storage.models import Case, CaseSLA, SLAPolicy
+from core.storage.models import Case, CaseSLA, SLAPolicy, User
 from core.storage.schemas import CaseSchema, SLAPolicySchema
 from core.time import utcnow
 
 router = APIRouter()
+
+# Response and resolution deadlines are how the SOC is measured, so changing
+# them is a manager's or an administrator's call, not an analyst's: the same
+# grant as the other system settings (W0.35; was cases.write, which Analyst
+# holds). Every change is audited with the before and after.
+WRITE_PERMISSION = "settings.write"
+_writer = require_permission(WRITE_PERMISSION)
+AUDIT_CONFIG_TYPE = "sla_policy"
+
+_AUDITED = (
+    "name",
+    "description",
+    "priority_level",
+    "response_time_hours",
+    "resolution_time_hours",
+    "business_hours_only",
+    "escalation_rules",
+    "notification_thresholds",
+    "is_active",
+    "is_default",
+)
+
+
+def _snapshot(policy: SLAPolicy) -> dict:
+    return {field: getattr(policy, field) for field in _AUDITED}
+
+
+def _audit(session, policy_id: str, action: str, old, new, user: User) -> None:
+    record_change(
+        session,
+        config_type=AUDIT_CONFIG_TYPE,
+        config_key=policy_id,
+        action=action,
+        old=old,
+        new=new,
+        actor=user.username or str(user.user_id),
+    )
+
+
+def _demote_defaults(session, priority_level: str, keep: Optional[str], user: User):
+    """Unset the other defaults of ``priority_level``, auditing each one."""
+    query = session.query(SLAPolicy).filter(
+        SLAPolicy.priority_level == priority_level,
+        SLAPolicy.is_default.is_(True),
+    )
+    if keep is not None:
+        query = query.filter(SLAPolicy.policy_id != keep)
+    for other in query.all():
+        before = _snapshot(other)
+        other.is_default = False
+        _audit(session, other.policy_id, "update", before, _snapshot(other), user)
+
 
 ROUTER_META = RouterMeta(
     prefix="/api/sla-policies",
@@ -105,8 +158,12 @@ def get_sla_policy(policy_id: str, session: UnitOfWorkSession):
     return SLAPolicySchema.dump(policy)
 
 
-@router.post("/", dependencies=[permission_gate("cases.write")])
-def create_sla_policy(data: SLAPolicyCreate, session: UnitOfWorkSession):
+@router.post("/")
+def create_sla_policy(
+    data: SLAPolicyCreate,
+    session: UnitOfWorkSession,
+    current_user: User = Depends(_writer),
+):
     """
     Create a new SLA policy.
 
@@ -152,10 +209,7 @@ def create_sla_policy(data: SLAPolicyCreate, session: UnitOfWorkSession):
 
     # If setting as default, unset other defaults for this priority
     if data.is_default:
-        session.query(SLAPolicy).filter(
-            SLAPolicy.priority_level == data.priority_level,
-            SLAPolicy.is_default.is_(True),
-        ).update({"is_default": False})
+        _demote_defaults(session, data.priority_level, None, current_user)
 
     # Create policy
     policy = SLAPolicy(
@@ -177,15 +231,17 @@ def create_sla_policy(data: SLAPolicyCreate, session: UnitOfWorkSession):
     # unit of work commits.
     session.flush()
     session.refresh(policy)
+    _audit(session, policy.policy_id, "create", None, _snapshot(policy), current_user)
 
     return SLAPolicySchema.dump(policy)
 
 
-@router.put("/{policy_id}", dependencies=[permission_gate("cases.write")])
+@router.put("/{policy_id}")
 def update_sla_policy(
     policy_id: str,
     data: SLAPolicyUpdate,
     session: UnitOfWorkSession,
+    current_user: User = Depends(_writer),
 ):
     """
     Update an existing SLA policy.
@@ -201,6 +257,7 @@ def update_sla_policy(
 
     if not policy:
         raise HTTPException(status_code=404, detail="SLA policy not found")
+    before = _snapshot(policy)
 
     # Update fields if provided
     if data.name is not None:
@@ -244,11 +301,7 @@ def update_sla_policy(
     if data.is_default is not None:
         # If setting as default, unset other defaults for this priority
         if data.is_default and not policy.is_default:
-            session.query(SLAPolicy).filter(
-                SLAPolicy.priority_level == policy.priority_level,
-                SLAPolicy.policy_id != policy_id,
-                SLAPolicy.is_default.is_(True),
-            ).update({"is_default": False})
+            _demote_defaults(session, policy.priority_level, policy_id, current_user)
 
         policy.is_default = data.is_default
 
@@ -257,6 +310,9 @@ def update_sla_policy(
     # unit of work commits.
     session.flush()
     session.refresh(policy)
+    after = _snapshot(policy)
+    if after != before:
+        _audit(session, policy_id, "update", before, after, current_user)
 
     return SLAPolicySchema.dump(policy)
 
@@ -284,10 +340,11 @@ def _still_referenced(policy_id: str, count: int | None = None) -> str:
     return _STILL_REFERENCED.format(cases=cases).replace("{policy_id}", policy_id)
 
 
-@router.delete("/{policy_id}", dependencies=[permission_gate("cases.write")])
+@router.delete("/{policy_id}")
 def delete_sla_policy(
     policy_id: str,
     session: UnitOfWorkSession,
+    current_user: User = Depends(_writer),
 ):
     """
     Delete an SLA policy that no case references.
@@ -310,7 +367,9 @@ def delete_sla_policy(
             status_code=409, detail=_still_referenced(policy_id, in_use)
         )
 
+    before = _snapshot(policy)
     session.delete(policy)
+    _audit(session, policy_id, "delete", before, None, current_user)
 
     # Flush inside the handler so the constraint speaks while there is still
     # something here to translate it. The count above and the delete are two
@@ -329,8 +388,12 @@ def delete_sla_policy(
     return {"success": True, "message": f"SLA policy {policy_id} deleted successfully"}
 
 
-@router.post("/{policy_id}/set-default", dependencies=[permission_gate("cases.write")])
-def set_default_policy(policy_id: str, session: UnitOfWorkSession):
+@router.post("/{policy_id}/set-default")
+def set_default_policy(
+    policy_id: str,
+    session: UnitOfWorkSession,
+    current_user: User = Depends(_writer),
+):
     """
     Set a policy as the default for its priority level.
 
@@ -345,12 +408,9 @@ def set_default_policy(policy_id: str, session: UnitOfWorkSession):
     if not policy:
         raise HTTPException(status_code=404, detail="SLA policy not found")
 
+    before = _snapshot(policy)
     # Unset other defaults for this priority
-    session.query(SLAPolicy).filter(
-        SLAPolicy.priority_level == policy.priority_level,
-        SLAPolicy.policy_id != policy_id,
-        SLAPolicy.is_default.is_(True),
-    ).update({"is_default": False})
+    _demote_defaults(session, policy.priority_level, policy_id, current_user)
 
     # Set this as default
     policy.is_default = True
@@ -359,6 +419,9 @@ def set_default_policy(policy_id: str, session: UnitOfWorkSession):
     # unit of work commits.
     session.flush()
     session.refresh(policy)
+    after = _snapshot(policy)
+    if after != before:
+        _audit(session, policy_id, "set_default", before, after, current_user)
 
     return SLAPolicySchema.dump(policy)
 

@@ -19,10 +19,10 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from core.auth.current_user import get_current_user
+from core.auth.current_user import get_current_user, principal_name
 from core.auth.permissions import permission_gate
 from core.cases import case_journal_service, case_records_service
 from core.cases.case_evidence_service import CaseEvidenceService
@@ -202,7 +202,11 @@ class EvidenceAdd(BaseModel):
 
     evidence_type: str
     name: str
-    collected_by: str
+    # Accepted so an older client keeps working, and ignored: the collector is
+    # the signed-in user (W0.35, SA-13), as closed_by is on close.
+    collected_by: Optional[str] = Field(
+        None, description="Ignored: the collector is the signed-in user."
+    )
     description: Optional[str] = None
     file_path: Optional[str] = None
     source: Optional[str] = None
@@ -624,15 +628,19 @@ def get_cases_summary():
 @router.post(
     "/{case_id}/evidence", dependencies=_CASES_WRITE, response_model=CaseEvidenceSchema
 )
-def add_evidence(case_id: str, data: EvidenceAdd):
-    """Add evidence to case."""
+def add_evidence(
+    case_id: str,
+    data: EvidenceAdd,
+    current_user: User = Depends(get_current_user),
+):
+    """Add evidence to case, collected by the signed-in user."""
     evidence_service = CaseEvidenceService()
     try:
         evidence = evidence_service.add_evidence(
             case_id=case_id,
             evidence_type=data.evidence_type,
             name=data.name,
-            collected_by=data.collected_by,
+            collected_by=principal_name(current_user),
             description=data.description,
             file_path=data.file_path,
             source=data.source,
