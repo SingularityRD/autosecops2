@@ -247,6 +247,15 @@ Aşağıda `REL` sürüm adı, `NS` ad alanıdır.
 
 Geri yükleme, döküm anından sonraki tüm verileri siler; RPO bu andır.
 
+**Dökümün yanında gereken anahtar.** Konsoldan girilen sırlar (`platform_secrets`)
+ve kullanıcıların MFA sırları dökümde veri anahtarıyla şifrelidir. Dökümü başka bir
+kümeye ya da yeni bir kuruluma geri yüklerken `secrets.dataEncryptionKey`'e
+(`VIGIL_DATA_KEY`) döküm alındığı andaki anahtarı verin; anahtar o tarihten sonra
+döndürüldüyse eskisini ikinci anahtar olarak ekleyin (`yeni,eski`), backend
+açılışta satırları yenisine taşır. `JWT_SECRET_KEY`'in taşınması gerekmez: yeni
+bir anahtar yalnızca oturumları düşürür. Sırayla anahtarlar ve neyin bozulduğu:
+[yönetici kılavuzu, Sır döndürme](../guide/yonetici-kilavuzu.md#sır-döndürme).
+
 ## 6. Docker Compose (tek kutu)
 
 Compose kurulumunda daemon tek süreçtir (`DAEMON_LEADER_ELECTION_ENABLED=false`);

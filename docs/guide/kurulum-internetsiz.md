@@ -172,9 +172,10 @@ ve bir SBOM eşlik etmez (Planlı — `wp/w4.7-release`, bu sürümde yok).
 |---|---|
 | `secrets.existingSecret` ya da `secrets.externalSecret.enabled` | JWT anahtarı, Postgres parolası, `AGENT_INTERNAL_TOKEN` gibi sırlar grafikte düz değer olarak durmasın; ExternalSecrets Operator ile kasa (Vault vb.) desteklenir |
 | `secrets.jwtSecretKey` (ya da aynı anahtarı taşıyan Secret) | `DEV_MODE=false` iken backend `JWT_SECRET_KEY` olmadan açılmaz |
+| `secrets.dataEncryptionKey` (ya da Secret'ta `VIGIL_DATA_KEY`) | `DEV_MODE=false` iken backend onsuz açılmaz. Konsoldan girilen sırları (PostgreSQL `platform_secrets`) ve MFA sırlarını şifreler; en az 32 karakter (`openssl rand -base64 32`). Kopyasını kümenin dışında saklayın: kaybolursa bu sırlar çözülemez. Her yükseltmede aynı değer verilmelidir |
 | `secrets.agentInternalToken` | Ajan katmanının `/internal` uçlarına tek kimlik doğrulaması; boşsa iş akışları 503 alır |
 | `secrets.postgresPassword` | Varsayılan değer (`change-me-before-production`) üretimde kullanılmamalı |
-| `stateDirectory.volume` | Varsayılan `emptyDir`'dir; konsoldan girilen sırlar (`secrets.enc`) ve `master.key` pod yeniden başlayınca kaybolur. Kalıcı ReadWriteMany birim verin ya da tüm kimlik bilgilerini Secret ile sağlayın |
+| `stateDirectory.volume` | Varsayılan `emptyDir`'dir. Konsoldan girilen sırlar burada değil, veritabanındadır (`config.SECRETS_BACKEND: "database"`), bu yüzden pod yeniden başlayınca kaybolmaz ve iki backend kopyası aynı değeri görür. Sırları Secret ile vermek de desteklenir (ör. `OIDC_CLIENT_SECRET_<ID>`, `<ENTEGRASYON>_<ALAN>`); konsoldan kaydedilen değer Secret'takini geçersiz kılar |
 | `evidence.persistence` | Vaka kanıt dosyalarının kalıcı birimi; `values-airgap.yaml`'da **kapalıdır**, bu durumda kanıt dosyaları pod yeniden başlayınca kaybolur. Kümede ReadWriteMany sağlayan bir StorageClass varsa `enabled: true`, `accessModes: [ReadWriteMany]`, `storageClassName: <sınıf>` verin. `ReadWriteOnce` birden çok pod bağladığı için reddedilir (bkz. [yönetici kılavuzu](yonetici-kilavuzu.md#kubernetes)) |
 | `networkPolicies.egress.extraCIDRs` | Kümenin dışındaki şirket içi hedefler (SIEM, EDR, güvenlik duvarı yönetim arayüzü, NodeLocal DNS `169.254.20.10/32`) |
 | `networkPolicies.daemon.webhookAllowFrom` | Daemon'un webhook portuna alarm itebilecek kaynak CIDR'leri; boşsa yalnız küme içi |

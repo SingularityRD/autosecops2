@@ -227,8 +227,11 @@ helm install vigil ./infra/helm/vigil \
   --namespace vigil --create-namespace \
   --set secrets.anthropicApiKey="$ANTHROPIC_API_KEY" \
   --set secrets.postgresPassword="$(openssl rand -hex 24)" \
-  --set secrets.jwtSecretKey="$(python -c 'import secrets; print(secrets.token_urlsafe(64))')"
+  --set secrets.jwtSecretKey="$(python -c 'import secrets; print(secrets.token_urlsafe(64))')" \
+  --set secrets.dataEncryptionKey="$(openssl rand -base64 32)"
 ```
+
+`secrets.dataEncryptionKey` encrypts the secrets entered in the console (kept in PostgreSQL, shared by both backend replicas) and users' MFA secrets. Keep a copy and pass the same value on every upgrade (or keep it in `secrets.existingSecret` as `VIGIL_DATA_KEY`): without it those secrets cannot be read back. Rotation: [administrator guide, "Sır döndürme"](docs/guide/yonetici-kilavuzu.md#sır-döndürme).
 
 See the [Helm guide](https://vigilsoc.org/docs/helm/) for values, external Postgres/Redis, ingress, and troubleshooting.
 

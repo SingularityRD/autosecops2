@@ -64,7 +64,7 @@ Tablolarda kısaltılarak anılan kanıtlar:
 | Bilgi güvenliği olay yönetimi | Alarm alımı, triage, vaka yönetimi, SLA izleyicisi, vaka bildirimleri | K9, K7 | Karşılanıyor (süreç kurumun) |
 | Yedekleme ve iş sürekliliği | Şifreli ve doğrulanan restic yedeği, test geri yükleme, yükseltme öncesi otomatik yedek (Compose/host); Helm yedek CronJob'u; daemon sıcak yedeği; RPO/RTO belgesi | K11, K15 | Kısmi — CronJob varsayılan kapalı ve dökümü şifrelemez; RTO kurumun tatbikatıyla ölçülmeli (R17) |
 | Dış hizmet (model sağlayıcı) riskinin yönetimi | Yerel model ile dış sağlayıcıya bağımlılığın kaldırılması | K1, K2 | Karşılanıyor (air-gap profiliyle) |
-| Kriptografik anahtar yönetimi | Bant dışı imza anahtarı; şifreli sır deposu; Secret/ExternalSecrets; isteğe bağlı FIPS 140-3 modu | K3, K21 | Kısmi — `master.key` için yerleşik döndürme yok; FIPS modunda kontrol noktası ve kanıt paketi imzaları Ed25519 kalır |
+| Kriptografik anahtar yönetimi | Bant dışı imza anahtarı; şifreli sır deposu; JWT'den ayrı veri anahtarı; JWT, veri anahtarı ve `master.key` için döndürme prosedürü ve komutu; Secret/ExternalSecrets; isteğe bağlı FIPS 140-3 modu | K3, K21 | Kısmi — KMS/HSM yok; Compose'da `master.key` sırlarla aynı birimde; FIPS modunda kontrol noktası ve kanıt paketi imzaları Ed25519 kalır |
 
 ## KVKK — 6698 sayılı Kişisel Verilerin Korunması Kanunu
 
