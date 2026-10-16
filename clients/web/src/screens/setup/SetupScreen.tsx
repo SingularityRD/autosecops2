@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import '../../../../../docs/design/console/tokens/tokens.css'
 import '../../styles.css'
@@ -20,6 +20,8 @@ import { Rail, TopBar, type RailMark } from './SetupChrome'
 import { useSystemChecks, type SystemChecks } from './useSystemChecks'
 import {
   SETUP_STEP_COUNT,
+  cacheSetupProgress,
+  fetchSetupProgress,
   markSetupDismissed,
   readSetupProgress,
   writeSetupProgress,
@@ -124,12 +126,35 @@ const SetupWizard = () => {
   const { hasPermission } = useAuth()
   const [progress, setProgress] = useState<SetupProgress>(readSetupProgress)
   const [index, setIndex] = useState(progress.furthest - 1)
+  const moved = useRef(false)
   const [demoBusy, setDemoBusy] = useState(false)
   const checks = useSystemChecks()
   const step = STEPS[index]
   const copy = STEP_COPY[step]
   const done = step === 'done'
   const last = index === DONE - 1
+
+  // The server's copy wins over this browser's cache: another administrator,
+  // or this one in another browser, may have got further. It moves the wizard
+  // only if the person has not moved it yet.
+  useEffect(() => {
+    let live = true
+    fetchSetupProgress().then((server) => {
+      if (!live || !server?.started) return
+      const next = { furthest: server.furthest, passed: server.passed }
+      cacheSetupProgress(next)
+      setProgress(next)
+      if (!moved.current) setIndex(next.furthest - 1)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+
+  const go = (n: number) => {
+    moved.current = true
+    setIndex(n)
+  }
 
   const dismiss = () => {
     markSetupDismissed()
@@ -147,7 +172,7 @@ const SetupWizard = () => {
       furthest: Math.max(progress.furthest, Math.min(n + 1, SETUP_STEP_COUNT)),
       passed: [...new Set([...progress.passed, n])],
     })
-    setIndex(n)
+    go(n)
   }
 
   // step 3 counts as passed once any provider can route, however the person got there
@@ -164,8 +189,9 @@ const SetupWizard = () => {
     return checks.warnings ? 'warning' : 'tick'
   }
 
+  // one save, as "deferred": a separate in-progress save could land after it
   const finishLater = () => {
-    writeSetupProgress({ ...progress, furthest: Math.max(progress.furthest, index + 1) })
+    cacheSetupProgress({ ...progress, furthest: Math.max(progress.furthest, index + 1) })
     dismiss()
   }
 
@@ -221,13 +247,13 @@ const SetupWizard = () => {
           steps={RAIL}
           active={done ? -1 : index}
           mark={railMark}
-          onPick={setIndex}
+          onPick={go}
           onDemo={lookAroundWithDemo}
           demoBusy={demoBusy}
         />
         <div className="su-main">
           {done ? (
-            <SummaryStep onChange={(target) => setIndex(STEPS.indexOf(target))} />
+            <SummaryStep onChange={(target) => go(STEPS.indexOf(target))} />
           ) : (
             <>
               <div className="su-scroll">
@@ -245,7 +271,7 @@ const SetupWizard = () => {
                   {`Step ${index + 1} of ${SETUP_STEP_COUNT} · your progress is saved`}
                 </span>
                 {index > 0 && (
-                  <button className="btn ghost" onClick={() => setIndex(index - 1)}>
+                  <button className="btn ghost" onClick={() => go(index - 1)}>
                     Back
                   </button>
                 )}

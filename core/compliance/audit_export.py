@@ -5226,6 +5226,8 @@ AUTH_SEVERITY = {
     ("mfa_disable", "success"): 7,
     ("mfa_recovery_codes", "success"): 5,
     ("user_create", "success"): 6,
+    ("setup_token", "success"): 6,
+    ("setup_token", "failure"): 6,
     ("user_delete", "success"): 7,
     ("user_update", "success"): 5,
     ("role_change", "success"): 7,

@@ -809,6 +809,10 @@ export interface paths {
          *     There is no self-service signup and creating a user needs users.write, so
          *     an instance with an empty user table cannot be signed into at all. The
          *     login screen asks this to offer first-account creation instead.
+         *
+         *     An install that needs its first account and has no setup token yet (the
+         *     database was not reachable at startup) gets one issued here; the token
+         *     itself goes to the backend log and State Directory, never this response.
          */
         get: operations["get_api_auth_bootstrap"];
         put?: never;
@@ -818,7 +822,9 @@ export interface paths {
          *
          *     Unauthenticated by necessity — it is the only way to obtain the account
          *     every other user-creating path requires. It closes permanently as soon as
-         *     one user exists, so it is not a signup endpoint.
+         *     one user exists, so it is not a signup endpoint. It also demands the
+         *     one-time setup token (core/auth/setup_token.py): reaching the instance
+         *     first over the network is not enough.
          */
         post: operations["post_api_auth_bootstrap"];
         delete?: never;
@@ -3494,6 +3500,55 @@ export interface paths {
          *     cryptography imported, and where each backend lives on disk.
          */
         get: operations["get_api_config_secrets_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/config/setup-progress": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Setup Progress
+         * @description The wizard's progress for the whole install (not per browser).
+         */
+        get: operations["get_api_config_setup-progress"];
+        /**
+         * Put Setup Progress
+         * @description Save the wizard's progress. ``completed`` is stored only when the
+         *     install is ready (see GET /setup-readiness); otherwise it is stored as
+         *     ``deferred``. ``{"furthest": 1, "passed": [], "status": "in_progress"}``
+         *     starts the wizard over (scripts/reset-setup.sh).
+         */
+        put: operations["put_api_config_setup-progress"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/config/setup-readiness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Setup Readiness
+         * @description What a working install still lacks: an alert source and a model are
+         *     required; a response integration and a notification route are recommended.
+         *     The setup wizard's summary reads this instead of declaring itself ready.
+         */
+        get: operations["get_api_config_setup-readiness"];
         put?: never;
         post?: never;
         delete?: never;
@@ -8435,7 +8490,9 @@ export interface components {
         };
         /**
          * BootstrapRequest
-         * @description First-admin details.
+         * @description First-admin details. The setup token travels in the ``X-Setup-Token``
+         *     header, not here: a 422 echoes the request body back, and a header is
+         *     never in a response or an access-log line.
          */
         BootstrapRequest: {
             /**
@@ -12806,6 +12863,77 @@ export interface components {
             /** Enabled */
             enabled: boolean;
         };
+        /** SetupProgress */
+        SetupProgress: {
+            /** Completed At */
+            completed_at?: string | null;
+            /** Completed By */
+            completed_by?: string | null;
+            /** Furthest */
+            furthest: number;
+            /** Passed */
+            passed: number[];
+            /** Started */
+            started: boolean;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "in_progress" | "deferred" | "completed";
+            /** Updated At */
+            updated_at?: string | null;
+            /** Updated By */
+            updated_by?: string | null;
+        };
+        /**
+         * SetupProgressWrite
+         * @description What the wizard saves. Steps are numbered 1..STEP_COUNT.
+         */
+        SetupProgressWrite: {
+            /**
+             * Furthest
+             * @default 1
+             */
+            furthest: number;
+            /** Passed */
+            passed?: number[];
+            /**
+             * Status
+             * @default in_progress
+             * @enum {string}
+             */
+            status: "in_progress" | "deferred" | "completed";
+        };
+        /**
+         * SetupReadiness
+         * @description ``ready`` is true only when every required item is; ``missing`` names
+         *     the required items that are not, ``recommended_missing`` the others.
+         */
+        SetupReadiness: {
+            /** Items */
+            items: components["schemas"]["SetupReadinessItem"][];
+            /** Missing */
+            missing: string[];
+            /** Ready */
+            ready: boolean;
+            /** Recommended Missing */
+            recommended_missing: string[];
+        };
+        /** SetupReadinessItem */
+        SetupReadinessItem: {
+            /** Detail */
+            detail: string;
+            /** Href */
+            href: string;
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Ready */
+            ready: boolean;
+            /** Required */
+            required: boolean;
+        };
         /** SkillCaseResult */
         SkillCaseResult: {
             /** Missing */
@@ -15249,7 +15377,9 @@ export interface operations {
     post_api_auth_bootstrap: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "X-Setup-Token"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -20061,6 +20191,103 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_config_setup-progress": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupProgress"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "put_api_config_setup-progress": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetupProgressWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupProgress"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_config_setup-readiness": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupReadiness"];
                 };
             };
             /** @description Validation Error */

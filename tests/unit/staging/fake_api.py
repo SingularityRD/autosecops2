@@ -33,6 +33,9 @@ class FakeState:
         self.healthy = healthy
         self.auth_bypassed = auth_bypassed
         self.users: Dict[str, Dict[str, str]] = {}
+        # The first-admin setup token the real route demands (W0.33).
+        self.setup_token = "fake-setup-token-for-staging-tests"
+        self.setup_tokens_seen: list = []
         self.tokens: set = set()
         self.findings: Dict[str, Dict[str, Any]] = {}
         self.reads: Dict[str, int] = {}
@@ -110,6 +113,9 @@ def make_handler(state: FakeState):
             if self.path == "/api/auth/bootstrap":
                 if state.users:
                     return self._send(403, {"detail": "An account already exists."})
+                state.setup_tokens_seen.append(self.headers.get("X-Setup-Token") or "")
+                if self.headers.get("X-Setup-Token") != state.setup_token:
+                    return self._send(401, {"detail": "Setup token missing or wrong."})
                 doc = json.loads(body)
                 if len(doc.get("password", "")) < 12:
                     return self._send(400, {"detail": "weak"})

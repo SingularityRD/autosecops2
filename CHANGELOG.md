@@ -37,6 +37,37 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
 
 ### Changed / contract
 
+* **auth (W0.33, security):** creating the first administrator
+  (`POST /api/auth/bootstrap`) needs a one-time setup token in the
+  `X-Setup-Token` header; without it, or with a wrong one, the route answers
+  401 (still 5 attempts a minute). Before, whoever reached a fresh install
+  first over the network became its administrator. On first start with no
+  account the backend generates the token, prints it once to its log and writes
+  it to `<State Directory>/setup-token` (0600); only its SHA-256 is stored
+  (`system_config['auth.setup_token']`), so every replica checks the same one.
+  It works once and is retired with the account it created. No route returns
+  it. `python -m core.auth.setup_token regenerate` (in the backend container)
+  issues a new one; `VIGIL_SETUP_TOKEN` / Helm `secrets.setupToken` choose it
+  for automation. The login screen asks for it. Issue, regeneration and use are
+  in `config_audit_log`; failed and successful uses are auth audit events
+  (`auth.setup_token`).
+* **setup (W0.33):** the setup wizard no longer calls an empty install ready.
+  `GET /api/config/setup-readiness` lists what is missing: an alert source and a
+  model are required, a response integration and a notification route are
+  recommended. The summary page says "AutoSecOps is not ready yet" and names the
+  missing items until the required ones are in place.
+* **setup (W0.33):** wizard progress is kept on the server for the whole install
+  (`GET`/`PUT /api/config/setup-progress`, audited), not per browser. A second
+  administrator or browser continues where the first left off; only accounts
+  with `settings.write` are sent to `/setup`, and "completed" is recorded only
+  when the install is ready (otherwise "deferred").
+* **scripts (W0.33, fix):** `scripts/reset-setup.sh` works on an install that
+  enforces CSRF (every write, the login included, was refused with 403). It
+  sends the double-submit pair, takes the login password on stdin rather than
+  the command line, gains `--wizard` (part of the default and `--all`) to start
+  the saved wizard progress over, and documents running it against Helm through
+  a port-forward.
+
 * **detections (W0.29):** the ATT&CK coverage verdict `loglm` is renamed
   `anomaly` (`rule | anomaly | both | missed`) in `analyze_coverage`,
   `reconstruct_run` and the Dashboard. Findings stored with
@@ -96,6 +127,18 @@ New init SQL files in 2.0.0: 46–51, 55–56, 58, 61–62.
   [docs/release/dogrulama.md](docs/release/dogrulama.md).
 
 ## Upgrade notes (unreleased upstream changes carried into 2.0.0)
+
+* **auth (W0.33):** an install that already has an account needs nothing: no
+  token is issued and the bootstrap route stays closed. A fresh install, and
+  any automation that creates the first admin through `POST /api/auth/bootstrap`
+  (CI, staging, scripted installs), must now send `X-Setup-Token`: read it from
+  the backend log or `<State Directory>/setup-token`, issue one with
+  `python -m core.auth.setup_token regenerate`, or set `VIGIL_SETUP_TOKEN`
+  (Helm `secrets.setupToken`, 24+ characters) before first start. A cross-origin
+  console must allow the new `X-Setup-Token` request header if it sits behind
+  its own CORS proxy. An administrator whose browser had dismissed the wizard
+  before the upgrade carries that over to the server on the first visit
+  (recorded as "deferred"); `scripts/reset-setup.sh --wizard` starts it over.
 
 * **integrations (W0.29):** a configured LogLM connector stops: its card, MCP
   server and console tab are gone and nothing calls the connector any more.

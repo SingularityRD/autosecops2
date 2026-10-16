@@ -920,6 +920,22 @@
    "role-manager": "allow",
    "role-admin": "allow"
   },
+  "GET /api/config/setup-progress": {
+   "gate": "login",
+   "role-viewer": "allow",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "GET /api/config/setup-readiness": {
+   "gate": "login",
+   "role-viewer": "allow",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
   "GET /api/config/setup-steps": {
    "gate": "login",
    "role-viewer": "allow",
@@ -3417,6 +3433,14 @@
   },
   "PUT /api/compliance/retention/policies/{data_class}": {
    "gate": "login + perm:settings.read + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "PUT /api/config/setup-progress": {
+   "gate": "login + perm:settings.write",
    "role-viewer": "deny",
    "role-analyst": "deny",
    "role-senior-analyst": "deny",

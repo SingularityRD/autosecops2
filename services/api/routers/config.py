@@ -1,5 +1,6 @@
 """Configuration API endpoints."""
 
+import asyncio
 import json
 import logging
 from typing import Any, Dict, List, Optional, Union
@@ -33,6 +34,14 @@ from core.integrations.integration_secrets import (
 )
 from core.intent import intent_file
 from core.llm.defaults import DEFAULT_MODEL
+from core.platform.setup_state import (
+    PROGRESS_KEY,
+    SetupProgressWrite,
+    SetupStatus,
+    build_readiness,
+    next_progress,
+    read_progress,
+)
 from core.response.approval_service import APPROVAL_CONFIG_KEY
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
 from core.secrets import get_secret, set_secret
@@ -744,6 +753,144 @@ def get_setup_steps(
         skills_root_set=skills_root_set,
         custom_skills=custom_skills,
     )
+
+
+class SetupReadinessItem(BaseModel):
+    id: str
+    label: str
+    required: bool
+    ready: bool
+    detail: str
+    href: str
+
+
+class SetupReadiness(BaseModel):
+    """``ready`` is true only when every required item is; ``missing`` names
+    the required items that are not, ``recommended_missing`` the others."""
+
+    ready: bool
+    missing: List[str]
+    recommended_missing: List[str]
+    items: List[SetupReadinessItem]
+
+
+def _readiness_facts() -> dict:
+    """Everything readiness needs from the database and config. Blocking."""
+    from core.response.executors.wiring import EXECUTOR_SOURCES
+    from core.storage.models import FederationSource, LLMProviderConfig
+    from core.storage.unit_of_work import unit_of_work
+
+    loaded = load_integrations_config(get_config_service())
+    secrets_set = _secrets_set_map(loaded.get("integrations") or {})
+    notify = any(
+        (secrets_set.get(iid) or {}).get(field) is True
+        for iid, field in (("slack", "bot_token"), ("pagerduty", "api_token"))
+    )
+    with unit_of_work() as session:
+        federation = (
+            session.query(FederationSource)
+            .filter(FederationSource.enabled.is_(True))
+            .count()
+        )
+        provider_ready = (
+            session.query(LLMProviderConfig.provider_id)
+            .filter(
+                LLMProviderConfig.is_active.is_(True),
+                LLMProviderConfig.is_default.is_(True),
+            )
+            .first()
+            is not None
+        )
+    return {
+        "demo_mode": is_demo_mode(),
+        "enabled_integrations": list(loaded.get("enabled_integrations") or []),
+        "categories": {d.id: d.category for d in iter_descriptors()},
+        "federation_sources": federation,
+        "alerts": findings_data_service.count_findings(),
+        "provider_ready": provider_ready,
+        "executor_integrations": [s.integration_id for s in EXECUTOR_SOURCES],
+        "notify_route": notify,
+    }
+
+
+async def _setup_readiness() -> dict:
+    from core.llm.bifrost import mirror
+
+    facts = await asyncio.to_thread(_readiness_facts)
+    gateway: Optional[bool] = False
+    if not facts["provider_ready"]:
+        try:
+            verdict = await mirror.routability()
+            gateway = any((verdict.get("providers") or {}).values())
+        except Exception as exc:  # noqa: BLE001 - an unreachable gateway is a fact here
+            logger.info(
+                "Setup readiness: model gateway not reachable (%s)", type(exc).__name__
+            )
+            gateway = None
+    return build_readiness(gateway_routable=gateway, **facts)
+
+
+@router.get("/setup-readiness", response_model=SetupReadiness)
+async def get_setup_readiness():
+    """What a working install still lacks: an alert source and a model are
+    required; a response integration and a notification route are recommended.
+    The setup wizard's summary reads this instead of declaring itself ready."""
+    return await _setup_readiness()
+
+
+class SetupProgress(BaseModel):
+    furthest: int
+    passed: List[int]
+    status: SetupStatus
+    started: bool
+    updated_by: Optional[str] = None
+    updated_at: Optional[str] = None
+    completed_by: Optional[str] = None
+    completed_at: Optional[str] = None
+
+
+@router.get("/setup-progress", response_model=SetupProgress)
+def get_setup_progress():
+    """The wizard's progress for the whole install (not per browser)."""
+    return read_progress(get_config_service().read_system_config(PROGRESS_KEY))
+
+
+@router.put(
+    "/setup-progress", response_model=SetupProgress, dependencies=_SETTINGS_WRITE
+)
+async def put_setup_progress(
+    body: SetupProgressWrite,
+    current_user: User = Depends(get_current_active_user),
+):
+    """Save the wizard's progress. ``completed`` is stored only when the
+    install is ready (see GET /setup-readiness); otherwise it is stored as
+    ``deferred``. ``{"furthest": 1, "passed": [], "status": "in_progress"}``
+    starts the wizard over (scripts/reset-setup.sh)."""
+    ready = True
+    if body.status == "completed":
+        ready = (await _setup_readiness())["ready"]
+
+    def _write() -> dict:
+        service = _for_user(current_user)
+        previous = service.read_system_config(PROGRESS_KEY)
+        stored = next_progress(
+            previous,
+            body,
+            actor=str(current_user.username),
+            now=utcnow().isoformat(),
+            ready=ready,
+        )
+        if not service.set_system_config(
+            key=PROGRESS_KEY,
+            value=stored,
+            description="Setup wizard progress",
+            config_type="setup",
+            change_reason=f"Setup wizard: {stored['status']}",
+        ):
+            raise HTTPException(status_code=500, detail="Could not save setup progress")
+        return read_progress(stored)
+
+    return await asyncio.to_thread(_write)
 
 
 def _secrets_set_map(integrations: dict) -> dict:

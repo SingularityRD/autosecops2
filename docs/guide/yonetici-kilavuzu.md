@@ -150,6 +150,79 @@ hesap oluşunca bu uç kalıcı olarak kapanır. Öneri: ilk hesabı yalnızca a
 (break-glass) yöneticisi olarak kullanın, MFA'sını açın, parolasını ve kurtarma
 kodlarını kasada tutun; günlük yönetim için kişisel hesaplar açın.
 
+**Kurulum token'ı (W0.33).** İlk hesabı oluşturmak tek kullanımlık bir kurulum
+token'ı ister. Böylece kuruluma ağdan ilk ulaşan kişi yönetici olamaz. Token'ı
+yalnızca backend'in günlüğünü ya da durum dizinini (State Directory) okuyabilen
+kişi bilir.
+
+- **Üretim.** Hesap yokken backend ilk açılışta 32 baytlık rastgele bir token
+  üretir. Token'ı günlüğe **bir kez** yazar (`AutoSecOps setup token (one-time,
+  creates the first administrator): …`) ve `<State Directory>/setup-token`
+  dosyasına `0600` izinle kaydeder. Veritabanında yalnızca SHA-256 özeti durur
+  (`system_config['auth.setup_token']`), bu yüzden birden çok backend kopyası aynı
+  token'ı denetler. Açılışta veritabanına ulaşılamadıysa token, giriş ekranının ilk
+  `GET /api/auth/bootstrap` çağrısında üretilir.
+- **Kullanım.** Giriş ekranı **Setup token** alanını sorar. API istemcileri token'ı
+  `X-Setup-Token` başlığında gönderir; gövdede ya da URL'de değil. Bu yüzden ne bir
+  doğrulama hatası yanıtında ne de erişim günlüğünde görünür. Token eksik ya da
+  yanlışsa yanıt 401'dir. Karşılaştırma sabit sürelidir ve dakikada 5 deneme
+  sınırı geçerlidir. Başarılı kullanımda token, hesapla aynı işlemde silinir. Aynı
+  token ikinci kez işe yaramaz. Hiçbir API yanıtı token'ı döndürmez.
+- **Kendi token'ınız.** Otomasyon (CI, betikli kurulum) için `VIGIL_SETUP_TOKEN`
+  (Helm: `secrets.setupToken`, en az 24 karakter) token'ı belirler. Bu değer
+  günlüğe yazılmaz. Hesap oluştuktan sonra yok sayılır.
+- **Denetim.** Üretim, yeniden üretim ve kullanım `config_audit_log`'a yazılır
+  (token ve özeti olmadan). Başarısız ve başarılı denemeler, denetim dışa
+  aktarımı açıksa `auth.setup_token` olayıdır.
+
+Token'ı okuma ve yenisini üretme (yeni token eskisini geçersiz kılar; hesap varsa
+komut 77 ile reddeder):
+
+| Kurulum | Token'ı okuma | Yeni token |
+|---|---|---|
+| Compose | `docker compose logs backend \| grep "setup token"` ya da `docker compose exec backend cat /home/vigil/.vigil/setup-token` | `docker compose exec backend python -m core.auth.setup_token regenerate` |
+| Helm | `kubectl logs -n <ns> -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=backend --prefix --tail=-1 \| grep "setup token"` (dosya yalnızca token'ı üreten pod'dadır) | `kubectl exec -n <ns> deploy/<release>-vigil-backend -c backend -- python -m core.auth.setup_token regenerate` |
+| İnternetsiz (Helm) | Helm satırıyla aynı; ayrıntı: [internetsiz kurulum §7](kurulum-internetsiz.md#7-kurulum-sonrası-ilk-15-dakika) | Helm satırıyla aynı |
+| Yerel (`start.sh`) | Backend günlüğü ya da `~/.vigil/setup-token` | `python -m core.auth.setup_token regenerate` |
+
+Helm'de dağıtımın adı `<release>-vigil-backend` biçimindedir. Kurulumdan sonra
+`helm status <release>` notları tam komutları basar.
+
+### Kurulum sihirbazı
+
+Konsolun kurulum sihirbazı (`/setup`) ilerlemesini tarayıcıda değil sunucuda,
+kurulumun tamamı için tutar (`GET`/`PUT /api/config/setup-progress`, W0.33).
+Her kayıt `config_audit_log`'a kimin yaptığıyla yazılır. İkinci bir yönetici ya
+da başka bir tarayıcı kaldığı yerden devam eder. Konsol yalnızca `settings.write`
+iznine sahip hesapları, kurulum bitirilene ya da ertelenene ("Save and finish
+later") kadar `/setup`'a gönderir. Analistler doğrudan konsolu açar.
+
+Son sayfa "hazır" kararını kendisi vermez. `GET /api/config/setup-readiness`
+eksikleri sayar:
+
+| Öğe | Durum | Hazır sayılır |
+|---|---|---|
+| Uyarı kaynağı (`data`) | zorunlu | uyarı kategorisinde (SIEM, EDR, ağ ve bulut güvenliği…) etkin bir entegrasyon, etkin bir Federation kaynağı, alınmış uyarılar ya da demo verisi |
+| Yapay zekâ modeli (`model`) | zorunlu | etkin varsayılan bir sağlayıcı ya da model ağ geçidinde (Bifrost) yönlendirilebilir bir anahtar |
+| Müdahale eylemleri (`executor`) | önerilen | eylem yürütebilen etkin bir entegrasyon (Cloudflare, Microsoft Defender, Entra ID, Palo Alto) |
+| Bildirim (`notify`) | önerilen | Slack ya da PagerDuty yolu |
+
+Zorunlu bir öğe eksikken özet "AutoSecOps is not ready yet" der ve eksikleri
+listeler. Kurulum o durumda "completed" olarak değil "deferred" olarak kaydedilir.
+
+**Sihirbazı sıfırlama.** `scripts/reset-setup.sh` sağlayıcıları, anahtarları,
+atamaları, bütçeyi, otonomiyi ve (`--wizard`) kayıtlı ilerlemeyi sıfırlar
+(`--status` yalnızca gösterir). `settings.write` iznine sahip bir hesapla
+çalışır (`VIGIL_TOKEN` ya da `VIGIL_USERNAME`/`VIGIL_PASSWORD`). CSRF'yi zorlayan
+kurulumlarda her yazmada çift gönderim çerezini ve `X-CSRF-Token` başlığını
+gönderir. Helm'de backend'e port yönlendirmesiyle çalıştırın:
+
+```bash
+kubectl -n <ns> port-forward svc/<release>-vigil-backend 6987:6987 &
+VIGIL_API=http://localhost:6987/api VIGIL_USERNAME=<admin> VIGIL_PASSWORD=<parola> \
+  ./scripts/reset-setup.sh --all -y
+```
+
 ## Kimlik doğrulama
 
 | Ayar | Varsayılan | Ortam değişkeni |

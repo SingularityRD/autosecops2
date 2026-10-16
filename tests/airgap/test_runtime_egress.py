@@ -316,6 +316,7 @@ def run(tmp_path_factory, profile, scratch_db, redis_url, stub):
             time.sleep(2)
         yield {
             "base": base,
+            "state_dir": tmp / "vigil",
             "api": api,
             "daemon": daemon,
             "worker": worker,
@@ -359,7 +360,12 @@ def test_flows_make_no_outbound_connection(run, stub):
 
     # --- first admin, login -------------------------------------------------
     assert client.get("/api/auth/bootstrap").json() == {"required": True}
-    created = client.post("/api/auth/bootstrap", json=ADMIN)
+    # The setup token, read where an air-gapped operator reads it: the State
+    # Directory the backend wrote it to on first start (W0.33).
+    setup_token = (run["state_dir"] / "setup-token").read_text().strip()
+    created = client.post(
+        "/api/auth/bootstrap", json=ADMIN, headers={"X-Setup-Token": setup_token}
+    )
     assert created.status_code == 201, created.text
     login = client.post(
         "/api/auth/login",

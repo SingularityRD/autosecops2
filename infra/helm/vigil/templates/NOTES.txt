@@ -58,6 +58,20 @@ Vigil SOC has been installed in namespace {{ .Release.Namespace }} as release "{
 No default admin account ships. On first visit the web UI opens a bootstrap
 screen (POST /api/auth/bootstrap) where you create the admin with a password
 of your choosing; it closes as soon as one account exists.
+
+Creating that first admin needs the one-time setup token, so whoever reaches
+the instance first cannot claim it.
+{{- if .Values.secrets.setupToken }}
+It is the value you set in secrets.setupToken.
+{{- else }}
+The backend prints it once, on first start. Read it with:
+
+   kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=backend --prefix --tail=-1 | grep "setup token"
+{{- end }}
+
+Or issue a new one (the old one stops working) with:
+
+   kubectl exec -n {{ .Release.Namespace }} deploy/{{ include "vigil.backend.fullname" . }} -c backend -- python -m core.auth.setup_token regenerate
 {{- end }}
 
 {{- $medic := .Values.medic | default dict }}

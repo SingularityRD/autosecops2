@@ -1,9 +1,11 @@
 #!/bin/bash
 # Reset the first-access setup state so the onboarding wizard (/setup) starts fresh.
 #
-# Each onboarding step derives "ready" live from backend state (see
-# clients/web/src/screens/setup/setupSteps.ts) — there is no persisted "done"
-# flag — so clearing the underlying state is all it takes to redo the wizard.
+# Two kinds of state make the wizard what it is: what the install has (providers,
+# keys, assignments, budget, autonomy, data sources), which every step reads
+# live, and the wizard's own progress, which the server keeps for the whole
+# install (GET/PUT /api/config/setup-progress, W0.33) so the console's setup gate
+# opens again only once that is reset too (--wizard).
 #
 # Two stores back the "connect an AI provider" step, and EITHER satisfies it:
 # the legacy llm_provider_configs table and Bifrost's own key store (#761). A
@@ -11,7 +13,7 @@
 # leaves a verified gateway key holding the gate open.
 #
 # Usage:
-#   ./scripts/reset-setup.sh                 # providers + bifrost keys + assignments + budget + autonomy
+#   ./scripts/reset-setup.sh                 # providers + bifrost keys + assignments + budget + autonomy + wizard
 #   ./scripts/reset-setup.sh --status        # show current state, change nothing
 #   ./scripts/reset-setup.sh --providers     # only clear the legacy LLM providers
 #   ./scripts/reset-setup.sh --bifrost       # only disable the gateway's keys
@@ -36,9 +38,12 @@
 #   --assignments        Clear all per-agent model assignments
 #   --budget             Clear the Bifrost virtual key + spend cap
 #   --autonomy           Disable the autonomous orchestrator (preserves its cost caps)
+#   --wizard             Start the wizard's saved progress over, for every browser and
+#                        administrator: the console sends an administrator to /setup again
 #   --data-source NAME   Disconnect MCP server NAME (repeatable). Use ONLY for real telemetry
 #                        sources (splunk, elastic, ...) — never Vigil's internal servers.
-#   --all                providers + bifrost + assignments + budget + autonomy (NOT data sources)
+#   --all                providers + bifrost + assignments + budget + autonomy + wizard
+#                        (NOT data sources)
 #   --status             Print current setup state and exit
 #   -y, --yes            Skip the confirmation prompt
 #   -h, --help           Show this help
@@ -51,6 +56,20 @@
 # Auth: the backend requires a login unless DEV_MODE=true. Either set
 # VIGIL_TOKEN to a bearer token, or set VIGIL_USERNAME and VIGIL_PASSWORD and
 # this script signs in for you. Against a bypassed backend neither is needed.
+# The account needs settings.write (an administrator).
+#
+# CSRF: an install that enforces it (VIGIL_CSRF_REPORT_ONLY=false, as Helm and
+# env.example set) refuses every POST/PUT/DELETE without the double-submit pair,
+# Bearer or not. The script reads a csrf_token cookie from one GET and sends it
+# back as both the cookie and the X-CSRF-Token header on every write, the login
+# included.
+#
+# Helm: run it from a machine with the repo against a port-forward:
+#   kubectl -n <ns> port-forward svc/<release>-backend 6987:6987 &
+#   VIGIL_API=http://localhost:6987/api VIGIL_USERNAME=... VIGIL_PASSWORD=... \
+#     ./scripts/reset-setup.sh --all -y
+# The --providers DB fallback needs Postgres from that machine; without it the
+# last default provider is deactivated instead, which re-fires the step too.
 #
 # DB step: --providers may need to clear a stale default flag directly in
 # Postgres (the API can't unset or delete the last default of a type). This
@@ -83,19 +102,33 @@ GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; DIM='\033[2m'; NC='\0
 
 AUTH=()
 [ -n "${VIGIL_TOKEN:-}" ] && AUTH=(-H "Authorization: Bearer ${VIGIL_TOKEN}")
+CSRF=()
+CSRF_TOKEN=""
 
 # --- prerequisites --------------------------------------------------------
 command -v curl   >/dev/null 2>&1 || { echo "curl is required"   >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
+
+# --- CSRF -----------------------------------------------------------------
+# Any response to a request without the cookie seeds one; health is public.
+# Sent back explicitly (cookie and header) rather than through a cookie jar: the
+# cookie is Secure, and a jar would withhold it from a plain-http port-forward.
+CSRF_TOKEN=$(curl -s -o /dev/null -D - "$B/health" 2>/dev/null | tr -d '\r' \
+    | sed -n 's/^[Ss]et-[Cc]ookie: *csrf_token=\([^;]*\).*/\1/p' | head -n 1) || true
+if [ -n "$CSRF_TOKEN" ]; then
+    CSRF=(-H "X-CSRF-Token: ${CSRF_TOKEN}" -H "Cookie: csrf_token=${CSRF_TOKEN}")
+fi
 
 # --- authentication -------------------------------------------------------
 # No token, but credentials: sign in and use the access token the login
 # returns. Kept to the bearer flow rather than the cookie flow so every call
 # below stays a plain curl with one header.
 if [ -z "${VIGIL_TOKEN:-}" ] && [ -n "${VIGIL_USERNAME:-}" ] && [ -n "${VIGIL_PASSWORD:-}" ]; then
-    login_body=$(curl -fsS -X POST -H 'Content-Type: application/json' \
-        -d "{\"username_or_email\":\"${VIGIL_USERNAME}\",\"password\":\"${VIGIL_PASSWORD}\"}" \
-        "$B/auth/login") || {
+    # The body goes on stdin, so the password is not on curl's command line.
+    login_body=$(VIGIL_USERNAME="$VIGIL_USERNAME" VIGIL_PASSWORD="$VIGIL_PASSWORD" python3 -c \
+        'import json,os; print(json.dumps({"username_or_email": os.environ["VIGIL_USERNAME"], "password": os.environ["VIGIL_PASSWORD"]}))' \
+        | curl -fsS -X POST -H 'Content-Type: application/json' "${CSRF[@]}" \
+        --data-binary @- "$B/auth/login") || {
         echo "Login failed for ${VIGIL_USERNAME} at $B/auth/login" >&2
         exit 1
     }
@@ -129,13 +162,13 @@ case "$auth_probe" in
 esac
 
 get()  { curl -fsS "${AUTH[@]}" "$B$1"; }
-del()  { curl -fsS "${AUTH[@]}" -X DELETE "$B$1"; }
+del()  { curl -fsS "${AUTH[@]}" "${CSRF[@]}" -X DELETE "$B$1"; }
 # DELETE that prints the HTTP status instead of aborting on 4xx. The provider
 # delete endpoint legitimately 409s on the last active default of a type (the
 # single-default guard added in #336) — we detect that and deactivate instead.
-del_code() { curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X DELETE "$B$1"; }
-put()  { curl -fsS "${AUTH[@]}" -X PUT  -H 'Content-Type: application/json' -d "$2" "$B$1"; }
-post() { curl -fsS "${AUTH[@]}" -X POST -H 'Content-Type: application/json' -d "$2" "$B$1"; }
+del_code() { curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" "${CSRF[@]}" -X DELETE "$B$1"; }
+put()  { curl -fsS "${AUTH[@]}" "${CSRF[@]}" -X PUT  -H 'Content-Type: application/json' -d "$2" "$B$1"; }
+post() { curl -fsS "${AUTH[@]}" "${CSRF[@]}" -X POST -H 'Content-Type: application/json' -d "$2" "$B$1"; }
 
 # Clear a provider's is_default flag straight in Postgres. The API deliberately
 # can't: the single-default guard (#336) 409s on unsetting the only default of a
@@ -182,12 +215,14 @@ PY
 # gate open) and the write side (how to disable one without corrupting its
 # credential) have to agree.
 bifrost_py() {
-  VIGIL_API="$B" BF_ADMIN="$BF_ADMIN" AUTH_TOKEN="${VIGIL_TOKEN:-}" BF_MODE="$1" "$PYTHON" - <<'PY'
+  VIGIL_API="$B" BF_ADMIN="$BF_ADMIN" AUTH_TOKEN="${VIGIL_TOKEN:-}" AUTH_CSRF="$CSRF_TOKEN" \
+    BF_MODE="$1" "$PYTHON" - <<'PY'
 import json, os, urllib.error, urllib.request
 
 API = os.environ["VIGIL_API"].rstrip("/")
 BF = os.environ["BF_ADMIN"].rstrip("/")
 TOKEN = os.environ.get("AUTH_TOKEN", "")
+CSRF = os.environ.get("AUTH_CSRF", "")
 MODE = os.environ["BF_MODE"]
 
 GREEN = "\033[0;32m"; YELLOW = "\033[1;33m"; DIM = "\033[2m"; NC = "\033[0m"
@@ -200,6 +235,10 @@ def req(url, method="GET", body=None):
         r.add_header("Content-Type", "application/json")
     if TOKEN:
         r.add_header("Authorization", "Bearer " + TOKEN)
+    # The double-submit pair, to the backend only: the gateway has no CSRF.
+    if CSRF and method != "GET" and url.startswith(API):
+        r.add_header("X-CSRF-Token", CSRF)
+        r.add_header("Cookie", "csrf_token=" + CSRF)
     with urllib.request.urlopen(r, timeout=15) as resp:
         raw = resp.read()
     return json.loads(raw) if raw else None
@@ -418,12 +457,14 @@ PY
 
 # --- argument parsing -----------------------------------------------------
 do_providers=false; do_assignments=false; do_budget=false; do_autonomy=false
+do_wizard=false
 do_bifrost=false; bifrost_failed=false
 status_only=false; assume_yes=false
 data_sources=()
 
 if [ $# -eq 0 ]; then
   do_providers=true; do_bifrost=true; do_assignments=true; do_budget=true; do_autonomy=true
+  do_wizard=true
 fi
 
 while [ $# -gt 0 ]; do
@@ -433,8 +474,9 @@ while [ $# -gt 0 ]; do
     --assignments) do_assignments=true ;;
     --budget)      do_budget=true ;;
     --autonomy)    do_autonomy=true ;;
+    --wizard)      do_wizard=true ;;
     --data-source) shift; [ $# -gt 0 ] || { echo "--data-source needs a server name" >&2; exit 1; }; data_sources+=("$1") ;;
-    --all)         do_providers=true; do_bifrost=true; do_assignments=true; do_budget=true; do_autonomy=true ;;
+    --all)         do_providers=true; do_bifrost=true; do_assignments=true; do_budget=true; do_autonomy=true; do_wizard=true ;;
     --status)      status_only=true ;;
     -y|--yes)      assume_yes=true ;;
     -h|--help)     awk 'NR>1 && /^# DB step:/{exit} NR>1 && /^#/{sub(/^# ?/,"");print}' "$0"; exit 0 ;;
@@ -460,6 +502,8 @@ show_status() {
   get /analytics/budget | python3 -c "import sys,json;d=json.load(sys.stdin);vk=(d.get('default_vk') or '').strip();print(f'vk set ({vk})' if vk else 'none')"
   echo -n "  Autonomy          : "
   get /config/orchestrator | python3 -c "import sys,json;print('enabled' if json.load(sys.stdin).get('enabled') else 'disabled')"
+  echo -n "  Setup wizard      : "
+  get /config/setup-progress | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('status','?') + (' (step %s, by %s)' % (d.get('furthest'), d.get('updated_by')) if d.get('started') else ' (not started)'))"
   echo -n "  Connected MCP     : "
   get /mcp/connections/status | python3 -c "import sys,json;c=[x['name'] for x in json.load(sys.stdin).get('connections',[]) if x.get('connected')];print(', '.join(c) or 'none')"
 }
@@ -477,6 +521,7 @@ planned=()
 [ "$do_assignments" = true ] && planned+=("clear all model assignments")
 [ "$do_budget"      = true ] && planned+=("clear the budget / virtual key")
 [ "$do_autonomy"    = true ] && planned+=("disable the orchestrator")
+[ "$do_wizard"      = true ] && planned+=("start the setup wizard's saved progress over (every browser)")
 for s in "${data_sources[@]:-}"; do [ -n "$s" ] && planned+=("disconnect MCP server '$s'"); done
 
 if [ ${#planned[@]} -eq 0 ]; then echo "Nothing selected. See --help."; exit 0; fi
@@ -508,7 +553,7 @@ if [ "$do_providers" = true ]; then
   # Postgres, then re-issue the delete (which now passes the guard and still runs
   # the FK cascade + Bifrost key reconcile). If the DB can't be reached we fall
   # back to deactivating it: the wizard gate is `is_active && is_default`
-  # (clients/web/src/setup/setupSteps.ts), so an inactive provider re-fires it too.
+  # (isProviderReady, clients/web/src/routing/useSetupStatus.ts), so an inactive provider re-fires it too.
   ids=$(get /llm/providers/ | python3 -c "import sys,json;rows=json.load(sys.stdin);[print(p['provider_id']) for p in sorted(rows,key=lambda p:bool(p.get('is_default')))]")
   if [ -z "$ids" ]; then echo "  providers: already empty"; else
     while read -r id; do
@@ -552,6 +597,11 @@ if [ "$do_autonomy" = true ]; then
   body=$(get /config/orchestrator | python3 -c "import sys,json;d=json.load(sys.stdin);d['enabled']=False;print(json.dumps(d))")
   post /config/orchestrator "$body" >/dev/null
   echo -e "  ${GREEN}disabled orchestrator${NC}"
+fi
+
+if [ "$do_wizard" = true ]; then
+  put /config/setup-progress '{"furthest":1,"passed":[],"status":"in_progress"}' >/dev/null
+  echo -e "  ${GREEN}reset setup wizard progress${NC}"
 fi
 
 for s in "${data_sources[@]:-}"; do
