@@ -7,7 +7,7 @@
 # that changed data a read-only Viewer must not touch now ask for a permission
 # (see docs/wp/w0.11.md). What is left is deliberate: own-account and login
 # flows (auth/*, own conversations), checks made inside a helper (users,
-# services, exclusions, cases delete), reads sent as POST (search, export,
+# services, exclusions, cases delete), reads sent as POST (search,
 # estimate-cost, coverage, workflows/reload), finding enrichment (generated
 # lazily when anyone opens a finding), and vstrike (checks its own inbound
 # key). Round 5 gated recalculate-cost (settings.write) and ai/decisions
@@ -29,7 +29,6 @@ POST /api/auth/refresh
 POST /api/cases/search
 POST /api/exclusions
 POST /api/exclusions/{exclusion_id}/remove
-POST /api/findings/export
 POST /api/findings/{finding_id}/enrich
 POST /api/integrations/vstrike/findings
 POST /api/services/{name}/restart

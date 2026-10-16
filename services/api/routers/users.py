@@ -69,13 +69,6 @@ def _refuse_service_account_role(user: User, role_id: str) -> None:
         )
 
 
-def _audit_on(http_request: Optional[Request]) -> bool:
-    """Whether auth events are being spooled for export (WP w3.6)."""
-    service = getattr(getattr(http_request, "app", None), "state", None)
-    service = getattr(service, "audit_export", None)
-    return bool(service is not None and service.spool_enabled)
-
-
 def _account_state(
     session: Session, user_id: str
 ) -> tuple[Optional[str], Optional[bool]]:
@@ -423,6 +416,7 @@ def create_user(
         actor_id=current_user.user_id,
         target_id=user.user_id,
         details={"username": user.username, "role_id": request.role_id},
+        session=session,
     )
     return UserSchema.dump(user)
 
@@ -542,9 +536,7 @@ async def update_user(
         Updated user information
     """
     try:
-        before: tuple[Optional[str], Optional[bool]] = (None, None)
-        if _audit_on(http_request):
-            before = await asyncio.to_thread(_account_state, session, user_id)
+        before = await asyncio.to_thread(_account_state, session, user_id)
         user, stale_reason, payload, old_email = await asyncio.to_thread(
             _apply_user_update, session, current_user, user_id, request
         )
@@ -567,11 +559,10 @@ async def update_user(
                 )
 
         logger.info(f"User updated by {current_user.username}: {user.username}")
-        if _audit_on(http_request):
-            # The spool write flocks and fsyncs: keep it off the event loop.
-            await asyncio.to_thread(
-                _record_update, http_request, current_user, user, request, before
-            )
+        # In the request's transaction, so the record commits with the change.
+        await asyncio.to_thread(
+            _record_update, session, http_request, current_user, user, request, before
+        )
         return payload
 
     except HTTPException:
@@ -585,16 +576,19 @@ async def update_user(
 
 
 def _record_update(
+    session: Session,
     http_request: Optional[Request],
     current_user: User,
     user: User,
     request: UpdateUserRequest,
     before: tuple[Optional[str], Optional[bool]],
 ) -> None:
-    """Spool the update, plus a role change or (de)activation of its own."""
-    if not _audit_on(http_request):
-        return
-    actor = {"actor": current_user.username, "actor_id": current_user.user_id}
+    """Record the update, plus a role change or (de)activation of its own."""
+    actor = {
+        "actor": current_user.username,
+        "actor_id": current_user.user_id,
+        "session": session,
+    }
     changed = sorted(request.model_dump(exclude_none=True))
     record_auth_event(
         http_request,
@@ -675,6 +669,7 @@ def delete_user(
             actor_id=current_user.user_id,
             target_id=user_id,
             details={"username": username},
+            session=session,
         )
         return {"message": "User deleted successfully"}
 

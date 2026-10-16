@@ -9,6 +9,7 @@ identity provider is ``oidc_mock.MockIdP`` behind respx, with real keys.
 from __future__ import annotations
 
 import base64
+import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
@@ -36,7 +37,13 @@ from core.auth.oidc_accounts import (  # noqa: E402
     load_providers,
 )
 from core.routing import request_unit_of_work  # noqa: E402
-from core.storage.models import ConfigAuditLog, Role, SystemConfig, User  # noqa: E402
+from core.storage.models import (  # noqa: E402
+    CaseAuditLog,
+    ConfigAuditLog,
+    Role,
+    SystemConfig,
+    User,
+)
 from core.storage.models.base import Base  # noqa: E402
 from services.api.middleware.rate_limit import limiter  # noqa: E402
 from services.api.routers import auth as auth_router  # noqa: E402
@@ -198,6 +205,17 @@ class World:
                 .all()
             ]
 
+    def auth_events(self, event):
+        """W0.35: the chained auth rows (case_audit_logs, entity_type auth)."""
+        with self.db() as s:
+            return [
+                (r.action, r.changed_by, json.loads(r.new_value))
+                for r in s.query(CaseAuditLog)
+                .filter(CaseAuditLog.entity_type == "auth")
+                .filter(CaseAuditLog.field_name == event)
+                .all()
+            ]
+
     def user_by_email(self, email):
         with self.db() as s:
             user = s.query(User).filter(User.email == email).first()
@@ -227,6 +245,7 @@ def world(monkeypatch):
             User.__table__,
             SystemConfig.__table__,
             ConfigAuditLog.__table__,
+            CaseAuditLog.__table__,
         ],
     )
     maker = sessionmaker(bind=engine, expire_on_commit=False)
@@ -361,6 +380,9 @@ def test_a_full_login_issues_the_same_session_as_a_password(world):
 
     [event] = world.audit("sso_login")
     assert event["user_id"] == user.user_id and event["created"] is True
+    [(outcome, actor, body)] = world.auth_events("sso_login")
+    assert (outcome, actor) == ("success", "alice")
+    assert body["actor_id"] == user.user_id and body["details"]["provider_id"]
     with world.db() as s:
         links = (
             s.query(SystemConfig)
@@ -423,6 +445,12 @@ def test_a_replayed_callback_is_refused(world):
     assert world.sso_error(replay) == "state"
     assert "access_token" not in replay.cookies
     assert world.audit("sso_failure")[-1]["reason"] == "state"
+    outcome, actor, body = world.auth_events("sso_login")[-1]
+    assert (outcome, actor, body["details"]["reason"]) == (
+        "failure",
+        "anonymous",
+        "state",
+    )
 
 
 def test_an_unknown_state_is_refused(world):

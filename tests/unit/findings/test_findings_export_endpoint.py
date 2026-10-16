@@ -24,6 +24,8 @@ import inspect
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Optional
 from unittest.mock import patch
 
 import pytest
@@ -47,10 +49,10 @@ class _StubDataService:
     def __init__(self):
         self.calls = []
 
-    def export_findings(self, output_path: Path, fmt: str = "json") -> bool:
+    def export_findings(self, output_path: Path, fmt: str = "json") -> Optional[int]:
         self.calls.append((output_path, fmt))
-        output_path.write_text(json.dumps({"findings": []}))
-        return True
+        output_path.write_text(json.dumps({"findings": [{}, {}, {}]}))
+        return 3
 
 
 @pytest.fixture
@@ -67,12 +69,49 @@ def stub(monkeypatch):
     return stub
 
 
+ANALYST = SimpleNamespace(user_id="u-ana", username="ana", role_id="role-analyst")
+VIEWER = SimpleNamespace(user_id="u-vic", username="vic", role_id="role-viewer")
+GRANTS = {"u-ana": {"findings.read", "findings.write"}, "u-vic": {"findings.read"}}
+
+
 @pytest.fixture
-def client():
+def recorded(monkeypatch):
+    """The export's audit rows, as the route hands them to the database."""
+    rows = []
+    monkeypatch.setattr(
+        findings_api,
+        "_record_export",
+        lambda user, request, fmt, n, path: rows.append(
+            (user.username, fmt, n, path.name, request.client.host)
+        ),
+    )
+    return rows
+
+
+def _app(user):
+    from core.auth.current_user import get_current_user
+
     app = FastAPI()
     register_exception_handlers(app)
     app.include_router(findings_api.router, prefix="/api/findings")
-    return TestClient(app, raise_server_exceptions=False)
+    app.dependency_overrides[get_current_user] = lambda: user
+    return app
+
+
+@pytest.fixture
+def grants(monkeypatch):
+    from core.auth.auth_service import AuthService
+
+    monkeypatch.setattr(
+        AuthService,
+        "check_permission",
+        staticmethod(lambda user_id, perm, session=None: perm in GRANTS[user_id]),
+    )
+
+
+@pytest.fixture
+def client(grants, recorded):
+    return TestClient(_app(ANALYST), raise_server_exceptions=False)
 
 
 def test_the_stub_matches_the_service_it_stands_in_for():
@@ -104,6 +143,45 @@ def test_an_export_writes_its_file_and_answers_with_the_path(
     assert written.exists()
     assert written.parent == exports_dir
     assert stub.calls == [(written, fmt)]
+    assert response.json()["rows"] == 3
+
+
+def test_an_export_is_recorded_with_who_what_and_how_many(
+    client, stub, exports_dir, recorded
+):
+    """U-17 (W0.35): every bulk export leaves an audit row."""
+    response = client.post("/api/findings/export?output_format=jsonl")
+
+    assert response.status_code == 200, response.text
+    name = Path(response.json()["file_path"]).name
+    assert recorded == [("ana", "jsonl", 3, name, "testclient")]
+
+
+def test_a_viewer_cannot_export(grants, recorded, stub, exports_dir):
+    """U-17 (W0.35): bulk export needs findings.write, which Viewer lacks."""
+    viewer = TestClient(_app(VIEWER), raise_server_exceptions=False)
+
+    response = viewer.post("/api/findings/export?output_format=json")
+
+    assert response.status_code == 403, response.text
+    assert "findings.write" in response.json()["detail"]
+    assert stub.calls == [] and recorded == []
+    assert not exports_dir.exists() or not any(exports_dir.iterdir())
+
+
+def test_an_export_that_cannot_be_recorded_is_withdrawn(
+    grants, stub, exports_dir, monkeypatch
+):
+    def fail(*_a):
+        raise RuntimeError("database down")
+
+    monkeypatch.setattr(findings_api, "_record_export", fail)
+    response = TestClient(_app(ANALYST), raise_server_exceptions=False).post(
+        "/api/findings/export?output_format=json"
+    )
+
+    assert response.status_code == 500
+    assert stub.calls and not stub.calls[0][0].exists()
 
 
 def test_a_format_the_service_cannot_write_is_refused(client, stub, exports_dir):
@@ -146,7 +224,7 @@ def test_every_declared_format_is_one_the_writer_writes_differently():
                 "get_findings",
                 return_value=[{"finding_id": "f-1"}, {"finding_id": "f-2"}],
             ):
-                assert service.export_findings(path, fmt=fmt) is True
+                assert service.export_findings(path, fmt=fmt) == 2
             written[fmt] = path.read_text()
 
     assert len(set(written.values())) == len(written), (

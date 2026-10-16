@@ -7,11 +7,13 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from core.auth.permissions import permission_gate
+from core.audit.config_changes import record_change_now
+from core.auth.permissions import require_permission
 from core.deps import provide_detection_rules, provide_mcp_client, provide_mcp_registry
 from core.detections.detection_rules_service import DetectionRulesService
 from core.integrations.mcp.registry import MCPRegistry, register_connected
 from core.routing import Auth, RouterMeta
+from core.storage.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +22,24 @@ router = APIRouter()
 # Adding, syncing or removing a rule source runs git on the API host and
 # restarts the detections MCP server: an administrator's call, not a viewer's
 # or an analyst's (W0.11; was login-only, so any role could reach git clone).
-_SOURCES_WRITE = [permission_gate("settings.write")]
+# Every write is audited as the signed-in user, with the source before and
+# after (W0.35): which rules the detections run on is a configuration change.
+_writer = require_permission("settings.write")
+AUDIT_CONFIG_TYPE = "detection_rules"
+
+
+async def _audit(key: str, action: str, old, new, user: User) -> None:
+    # Sources live in a file and on disk, not in the database: committed alone.
+    await asyncio.to_thread(
+        record_change_now,
+        config_type=AUDIT_CONFIG_TYPE,
+        config_key=key,
+        action=action,
+        old=old,
+        new=new,
+        actor=user.username or str(user.user_id),
+    )
+
 
 ROUTER_META = RouterMeta(
     prefix="/api/detection-rules",
@@ -75,9 +94,10 @@ def get_source(
     return source
 
 
-@router.post("/sources", dependencies=_SOURCES_WRITE)
-def add_source(
+@router.post("/sources")
+async def add_source(
     request: AddSourceRequest,
+    current_user: User = Depends(_writer),
     service: DetectionRulesService = Depends(provide_detection_rules),
 ):
     """
@@ -90,7 +110,9 @@ def add_source(
         The newly created source
     """
     try:
-        source = service.add_source(
+        # git clone runs up to minutes; keep it off the event loop.
+        source = await asyncio.to_thread(
+            service.add_source,
             name=request.name,
             source_type=request.source_type,
             format=request.format,
@@ -99,15 +121,17 @@ def add_source(
             subdirectory=request.subdirectory,
             story_subdirectory=request.story_subdirectory,
         )
-        return {"success": True, "source": source}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    await _audit(str(source.get("id")), "create", None, source, current_user)
+    return {"success": True, "source": source}
 
 
-@router.delete("/sources/{source_id}", dependencies=_SOURCES_WRITE)
-def remove_source(
+@router.delete("/sources/{source_id}")
+async def remove_source(
     source_id: str,
     delete_files: bool = False,
+    current_user: User = Depends(_writer),
     service: DetectionRulesService = Depends(provide_detection_rules),
 ):
     """
@@ -120,15 +144,23 @@ def remove_source(
     Returns:
         Success status
     """
-    success = service.remove_source(source_id, delete_files=delete_files)
+    before = service.get_source(source_id)
+    before = dict(before) if before else None
+    success = await asyncio.to_thread(
+        service.remove_source, source_id, delete_files=delete_files
+    )
     if not success:
         raise HTTPException(status_code=404, detail=f"Source not found: {source_id}")
+    await _audit(
+        source_id, "delete", before, {"delete_files": delete_files}, current_user
+    )
     return {"success": True}
 
 
-@router.post("/sources/{source_id}/update", dependencies=_SOURCES_WRITE)
+@router.post("/sources/{source_id}/update")
 async def update_source(
     source_id: str,
+    current_user: User = Depends(_writer),
     service: DetectionRulesService = Depends(provide_detection_rules),
     mcp_client=Depends(provide_mcp_client),
     registry: MCPRegistry = Depends(provide_mcp_registry),
@@ -142,9 +174,12 @@ async def update_source(
     Returns:
         Updated source details
     """
+    before = service.get_source(source_id)
+    before = dict(before) if before else None
     try:
         # git pull runs up to 120s; keep it off the event loop.
         source = await asyncio.to_thread(service.update_source, source_id)
+        await _audit(source_id, "sync", before, source, current_user)
 
         # After updating, restart the security-detections MCP server to rebuild index
         await _restart_security_detections_mcp(mcp_client, service, registry)
@@ -156,8 +191,9 @@ async def update_source(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/update-all", dependencies=_SOURCES_WRITE)
+@router.post("/update-all")
 async def update_all_sources(
+    current_user: User = Depends(_writer),
     service: DetectionRulesService = Depends(provide_detection_rules),
     mcp_client=Depends(provide_mcp_client),
     registry: MCPRegistry = Depends(provide_mcp_registry),
@@ -169,6 +205,7 @@ async def update_all_sources(
         Results for each source update
     """
     results = await asyncio.to_thread(service.update_all)
+    await _audit("*", "sync_all", None, {"results": results}, current_user)
 
     # After updating all, restart the security-detections MCP server
     await _restart_security_detections_mcp(mcp_client, service, registry)
@@ -204,8 +241,9 @@ def get_mcp_env(
     return {"env_vars": env_vars}
 
 
-@router.post("/reload", dependencies=_SOURCES_WRITE)
+@router.post("/reload")
 async def reload_service(
+    current_user: User = Depends(_writer),
     service: DetectionRulesService = Depends(provide_detection_rules),
     mcp_client=Depends(provide_mcp_client),
     registry: MCPRegistry = Depends(provide_mcp_registry),
@@ -223,6 +261,7 @@ async def reload_service(
     await _restart_security_detections_mcp(mcp_client, service, registry)
 
     stats = await asyncio.to_thread(service.get_stats)
+    await _audit("*", "reload", None, {"stats": stats}, current_user)
     return {"success": True, "stats": stats}
 
 

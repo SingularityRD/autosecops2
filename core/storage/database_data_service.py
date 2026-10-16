@@ -532,7 +532,8 @@ class DatabaseDataService:
     # that silently lands as JSON.
     EXPORT_FORMATS = ("json", "jsonl")
 
-    def export_findings(self, output_path: Path, fmt: str = "json") -> bool:
+    def export_findings(self, output_path: Path, fmt: str = "json") -> Optional[int]:
+        """Write every finding (hidden canaries left out); the rows written, or None."""
         findings = self.get_findings()
         try:
             # Hidden canaries (W1.5) never leave the install.
@@ -544,7 +545,7 @@ class DatabaseDataService:
                         f.write(json.dumps(finding) + "\n")
                 else:
                     json.dump({"findings": findings}, f, indent=2)
-            return True
+            return len(findings)
         except Exception as e:
             logger.error(f"Error exporting findings: {e}")
-            return False
+            return None

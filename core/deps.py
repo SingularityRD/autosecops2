@@ -21,6 +21,7 @@ from core.integrations.mcp.registry import MCPRegistry
 from core.platform.demo_data_service import DemoDataService
 from core.response.approval_service import ApprovalService
 from core.response.autonomous_response_service import AutonomousResponseService
+from core.response.executors.base import ExecutorRegistry
 from core.workflows.custom_workflow_service import CustomWorkflowService
 from core.workflows.workflow_ai_generator import WorkflowAIGenerator
 from core.workflows.workflow_run_service import WorkflowRunService
@@ -33,6 +34,11 @@ def provide_approvals(request: Request) -> ApprovalService:
 
 def provide_response(request: Request) -> AutonomousResponseService:
     return request.app.state.response
+
+
+def provide_executors(request: Request) -> Optional[ExecutorRegistry]:
+    """The API process's executor registry; None in an app built without one."""
+    return getattr(request.app.state, "executors", None)
 
 
 def provide_workflows(request: Request) -> WorkflowsService:

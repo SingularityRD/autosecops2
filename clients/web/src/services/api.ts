@@ -595,6 +595,8 @@ export interface IntegrationTestResult {
   servers?: { name: string; success: boolean; error?: string; missing_credentials?: string[] }[]
   /** the read-only check of the saved URL and credentials, for integrations that have one */
   credentials?: { success: boolean; message: string }
+  /** response executors only: whether this process runs its actions now (after approval) */
+  executor?: { available: boolean; action_types: string[] }
 }
 
 export const configApi = {

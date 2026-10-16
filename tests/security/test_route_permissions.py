@@ -187,10 +187,13 @@ GATED_ROUTES = [
     ("PATCH", "/api/agents/custom/a-1", {}, "ai_chat.use"),
     ("DELETE", "/api/agents/custom/a-1", None, "ai_chat.use"),
     ("POST", "/api/conversations/import", {}, "ai_chat.use"),
-    ("POST", "/api/sla-policies/", {}, "cases.write"),
-    ("PUT", "/api/sla-policies/p-1", {}, "cases.write"),
-    ("DELETE", "/api/sla-policies/p-1", None, "cases.write"),
-    ("POST", "/api/sla-policies/p-1/set-default", None, "cases.write"),
+    # W0.35 (SOC4-12): SLA deadlines are a manager's setting, not cases.write.
+    ("POST", "/api/sla-policies/", {}, "settings.write"),
+    ("PUT", "/api/sla-policies/p-1", {}, "settings.write"),
+    ("DELETE", "/api/sla-policies/p-1", None, "settings.write"),
+    ("POST", "/api/sla-policies/p-1/set-default", None, "settings.write"),
+    # W0.35 (U-17): bulk finding export, Viewer excluded.
+    ("POST", "/api/findings/export", None, "findings.write"),
     ("POST", "/api/cases/templates/", {}, "cases.write"),
     ("PUT", "/api/cases/templates/t-1", {}, "cases.write"),
     ("DELETE", "/api/cases/templates/t-1", None, "cases.write"),
