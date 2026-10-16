@@ -25,6 +25,8 @@ import pytest
 import yaml
 from sqlalchemy import create_engine, text
 
+from tests.unit.storage.kubelet_expand import kubelet_expand
+
 pytestmark = [pytest.mark.unit, pytest.mark.external_service, pytest.mark.database]
 
 REPO = Path(__file__).resolve().parents[3]
@@ -88,7 +90,19 @@ def job_script(sql_dir: Path) -> str:
     )
     assert n == 1, "the range over dbInit.sqlFiles moved; update this test"
     assert "{{" not in body
-    return body.replace('"/sql/$f"', f'"{sql_dir}/$f"')
+    # What the kubelet hands the container (W0.39 review): $$ -> $, $(NAME) of
+    # a container env var -> its value. The script must mean the same after it.
+    names = {name: f"<{name}>" for name in job_env_names()}
+    expanded = kubelet_expand(body, names)
+    assert not any(f"<{name}>" in expanded for name in names), "script uses $(NAME)"
+    return expanded.replace('"/sql/$f"', f'"{sql_dir}/$f"')
+
+
+def job_env_names() -> list[str]:
+    """The env var names the db-init container declares."""
+    text = JOB.read_text(encoding="utf-8")
+    env = text[text.index("          env:\n") : text.index("          command:\n")]
+    return re.findall(r"^\s*- name: (\w+)$", env, re.MULTILINE)
 
 
 def run_job(wait_seconds: int = 0) -> subprocess.CompletedProcess:
@@ -166,6 +180,8 @@ def test_first_install_does_not_record_files_that_failed_and_upgrade_applies_the
         assert _exists(scratch, table), f"{table} missing after upgrade\n{proc.stdout}"
     recorded = _recorded(scratch)
     assert {"50_regulatory_clocks.sql", "58_broadcast_unique_and_clock_heads.sql"} <= recorded
+    # The DO block 30 is rewritten into survives the kubelet (W0.39 review).
+    assert "30_vigil_app_role.sql" in recorded, proc.stdout
 
 
 def test_second_pass_applies_them_once_the_backend_has_built_its_tables(scratch):

@@ -108,10 +108,13 @@ spec:
               #  - 30's ALTER ROLE vigil_app NOSUPERUSER fails for a user that is
               #    not a superuser (a managed or bank Postgres); such a user
               #    cannot have made vigil_app one, so only a superuser says it.
+              #    The DO block is quoted $w$, not with two dollars: the kubelet
+              #    turns two dollars in `command:` into one (and expands $(NAME)
+              #    for the env names below), so this script never uses either.
               # With the default superuser deeptempo nothing changes.
               init_sql() {
                 sed -e 's/^\(GRANT .*[[:space:]]TO[[:space:]]*\)deeptempo;/\1CURRENT_USER;/' \
-                  -e 's/^ALTER ROLE vigil_app NOSUPERUSER LOGIN;$/DO $$ BEGIN IF (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN ALTER ROLE vigil_app NOSUPERUSER; END IF; END $$; ALTER ROLE vigil_app LOGIN;/' \
+                  -e 's/^ALTER ROLE vigil_app NOSUPERUSER LOGIN;$/DO $w$ BEGIN IF (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN ALTER ROLE vigil_app NOSUPERUSER; END IF; END $w$; ALTER ROLE vigil_app LOGIN;/' \
                   "$1"
               }
 

@@ -878,6 +878,13 @@ oluşturup parolasını ayarlar. Job bunu her kurulumda ve yükseltmede yaptığ
 yetki kalıcı olarak gerekir. `pg_trgm` ve `uuid-ossp` uzantılarını veritabanı
 sahibi kendisi oluşturabilir.
 
+**Bitnami alt grafiği (`postgresql.bitnami.enabled=true`).** Alt grafiğin
+oluşturduğu kullanıcının (`postgresql.bitnami.auth.username`) CREATEROLE yetkisi
+yoktur. Bu yüzden `vigil_app` oluşturulmaz ve uygulamalar veritabanına
+bağlanamaz. İki çözüm vardır: bu kullanıcıya bir kez süper kullanıcıyla
+`ALTER ROLE <kullanıcı> CREATEROLE;` verin ve ardından `helm upgrade` yapın, ya da
+kullanıcı adı olarak CREATEROLE yetkisi olan bir kullanıcı verin.
+
 ## Yedekleme ve geri yükleme
 
 `python -m core.backup` şunları **şifreli bir restic deposuna** yazar:

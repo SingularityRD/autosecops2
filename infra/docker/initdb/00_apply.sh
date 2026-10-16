@@ -28,7 +28,7 @@ export PGUSER PGDATABASE
 # nothing changes.
 init_sql() {
     sed -e 's/^\(GRANT .*[[:space:]]TO[[:space:]]*\)deeptempo;/\1CURRENT_USER;/' \
-        -e 's/^ALTER ROLE vigil_app NOSUPERUSER LOGIN;$/DO $$ BEGIN IF (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN ALTER ROLE vigil_app NOSUPERUSER; END IF; END $$; ALTER ROLE vigil_app LOGIN;/' \
+        -e 's/^ALTER ROLE vigil_app NOSUPERUSER LOGIN;$/DO $w$ BEGIN IF (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN ALTER ROLE vigil_app NOSUPERUSER; END IF; END $w$; ALTER ROLE vigil_app LOGIN;/' \
         "$1"
 }
 
