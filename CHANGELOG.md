@@ -37,6 +37,35 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
 
 ### Changed / contract
 
+* **audit (W0.36):** installation provisions the two Ed25519 signing keys
+  (`AUDIT_CHECKPOINT_SIGNING_KEY`, `EVIDENCE_PACK_SIGNING_KEY`) when absent, so a
+  fresh install writes signed audit checkpoints and signs evidence packs with a
+  pinned key from day one. Compose: a one-shot `signing-keys` service writes them
+  to the encrypted secrets store before the backend and daemon start. Helm:
+  `signingKeys.generate` (default `true`) mints each into its own Secret,
+  `<release>-vigil-signing-key-checkpoint` (daemon only) and
+  `<release>-vigil-signing-key-evidence` (backend only), kept on upgrade and on
+  uninstall; a key you already supply through `secrets.existingSecret` /
+  ExternalSecrets wins, or `signingKeys.existingSecret` names one Secret of
+  your own. The air-gap installer inherits the
+  chart and prints the public keys at the end (`--signing-keys-out FILE`). An
+  existing key is never replaced and no private key is printed or logged.
+  `python -m core.audit.signing_keys {provision,status,export}` and
+  `GET /api/audit/signing-keys` (`settings.read`) export the public keys for
+  offline verification. `/api/health` and `/api/health/ready` gain `signing`
+  (two booleans) and `warnings` (`audit_checkpoint_signing_not_configured`,
+  `evidence_pack_signing_key_missing`); a warning never makes a pod unready.
+  Signatures stay Ed25519 under `FIPS_MODE` (W3.10's documented gap).
+* **response (W0.36):** the response policy is managed in the console (Settings
+  › System › Response policy) and by `GET /api/response/policy`
+  (`settings.read`) and `PUT /api/response/policy` (`settings.write`: Manager,
+  Admin; Analyst gets 403): protected targets, asset tags, extra protected tags,
+  hourly limits per action type and the default limit, and four-eyes action
+  types. Input is validated (422, nothing written); built-in protected tags and
+  four-eyes types can only be added to. Every change writes a
+  `config_audit_log` row (`config_type` `response_policy`) with the user, the
+  reason and the old and new policy. `distinct_role_types` keeps its own route.
+
 * **detections (W0.29):** the ATT&CK coverage verdict `loglm` is renamed
   `anomaly` (`rule | anomaly | both | missed`) in `analyze_coverage`,
   `reconstruct_run` and the Dashboard. Findings stored with
@@ -96,6 +125,18 @@ New init SQL files in 2.0.0: 46–51, 55–56, 58, 61–62.
   [docs/release/dogrulama.md](docs/release/dogrulama.md).
 
 ## Upgrade notes (unreleased upstream changes carried into 2.0.0)
+
+* **signing keys (W0.36):** an install that already set
+  `AUDIT_CHECKPOINT_SIGNING_KEY` / `EVIDENCE_PACK_SIGNING_KEY` keeps its keys:
+  Compose's `signing-keys` service never overwrites one, and on Helm a key you
+  supply through `secrets.existingSecret` or ExternalSecrets takes precedence
+  over the chart-minted one (set `signingKeys.generate=false` to not mint unused
+  Secrets). With `helm template`, Argo CD or
+  Flux (no `lookup`) every render would mint new keys: use
+  `signingKeys.existingSecret`. After upgrading, export the public keys
+  (`python -m core.audit.signing_keys export`) and hand them to your auditor; if
+  the keys were newly created, earlier evidence packs remain signed by their
+  one-off keys.
 
 * **integrations (W0.29):** a configured LogLM connector stops: its card, MCP
   server and console tab are gone and nothing calls the connector any more.

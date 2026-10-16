@@ -465,9 +465,33 @@ Kuru çalıştırma için `DAEMON_DRY_RUN=true`: eylemler loglanır, uygulanmaz.
 
 ### Müdahale politikasının ayarları
 
-Politika `system_config` tablosundaki `response.policy` satırından (JSON) okunur.
-Konsolda yalnızca farklı rol koşulu için bir ekran vardır; diğer anahtarlar için
-yoktur. Anahtarlar:
+Politika `system_config` tablosundaki `response.policy` satırından (JSON) okunur
+ve her kararda yeniden okunur: değişiklik yeniden başlatma gerektirmez.
+
+**Konsol:** Ayarlar → System → **Response policy**. Korunan hedefler (satır
+başına bir host, IP/aralık ya da hesap), varlık etiketleri (`fs01.corp.local:
+tier0, critical_infrastructure` biçiminde satırlar), ek korunan etiketler, tür
+başına saatlik sınırlar ve dört göz onayı isteyen türler bu ekrandan görülür ve
+değiştirilir. Kaydetmek için gerekçe zorunludur. API: `GET /api/response/policy`
+(`settings.read`; Analyst okuyabilir) ve `PUT /api/response/policy`
+(`settings.write`; Manager ve Admin). Analyst, Senior Analyst ve Viewer politikayı
+değiştiremez (403). PUT altı anahtarın tamamını gönderir; gönderilmeyen anahtar
+varsayılanına döner. `distinct_role_types`, `subdomain_matching_types` ve
+`undo_types` bu istekle değişmez.
+
+Doğrulama: hedefler boş, kontrol karakterli, 253 karakterden uzun ya da hiçbir şey
+adlandırmayan (`unknown`, `none` …) olamaz; etiketler `a-z 0-9 _ . : -` ve en çok
+64 karakterdir; saatlik sınır 0 ile 1000 arasında bir tam sayıdır (`0` o türü
+otomatik yürütmeye kapatır); tür adları bilinen eylem türleridir. Hatalı istek 422
+döner ve hiçbir şey yazılmaz. Varsayılan korunan etiketler ve varsayılan dört göz
+türleri kaldırılamaz: istek yalnızca onlara ekler.
+
+**Denetim:** her kabul edilen değişiklik `config_audit_log`'a
+`config_type='response_policy'` ile yazılır: değiştiren kullanıcı, gerekçe, eski
+ve yeni değer (tam JSON). Değişmeyen bir kayıt satır yazmaz. `config_audit_log`
+bu sürümde hash zincirine bağlı değildir (bkz. denetim kayıtları tablosu).
+
+Anahtarlar:
 
 | Anahtar | Anlamı | Varsayılan |
 |---|---|---|
@@ -745,12 +769,61 @@ imhayı yalnızca imha işiyle yapın.
 | `lesson_events` | Derslerin her geçişi (öneri, replay, terfi, ret, geri alma) | yalnızca eklenir; zincirsiz | `GET /api/lessons/{lesson_id}/events` |
 | Soruşturma gözetim zinciri | Bir soruşturmanın dosyaları ve kayıtları | — | `GET /api/orchestrator/investigations/{investigation_id}/chain-of-custody` |
 
-### İmzalı kontrol noktalarını açma
+### İmza anahtarları (kurulumda)
 
-Zincir (`audit_chain`) kurulumla birlikte çalışır. Kontrol noktaları ise imza
-anahtarı verilene kadar yazılmaz (daemon her aralıkta uyarı loglar):
+Kurulum iki Ed25519 imza anahtarını yoksa üretir: `AUDIT_CHECKPOINT_SIGNING_KEY`
+(daemon'un denetim kontrol noktaları) ve `EVIDENCE_PACK_SIGNING_KEY` (API'nin vaka
+kanıt paketleri). Var olan bir anahtar hiçbir zaman değiştirilmez. Gizli anahtar
+hiçbir çıktıya ya da loga yazılmaz; yalnızca açık anahtar ve anahtar kimliği
+(key id) gösterilir. FIPS modunda da algoritma Ed25519'dur (W3.10 bilinen boşluğu).
 
-1. Anahtar çiftini üretin: `python -m core.audit.checkpoint keygen`. İlk satır
+- **Compose:** `signing-keys` tek seferlik servisi her `up`'ta backend ve daemon'dan
+  önce çalışır (`python -m core.audit.signing_keys provision`) ve anahtarları
+  `vigil_home` birimindeki şifreli sır deposuna (`secrets.enc`) yazar. Depo
+  yazılamazsa `up` durmaz; uyarı verir ve `/api/health` uyarıyı gösterir.
+- **Helm:** `signingKeys.generate=true` (varsayılan) ilk kurulumda her anahtarı
+  kendi Secret'ına üretir: `<release>-vigil-signing-key-checkpoint` (yalnızca
+  daemon'a verilir) ve `<release>-vigil-signing-key-evidence` (yalnızca backend'e).
+  Yükseltmede korunur, `helm uninstall` silmez (`helm.sh/resource-policy: keep`).
+  Aynı anahtar `secrets.existingSecret`/ExternalSecrets'te de varsa sizinki geçerli
+  olur. `helm template`, Argo CD ya da Flux ile (lookup çalışmaz, her render yeni
+  anahtar üretir) iki anahtarı içeren bir Secret'ı kendiniz oluşturup
+  `signingKeys.existingSecret` ile verin ya da anahtarları
+  `secrets.existingSecret`/ExternalSecrets ile verip `signingKeys.generate=false`
+  yapın.
+- **Air-gap (`install.sh`):** Helm şemasını kurduğu için anahtarlar aynı şekilde
+  üretilir. Kurulumun sonunda açık anahtarlar yazdırılır ya da
+  `--signing-keys-out <dosya>` ile dosyaya yazılır.
+
+**Denetçi için açık anahtarlar** (çevrimdışı doğrulama):
+
+```bash
+docker compose -f infra/docker/docker-compose.yml run --rm signing-keys export
+kubectl exec statefulset/<release>-vigil-daemon -- python -m core.audit.signing_keys export --purpose audit_checkpoints
+kubectl exec deploy/<release>-vigil-backend -- python -m core.audit.signing_keys export --purpose evidence_packs
+```
+
+`export` varsayılan olarak `AUDIT_CHECKPOINT_PUBLIC_KEY=…` ve
+`EVIDENCE_PACK_PUBLIC_KEY=…` satırları verir; `--format pem` ya da `--format json`
+da seçilebilir. Konsoldan: `GET /api/audit/signing-keys` (`settings.read`). Bu
+yanıtta kontrol noktası anahtarı backend'de yoksa son kontrol noktasındaki açık
+anahtar `source: latest_checkpoint` ile gösterilir; bu değer veritabanından
+geldiği için kurulumda dışa aktarılan anahtarla karşılaştırın. Durum:
+`python -m core.audit.signing_keys status` (`scripts/autosecops signing-keys …`).
+
+**Uyarı:** imza yapılandırılmamışsa `/api/health` ve `/api/health/ready` yanıtında
+`warnings` listesi `audit_checkpoint_signing_not_configured` (kontrol noktası iş
+kapalı, ya da ne backend'de anahtar ne son iki aralıkta, en az iki saatte, imzalı
+kontrol noktası var) ve/veya `evidence_pack_signing_key_missing` içerir;
+`signing` alanı iki boolean verir. Bu uyarı pod'u hazır olmaktan çıkarmaz.
+
+### İmzalı kontrol noktaları
+
+Zincir (`audit_chain`) kurulumla birlikte çalışır. Kontrol noktaları kurulumda
+üretilen anahtarla imzalanır (yukarıya bakın); anahtar yoksa yazılmaz ve daemon
+her aralıkta uyarı loglar.
+
+1. Anahtarı elle vermek için: `python -m core.audit.checkpoint keygen`. İlk satır
    (`AUDIT_CHECKPOINT_SIGNING_KEY=…`) gizlidir: sır deposuna ya da
    Secret/ExternalSecrets'e koyun ve daemon'a verin. İkinci satır
    (`AUDIT_CHECKPOINT_PUBLIC_KEY=…`) açık anahtardır: doğrulamayı yapacak kişiye,
@@ -789,10 +862,11 @@ imzalı bir yeniden temel alma kaydı yazar.
 Vaka sayfasında **Evidence pack** düğmesi (`GET /api/cases/{case_id}/evidence-pack`,
 `cases.read`) vakanın imzalı ZIP arşivini indirir (içerik:
 [güvenlik teknik belgesi §5](guvenlik-teknik-belgesi.md#5-denetim-kayıtları-ve-zincir)).
-Kalıcı imza anahtarı için `scripts/autosecops evidence-keygen` çıktısındaki gizli
-anahtarı `EVIDENCE_PACK_SIGNING_KEY` sırrı olarak verin ve açık anahtarı denetçiye
-ayrıca iletin. Anahtar yoksa her paket geçici bir anahtarla imzalanır ve bu manifestte
-yazılıdır. Denetçi paketi ağsız doğrular:
+İmza anahtarı `EVIDENCE_PACK_SIGNING_KEY` kurulumda üretilir (bkz. İmza
+anahtarları); açık anahtarı `signing_keys export` ile alıp denetçiye ayrıca iletin.
+Kendi anahtarınızı vermek için `scripts/autosecops evidence-keygen`. Anahtar yoksa
+her paket geçici bir anahtarla imzalanır, bu manifestte yazılıdır ve `/api/health`
+uyarı verir. Denetçi paketi ağsız doğrular:
 
 ```bash
 scripts/autosecops verify-bundle vaka-paketi.zip --public-key <acik-anahtar>

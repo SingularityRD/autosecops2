@@ -224,6 +224,12 @@ Politika şunları uygular:
   adres verilirse eylem reddedilir ve tür başına parametre izin listesi uygulanır.
 - Yapılandırma okunamazsa her eylem reddedilir.
 
+Korunan hedefler, varlık etiketleri, saatlik sınırlar ve dört göz türleri konsoldan
+(Ayarlar → System → Response policy; `PUT /api/response/policy`, `settings.write`)
+gerekçeyle değiştirilir; her değişiklik `config_audit_log`'a değiştiren, gerekçe ve
+eski/yeni değerle yazılır (W0.36). Varsayılan korunan etiketler ve dört göz türleri
+kaldırılamaz.
+
 **Yürütücüler** `Executor` protokolünü (`validate`, `execute`, `verify`, `reverse`)
 uygular ve süreç başına bir kez kurulan kayıt defteri üzerinden çalışır
 (`core/response/executors/wiring.py`). Cloudflare her zaman kayıtlıdır. Defender,
@@ -275,9 +281,13 @@ edici önlem: [tehdit modeli R2](tehdit-modeli.md#açık-riskler).
 `AUDIT_CHECKPOINT_INTERVAL_SECONDS` (varsayılan 3600; `0` kapalı, en az 60 sn)
 aralıkla iki zincirin başını, satır sayılarını ve önceki kontrol noktasının
 özetini imzalar. İmza anahtarı `AUDIT_CHECKPOINT_SIGNING_KEY` sırrıdır (Ed25519);
-anahtar yoksa iş uyarı loglar ve **hiçbir şey yazmaz**. Anahtar
-`python -m core.audit.checkpoint keygen` ile üretilir; komut doğrulamada
-kullanılacak açık anahtarı (`AUDIT_CHECKPOINT_PUBLIC_KEY`) da yazar.
+anahtar yoksa iş uyarı loglar ve **hiçbir şey yazmaz**. Anahtar kurulumda
+üretilir (W0.36: Compose'da `signing-keys` servisi sır deposuna, Helm'de
+`<release>-vigil-signing-key-checkpoint` Secret'ına; var olan anahtar değiştirilmez); elle
+`python -m core.audit.checkpoint keygen` ile de üretilebilir. Doğrulamada
+kullanılacak açık anahtar (`AUDIT_CHECKPOINT_PUBLIC_KEY`)
+`python -m core.audit.signing_keys export` ile alınır. İmza yapılandırılmamışsa
+`/api/health` `warnings` listesinde bunu bildirir.
 `AUDIT_CHECKPOINT_FILE` verilirse her kontrol noktası ayrıca bir dosyaya JSON satırı
 olarak eklenir; bu kopya veritabanı dışında, başka bir makinede tutulmalıdır.
 `AUDIT_TSA_URL` verilirse her kontrol noktası için bir RFC 3161 zaman damgası
@@ -337,8 +347,8 @@ arşivini indirir: vaka, bulgular, kanıt, vaka denetim kaydı, eylemler (onayla
 yürütme sonucu, önceki/sonraki durum, doğrulama, geri alma), vakanın ajan koşularının
 defter olayları, AI karar kökeni, düzenleyici an olayları ve (varsa) `audit_chain`
 satırları. `manifest.json` her dosyanın SHA-256 özetini, `manifest.sig` manifestin
-Ed25519 imzasını taşır. Anahtar `EVIDENCE_PACK_SIGNING_KEY` sırrıdır
-(`scripts/autosecops evidence-keygen`); yoksa paket her seferinde üretilen geçici
+Ed25519 imzasını taşır. Anahtar `EVIDENCE_PACK_SIGNING_KEY` sırrıdır; kurulumda
+üretilir (W0.36) ya da `scripts/autosecops evidence-keygen` ile verilir; yoksa paket her seferinde üretilen geçici
 bir anahtarla imzalanır ve manifest bunu `key_source: "ephemeral"` olarak söyler,
 bu durumda imza yalnızca paketin kendi içinde tutarlı olduğunu kanıtlar.
 `scripts/autosecops verify-bundle <paket> --public-key <anahtar>` ağ ve
@@ -382,8 +392,8 @@ adreslerini reddeder.
 | Sır | Nerede |
 |---|---|
 | Entegrasyon ve sağlayıcı kimlik bilgileri | Şifreli sır deposu `secrets.enc` (Fernet); anahtar aynı durum dizininde `master.key` (dizin 0700, dosya 0600). Veritabanına ve yapılandırma JSON'una yazılmaz; API yanıtlarında maskelenir |
-| `AUDIT_CHECKPOINT_SIGNING_KEY` | Sır deposu ya da ortam / Secret (Ed25519 tohumu; hex, base64 ya da PEM). Yalnızca daemon'un kontrol noktası işi ve `python -m core.audit.checkpoint` kullanır. Doğrulayıcıya yalnızca açık anahtar (`AUDIT_CHECKPOINT_PUBLIC_KEY`) verilmelidir |
-| `EVIDENCE_PACK_SIGNING_KEY` | Sır deposu ya da ortam / Secret (Ed25519); yalnızca kanıt paketini imzalayan API kullanır |
+| `AUDIT_CHECKPOINT_SIGNING_KEY` | Sır deposu ya da ortam / Secret (Ed25519 tohumu; hex, base64 ya da PEM). Kurulumda üretilir (Compose: sır deposu; Helm: `<release>-vigil-signing-key-checkpoint` Secret'ı, yalnızca daemon'a verilir). Yalnızca daemon'un kontrol noktası işi ve `python -m core.audit.checkpoint` kullanır. Doğrulayıcıya yalnızca açık anahtar (`AUDIT_CHECKPOINT_PUBLIC_KEY`) verilmelidir |
+| `EVIDENCE_PACK_SIGNING_KEY` | Sır deposu ya da ortam / Secret (Ed25519); kurulumda üretilir (Helm: `<release>-vigil-signing-key-evidence`, yalnızca backend'e verilir); yalnızca kanıt paketini imzalayan API kullanır |
 | `JWT_SECRET_KEY` | Sır deposu (`secrets.enc`), ortam / Kubernetes Secret ya da `.env`; okuma önceliği aşağıda. Anahtar verilmemişse `start.sh` durum dizininde bir `jwt_secret` dosyası üretir ve onu ortama verir. `DEV_MODE=false` iken zorunlu, yoksa backend açılmaz |
 | OIDC istemci sırları | Sır deposu (`OIDC_CLIENT_SECRET_<ID>`); API geri döndürmez |
 | SIEM aktarım jetonları ve istemci anahtarları | Sır deposu (`AUDIT_EXPORT_<HEDEF>_TOKEN`, `AUDIT_EXPORT_<HEDEF>_CLIENT_KEY`); ad hedeften türetilir, başka bir sırra yöneltilemez; saklı jeton uç noktaya bağlıdır |

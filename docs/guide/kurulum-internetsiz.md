@@ -165,6 +165,11 @@ ve bir SBOM eşlik etmez (Planlı — `wp/w4.7-release`, bu sürümde yok).
 - Kural korpusları: `--rules-into-backend` backend pod'unun `~/security-detections`
   dizinine açar; o dizin kalıcı değilse pod yeniden başladığında tekrarlayın ya da
   `--rules-dir` ile kalıcı bir birime açın.
+- İmza anahtarları (W0.36): grafik denetim kontrol noktası ve kanıt paketi imza
+  anahtarlarını yoksa üretir (`signingKeys.generate`, varsayılan açık). Kurulumun
+  sonunda `install.sh` açık anahtarları yazdırır; `--signing-keys-out <dosya>` ile
+  dosyaya yazar. Bunları denetçiye ayrı bir kanaldan verin. Ayrıntı:
+  [yönetici kılavuzu](yonetici-kilavuzu.md#imza-anahtarları-kurulumda).
 
 ### `musteri-values.yaml` içinde mutlaka verilecekler
 
