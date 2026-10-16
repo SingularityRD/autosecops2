@@ -19,7 +19,10 @@
 > records exist and how to verify them (`python -m core.audit.verify`, signed
 > checkpoints, per-case evidence packs), SIEM audit export over syslog/HTTPS
 > (free-text PII redaction is best effort), encrypted restic backups with tested
-> restore, the Helm backup CronJob and daemon hot standby, where the 0.7 →
+> restore, the Helm backup CronJob and daemon hot standby, the secrets-rotation
+> runbook (JWT, data key / `master.key`, database and Redis passwords,
+> integration credentials; `master.key` shares a volume with `secrets.enc`, a
+> known limit), where the 0.7 →
 > 2.0 upgrade procedure lives, and the desktop app (macOS dmg, Linux AppImage,
 > Windows installer as a preview): requirements, first run, data and log
 > locations, manual update, uninstall, support bundle and signature checks.
@@ -251,7 +254,10 @@ açmayın; `JWT_SECRET_KEY` olmadan backend `DEV_MODE=false` iken açılmaz.
 
 **MFA (TOTP).** Her kullanıcı kendi hesabında MFA'yı açar (`/api/auth/mfa/setup`
 → `/api/auth/mfa/verify`); 10 tek kullanımlık kurtarma kodu üretilir. TOTP sırrı
-veritabanında şifreli durur. Bu sürümde MFA'yı bir rol için **zorunlu kılan bir
+veritabanında veri anahtarıyla (`VIGIL_DATA_KEY`; tanımlı değilse durum dizinindeki
+`master.key`) şifreli durur. Bu anahtar JWT anahtarından ayrıdır: `JWT_SECRET_KEY`'i
+döndürmek yalnızca oturumları düşürür, MFA'yı bozmaz (bkz.
+[Sır döndürme](#sır-döndürme)). Bu sürümde MFA'yı bir rol için **zorunlu kılan bir
 ayar yoktur**; yönetici ve onaylayıcı hesaplarında MFA'yı süreçle zorunlu tutun ve
 düzenli olarak kullanıcıların `mfa_enabled` alanını denetleyin. MFA açıkken onu
 kapatmak (`DELETE /api/auth/mfa`) ve yeni kurtarma kodu üretmek
@@ -416,12 +422,26 @@ hazırlığı, göç ve ayrıntı: [docs/fips.md](../fips.md).
 - Konsol: **Ayarlar → Integrations** (kaydetme `integrations.write`; Senior Analyst,
   Manager, Admin). Zamanlanmış alarm çekme kaynakları: **Ayarlar → Alert collection**
   (`/api/federation/sources`).
-- Kimlik bilgileri (API anahtarı, parola, belirteç) veritabanına yazılmaz: kaydetme
-  işleyicisi gizli alanları şifreli sır deposuna (`secrets.enc`) yönlendirir, geri
-  okurken maskeler; yalnızca URL, bölge, `verify_ssl` gibi gizli olmayan alanlar
-  veritabanında durur.
-- Kubernetes'te `stateDirectory` varsayılan olarak geçicidir; kimlik bilgilerini
-  konsol yerine Secret / ExternalSecrets ile verin (bkz.
+- Kimlik bilgileri (API anahtarı, parola, belirteç) entegrasyon yapılandırmasına
+  yazılmaz: kaydetme işleyicisi gizli alanları şifreli sır deposuna yönlendirir,
+  geri okurken maskeler; yalnızca URL, bölge, `verify_ssl` gibi gizli olmayan
+  alanlar yapılandırmada durur. Sır deposu kuruluma göre değişir
+  (`SECRETS_BACKEND`):
+  - **Compose ve tek sunucu** (`encrypted`, varsayılan): durum dizinindeki
+    `secrets.enc` (Fernet), anahtarı aynı dizindeki `master.key`.
+  - **Kubernetes** (`database`, Helm varsayılanı): PostgreSQL'deki
+    `platform_secrets` tablosu. Her değer veri anahtarıyla
+    (`secrets.dataEncryptionKey` → `VIGIL_DATA_KEY`) Fernet ile şifrelidir; anahtar
+    veritabanında değil Kubernetes Secret'tadır. İki backend kopyası aynı satırları
+    okur (diğer kopya değişikliği en geç 5 sn içinde görür), sırlar pod yeniden
+    başlayınca kaybolmaz ve hiçbir dosyaya yazılmaz. Veritabanına bağlanmak için
+    gereken anahtarlar (`POSTGRES_*`, `JWT_SECRET_KEY`, `VIGIL_DATA_KEY`, platform
+    veritabanı proxy'si) bu depoya yazılmaz; onlar Secret'tan gelir ve konsoldaki
+    PostgreSQL / platform veritabanı ayarları 409 döner.
+- Secret / ExternalSecrets ile verilen bir değer de geçerlidir; konsolda aynı ad
+  için kaydedilen değer onu geçersiz kılar. Sır adları: entegrasyon alanları
+  `<ENTEGRASYON>_<ALAN>` (ör. `SPLUNK_PASSWORD`), SSO istemci sırrı
+  `OIDC_CLIENT_SECRET_<ID>`, SIEM aktarım jetonu `AUDIT_EXPORT_<HEDEF>_TOKEN` (bkz.
   [kurulum kılavuzu](kurulum-internetsiz.md#5-kurulum-kubernetes)).
 - **Test** düğmesi (`POST /api/config/integrations/{integration_id}/test`): Splunk ve
   Elastic için gerçekten oturum açıp sunucu bilgisini okur. Müdahale yürütücüleri
@@ -1213,8 +1233,10 @@ Zamanlanmış yedek için Compose'daki `backup` servisi durum dizinindeki
 önce `backup-pre-upgrade` servisi varsayılan hedefe otomatik anlık görüntü alır.
 
 Geri yükleme (`--test` olmadan) veritabanını değiştirdikten sonra bekleyen onayları
-reddeder ve `config_audit_log`'a bir satır yazar. Eski JWT anahtarını bulabildiğinde
-MFA sırlarını yeni anahtarla yeniden şifreler. Bu sayede eski bir anlık görüntüden "geri dönen" bir onay istemi
+reddeder ve `config_audit_log`'a bir satır yazar. MFA sırları JWT anahtarına bağlı
+değildir; eski bir yedekte hâlâ JWT'den türetilen anahtarla şifreli MFA sırrı
+varsa, geri yükleme eski JWT anahtarını bulabildiğinde onu döndürmeden önce veri
+anahtarına taşır. Bu sayede eski bir anlık görüntüden "geri dönen" bir onay istemi
 uygulanamaz. JWT anahtarının döndürülmesi anahtarın nerede tutulduğuna bağlıdır:
 
 | `JWT_SECRET_KEY` nerede | Geri yüklemenin yaptığı | Sizin yapmanız gereken |
@@ -1235,8 +1257,11 @@ saklama uygular. İsteğe bağlı olarak dökümü S3 uyumlu bir nesne deposuna 
 (`backup.objectStore`). Varsayılan zamanlama günlüktür (`backup.schedule`); RPO bu
 aralıktır. CronJob dökümü kendisi şifrelemez; PVC'nin ve nesne deposunun
 şifrelemesini kurum tarafında sağlayın. CronJob veritabanını ve vaka kanıt
-deposunu yedekler (aşağıya bakın); durum dizinini yedeklemez. Kimlik bilgilerini
-Secret/ExternalSecrets ile verdiyseniz durum dizini yeniden üretilebilir.
+deposunu yedekler (aşağıya bakın); durum dizinini yedeklemez. Konsoldan girilen
+sırlar veritabanında (`platform_secrets`) olduğundan dökümdedir, ama veri
+anahtarıyla şifrelidir: dökümü geri yüklemek için `VIGIL_DATA_KEY`'in döküm
+alındığı andaki değeri de gerekir. Bu anahtarı dökümden ayrı (kasada) saklayın; o
+olmadan bu sırlar ve kullanıcıların MFA sırları çözülemez.
 
 **Vaka kanıt deposu.** Vakaya eklenen dosyalar (ör. /hunt belgesi)
 `<stateDirectory.mountPath>/evidence` altına yazılır.
@@ -1288,6 +1313,175 @@ RPO/RTO hedefleri, ölçüm yöntemi, geri yükleme prosedürü ve kalan riskler
 [docs/operations/rpo-rto.md](../operations/rpo-rto.md). Bu belgedeki süreler
 hedeftir. Devralma ve döküm/geri yükleme testlerle sınanır, ancak bir müşteri
 ortamında ölçülmüş RTO değeri yoktur; tatbikatı yapıp süreyi kaydedin.
+
+## Sır döndürme
+
+Hangi anahtar neyi korur:
+
+| Sır | Korur | Nerede |
+|---|---|---|
+| `JWT_SECRET_KEY` | Oturum belirteçleri, parola sıfırlama bağlantıları, sohbet araç çağrılarının kimlik imzası | Helm: `secrets.jwtSecretKey` ya da Secret. Compose: `.env`; `secrets.enc` ya da durum dizinindeki `jwt_secret` de olabilir ve `secrets.enc` ortamdan önce okunur |
+| Veri anahtarı (`VIGIL_DATA_KEY`) | Kullanıcıların MFA (TOTP) sırları; Helm'de konsoldan girilen tüm sırlar (`platform_secrets`) | Helm: grafik `<fullname>-data-key` Secret'ına üretir ve korur; `secrets.dataEncryptionKey` ya da kendi Secret'ınız (`dataKey.existingSecret`) önceliklidir. Bu Secret'ı veritabanıyla birlikte yedekleyin. Compose: tanımlı değilse durum dizinindeki `master.key` |
+| `master.key` | Compose ve tek sunucuda `secrets.enc` (konsoldan girilen sırlar) | Durum dizini (`vigil_home` birimi) |
+| `POSTGRES_PASSWORD` | Veritabanı sahibi ve uygulamaların bağlandığı `vigil_app` rolü (ikisi aynı parolayı kullanır) | Helm: `secrets.postgresPassword` ya da Secret. Compose: `.env` |
+| Redis parolası | ARQ kuyruğu ve oturum iptal listesi | Helm: Bitnami alt grafiğinin Secret'ı ya da `redis.external.url`. Gömülü Redis ve Compose Redis'i parolasızdır; erişimi ağ politikasıyla sınırlayın |
+| Entegrasyon kimlik bilgileri | Splunk, EDR, SIEM, LLM sağlayıcıları, SSO istemci sırrı, webhook imza anahtarları | Konsol (sır deposu) ya da Secret / ExternalSecrets |
+
+**Sıra.** Her döndürme diğerlerinden bağımsızdır. Bir ihlal şüphesinde önce
+`JWT_SECRET_KEY`'i döndürün (açık oturumları hemen düşürür), sonra ele geçmiş
+olabilecek entegrasyon kimlik bilgilerini, veritabanı ve Redis parolalarını, en son
+veri anahtarını. Her adımdan önce yedek alın.
+
+**Önce kontrol.** 2.0'dan önce kurulan bir sistemde MFA sırları JWT'den türetilen
+anahtarla şifreliydi. Backend her açılışta bunları veri anahtarına taşır
+(`DATA_KEY_REKEY_ON_START`, varsayılan açık; tek kopya danışma kilidiyle yapar,
+ikinci çalıştırma bir şey değiştirmez, değişiklik `config_audit_log`'a
+`config_type=secrets` satırı yazar). JWT anahtarını döndürmeden önce taşımanın
+bittiğini görün:
+
+```bash
+# Kubernetes
+kubectl -n <ns> exec deploy/<backend> -- python -m core.crypto.rekey status
+# Compose
+docker compose --env-file .env -f infra/docker/docker-compose.yml exec backend python -m core.crypto.rekey status
+```
+
+Çıktıda `mfa` altındaki `legacy` ve `pending` 0 olmalıdır; değilse `python -m core.crypto.rekey run`
+çalıştırın. `undecryptable` altında listelenen kullanıcıların sırrı elde olmayan bir
+anahtarla şifrelidir: kurtarma koduyla girip MFA'yı yeniden kurarlar.
+
+### JWT_SECRET_KEY
+
+1. Yeni anahtar üretin: `python -c "import secrets; print(secrets.token_urlsafe(64))"`.
+2. Kubernetes: `secrets.jwtSecretKey`'i (ya da Secret'taki `JWT_SECRET_KEY`'i)
+   değiştirip `helm upgrade` çalıştırın; `existingSecret`/ExternalSecrets
+   kullanıyorsanız ayrıca `kubectl rollout restart deploy/<backend>` yapın.
+   Compose: anahtarı tutulduğu yerde değiştirin (`secrets.enc`'te varsa oradaki
+   değer kazanır; `.env` ya da `jwt_secret`), sonra servisleri yeniden başlatın.
+
+Ne bozulur: tüm erişim ve yenileme belirteçleri geçersizleşir, herkes yeniden
+giriş yapar. Gönderilmiş ama kullanılmamış parola sıfırlama bağlantıları ve
+sürmekte olan sohbet turlarının araç çağrıları reddedilir (tur yeniden
+başlatılır). Kopyalar yenilenirken eski ve yeni pod farklı anahtar taşır; birkaç
+dakika boyunca bir kullanıcı yeniden girişe yönlendirilebilir. MFA etkilenmez.
+
+### Veri anahtarı (VIGIL_DATA_KEY)
+
+`VIGIL_DATA_KEY` virgülle ayrılmış birden çok anahtar alabilir: ilki şifreler, her
+biri çözer. Döndürme üç yayılımla, kesintisiz yapılır (`K1` eski, `K2` yeni,
+`openssl rand -base64 32`):
+
+1. `VIGIL_DATA_KEY="K1,K2"` ile yayın. Hiçbir şey yeniden şifrelenmez; her pod
+   artık `K2`'yi tanır.
+2. `VIGIL_DATA_KEY="K2,K1"` ile yayın. Yeni pod'lar `K2` ile şifreler; açılıştaki
+   yeniden şifreleme MFA sırlarını ve `platform_secrets` satırlarını `K2`'ye taşır.
+   1. adımdaki pod'lar `K2`'yi tanıdığı için yayılım sırasında bir şey bozulmaz.
+3. `python -m core.crypto.rekey status` çıktısında `pending` 0 olunca
+   `VIGIL_DATA_KEY="K2"` ile yayın.
+
+Ne bozulur: 1. adım atlanırsa yayılım sırasında eski pod'lar yeni pod'ların yazdığı
+satırları çözemez (o sırada MFA kuran kullanıcı ve kaydedilen sır). 3. adım
+`pending` 0 olmadan yapılırsa kalan satırlar çözülemez: MFA kullanıcıları kurtarma
+koduyla girer, sırlar yeniden girilir. `K1`'i, onunla şifrelenmiş satırları içeren
+yedekleri sakladığınız sürece saklayın; bu yedeklerden biri geri yüklenirse
+`K1`'i yeniden ikinci anahtar olarak verin.
+
+Compose'da `VIGIL_DATA_KEY` tanımlı değilse veri anahtarı `master.key`'dir.
+Değişkeni ilk kez tanımlamak güvenlidir: mevcut `master.key` çözmek için tutulur ve
+açılıştaki yeniden şifreleme MFA sırlarını yeni anahtara taşır.
+
+### master.key (Compose ve tek sunucu)
+
+`master.key`, `secrets.enc`'i ve `VIGIL_DATA_KEY` yoksa MFA sırlarını korur.
+Döndürme servisler dururken yapılır, veritabanı açık kalır:
+
+```bash
+./start.sh backup --repo /yedek/depo --passphrase-file /guvenli/parola
+docker compose --env-file .env -f infra/docker/docker-compose.yml stop backend soc-daemon llm-worker backup
+docker compose --env-file .env -f infra/docker/docker-compose.yml run --rm --no-deps backend \
+  python -m core.crypto.rekey rotate-master-key
+docker compose --env-file .env -f infra/docker/docker-compose.yml up -d
+```
+
+Komut yeni bir `master.key` üretir, `secrets.enc`'i ve (veri anahtarı
+`master.key` ise) MFA sırlarını onunla yeniden şifreler, veritabanı işini dosyalar
+değişmeden önce tamamlar ve `config_audit_log`'a yazar. `secrets.enc` mevcut
+`master.key` ile açılmıyorsa hiçbir şeyi değiştirmeden durur. Ne bozulur:
+servisler komut boyunca kapalıdır. Eski yedekler kendi `master.key`'iyle tutarlıdır.
+Kubernetes'te `master.key` kullanılmaz (`SECRETS_BACKEND=database`); komut orada
+reddeder.
+
+### Veritabanı parolası
+
+Sahip rolü ve `vigil_app` aynı `POSTGRES_PASSWORD`'ü kullanır. PostgreSQL bir rol
+için iki parola tutamaz, bu yüzden kısa bir bağlantı kesintisi olur; bakım
+penceresinde yapın.
+
+1. Veritabanında iki rolün parolasını değiştirin (gömülü Postgres:
+   `kubectl -n <ns> exec -it <postgres-pod> -- psql -U <sahip>`; Compose:
+   `docker compose ... exec postgres psql -U deeptempo`):
+   `ALTER ROLE <sahip> PASSWORD '<yeni>'; ALTER ROLE vigil_app PASSWORD '<yeni>';`
+2. Hemen ardından Secret'ı (`secrets.postgresPassword`) ya da `.env`'deki
+   `POSTGRES_PASSWORD`'ü güncelleyip `helm upgrade` (gerekirse `rollout restart`)
+   ya da `docker compose up -d` çalıştırın. db-init işi ve Compose db-seed
+   `vigil_app` parolasını yeniden aynı değere ayarlar.
+
+Ne bozulur: 1. ile 2. arasında çalışan pod'ların yeni bağlantıları reddedilir
+(havuzdaki açık bağlantılar çalışır); bu arada başlayan yedek CronJob'u başarısız
+olur. Harici PostgreSQL'de 1. adımı veritabanı hizmetinde yapın.
+
+### Redis parolası
+
+Gömülü Redis'in parolası yoktur. Bitnami alt grafiği ya da harici Redis için:
+
+1. Redis 6 ve sonrası bir kullanıcıya ikinci parola ekleyebilir:
+   `ACL SETUSER default on >YENI` (eski parola geçerli kalır).
+2. Uygulamanın parolasını güncelleyin (Bitnami Secret'ındaki `redis-password`,
+   ya da `redis.external.url` / `REDIS_URL` taşıyan Secret) ve pod'ları yeniden
+   başlatın.
+3. Eski parolayı kaldırın: `ACL SETUSER default <ESKI`.
+
+Ne bozulur: 1. adım atlanıp parola doğrudan değiştirilirse pod'lar yeniden
+başlayana kadar Redis'e bağlanamaz. Oturum iptal denetimi kapalı başarısızdır
+(`REVOCATION_FAIL_OPEN=false`): bu sürede kimlik doğrulamalı istekler reddedilir ve
+iş kuyruğu bekler. Bitnami alt grafiğinin Secret'ını değiştirmek Redis'i yeni
+parolayla yeniden başlatır; bu durumda 1. ve 3. adım yoktur, kesinti uygulama
+pod'ları yenilenene kadar sürer.
+
+### Entegrasyon kimlik bilgileri
+
+1. Sağlayıcıda (Splunk, EDR, SIEM, LLM sağlayıcısı, IdP) yeni anahtarı oluşturun;
+   eskisini henüz iptal etmeyin.
+2. Yenisini konsoldan kaydedin (**Ayarlar → Integrations**, SSO sağlayıcısı, SIEM
+   aktarım hedefi) ya da Secret / ExternalSecrets'ta güncelleyin. Kubernetes'te
+   diğer backend kopyası konsoldan kaydedileni en geç 5 sn içinde okur; ancak her
+   kopyanın başlattığı MCP sunucuları kimlik bilgisini başlarken ortamdan alır, bu
+   yüzden kaydettikten sonra `kubectl rollout restart deploy/<backend>` yapın.
+   Secret ile verilen bir değer değiştiyse pod'ları yeniden başlatın.
+3. Test düğmesiyle doğrulayın, sonra eski anahtarı sağlayıcıda iptal edin.
+
+Ne bozulur: eski anahtar yenisi kaydedilmeden iptal edilirse o arada entegrasyon
+çağrıları başarısız olur. Giden webhook imza anahtarı değişince alıcının da yeni
+anahtarı kullanması gerekir ([docs/outbound-webhooks.md](../outbound-webhooks.md)).
+`AGENT_INTERNAL_TOKEN` backend ile ajan pod'larında aynı anda değişmelidir; yayılım
+sırasında iş akışlarının `/internal` çağrıları reddedilir. Kontrol noktası ve kanıt
+paketi imza anahtarları için bkz. [Denetim kayıtları](#denetim-kayıtları-ve-dışa-aktarım).
+
+### Bilinen sınırlar
+
+- **`master.key` sırlarla aynı birimde.** Compose ve tek sunucuda `master.key`,
+  çözdüğü `secrets.enc` ile aynı durum dizininde ve aynı restic yedeğindedir; birimi
+  ya da yedeği (parolasıyla) ele geçiren ikisini birlikte alır. Önerilen önlem:
+  `VIGIL_DATA_KEY`'i birimin dışından (ortam değişkeni, Docker secret, kasa) verin,
+  böylece MFA sırlarının anahtarı birimde durmaz; entegrasyon kimlik bilgilerini de
+  mümkünse ortamdan/Secret'tan verin; restic parolasını yedekten ayrı saklayın.
+  Kubernetes'te bu sınır yoktur: sırlar veritabanında, anahtar ayrı bir Kubernetes
+  Secret'tadır. Veritabanı dökümü ile Secret'ı aynı yerde saklamayın.
+- **KMS, HSM, PKCS#11 ve Vault transit desteklenmez.** Anahtarlar Secret ya da
+  ortam değişkeni olarak verilir; ExternalSecrets ile kasadan beslenebilir, ama
+  şifreleme işlemi uygulamanın içinde yapılır.
+- Fernet (AES-128-CBC ve HMAC-SHA256) ve anahtar türetme (HKDF-SHA256) FIPS
+  onaylı ilkellerdir; `FIPS_MODE` açıkken de aynı şekilde çalışır.
 
 ## Masaüstü uygulaması
 

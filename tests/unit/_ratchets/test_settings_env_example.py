@@ -87,6 +87,9 @@ NOT_SETTINGS = ENV_CREDENTIAL_NAMES | {
     # Bootstrap for the secrets manager itself, which cannot depend on Settings.
     "ENABLE_KEYRING",
     "SECRETS_BACKEND",
+    # The data-encryption key (core/crypto/data_key.py): read by the secrets
+    # manager before Settings exists, and a secret, not a setting.
+    "VIGIL_DATA_KEY",
     # Locates the State Directory. vigil_path() resolves it at import time, before
     # Settings can be built, so it is read from the environment and must be
     # exported rather than set in .env.

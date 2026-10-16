@@ -587,46 +587,12 @@ async def _startup(app: FastAPI):
     except Exception as e:  # pragma: no cover - probe is best-effort
         logger.warning("SecretsManager startup probe failed: %s", e)
 
-    # W0.36: an install provisions EVIDENCE_PACK_SIGNING_KEY; say so when it did not.
-    try:
-        from core.audit.signing_keys import EVIDENCE_PACKS, key_status
+    # Fail closed like JWT_SECRET_KEY: with the database secret store a missing
+    # VIGIL_DATA_KEY would leave console secrets and MFA setup unusable, and a
+    # malformed one would fail on the first save instead of here.
+    from core.crypto import data_key
 
-        if not key_status(EVIDENCE_PACKS).usable:
-            logger.warning(
-                "%s is not configured: evidence packs are signed with a one-off "
-                "key (python -m core.audit.signing_keys provision); "
-                "/api/health reports this under warnings",
-                EVIDENCE_PACKS.secret,
-            )
-    except Exception as e:  # pragma: no cover - best-effort
-        logger.warning("Signing-key startup check failed: %s", e)
-
-    # Load secrets into environment for MCP servers
-    try:
-        from core.secrets_manager import get_secret
-
-        # Load PostgreSQL connection string for database backend
-        postgres_conn = get_secret("POSTGRESQL_CONNECTION_STRING")
-        if postgres_conn:
-            os.environ["POSTGRESQL_CONNECTION_STRING"] = postgres_conn  # noqa: ENV001
-            logger.debug("Loaded PostgreSQL connection string from secrets")
-
-        # Rehydrate integration credentials into os.environ so MCP servers gated
-        # on ${<ID>_<FIELD>} survive a restart — set_secret only writes os.environ
-        # in the saving process, so without this they'd go dormant.
-        from core.integrations.integration_secrets import INTEGRATION_SECRET_FIELDS
-
-        rehydrated = 0
-        for field_map in INTEGRATION_SECRET_FIELDS.values():
-            for env_key in field_map.values():
-                value = get_secret(env_key)
-                if value:
-                    os.environ[env_key] = value  # noqa: ENV001 - MCP child env
-                    rehydrated += 1
-        logger.debug("Rehydrated %d integration secret(s) into env", rehydrated)
-
-    except Exception as e:
-        logger.warning(f"Error loading secrets for MCP servers: {e}")
+    data_key.check_at_startup()
 
     # Initialize data storage backend
     logger.info("Initializing data storage...")
@@ -683,6 +649,58 @@ async def _startup(app: FastAPI):
         logger.warning(f"Database modules not available: {e}")
     except Exception as e:
         logger.error(f"Error during storage initialization: {e}")
+
+    # MFA secrets still under the JWT-derived key move to the data key, and rows
+    # under a previous VIGIL_DATA_KEY entry to the first one. Idempotent; one
+    # replica does it under an advisory lock. Never stops the start.
+    from core.config import is_demo_mode as _is_demo_mode
+
+    if not _is_demo_mode():
+        from core.crypto.rekey import startup_rekey
+
+        startup_rekey()
+
+    # Load secrets into environment for MCP servers. After the database is open:
+    # with SECRETS_BACKEND=database the stored secrets are rows there.
+    try:
+        from core.secrets_manager import get_secret
+
+        # Load PostgreSQL connection string for database backend
+        postgres_conn = get_secret("POSTGRESQL_CONNECTION_STRING")
+        if postgres_conn:
+            os.environ["POSTGRESQL_CONNECTION_STRING"] = postgres_conn  # noqa: ENV001
+            logger.debug("Loaded PostgreSQL connection string from secrets")
+
+        # Rehydrate integration credentials into os.environ so MCP servers gated
+        # on ${<ID>_<FIELD>} survive a restart — set_secret only writes os.environ
+        # in the saving process, so without this they'd go dormant.
+        from core.integrations.integration_secrets import INTEGRATION_SECRET_FIELDS
+
+        rehydrated = 0
+        for field_map in INTEGRATION_SECRET_FIELDS.values():
+            for env_key in field_map.values():
+                value = get_secret(env_key)
+                if value:
+                    os.environ[env_key] = value  # noqa: ENV001 - MCP child env
+                    rehydrated += 1
+        logger.debug("Rehydrated %d integration secret(s) into env", rehydrated)
+
+    except Exception as e:
+        logger.warning(f"Error loading secrets for MCP servers: {e}")
+
+    # W0.36: an install provisions EVIDENCE_PACK_SIGNING_KEY; say so when it did not.
+    try:
+        from core.audit.signing_keys import EVIDENCE_PACKS, key_status
+
+        if not key_status(EVIDENCE_PACKS).usable:
+            logger.warning(
+                "%s is not configured: evidence packs are signed with a one-off "
+                "key (python -m core.audit.signing_keys provision); "
+                "/api/health reports this under warnings",
+                EVIDENCE_PACKS.secret,
+            )
+    except Exception as e:  # pragma: no cover - best-effort
+        logger.warning("Signing-key startup check failed: %s", e)
 
     # A fresh install's first-admin setup token (W0.33): issued and printed
     # once here, so the operator has it before anyone opens the login screen.

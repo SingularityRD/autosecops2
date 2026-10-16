@@ -108,6 +108,16 @@ the Secret to rotate, then restart the gateway:
          python -m core.auth.service_account ensure {{ $user }}
 {{- end }}
 
+{{- if and (eq (.Values.config.SECRETS_BACKEND | toString) "database") (not .Values.secrets.dataEncryptionKey) (not .Values.secrets.existingSecret) (not .Values.dataKey.generate) (not .Values.dataKey.existingSecret) (not .Values.secrets.externalSecret.enabled) (ne (.Values.config.DEV_MODE | toString) "true") }}
+
+⚠️  WARNING: secrets.dataEncryptionKey is empty. The backend will not start
+   without VIGIL_DATA_KEY: it encrypts the secrets entered in the console (kept
+   in PostgreSQL, table platform_secrets) and the users' MFA secrets. Generate
+   one with `openssl rand -base64 32`, set it (or put VIGIL_DATA_KEY in
+   secrets.existingSecret), and keep a copy: without it those secrets cannot
+   be read back.
+{{- end }}
+
 {{- if not .Values.secrets.anthropicApiKey }}
 {{- if and (not .Values.secrets.existingSecret) (not .Values.secrets.externalSecret.enabled) }}
 

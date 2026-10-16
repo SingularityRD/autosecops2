@@ -228,6 +228,8 @@ helm install autosecops ./infra/helm/vigil \
   --set secrets.jwtSecretKey="$(python -c 'import secrets; print(secrets.token_urlsafe(64))')"
 ```
 
+The data-encryption key (`VIGIL_DATA_KEY`) encrypts the secrets entered in the console (kept in PostgreSQL, shared by both backend replicas) and users' MFA secrets. The chart mints it into the Secret `<fullname>-data-key` and keeps it on every upgrade; back that Secret up with the database, because without it those secrets cannot be read back. To bring your own, set `secrets.dataEncryptionKey` or `dataKey.existingSecret` (required with `helm template`, Argo CD or Flux). Rotation: [administrator guide, "Sır döndürme"](docs/guide/yonetici-kilavuzu.md#sır-döndürme).
+
 The chart directory keeps its upstream name, `vigil`, so existing releases upgrade in place. See the [chart README](infra/helm/vigil/README.md) and the [administrator guide](docs/guide/yonetici-kilavuzu.md) for values, external Postgres/Redis, ingress, and troubleshooting; for a network without internet access, [infra/airgap/README.md](infra/airgap/README.md).
 
 ### Desktop app

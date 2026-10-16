@@ -14,11 +14,12 @@ from pathlib import Path
 import jwt
 import psycopg2
 import pytest
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import create_engine, text
 
 import core.storage.connection  # noqa: F401  registers models on Base.metadata
 from core.config import REPO_ROOT as CORE_REPO_ROOT
+from core.crypto import data_key
 from core.storage.models.base import Base
 
 pytestmark = [pytest.mark.integration, pytest.mark.database]
@@ -836,6 +837,7 @@ def test_restore_rotates_jwt_and_expires_pending_approvals(
 
     mfa = _rows(live, "SELECT mfa_secret FROM users WHERE user_id = 'u-mfa'")[0][0]
     assert mfa != ciphertext
+    assert mfa.startswith("dk:")
     assert _rows(live, "SELECT mfa_secret FROM users WHERE user_id = 'u-none'") == [
         (None,)
     ]
@@ -962,14 +964,16 @@ def test_key_held_outside_the_install_rotates_into_secrets(
     payload = audit[0][0] if isinstance(audit[0][0], dict) else json.loads(audit[0][0])
     assert payload["jwt_rotated"] is True
     assert payload["expired_count"] == 2
+    # Moved off the JWT-derived key before the JWT key rotated: it is under the
+    # data key now and no longer depends on either JWT key.
     mfa = _rows(live, "SELECT mfa_secret FROM users WHERE user_id = 'u-mfa'")[0][0]
     assert mfa != ciphertext
-    assert (
+    assert mfa.startswith("dk:")
+    with pytest.raises(InvalidToken):
         Fernet(
             base64.urlsafe_b64encode(hashlib.sha256(new_key.encode()).digest())
-        ).decrypt(mfa.encode())
-        == _TOTP.encode()
-    )
+        ).decrypt(mfa[3:].encode())
+    assert data_key.current().decrypt(mfa[3:]) == _TOTP.encode()
 
 
 @needs_restic

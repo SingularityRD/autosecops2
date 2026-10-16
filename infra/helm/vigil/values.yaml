@@ -473,6 +473,7 @@ dbInit:
     - 61_approval_decisions.sql
     - 62_workflow_runs_progress.sql
     - 63_approval_default_assist.sql
+    - 64_platform_secrets.sql
   resources:
     requests:
       cpu: 50m
@@ -578,14 +579,14 @@ serviceAccount:
 # -----------------------------------------------------------------------------
 # State Directory
 # -----------------------------------------------------------------------------
-# Where AutoSecOps keeps what the database does not: the secrets store, MCP enable
-# flags, detection sources. Exported as VIGIL_DIR to the backend, daemon and
-# llm-worker.
+# Where AutoSecOps keeps what the database does not: MCP enable flags, detection
+# sources. Exported as VIGIL_DIR to the backend, daemon and llm-worker. Secrets
+# entered in the Settings UI are not here: with config.SECRETS_BACKEND
+# "database" they are encrypted rows in PostgreSQL.
 #
 # The emptyDir default is per-pod and cleared on restart, deliberately: a
 # ReadWriteOnce disk cannot be shared by backend.replicaCount > 1, and
-# ReadWriteMany is not available on every cluster. So supply credentials through
-# `secrets.existingSecret` or ExternalSecrets, not the Settings UI.
+# ReadWriteMany is not available on every cluster.
 #
 # For durability on a cluster with ReadWriteMany storage:
 #   stateDirectory.volume:
@@ -705,6 +706,19 @@ signingKeys:
   generate: true
   existingSecret: ""
 
+# Data-encryption key (VIGIL_DATA_KEY, W0.34): encrypts the MFA secrets and the
+# console secrets kept in PostgreSQL (SECRETS_BACKEND=database). generate=true
+# mints one into the Secret <fullname>-data-key on first install and keeps it on
+# every upgrade and on uninstall (helm.sh/resource-policy: keep): losing it makes
+# every stored secret unreadable, so back it up with the database. A key in
+# secrets.dataEncryptionKey, secrets.existingSecret or an ExternalSecret wins.
+# Where lookup cannot run (helm template, Argo CD, Flux) every render would mint
+# a new key: create the Secret yourself (key VIGIL_DATA_KEY, 32+ characters) and
+# name it in existingSecret.
+dataKey:
+  generate: true
+  existingSecret: ""
+
 # -----------------------------------------------------------------------------
 # Secrets (plain values — skipped if existingSecret is set)
 # -----------------------------------------------------------------------------
@@ -751,6 +765,17 @@ secrets:
   # Required when DEV_MODE=false (see env.example). Generate with:
   #   python -c "import secrets; print(secrets.token_urlsafe(64))"
   jwtSecretKey: ""
+
+  # Data-encryption key (VIGIL_DATA_KEY). The backend does not start without
+  # one when DEV_MODE=false; leave this empty and dataKey.generate (above) mints
+  # and keeps one. Set it to bring your own. It encrypts the secrets entered in the
+  # console, which SECRETS_BACKEND=database keeps in PostgreSQL (shared by every
+  # replica, kept across restarts), and the users' MFA (TOTP) secrets. It is not
+  # the JWT key: rotating jwtSecretKey only ends sessions. Keep a copy outside
+  # the cluster; losing it loses those secrets. At least 32 characters:
+  #   openssl rand -base64 32
+  # Rotation ("new,old" for one rollout, then "new"): admin guide, Sır döndürme.
+  dataEncryptionKey: ""
 
   # Shared secret the agent worker presents on the /internal endpoints. Required
   # to run a workflow: without it every /internal call answers 503. The worker
@@ -811,8 +836,11 @@ config:
   # Development Mode — MUST be false in production.
   DEV_MODE: "false"
 
-  # Secrets / auth policy
-  SECRETS_BACKEND: "dotenv"
+  # Secrets / auth policy. "database": secrets entered in the console are
+  # Fernet-encrypted with secrets.dataEncryptionKey and kept in PostgreSQL
+  # (platform_secrets), so both backend replicas see them and they survive a
+  # restart. Nothing is written to the State Directory (an emptyDir).
+  SECRETS_BACKEND: "database"
   ENABLE_KEYRING: "false"
   AUTH_LOCKOUT_THRESHOLD: "5"
   AUTH_LOCKOUT_DURATION_MINUTES: "15"

@@ -376,3 +376,19 @@ signingKeys.generate nor signingKeys.existingSecret is set.
     optional: true
 {{- end -}}
 {{- end -}}
+
+{{/*
+W0.34: the Secret holding the chart-minted data-encryption key (VIGIL_DATA_KEY).
+vigil.envFrom lists it BEFORE the main Secret on purpose: the last envFrom source wins,
+so secrets.dataEncryptionKey, secrets.existingSecret or an ExternalSecret that
+carries VIGIL_DATA_KEY replaces the minted one. optional so a release with
+dataKey.generate=false still starts.
+*/}}
+{{- define "vigil.dataKey.secretName" -}}
+{{- if .Values.dataKey.existingSecret -}}
+{{- .Values.dataKey.existingSecret -}}
+{{- else -}}
+{{- printf "%s-data-key" (include "vigil.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+

@@ -15,6 +15,13 @@ os.environ["JWT_SECRET_KEY"] = (
     os.environ.get("JWT_SECRET_KEY") or "test-only-secret-not-for-prod"
 )
 os.environ["VIGIL_DISABLE_DOTENV"] = "1"
+# The data-encryption key (MFA secrets, database secret store), pinned for the
+# same reason as the JWT secret: without it the key would be ~/.vigil/master.key,
+# created on a developer's machine by the first MFA test. The start-up rekey is
+# off: an API test starts the app against a database other checkouts share, and
+# must not re-encrypt their users' MFA secrets under this key.
+os.environ["VIGIL_DATA_KEY"] = "test-only-data-key-not-for-production-use"
+os.environ["DATA_KEY_REKEY_ON_START"] = "false"
 
 # The CSRF settings an unconfigured install has -- `core/config.py` defaults
 # them to exactly this. Stated here rather than left to the defaults because a

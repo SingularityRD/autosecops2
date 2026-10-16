@@ -2947,6 +2947,20 @@
       "nullable": false
     }
   },
+  "platform_secrets": {
+    "ciphertext": {
+      "data_type": "text",
+      "nullable": false
+    },
+    "name": {
+      "data_type": "character varying(200)",
+      "nullable": false
+    },
+    "updated_at": {
+      "data_type": "timestamp without time zone",
+      "nullable": false
+    }
+  },
   "qa_samples": {
     "agrees": {
       "data_type": "boolean",

@@ -233,9 +233,10 @@ def test_default_pods_match_main_before_w026(chart, tmp_path):
             ) == _without_later_changes(_render(base, name, *extra)), name
 
 
-# W0.36 later gave the backend and the daemon one signing-key envFrom source each.
+# W0.36 later gave the backend and the daemon one signing-key envFrom source each,
+# and W0.34 every workload the chart-minted data key.
 _SIGNING_KEY_ENV = re.compile(
-    r"^( +)- secretRef:\n\1    name: rc-vigil-signing-key-\w+\n\1    optional: true\n",
+    r"^( +)- secretRef:\n\1    name: rc-vigil-(?:signing-key-\w+|data-key)\n\1    optional: true\n",
     re.MULTILINE,
 )
 

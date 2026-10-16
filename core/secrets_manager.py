@@ -2,7 +2,8 @@
 Secrets Manager for Vigil SOC
 
 Provides pluggable secrets storage backends with priority fallback:
-1. Encrypted local file at ``~/.vigil/secrets.enc`` (preferred; at-rest encrypted)
+1. Encrypted local file at ``~/.vigil/secrets.enc`` (preferred; at-rest encrypted),
+   or with ``SECRETS_BACKEND=database`` (Helm) encrypted rows in Postgres first
 2. Environment variables
 3. Repo-root .env (read-only)
 4. State-dir .env file (legacy / interoperability)
@@ -18,6 +19,8 @@ Usage:
 import json
 import logging
 import os
+import threading
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -516,12 +519,229 @@ class EncryptedFileBackend(SecretsBackend):
         return self._crypto_ok
 
 
+def _platform_engine():
+    # Local import: core.storage.connection imports this module (via core.secrets).
+    from core.storage.connection import get_db_manager
+
+    return get_db_manager().engine
+
+
+class DatabaseBackend(SecretsBackend):
+    """Secrets in Postgres (``platform_secrets``), encrypted with the data key.
+
+    The store for a deployment whose State Directory is per pod (Helm: an
+    ``emptyDir`` and two backend replicas). Every replica reads the same rows and
+    they survive a restart, where a file in the State Directory would exist in
+    one pod until it restarts. Each value is a Fernet token under the data key
+    (:mod:`core.crypto.data_key`, ``VIGIL_DATA_KEY``), never a key in the State
+    Directory, and nothing is written to a file.
+
+    It answers only once this process has opened its database; before that, and
+    for the keys the connection itself needs, reads fall through to the
+    environment. Rows are read in one query and cached for ``cache_seconds``, so
+    a value saved on another replica is seen within that time; a save here is
+    seen at once.
+    """
+
+    TABLE = "platform_secrets"
+    CACHE_SECONDS = 5.0
+    # After a failed read, how long to serve the last rows before trying again.
+    RETRY_SECONDS = 5.0
+    # Needed to reach the database, or read at import before it is open. They
+    # belong in the deployment's Secret; a row here could never be read in time.
+    BOOTSTRAP_KEYS = frozenset(
+        {
+            "DATABASE_URL",
+            "JWT_SECRET_KEY",
+            "POSTGRESQL_CONNECTION_STRING",
+            "POSTGRES_DB",
+            "POSTGRES_HOST",
+            "POSTGRES_PASSWORD",
+            "POSTGRES_PORT",
+            "POSTGRES_USER",
+            "SECRETS_BACKEND",
+            "VIGIL_DATA_KEY",
+        }
+    )
+    BOOTSTRAP_PREFIXES = ("PLATFORM_DB_",)
+
+    def __init__(self, engine_provider=None, cache_seconds: Optional[float] = None):
+        self._engine_provider = engine_provider or _platform_engine
+        self._cache_seconds = (
+            self.CACHE_SECONDS if cache_seconds is None else cache_seconds
+        )
+        self._lock = threading.Lock()
+        self._rows: Optional[Dict[str, str]] = None  # name -> token
+        self._loaded_at = float("-inf")
+        self._retry_at = float("-inf")
+        self._plain: Dict[str, tuple[str, str]] = {}  # name -> (token, value)
+        self._undecryptable_logged: set[str] = set()
+
+    @classmethod
+    def is_bootstrap_key(cls, key: str) -> bool:
+        return key in cls.BOOTSTRAP_KEYS or key.startswith(cls.BOOTSTRAP_PREFIXES)
+
+    @staticmethod
+    def _ring():
+        from core.crypto import data_key
+
+        return data_key.current(allow_state_dir=False)
+
+    def _engine(self):
+        try:
+            return self._engine_provider()
+        except Exception:  # noqa: BLE001 - no database yet reads as "not open"
+            return None
+
+    def _snapshot(self) -> Dict[str, str]:
+        now = time.monotonic()
+        with self._lock:
+            if self._rows is not None and now - self._loaded_at < self._cache_seconds:
+                return self._rows
+            if now < self._retry_at:
+                return self._rows or {}
+            engine = self._engine()
+            if engine is None:
+                return self._rows or {}
+            from sqlalchemy import text
+
+            try:
+                with engine.connect() as conn:
+                    found = conn.execute(
+                        text(
+                            f"SELECT name, ciphertext FROM {self.TABLE}"
+                        )  # nosec B608 - constant
+                    ).fetchall()
+            except Exception as e:  # noqa: BLE001 - serve the last rows, retry later
+                self._retry_at = now + self.RETRY_SECONDS
+                logger.warning(
+                    "Could not read %s (%s); serving the last copy for %.0fs",
+                    self.TABLE,
+                    type(e).__name__,
+                    self.RETRY_SECONDS,
+                )
+                return self._rows or {}
+            self._rows = {row[0]: row[1] for row in found}
+            self._loaded_at = now
+            return self._rows
+
+    def _invalidate(self) -> None:
+        with self._lock:
+            self._loaded_at = float("-inf")
+            self._retry_at = float("-inf")
+
+    def get(self, key: str) -> Optional[str]:
+        if self.is_bootstrap_key(key):
+            return None
+        token = self._snapshot().get(key)
+        if not token:
+            return None
+        cached = self._plain.get(key)
+        if cached and cached[0] == token:
+            return cached[1]
+        from core.crypto.data_key import DataKeyUnavailable, InvalidToken
+
+        try:
+            value = self._ring().decrypt(token).decode("utf-8")
+        except (InvalidToken, DataKeyUnavailable) as e:
+            if key not in self._undecryptable_logged:
+                self._undecryptable_logged.add(key)
+                logger.error(
+                    "Secret '%s' in %s cannot be decrypted with the current data "
+                    "key (%s); treating it as unset. Restore the VIGIL_DATA_KEY it "
+                    "was saved under, or save it again.",
+                    key,
+                    self.TABLE,
+                    type(e).__name__,
+                )
+            return None
+        self._plain[key] = (token, value)
+        logger.debug(f"Found secret '{key}' in database store")
+        return value
+
+    def set(self, key: str, value: str) -> bool:
+        if self.is_bootstrap_key(key):
+            logger.error(
+                "Refusing to save '%s' in the database secret store: the database "
+                "connection or start-up needs it first. Set it in the deployment's "
+                "Secret (Helm: secrets.* or secrets.existingSecret).",
+                key,
+            )
+            return False
+        if not value:
+            return self.delete(key)
+        from core.crypto.data_key import DataKeyUnavailable
+
+        try:
+            token = self._ring().encrypt(value.encode("utf-8"))
+        except DataKeyUnavailable as e:
+            logger.error("Cannot save secret '%s': %s", key, e)
+            return False
+        engine = self._engine()
+        if engine is None:
+            logger.error("Cannot save secret '%s': the database is not open", key)
+            return False
+        from sqlalchemy import text
+
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        f"INSERT INTO {self.TABLE} (name, ciphertext, updated_at) "  # nosec B608 - constant
+                        "VALUES (:name, :token, now()) ON CONFLICT (name) DO UPDATE "
+                        "SET ciphertext = EXCLUDED.ciphertext, updated_at = now()"
+                    ),
+                    {"name": key, "token": token},
+                )
+        except Exception as e:  # noqa: BLE001 - reported as a failed save
+            logger.error("Cannot save secret '%s': %s", key, type(e).__name__)
+            return False
+        self._invalidate()
+        logger.info(f"Set secret '{key}' in database store")
+        return True
+
+    def delete(self, key: str) -> bool:
+        if self.is_bootstrap_key(key):
+            return True
+        engine = self._engine()
+        if engine is None:
+            return False
+        from sqlalchemy import text
+
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        f"DELETE FROM {self.TABLE} WHERE name = :name"
+                    ),  # nosec B608 - constant
+                    {"name": key},
+                )
+        except Exception as e:  # noqa: BLE001 - reported as a failed delete
+            logger.error("Cannot delete secret '%s': %s", key, type(e).__name__)
+            return False
+        self._plain.pop(key, None)
+        self._invalidate()
+        return True
+
+    def is_available(self) -> bool:
+        if not _CRYPTOGRAPHY_AVAILABLE:
+            return False
+        from core.crypto.data_key import DataKeyUnavailable
+
+        try:
+            self._ring()
+        except DataKeyUnavailable:
+            return False
+        return True
+
+
 class SecretsManager:
     """
     Unified secrets manager that tries multiple backends in priority order.
 
     Priority for reading:
-    1. Encrypted local file (``~/.vigil/secrets.enc``; preferred)
+    1. Encrypted local file (``~/.vigil/secrets.enc``; preferred), or with
+       ``SECRETS_BACKEND=database`` the database store ahead of it
     2. Environment variables
     3. Repo-root .env (read-only; skipped under VIGIL_DISABLE_DOTENV)
     4. State-dir .env file (legacy / interoperability)
@@ -529,17 +749,19 @@ class SecretsManager:
 
     Priority for writing: configurable via ``SECRETS_BACKEND``. Default is
     ``encrypted`` when ``cryptography`` is available, otherwise ``dotenv``.
+    ``database`` (Helm) never falls back to a file.
     """
 
     def __init__(self, write_backend: str = "encrypted", enable_keyring: bool = False):
         """Initialize secrets manager.
 
         Args:
-            write_backend: "encrypted", "env", "dotenv", or "keyring".
+            write_backend: "encrypted", "database", "env", "dotenv", or "keyring".
             enable_keyring: Include keyring in read backends when True. Keyring
                 access triggers macOS keychain prompts, so off by default.
         """
         self.encrypted_backend = EncryptedFileBackend()
+        self.database_backend = DatabaseBackend()
         self.env_backend = EnvironmentBackend()
         self.dotenv_backend = DotEnvBackend()
         # Read-only: never a write/delete/migrate target, so the operator's
@@ -564,10 +786,23 @@ class SecretsManager:
             )
             write_backend = "dotenv"
 
-        # Read priority — encrypted first (preferred), then env, then the repo
-        # .env (as start.sh sourcing it would), then the state-dir .env, then
-        # keyring only when explicitly enabled.
+        # The database store is the write target or nothing. It is not a
+        # fallback: on Helm a file in the State Directory lives in one pod, and
+        # writing there instead would hide the failure.
+        self.use_database = write_backend == "database"
+        if self.use_database and not self.database_backend.is_available():
+            logger.error(
+                "Database secret store unavailable (cryptography missing or no "
+                "VIGIL_DATA_KEY); secrets cannot be saved until it is fixed"
+            )
+
+        # Read priority — the database store when it is the write target, then
+        # encrypted (preferred), then env, then the repo .env (as start.sh
+        # sourcing it would), then the state-dir .env, then keyring only when
+        # explicitly enabled.
         self.read_backends: list[SecretsBackend] = []
+        if self.use_database:
+            self.read_backends.append(self.database_backend)
         if self.encrypted_backend.is_available():
             self.read_backends.append(self.encrypted_backend)
         self.read_backends.append(self.env_backend)
@@ -585,6 +820,7 @@ class SecretsManager:
         self.write_backend_name = write_backend
         backend_map = {
             "encrypted": self.encrypted_backend,
+            "database": self.database_backend,
             "env": self.env_backend,
             "dotenv": self.dotenv_backend,
             "keyring": self.keyring_backend,
@@ -650,12 +886,15 @@ class SecretsManager:
             True if successful
         """
         success = True
-        for backend in [
+        backends = [
             self.encrypted_backend,
             self.env_backend,
             self.dotenv_backend,
             self.keyring_backend,
-        ]:
+        ]
+        if self.use_database:
+            backends.insert(0, self.database_backend)
+        for backend in backends:
             if backend.is_available():
                 if not backend.delete(key):
                     success = False
@@ -672,6 +911,15 @@ class SecretsManager:
                 "master_key_present": master_key_path.exists(),
                 "master_key_path": str(master_key_path),
                 "description": "Project-local encrypted file (preferred)",
+            },
+            "database": {
+                "available": self.database_backend.is_available(),
+                "in_use": self.use_database,
+                "table": self.database_backend.TABLE,
+                "description": (
+                    "Encrypted rows in PostgreSQL, shared by every replica "
+                    "(SECRETS_BACKEND=database, key VIGIL_DATA_KEY)"
+                ),
             },
             "environment": {
                 "available": self.env_backend.is_available(),

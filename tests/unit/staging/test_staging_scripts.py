@@ -310,6 +310,7 @@ def test_bootstrap_generators_produce_valid_secrets(tmp_path):
     assert len(secrets["postgresPassword"]) >= 24
     assert len(secrets["jwtSecretKey"]) >= 64
     assert len(secrets["agentInternalToken"]) >= 48
+    assert len(secrets["dataEncryptionKey"]) >= 32  # VIGIL_DATA_KEY minimum
     admin = dict(
         line.split("=", 1) for line in (tmp_path / "a.env").read_text().splitlines()
         if line and not line.startswith("#")

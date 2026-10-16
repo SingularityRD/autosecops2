@@ -256,6 +256,10 @@ services:
       # mint one with `openssl rand -base64 48` or reuse ~/.vigil/jwt_secret from
       # start.sh. DEV_MODE=true is the opt-in auth bypass for a developer machine.
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      # Data-encryption key for MFA secrets (core/crypto/data_key.py). Unset: the
+      # State Directory's master.key, on the vigil_home volume. Set it to keep
+      # that key off the volume the secrets live on (admin guide, Sır döndürme).
+      VIGIL_DATA_KEY: ${VIGIL_DATA_KEY:-}
       DEV_MODE: ${DEV_MODE:-false}
       # First-admin setup token. Unset: the backend generates one on first start
       # and prints it once (`docker compose logs backend | grep "setup token"`;

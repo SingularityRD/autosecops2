@@ -48,6 +48,7 @@ OTHER_CONSUMERS = {
     # Bootstrap for the secrets manager, read before Settings exists.
     "ENABLE_KEYRING": "core.secrets_manager",
     "SECRETS_BACKEND": "core.secrets_manager",
+    "VIGIL_DATA_KEY": "core.crypto.data_key",
     # Read by third-party SDKs.
     "AWS_REGION": "AWS SDKs",
     "OTEL_TRACES_SAMPLER": "OpenTelemetry SDK",

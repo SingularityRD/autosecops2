@@ -393,27 +393,35 @@ adreslerini reddeder.
 
 | Sır | Nerede |
 |---|---|
-| Entegrasyon ve sağlayıcı kimlik bilgileri | Şifreli sır deposu `secrets.enc` (Fernet); anahtar aynı durum dizininde `master.key` (dizin 0700, dosya 0600). Veritabanına ve yapılandırma JSON'una yazılmaz; API yanıtlarında maskelenir |
+| Entegrasyon ve sağlayıcı kimlik bilgileri | Şifreli sır deposu (`SECRETS_BACKEND`). Compose ve tek sunucu (`encrypted`): `secrets.enc` (Fernet), anahtar aynı durum dizininde `master.key` (dizin 0700, dosya 0600). Kubernetes (`database`, Helm varsayılanı): PostgreSQL `platform_secrets` tablosunda veri anahtarıyla Fernet şifreli satırlar; tüm kopyalar paylaşır, yeniden başlatmada kaybolmaz, hiçbir dosyaya yazılmaz. Entegrasyon yapılandırmasına ve JSON'a yazılmaz; API yanıtlarında maskelenir |
 | `AUDIT_CHECKPOINT_SIGNING_KEY` | Sır deposu ya da ortam / Secret (Ed25519 tohumu; hex, base64 ya da PEM). Kurulumda üretilir (Compose: sır deposu; Helm: `<release>-vigil-signing-key-checkpoint` Secret'ı, yalnızca daemon'a verilir). Yalnızca daemon'un kontrol noktası işi ve `python -m core.audit.checkpoint` kullanır. Doğrulayıcıya yalnızca açık anahtar (`AUDIT_CHECKPOINT_PUBLIC_KEY`) verilmelidir |
 | `EVIDENCE_PACK_SIGNING_KEY` | Sır deposu ya da ortam / Secret (Ed25519); kurulumda üretilir (Helm: `<release>-vigil-signing-key-evidence`, yalnızca backend'e verilir); yalnızca kanıt paketini imzalayan API kullanır |
-| `JWT_SECRET_KEY` | Sır deposu (`secrets.enc`), ortam / Kubernetes Secret ya da `.env`; okuma önceliği aşağıda. Anahtar verilmemişse `start.sh` durum dizininde bir `jwt_secret` dosyası üretir ve onu ortama verir. `DEV_MODE=false` iken zorunlu, yoksa backend açılmaz |
+| `JWT_SECRET_KEY` | Sır deposu (`secrets.enc`), ortam / Kubernetes Secret ya da `.env`; okuma önceliği aşağıda. Anahtar verilmemişse `start.sh` durum dizininde bir `jwt_secret` dosyası üretir ve onu ortama verir. `DEV_MODE=false` iken zorunlu, yoksa backend açılmaz. Yalnızca oturumları, parola sıfırlama bağlantılarını ve araç çağrısı kimliğini imzalar; veri şifrelemez |
+| Veri anahtarı (`VIGIL_DATA_KEY`) | Ortam / Kubernetes Secret (`secrets.dataEncryptionKey`); virgülle ayrılmış birden çok anahtar (ilki şifreler, hepsi çözer), her biri HKDF-SHA256 ile Fernet anahtarına türetilir. Tanımlı değilse durum dizinindeki `master.key`. `SECRETS_BACKEND=database` ve `DEV_MODE=false` iken zorunlu, yoksa backend açılmaz |
 | OIDC istemci sırları | Sır deposu (`OIDC_CLIENT_SECRET_<ID>`); API geri döndürmez |
 | SIEM aktarım jetonları ve istemci anahtarları | Sır deposu (`AUDIT_EXPORT_<HEDEF>_TOKEN`, `AUDIT_EXPORT_<HEDEF>_CLIENT_KEY`); ad hedeften türetilir, başka bir sırra yöneltilemez; saklı jeton uç noktaya bağlıdır |
 | `AGENT_INTERNAL_TOKEN` | Ortam / Secret; API ile ajan katmanı arasındaki tek kimlik doğrulama |
 | Postgres / Redis parolaları | Secret (`existingSecret` desteklenir) |
-| TOTP sırları | Veritabanında, `JWT_SECRET_KEY`'den türetilen anahtarla Fernet şifreli |
+| TOTP sırları | Veritabanında, veri anahtarıyla Fernet şifreli (`dk:` önekli). 2.0 öncesinden kalan, `JWT_SECRET_KEY`'den türetilen anahtarla şifreli satırları backend açılışta bir kez ve idempotent olarak veri anahtarına taşır (`core/crypto/rekey.py`) |
 | Giden webhook imza anahtarları | Sır deposu; tabloda yalnız `secret_ref` |
 | Air-gap paket imza anahtarı | Yalnızca imzalama makinesi; pakette hiçbir anahtar yok |
 
-Okuma önceliği: şifreli dosya → ortam değişkeni → depo kökündeki `.env` (salt okuma)
-→ durum dizinindeki `.env` → (açıkça etkinleştirilirse) işletim sistemi anahtarlığı.
-Kubernetes'te durum dizini varsayılan olarak geçicidir; üretimde kimlik bilgilerini
-Secret ya da ExternalSecrets Operator (`secrets.externalSecret.enabled`; Vault, AWS
-Secrets Manager vb.) ile verin.
+Okuma önceliği: (`SECRETS_BACKEND=database` ise) veritabanı deposu → şifreli dosya →
+ortam değişkeni → depo kökündeki `.env` (salt okuma) → durum dizinindeki `.env` →
+(açıkça etkinleştirilirse) işletim sistemi anahtarlığı. Veritabanı deposu düz
+dosyaya geri düşmez: anahtar yoksa ya da veritabanı açık değilse kaydetme başarısız
+olur. Kubernetes'te durum dizini varsayılan olarak geçicidir ve sır tutmaz; Secret
+ya da ExternalSecrets Operator (`secrets.externalSecret.enabled`; Vault, AWS
+Secrets Manager vb.) ile verilen değerler de okunur.
 
-Döndürme: veritabanı yedeğinden geri yükleme bekleyen onayları reddeder.
-`JWT_SECRET_KEY` `secrets.enc`'te, `.env`'de ya da `jwt_secret` dosyasındaysa onu
-döndürür ve TOTP sırlarını yeniden şifreler. Anahtar yalnızca geri yükleme sürecine
+Döndürme: her sır için sıra ve neyin bozulduğu yönetici kılavuzundadır
+([Sır döndürme](yonetici-kilavuzu.md#sır-döndürme)). `JWT_SECRET_KEY`'i döndürmek
+yalnızca oturumları düşürür. Veri anahtarı üç yayılımla kesintisiz döndürülür
+(`K1,K2` → `K2,K1` → `K2`); `master.key` için `python -m core.crypto.rekey
+rotate-master-key` vardır (servisler dururken). Veritabanı yedeğinden geri yükleme
+bekleyen onayları reddeder. `JWT_SECRET_KEY` `secrets.enc`'te, `.env`'de ya da
+`jwt_secret` dosyasındaysa onu döndürür; hâlâ JWT'den türetilen anahtarla şifreli
+TOTP sırlarını önce veri anahtarına taşır. Anahtar yalnızca geri yükleme sürecine
 verilen ortam değişkeninden geliyorsa yeni anahtar `secrets.enc`'e yazılır. Backend
 anahtarı `secrets.enc`'ten ortamdan önce okur (`core/secrets_manager.py`,
 `core/auth/auth_service.py`). Bu yüzden aynı durum dizinini okuyan servisler
@@ -423,7 +431,11 @@ o ileti yanlıştır. Anahtar kurulum dışında tanımlıysa ve sürece verilme
 (ör. Kubernetes Secret) geri yükleme onu döndüremez ve hata ile biter. Bu durumda
 anahtarı tanımlandığı yerde döndürün
 (bkz. [yönetici kılavuzu](yonetici-kilavuzu.md#docker-compose--tek-sunucu)).
-`master.key` için yerleşik bir döndürme komutu bu sürümde yoktur. Loglarda URL kullanıcı bilgisi
+Bilinen sınır: Compose ve tek sunucuda `master.key`, çözdüğü `secrets.enc` ile aynı
+birimde ve aynı yedektedir. Önlem: `VIGIL_DATA_KEY`'i birimin dışından verin (MFA
+sırlarının anahtarı birimde durmaz), entegrasyon kimlik bilgilerini mümkünse
+Secret/ortamdan verin. Kubernetes'te anahtar veritabanından ayrı bir Secret'tadır.
+KMS, HSM ve Vault transit desteklenmez. Loglarda URL kullanıcı bilgisi
 (`core/platform/log_redaction.py`) ve telemetri öznitelikleri
 (`core/telemetry_sanitizer.py`) maskelenir.
 
@@ -435,7 +447,7 @@ anahtarı tanımlandığı yerde döndürün
 | Parola sıfırlama belirteci | HMAC-SHA256 (itsdangerous, SHA-256 anahtar türetme) | `itsdangerous` |
 | OIDC ID token doğrulaması | RS256 / ES256 (sağlayıcının JWKS'i); PKCE S256 | PyJWT, `cryptography` |
 | Oturum belirteci | JWT, HMAC-SHA256 (HS256); erişim 30 dk, yenileme 7 gün | PyJWT |
-| Sır deposu, TOTP sırrı şifrelemesi | Fernet (AES-128-CBC + HMAC-SHA256) | `cryptography` |
+| Sır deposu, TOTP sırrı şifrelemesi | Fernet (AES-128-CBC + HMAC-SHA256); veri anahtarı HKDF-SHA256 ile türetilir | `cryptography` |
 | MFA | TOTP (RFC 6238) | `pyotp` |
 | Giden webhook imzası | HMAC-SHA256, zaman damgalı (`t=…,v1=…`) | standart kütüphane |
 | Ajan iç belirteci | sabit zamanlı karşılaştırma (`hmac.compare_digest`) | standart kütüphane |

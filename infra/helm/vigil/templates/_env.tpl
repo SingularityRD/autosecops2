@@ -19,6 +19,11 @@ at a Secret of the same name (user-supplied, ESO-materialized, or
 chart-templated).
 */}}
 {{- define "vigil.envFrom" -}}
+{{- if or .Values.dataKey.generate .Values.dataKey.existingSecret -}}
+- secretRef:
+    name: {{ include "vigil.dataKey.secretName" . }}
+    optional: true
+{{ end -}}
 - configMapRef:
     name: {{ include "vigil.configmap.fullname" . }}
 - secretRef:
