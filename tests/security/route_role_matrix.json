@@ -424,6 +424,14 @@
    "role-manager": "allow",
    "role-admin": "allow"
   },
+  "GET /api/audit/signing-keys": {
+   "gate": "login + perm:settings.read",
+   "role-viewer": "deny",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
   "GET /api/auth/bootstrap": {
    "gate": "public",
    "role-viewer": "allow",
@@ -1340,6 +1348,14 @@
    "gate": "login + perm:users.read",
    "role-viewer": "deny",
    "role-analyst": "deny",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "GET /api/response/policy": {
+   "gate": "login + perm:settings.read",
+   "role-viewer": "deny",
+   "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
@@ -3472,6 +3488,14 @@
    "role-admin": "allow"
   },
   "PUT /api/response/four-eyes/{action_type}": {
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "PUT /api/response/policy": {
    "gate": "login + perm:settings.write",
    "role-viewer": "deny",
    "role-analyst": "deny",

@@ -680,6 +680,28 @@ containerSecurityContext:
       - ALL
 
 # -----------------------------------------------------------------------------
+# Signing keys (W0.36)
+# -----------------------------------------------------------------------------
+# Ed25519 keys for the signed audit checkpoints (daemon) and the case evidence
+# packs (backend). With generate on, the first install mints each into its own
+# Secret (<fullname>-signing-key-checkpoint for the daemon, -evidence for the
+# backend); upgrades keep them (read back with lookup) and `helm uninstall`
+# leaves them (helm.sh/resource-policy: keep). A key also present in
+# secrets.existingSecret / ExternalSecrets wins over the minted one. The values
+# are never in values.yaml or the release notes. Export the public keys for the
+# auditor after install:
+#   kubectl exec statefulset/<fullname>-daemon -- python -m core.audit.signing_keys export
+#   kubectl exec deploy/<fullname>-backend -- python -m core.audit.signing_keys export
+# Where lookup cannot run (helm template, Argo CD, Flux) every render would mint
+# new keys: create one Secret yourself with both keys
+# (AUDIT_CHECKPOINT_SIGNING_KEY, EVIDENCE_PACK_SIGNING_KEY) and name it in
+# existingSecret, or supply them through secrets.existingSecret / ExternalSecrets
+# with generate=false. Without a key the backend's /api/health lists a warning.
+signingKeys:
+  generate: true
+  existingSecret: ""
+
+# -----------------------------------------------------------------------------
 # Secrets (plain values — skipped if existingSecret is set)
 # -----------------------------------------------------------------------------
 # Reference a pre-created secret instead of templating values here.

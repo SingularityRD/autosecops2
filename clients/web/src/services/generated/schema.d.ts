@@ -795,6 +795,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/audit/signing-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Signing Keys
+         * @description The public halves of the signing keys, for offline verification.
+         */
+        get: operations["get_api_audit_signing-keys"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/bootstrap": {
         parameters: {
             query?: never;
@@ -5623,6 +5643,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/response/policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Response Policy
+         * @description Protected assets, hourly limits and four-eyes types, stored and in effect.
+         */
+        get: operations["get_api_response_policy"];
+        /**
+         * Put Response Policy
+         * @description Replace the editable keys. Audited (who, reason, old and new value).
+         */
+        put: operations["put_api_response_policy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/response/segregation": {
         parameters: {
             query?: never;
@@ -10314,6 +10358,24 @@ export interface components {
              */
             months: number;
         };
+        /**
+         * EffectivePolicy
+         * @description What ``ActionPolicy`` applies: the stored values merged with the defaults.
+         */
+        EffectivePolicy: {
+            /** Default Hourly Limit */
+            default_hourly_limit: number;
+            /** Distinct Role Types */
+            distinct_role_types: string[];
+            /** Four Eyes Types */
+            four_eyes_types: string[];
+            /** Hourly Limits */
+            hourly_limits: {
+                [key: string]: number;
+            };
+            /** Protected Tags */
+            protected_tags: string[];
+        };
         /** EndpointCreate */
         EndpointCreate: {
             /**
@@ -11876,6 +11938,19 @@ export interface components {
             /** Retain Days */
             retain_days: number;
         };
+        /** PolicyDefaults */
+        PolicyDefaults: {
+            /** Default Hourly Limit */
+            default_hourly_limit: number;
+            /** Four Eyes Types */
+            four_eyes_types: string[];
+            /** Hourly Limits */
+            hourly_limits: {
+                [key: string]: number;
+            };
+            /** Protected Tags */
+            protected_tags: string[];
+        };
         /**
          * PostgreSQLConfig
          * @description PostgreSQL database backend configuration.
@@ -12038,6 +12113,25 @@ export interface components {
             local_login_enabled: boolean;
             /** Providers */
             providers: components["schemas"]["PublicProvider"][];
+        };
+        /** PublicSigningKey */
+        PublicSigningKey: {
+            /** Algorithm */
+            algorithm: string;
+            /** Configured */
+            configured: boolean;
+            /** Key Id */
+            key_id?: string | null;
+            /** Public Key */
+            public_key?: string | null;
+            /** Public Key Pem */
+            public_key_pem?: string | null;
+            /** Purpose */
+            purpose: string;
+            /** Secret */
+            secret: string;
+            /** Source */
+            source: string;
         };
         /** PurgeBody */
         PurgeBody: {
@@ -12422,6 +12516,56 @@ export interface components {
             /** Playbook */
             playbook: string;
         };
+        /**
+         * ResponsePolicyUpdate
+         * @description The editable keys, whole: a key left out is reset to its default.
+         */
+        ResponsePolicyUpdate: {
+            /** Asset Tags */
+            asset_tags?: {
+                [key: string]: string[];
+            };
+            /**
+             * Default Hourly Limit
+             * @default 20
+             */
+            default_hourly_limit: number;
+            /** Four Eyes Types */
+            four_eyes_types?: string[];
+            /** Hourly Limits */
+            hourly_limits?: {
+                [key: string]: number;
+            };
+            /** Protected Tags */
+            protected_tags?: string[];
+            /** Protected Targets */
+            protected_targets?: string[];
+            /** Reason */
+            reason: string;
+        };
+        /** ResponsePolicyView */
+        ResponsePolicyView: {
+            /** Action Types */
+            action_types: string[];
+            /** Asset Tags */
+            asset_tags: {
+                [key: string]: string[];
+            };
+            /** Default Hourly Limit */
+            default_hourly_limit: number;
+            defaults: components["schemas"]["PolicyDefaults"];
+            effective: components["schemas"]["EffectivePolicy"];
+            /** Four Eyes Types */
+            four_eyes_types: string[];
+            /** Hourly Limits */
+            hourly_limits: {
+                [key: string]: number;
+            };
+            /** Protected Tags */
+            protected_tags: string[];
+            /** Protected Targets */
+            protected_targets: string[];
+        };
         /** RevertRequest */
         RevertRequest: {
             /**
@@ -12805,6 +12949,11 @@ export interface components {
         ServerEnabledRequest: {
             /** Enabled */
             enabled: boolean;
+        };
+        /** SigningKeysResponse */
+        SigningKeysResponse: {
+            /** Keys */
+            keys: components["schemas"]["PublicSigningKey"][];
         };
         /** SkillCaseResult */
         SkillCaseResult: {
@@ -15213,6 +15362,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_audit_signing-keys": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SigningKeysResponse"];
                 };
             };
             /** @description Validation Error */
@@ -23792,6 +23972,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FourEyesConfig"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_response_policy: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponsePolicyView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_api_response_policy: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResponsePolicyUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponsePolicyView"];
                 };
             };
             /** @description Validation Error */

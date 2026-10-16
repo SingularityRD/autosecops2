@@ -239,6 +239,8 @@ services:
         condition: service_healthy
       backup-pre-upgrade:
         condition: service_completed_successfully
+      signing-keys:
+        condition: service_completed_successfully
     restart: unless-stopped
     # Host Ollama: implicit on Docker Desktop, required on native Linux Docker.
     extra_hosts:
@@ -307,6 +309,27 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    restart: "no"
+
+  # W0.36: mints AUDIT_CHECKPOINT_SIGNING_KEY and EVIDENCE_PACK_SIGNING_KEY into
+  # the encrypted secrets store (secrets.enc on vigil_home) when absent, before
+  # the backend and daemon start. Never overwrites a key and prints only the
+  # public halves; `docker compose run --rm signing-keys export` prints them
+  # again for whoever verifies. A store it cannot write is a warning here and
+  # on /api/health, not a failed `up`.
+  signing-keys:
+    image: vigil-backend:local
+    build: *backend-build
+    environment:
+      HOME: /home/vigil
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - vigil_home:/home/vigil/.vigil
+    entrypoint: ["python", "-m", "core.audit.signing_keys"]
+    command: ["provision", "--warn-only"]
+    healthcheck:
+      disable: true
+    network_mode: none
     restart: "no"
 
   # ─── Daemon layer (--profile daemon) ──────────────────────────────────────
@@ -431,6 +454,8 @@ services:
       bifrost:
         condition: service_healthy
       backup-pre-upgrade:
+        condition: service_completed_successfully
+      signing-keys:
         condition: service_completed_successfully
     restart: unless-stopped
     # Host Ollama: implicit on Docker Desktop, required on native Linux Docker.
