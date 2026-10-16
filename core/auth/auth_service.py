@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from core.auth import passwords
 from core.config import get_settings
+from core.crypto import data_key
 from core.exceptions import default_on_error
 from core.secrets import get_secret
 from core.storage.models import Role, User
@@ -32,12 +33,16 @@ logger = logging.getLogger(__name__)
 # Fernet tokens are urlsafe base64 of a version byte + timestamp, so they start
 # with "gAAAAA". Lowercase "g" is not base32, so legacy plaintext never matches.
 _FERNET_TOKEN_PREFIX = "gAAAAA"
+# An MFA secret encrypted under the data key (core.crypto.data_key). A bare
+# Fernet token is the legacy form, under a key derived from JWT_SECRET_KEY; the
+# start-up rekey (core.crypto.rekey) moves those rows to this one.
+MFA_DATA_KEY_PREFIX = "dk:"
 _UNDECRYPTABLE_LOG_INTERVAL = 60.0
 _last_undecryptable_log = float("-inf")
 
 
 class MFASecretDecryptionError(Exception):
-    """A stored MFA secret is encrypted but not under the current JWT_SECRET_KEY."""
+    """A stored MFA secret is encrypted, but not under a key this process holds."""
 
 
 def _is_dev_mode() -> bool:
@@ -439,36 +444,63 @@ class AuthService:
         return codes, hashed
 
     @staticmethod
-    def _fernet() -> Fernet:
-        """Fernet cipher keyed off JWT_SECRET_KEY (SHA-256 -> base64 32-byte key)."""
-        key = base64.urlsafe_b64encode(hashlib.sha256(JWT_SECRET_KEY.encode()).digest())
+    def _legacy_fernet(jwt_secret: Optional[str] = None) -> Fernet:
+        """The pre-data-key cipher: keyed off JWT_SECRET_KEY (SHA-256 -> Fernet key).
+
+        Only decrypts rows written before the data key; nothing is encrypted
+        with it any more.
+        """
+        secret = JWT_SECRET_KEY if jwt_secret is None else jwt_secret
+        key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
         return Fernet(key)
 
     @staticmethod
     def _encrypt_mfa_secret(secret: str) -> str:
-        """Encrypt an MFA secret at rest with Fernet (JWT-key-derived)."""
-        return AuthService._fernet().encrypt(secret.encode()).decode()
-
-    @staticmethod
-    def _decrypt_mfa_secret(encrypted: str) -> str:
-        """Decrypt an MFA secret; fall back to plaintext for pre-migration rows.
+        """Encrypt an MFA secret at rest under the data key, not the JWT key.
 
         Raises:
-            MFASecretDecryptionError: the value is a Fernet token that the
-                current JWT_SECRET_KEY cannot decrypt.
+            DataKeyUnavailable: no data key (database store without VIGIL_DATA_KEY).
         """
+        return MFA_DATA_KEY_PREFIX + data_key.current().encrypt(secret.encode())
+
+    @staticmethod
+    def _decrypt_mfa_secret(encrypted: str, jwt_secret: Optional[str] = None) -> str:
+        """Decrypt an MFA secret; fall back to plaintext for pre-migration rows.
+
+        ``jwt_secret`` names the JWT key a legacy row was encrypted under; the
+        running key by default. A data-key row does not depend on it.
+
+        Raises:
+            MFASecretDecryptionError: the value is encrypted under a key this
+                process does not hold.
+        """
+        if encrypted.startswith(MFA_DATA_KEY_PREFIX):
+            try:
+                ring = data_key.current()
+                return ring.decrypt(encrypted[len(MFA_DATA_KEY_PREFIX) :]).decode()
+            except (data_key.InvalidToken, data_key.DataKeyUnavailable) as exc:
+                AuthService._log_undecryptable_secret(
+                    "the current data key (VIGIL_DATA_KEY or master.key)"
+                )
+                raise MFASecretDecryptionError(
+                    "MFA secret cannot be decrypted with the current data key"
+                ) from exc
         try:
-            return AuthService._fernet().decrypt(encrypted.encode()).decode()
+            return (
+                AuthService._legacy_fernet(jwt_secret)
+                .decrypt(encrypted.encode())
+                .decode()
+            )
         except Exception as exc:
             if not encrypted.startswith(_FERNET_TOKEN_PREFIX):
                 return encrypted  # legacy plaintext (pre-migration rows)
-            AuthService._log_undecryptable_secret()
+            AuthService._log_undecryptable_secret("the current JWT_SECRET_KEY")
             raise MFASecretDecryptionError(
                 "MFA secret cannot be decrypted with the current JWT_SECRET_KEY"
             ) from exc
 
     @staticmethod
-    def _log_undecryptable_secret() -> None:
+    def _log_undecryptable_secret(key_name: str) -> None:
         """Log the key mismatch at ERROR, at most once per interval."""
         global _last_undecryptable_log
         now = time.monotonic()
@@ -476,9 +508,10 @@ class AuthService:
             return
         _last_undecryptable_log = now
         logger.error(
-            "MFA secret cannot be decrypted with the current JWT_SECRET_KEY; "
-            "the key has changed since MFA was set up. TOTP codes are rejected "
-            "until the original key is restored; recovery codes still work."
+            "MFA secret cannot be decrypted with %s; the key has changed since "
+            "MFA was set up. TOTP codes are rejected until the original key is "
+            "restored; recovery codes still work.",
+            key_name,
         )
 
     @staticmethod

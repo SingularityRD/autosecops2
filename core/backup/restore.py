@@ -1,7 +1,7 @@
 """Stage a snapshot, check it, and swap it in. ``--test`` discards the stage.
 
-After a swap, rotate the JWT secret, re-encrypt MFA secrets, reject pending
-approvals, and write one audit row. ``--test`` returns before any of that.
+After a swap, rotate the JWT secret, move MFA secrets still under a key derived
+from it to the data key, reject pending approvals, and write one audit row. ``--test`` returns before any of that.
 
 The dump is restored into a new database. ``agent_events_assign_hashes`` is a
 BEFORE INSERT trigger and would re-hash rows if the dump landed in a schema
@@ -939,7 +939,7 @@ def _settle_restored(
     if from_env:
         old_key = env_key
     new_key = secrets.token_urlsafe(48)
-    expired = _reencrypt_and_expire(old_key, new_key, snapshot_id, created_at, actor)
+    expired = _reencrypt_and_expire(old_key, snapshot_id, created_at, actor)
     # With no key anywhere, a deployment outside this install sets it. A
     # jwt_secret written here would never be read.
     rotated = old_key is not None
@@ -1021,7 +1021,6 @@ def _encrypted_jwt(state: Path) -> str | None:
 
 def _reencrypt_and_expire(
     old_key: str | None,
-    new_key: str,
     snapshot_id: str,
     created_at: str,
     actor: str,
@@ -1034,29 +1033,33 @@ def _reencrypt_and_expire(
         auth_service, auth_cls = _load_auth_service()
         with get_db_manager().session_scope() as session:
             users = session.query(User).filter(User.mfa_secret.isnot(None)).all()
-            # Without the old key there is no rotation, so MFA stays as it is.
+            # An MFA secret under the data key does not depend on the JWT key and
+            # is left alone. One from before the data key (a bare token, under a
+            # key derived from the old JWT secret) would be locked out by the
+            # rotation, so it moves to the data key first. Without the old key
+            # there is no rotation, so MFA stays as it is.
             if old_key:
-                original_key = auth_service.JWT_SECRET_KEY
-                try:
-                    auth_service.JWT_SECRET_KEY = old_key
-                    plaintext = []
-                    for user in users:
-                        try:
-                            plaintext.append(
-                                auth_cls._decrypt_mfa_secret(user.mfa_secret)
+                legacy = [
+                    user
+                    for user in users
+                    if not user.mfa_secret.startswith(auth_service.MFA_DATA_KEY_PREFIX)
+                ]
+                plaintext = []
+                for user in legacy:
+                    try:
+                        plaintext.append(
+                            auth_cls._decrypt_mfa_secret(
+                                user.mfa_secret, jwt_secret=old_key
                             )
-                        except auth_service.MFASecretDecryptionError as exc:
-                            # Nothing is written yet; the session rolls back.
-                            raise BackupError(
-                                "cannot rotate JWT_SECRET_KEY: the old key does not "
-                                f"decrypt the MFA secret of user {user.user_id}"
-                            ) from exc
-                    auth_service.JWT_SECRET_KEY = new_key
-                    for user, secret in zip(users, plaintext):
-                        user.mfa_secret = auth_cls._encrypt_mfa_secret(secret)
-                except BaseException:
-                    auth_service.JWT_SECRET_KEY = original_key
-                    raise
+                        )
+                    except auth_service.MFASecretDecryptionError as exc:
+                        # Nothing is written yet; the session rolls back.
+                        raise BackupError(
+                            "cannot rotate JWT_SECRET_KEY: the old key does not "
+                            f"decrypt the MFA secret of user {user.user_id}"
+                        ) from exc
+                for user, secret in zip(legacy, plaintext):
+                    user.mfa_secret = auth_cls._encrypt_mfa_secret(secret)
             pending = (
                 session.query(ApprovalAction)
                 .filter(ApprovalAction.status == ActionStatus.PENDING.value)

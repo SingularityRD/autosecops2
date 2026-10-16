@@ -242,6 +242,10 @@ class Settings(BaseSettings):
     auth_max_password_bytes: int = 72
     auth_min_zxcvbn_score: int = 3
     password_reset_ttl_seconds: int = 3600
+    # Re-encrypt MFA secrets (and the database secret store) under the data key
+    # at API start-up (core/crypto/rekey.py). Off: run
+    # `python -m core.crypto.rekey run` by hand; rows stay readable either way.
+    data_key_rekey_on_start: bool = True
     revocation_fail_open: bool = False
 
     # FIPS 140-3 mode (W3.10). True refuses to start unless the OpenSSL 3 FIPS

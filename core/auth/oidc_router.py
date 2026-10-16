@@ -607,8 +607,8 @@ def _secret_from_environment(key: str) -> bool:
     only hides it from this process until the next restart, when it comes
     back and would be sent to whatever the provider points at by then. True
     if the variable was present at startup, or if os.environ holds a value
-    that no store the application writes to (encrypted file, state-dir .env,
-    keyring) holds, i.e. it did not come from set_secret.
+    that no store the application writes to (database store, encrypted file,
+    state-dir .env, keyring) holds, i.e. it did not come from set_secret.
     """
     if key in _STARTUP_ENV_SECRET_KEYS:
         return True
@@ -621,6 +621,8 @@ def _secret_from_environment(key: str) -> bool:
         # deleting it is final. (A deployment variable is caught above.)
         return False
     stores = [manager.encrypted_backend, manager.dotenv_backend]
+    if manager.use_database:
+        stores.insert(0, manager.database_backend)
     if manager.enable_keyring:
         stores.append(manager.keyring_backend)
     for store in stores:

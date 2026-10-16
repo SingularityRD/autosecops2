@@ -6,7 +6,8 @@
 #     -f /etc/autosecops-staging/secrets.yaml \        # generated on the VM, 0600
 #     --set global.imageRegistry=... --set backend.image.tag=<sha12> ...
 #
-# NO SECRETS IN THIS FILE. postgresPassword / jwtSecretKey / agentInternalToken
+# NO SECRETS IN THIS FILE. postgresPassword / jwtSecretKey / agentInternalToken /
+# dataEncryptionKey
 # live in /etc/autosecops-staging/secrets.yaml, written once by bootstrap.sh.
 # Image registry, namespace and tags are set per run by nightly.sh.
 #

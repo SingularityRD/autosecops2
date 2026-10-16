@@ -487,6 +487,24 @@ def get_platform_database_config():
     return result
 
 
+def _refuse_database_store_bootstrap() -> None:
+    """409 when secrets live in the database: it cannot hold how to reach itself.
+
+    With ``SECRETS_BACKEND=database`` (Helm) the database store refuses these
+    keys and every set_secret call would fail; the connection is the
+    deployment's (Helm ``postgresql.*`` and ``secrets.*``).
+    """
+    if get_secrets_manager().use_database:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Secrets are kept in the platform database here "
+                "(SECRETS_BACKEND=database), so the settings needed to reach it "
+                "are set in the deployment (Helm values or its Secret), not here."
+            ),
+        )
+
+
 @router.post("/platform-database", dependencies=_SETTINGS_WRITE)
 def set_platform_database_config(config: PlatformDatabaseProxyConfig):
     """Persist the platform-DB proxy config to the encrypted secrets
@@ -495,6 +513,7 @@ def set_platform_database_config(config: PlatformDatabaseProxyConfig):
 
     Empty-string secrets mean "leave existing value untouched".
     """
+    _refuse_database_store_bootstrap()
     proxy_type = (config.proxy_type or "none").strip().lower()
     if proxy_type not in ("none", "pgbouncer", "ssh_tunnel"):
         raise HTTPException(
@@ -1220,6 +1239,7 @@ def set_postgresql_config(config: PostgreSQLConfig):
     Returns:
         Success status
     """
+    _refuse_database_store_bootstrap()
     success = set_secret("POSTGRESQL_CONNECTION_STRING", config.connection_string)
     if success:
         return {
