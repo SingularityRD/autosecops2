@@ -23,6 +23,7 @@ from core.autonomy.controller import (
 )
 from core.autonomy.tiers import (
     ACTION_CLASSES,
+    ALWAYS_HUMAN,
     AUTONOMOUS_ELIGIBLE,
     DEFAULT_TIER,
     TIERS,
@@ -31,6 +32,7 @@ from core.autonomy.tiers import (
 
 __all__ = [
     "ACTION_CLASSES",
+    "ALWAYS_HUMAN",
     "AUTONOMOUS_ELIGIBLE",
     "DEFAULT_TIER",
     "TIERS",

@@ -6714,6 +6714,18 @@
    color: var(--tx-2);
 }
 
+.auth .field-hint {
+   margin-top: 6px;
+   font-size: 12px;
+   line-height: 1.45;
+   color: var(--tx-3);
+}
+
+.auth .field-hint code {
+   font-family: var(--font-mono);
+   font-size: 11px;
+}
+
 .auth .ctrl {
    position: relative;
    display: flex;

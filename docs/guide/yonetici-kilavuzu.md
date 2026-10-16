@@ -11,7 +11,9 @@
 > segregation-of-duties report; models cannot approve, approvals are bound to
 > the tool call's arguments (refused above 64 KB), people decide on the
 > AI Decisions → Pending Approvals screen, approved agent MCP tools still bypass the response
-> policy, an open risk), the Assist/Act switch and the recommended
+> policy, an open risk), the Assist/Act switch (Assist, human approval of
+> every action, is the default; containment such as host isolation, account
+> disable and firewall blocks is never autonomous) and the recommended
 > regulated-sector setting `DAEMON_FORCE_APPROVAL=true`, the local model lane
 > and lessons, retention policies, KVKK purge and legal hold, which audit
 > records exist and how to verify them (`python -m core.audit.verify`, signed
@@ -100,9 +102,11 @@ bunu değişiklik yönetimi sürecinize alın.
 | Kural kaynağı ekleme, silme, güncelleme, yeniden yükleme (`POST /api/detection-rules/sources`, `DELETE /api/detection-rules/sources/{source_id}`, `.../update`, `POST /api/detection-rules/update-all`, `POST /api/detection-rules/reload`) | `settings.write` |
 | AI bileşen yapılandırması, Kafka ayarı, federasyon ayarı, ajan ve iş akışı açma/kapama, iş akışı koşusu silme, maliyet yeniden hesabı (`POST /api/analytics/recalculate-cost`) | `settings.write` |
 | Federasyon kaynağını düzenleme ve hemen çekme (`PATCH /api/federation/sources/{source_id}`, `.../poll-now`) | `integrations.write` |
-| Dosya/metin/S3 alımı (`POST /api/ingest/upload`, `POST /api/ingest/ingest-string`, `.../sync-s3-folder`, `.../s3-file`), gürültü işaretleme (`/api/findings/{finding_id}/noise`), soruşturma incelemesi, AI kararına geri bildirim (`POST /api/ai/decisions/{decision_id}/feedback`) | `findings.write` |
+| Dosya/metin/S3 alımı (`POST /api/ingest/upload`, `POST /api/ingest/ingest-string`, `.../sync-s3-folder`, `.../s3-file`), gürültü işaretleme (`/api/findings/{finding_id}/noise`), soruşturma incelemesi, AI kararına geri bildirim (`POST /api/ai/decisions/{decision_id}/feedback`), toplu bulgu dışa aktarımı (`POST /api/findings/export`; Viewer alamaz, her aktarım kayda geçer) | `findings.write` |
 | Beceriler, özel ajanlar, özel iş akışları, iş akışı üretme, sohbet içe aktarma, bulgu alımı, vaka raporu üretme, soruşturma başlatma/durdurma, AI karar kaydı oluşturma (`POST /api/ai/decisions`) | `ai_chat.use` |
-| SLA politikaları (`/api/sla-policies`), vaka şablonları (`/api/cases/templates`) | `cases.write` |
+| SLA politikası oluşturma, değiştirme, silme, varsayılan yapma (`/api/sla-policies`; W0.35'e kadar `cases.write`, yani Analyst de yapabiliyordu) | `settings.write` |
+| LLM sağlayıcı ekleme, değiştirme, silme (`/api/llm/providers`), bütçe ayarı (`PUT /api/analytics/budget`) | `settings.write` (Analyst ve Senior Analyst alamaz) |
+| Vaka şablonları (`/api/cases/templates`) | `cases.write` |
 
 CI'daki `tests/security/test_route_permissions.py` iki şeyi sınar. Birincisi,
 testin rota listesindeki her rota, izni olmayan bir kullanıcıya 403 döner. Bu
@@ -118,8 +122,7 @@ listedeki rotalar yalnızca oturum ister. W0.11 bu listeyi küçülttü; kalanla
 bilinçlidir: kimlik ve kendi hesabı (`/api/auth/...`, `PUT /api/auth/me`), kendi
 sohbetleri, izni yardımcı işlevde denetlenenler (`PUT /api/users/{user_id}`,
 `/api/services/...`, `/api/exclusions`), POST ile yapılan okumalar
-(`POST /api/cases/search`, `POST /api/findings/export`,
-`POST /api/analytics/estimate-cost`) ve bulgu açılınca üretilen zenginleştirme
+(`POST /api/cases/search`, `POST /api/analytics/estimate-cost`) ve bulgu açılınca üretilen zenginleştirme
 (bkz. [tehdit modeli R28](tehdit-modeli.md#açık-riskler)).
 Ayrıca `tests/security/test_route_role_matrix.py`, API'nin **her** rotası için
 her yerleşik rolün sonucunu (`allow`, `deny`, `conditional`)
@@ -152,6 +155,79 @@ oluşturmayı önerir (`POST /api/auth/bootstrap`, dakikada 5 deneme sınırı);
 hesap oluşunca bu uç kalıcı olarak kapanır. Öneri: ilk hesabı yalnızca acil erişim
 (break-glass) yöneticisi olarak kullanın, MFA'sını açın, parolasını ve kurtarma
 kodlarını kasada tutun; günlük yönetim için kişisel hesaplar açın.
+
+**Kurulum token'ı (W0.33).** İlk hesabı oluşturmak tek kullanımlık bir kurulum
+token'ı ister. Böylece kuruluma ağdan ilk ulaşan kişi yönetici olamaz. Token'ı
+yalnızca backend'in günlüğünü ya da durum dizinini (State Directory) okuyabilen
+kişi bilir.
+
+- **Üretim.** Hesap yokken backend ilk açılışta 32 baytlık rastgele bir token
+  üretir. Token'ı günlüğe **bir kez** yazar (`AutoSecOps setup token (one-time,
+  creates the first administrator): …`) ve `<State Directory>/setup-token`
+  dosyasına `0600` izinle kaydeder. Veritabanında yalnızca SHA-256 özeti durur
+  (`system_config['auth.setup_token']`), bu yüzden birden çok backend kopyası aynı
+  token'ı denetler. Açılışta veritabanına ulaşılamadıysa token, giriş ekranının ilk
+  `GET /api/auth/bootstrap` çağrısında üretilir.
+- **Kullanım.** Giriş ekranı **Setup token** alanını sorar. API istemcileri token'ı
+  `X-Setup-Token` başlığında gönderir; gövdede ya da URL'de değil. Bu yüzden ne bir
+  doğrulama hatası yanıtında ne de erişim günlüğünde görünür. Token eksik ya da
+  yanlışsa yanıt 401'dir. Karşılaştırma sabit sürelidir ve dakikada 5 deneme
+  sınırı geçerlidir. Başarılı kullanımda token, hesapla aynı işlemde silinir. Aynı
+  token ikinci kez işe yaramaz. Hiçbir API yanıtı token'ı döndürmez.
+- **Kendi token'ınız.** Otomasyon (CI, betikli kurulum) için `VIGIL_SETUP_TOKEN`
+  (Helm: `secrets.setupToken`, en az 24 karakter) token'ı belirler. Bu değer
+  günlüğe yazılmaz. Hesap oluştuktan sonra yok sayılır.
+- **Denetim.** Üretim, yeniden üretim ve kullanım `config_audit_log`'a yazılır
+  (token ve özeti olmadan). Başarısız ve başarılı denemeler, denetim dışa
+  aktarımı açıksa `auth.setup_token` olayıdır.
+
+Token'ı okuma ve yenisini üretme (yeni token eskisini geçersiz kılar; hesap varsa
+komut 77 ile reddeder):
+
+| Kurulum | Token'ı okuma | Yeni token |
+|---|---|---|
+| Compose | `docker compose logs backend \| grep "setup token"` ya da `docker compose exec backend cat /home/vigil/.vigil/setup-token` | `docker compose exec backend python -m core.auth.setup_token regenerate` |
+| Helm | `kubectl logs -n <ns> -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=backend --prefix --tail=-1 \| grep "setup token"` (dosya yalnızca token'ı üreten pod'dadır) | `kubectl exec -n <ns> deploy/<release>-vigil-backend -c backend -- python -m core.auth.setup_token regenerate` |
+| İnternetsiz (Helm) | Helm satırıyla aynı; ayrıntı: [internetsiz kurulum §7](kurulum-internetsiz.md#7-kurulum-sonrası-ilk-15-dakika) | Helm satırıyla aynı |
+| Yerel (`start.sh`) | Backend günlüğü ya da `~/.vigil/setup-token` | `python -m core.auth.setup_token regenerate` |
+
+Helm'de dağıtımın adı `<release>-vigil-backend` biçimindedir. Kurulumdan sonra
+`helm status <release>` notları tam komutları basar.
+
+### Kurulum sihirbazı
+
+Konsolun kurulum sihirbazı (`/setup`) ilerlemesini tarayıcıda değil sunucuda,
+kurulumun tamamı için tutar (`GET`/`PUT /api/config/setup-progress`, W0.33).
+Her kayıt `config_audit_log`'a kimin yaptığıyla yazılır. İkinci bir yönetici ya
+da başka bir tarayıcı kaldığı yerden devam eder. Konsol yalnızca `settings.write`
+iznine sahip hesapları, kurulum bitirilene ya da ertelenene ("Save and finish
+later") kadar `/setup`'a gönderir. Analistler doğrudan konsolu açar.
+
+Son sayfa "hazır" kararını kendisi vermez. `GET /api/config/setup-readiness`
+eksikleri sayar:
+
+| Öğe | Durum | Hazır sayılır |
+|---|---|---|
+| Uyarı kaynağı (`data`) | zorunlu | uyarı kategorisinde (SIEM, EDR, ağ ve bulut güvenliği…) etkin bir entegrasyon, etkin bir Federation kaynağı, alınmış uyarılar ya da demo verisi |
+| Yapay zekâ modeli (`model`) | zorunlu | etkin varsayılan bir sağlayıcı ya da model ağ geçidinde (Bifrost) yönlendirilebilir bir anahtar |
+| Müdahale eylemleri (`executor`) | önerilen | eylem yürütebilen etkin bir entegrasyon (Cloudflare, Microsoft Defender, Entra ID, Palo Alto) |
+| Bildirim (`notify`) | önerilen | Slack ya da PagerDuty yolu |
+
+Zorunlu bir öğe eksikken özet "AutoSecOps is not ready yet" der ve eksikleri
+listeler. Kurulum o durumda "completed" olarak değil "deferred" olarak kaydedilir.
+
+**Sihirbazı sıfırlama.** `scripts/reset-setup.sh` sağlayıcıları, anahtarları,
+atamaları, bütçeyi, otonomiyi ve (`--wizard`) kayıtlı ilerlemeyi sıfırlar
+(`--status` yalnızca gösterir). `settings.write` iznine sahip bir hesapla
+çalışır (`VIGIL_TOKEN` ya da `VIGIL_USERNAME`/`VIGIL_PASSWORD`). CSRF'yi zorlayan
+kurulumlarda her yazmada çift gönderim çerezini ve `X-CSRF-Token` başlığını
+gönderir. Helm'de backend'e port yönlendirmesiyle çalıştırın:
+
+```bash
+kubectl -n <ns> port-forward svc/<release>-vigil-backend 6987:6987 &
+VIGIL_API=http://localhost:6987/api VIGIL_USERNAME=<admin> VIGIL_PASSWORD=<parola> \
+  ./scripts/reset-setup.sh --all -y
+```
 
 ## Kimlik doğrulama
 
@@ -368,8 +444,13 @@ hazırlığı, göç ve ayrıntı: [docs/fips.md](../fips.md).
   `OIDC_CLIENT_SECRET_<ID>`, SIEM aktarım jetonu `AUDIT_EXPORT_<HEDEF>_TOKEN` (bkz.
   [kurulum kılavuzu](kurulum-internetsiz.md#5-kurulum-kubernetes)).
 - **Test** düğmesi (`POST /api/config/integrations/{integration_id}/test`): Splunk ve
-  Elastic için gerçekten oturum açıp sunucu bilgisini okur; diğerleri için yalnızca
-  MCP sunucusunun yanıt verdiğini gösterir.
+  Elastic için gerçekten oturum açıp sunucu bilgisini okur. Müdahale yürütücüleri
+  için de kaydedilen kimlik bilgisiyle tek bir salt-okuma çağrısı yapar: Defender
+  bir makine listeler (MDE `machines`, `$top=1`), Entra ID bir kullanıcı okur
+  (Graph `users`, `$top=1`), PAN-OS `show system info` çalıştırır. Hiçbiri bir şey
+  değiştirmez; çağrı yeniden denenmez, ağ yoksa birkaç saniyede bağlantı hatasının
+  adıyla başarısız olur. Diğer entegrasyonlarda yalnızca MCP sunucusunun yanıt
+  verdiğini gösterir.
 - Kendi imzalı CA'sı olan bir sunucu için entegrasyonun "CA Certificate Path"
   alanını kullanın; tüm süreçlere bir CA eklemek için Helm `caBundle.existingSecret`.
 - MCP sunucuları: `mcp-config.json`'daki sunucular, yerel `security-detections` ve
@@ -377,9 +458,20 @@ hazırlığı, göç ve ayrıntı: [docs/fips.md](../fips.md).
   kendi MCP yüzeyi `VIGIL_MCP_ENABLED=false` ile kapalı gelir.
 - Air-gap'te bir entegrasyonu açtığınızda hedefinin küme içinde ya da
   `networkPolicies.egress.extraCIDRs` listesinde olması gerekir.
-- Defender, Entra ID ve Palo Alto entegrasyonları açıkken müdahale yürütücüleri de
-  kayda alınır. Kayıt defteri API ve daemon açılışında bir kez kurulur; bu
-  entegrasyonları açtıktan ya da kapattıktan sonra iki servisi yeniden başlatın.
+- **Müdahale yürütücüleri** (Microsoft Defender for Endpoint, Entra ID, Palo Alto
+  PAN-OS) **Ayarlar → Integrations → Add integration**'dan bağlanır: form kiracı,
+  istemci kimliği ve istemci sırrını (Palo Alto için ana makine adı ve API
+  anahtarını) ister; sır, diğer kimlik bilgileri gibi şifreli sır deposuna gider ve
+  API hiçbir yanıtta geri vermez. Üçü de **Deneysel**'dir (bkz.
+  [Bağlayıcı destek durumu](#bağlayıcı-destek-durumu)).
+- Yürütücüler yapılandırmayı izler; yeniden başlatma gerekmez. Bir yürütücüyü açmak,
+  kapatmak ya da kimlik bilgisini değiştirmek, kaydedildiği API sürecinde hemen,
+  daemon'da en geç 10 saniyede (`RELOAD_SECONDS`) geçerli olur: her süreç
+  `integration_configs` satırlarını ve sır dosyasını yeniden okur, değiştiyse
+  yürütücülerini yeniden kurar. Test sonucundaki **Response actions** satırı
+  yürütücünün bu süreçte hangi eylemleri alabildiğini gösterir. Eylemler yine onay
+  kapısından ve müdahale politikasından geçer; bir yürütücüyü açmak hiçbir eylemi
+  onaysız uygulatmaz. Veritabanı okunamazsa süreç elindeki yürütücülerle devam eder.
 
 **Giden webhook'lar ve bildirimler.** Uç noktalar `/api/webhook-endpoints` ile
 yönetilir (`settings.write`); imza anahtarı yalnızca oluştururken bir kez döner ve
@@ -398,14 +490,16 @@ Katalogdaki her MCP sunucusunun tek bir destek durumu vardır
 | Durum | Bağlayıcılar | Konsolda |
 |---|---|---|
 | Destekli | Listede adı geçmeyen her bağlayıcı (ör. Splunk (Self-Hosted), Elastic, Okta, VirusTotal) | Etiketsiz |
-| Deneysel (**Experimental**) | CrowdStrike Falcon, SentinelOne, Microsoft Sentinel, resmî Splunk MCP sunucusu, Google SecOps, Google Threat Intelligence, Joe Sandbox, vStrike, Atomic Red Team, CAPE Sandbox | Bir bağlayıcıyı açan her ekranda etiket: Add integration kartı, Connected tablosu, Ayarlar kurulum çekmecesi, ilk kurulumdaki veri kaynağı seçimi ve formu (formda gerekçe metniyle) |
-| Sunulmuyor (WIP) | Carbon Black, Hybrid Analysis, ANY.RUN, AlienVault OTX, Palo Alto, Slack, MISP, IP Geolocation, URL Analysis, Microsoft Defender, Entra ID (Azure AD), Microsoft Teams | Add integration'da yok; önceden açılmışsa Connected tablosunda WIP etiketiyle |
+| Deneysel (**Experimental**) | CrowdStrike Falcon, SentinelOne, Microsoft Sentinel, resmî Splunk MCP sunucusu, Google SecOps, Google Threat Intelligence, Joe Sandbox, vStrike, Atomic Red Team, CAPE Sandbox, Microsoft Defender for Endpoint, Entra ID (Azure AD), Palo Alto PAN-OS | Bir bağlayıcıyı açan her ekranda etiket: Add integration kartı, Connected tablosu, Ayarlar kurulum çekmecesi, ilk kurulumdaki veri kaynağı seçimi ve formu (formda gerekçe metniyle) |
+| Sunulmuyor (WIP) | Carbon Black, Hybrid Analysis, ANY.RUN, AlienVault OTX, Slack, MISP, IP Geolocation, URL Analysis, Microsoft Teams | Add integration'da yok; önceden açılmışsa Connected tablosunda WIP etiketiyle |
 
 "Destekli", canlı bir ürün örneğine karşı test edilebilen bağlayıcı demektir:
 bunlar AutoSecOps'un temel aldığı açık kaynak projenin haftalık canlı testlerinde
 çalışır. Bu canlı test takımı AutoSecOps deposunda henüz yoktur (ertelendi:
 satıcı hesapları ve CI'dan dış erişim gerektirir). Deneysel bağlayıcılar ise canlı
-bir ürün örneğine karşı hiç çalıştırılmadı; çalışmayabilir. Etiket kapatılamaz ve kurulum tarafından
+bir ürün örneğine karşı hiç çalıştırılmadı; çalışmayabilir. Üç müdahale yürütücüsü
+(Defender, Entra ID, PAN-OS) kayıtlı satıcı yanıtlarıyla birim testlerinden geçer,
+ama canlı bir kiracıya ya da güvenlik duvarına karşı hiç çalıştırılmadı. Etiket kapatılamaz ve kurulum tarafından
 "destekli" olarak işaretlenemez; bir bağlayıcı yalnızca canlı bir testi
 olduğunda bu durumdan çıkar. Birini kullanırsanız sonucu bir destek paketiyle
 birlikte AutoSecOps desteğine bildirin (bkz.
@@ -429,7 +523,11 @@ adı (ör. acme.okta.com, `https://` olmadan) ve API belirteci girilir.
 2. **Onay kapısı ve otonomi katmanı.** Satırın insan beklemesi gerekip
    gerekmediğine kod karar verir ve kararı veren kuralı satıra yazar
    (ör. `autonomy.tier=approve`):
-   - `DAEMON_FORCE_APPROVAL=true` ya da konsolda Assist → her eylem insan bekler;
+   - `DAEMON_FORCE_APPROVAL=true` ya da konsolda Assist (varsayılan) → her eylem
+     insan bekler;
+   - çevreleme eylemi (ana makine izolasyonu, hesabı devre dışı bırakma ya da
+     kilitleme, güvenlik duvarında engelleme, dosya karantinası) → katmandan bağımsız
+     olarak her zaman insan bekler;
    - geri alınamaz eylem → her zaman insan bekler, hiçbir zaman otomatik onaylanmaz;
    - dört göz onayı isteyen eylem → her zaman insan bekler;
    - güven `DAEMON_CONFIDENCE_THRESHOLD` (0.90) altındaysa → insan bekler;
@@ -485,9 +583,41 @@ Kuru çalıştırma için `DAEMON_DRY_RUN=true`: eylemler loglanır, uygulanmaz.
 
 ### Müdahale politikasının ayarları
 
-Politika `system_config` tablosundaki `response.policy` satırından (JSON) okunur.
-Konsolda yalnızca farklı rol koşulu için bir ekran vardır; diğer anahtarlar için
-yoktur. Anahtarlar:
+Politika `system_config` tablosundaki `response.policy` satırından (JSON) okunur
+ve her kararda yeniden okunur: değişiklik yeniden başlatma gerektirmez.
+
+**Konsol:** Ayarlar → System → **Response policy**. Korunan hedefler (satır
+başına bir host, IP/aralık ya da hesap), varlık etiketleri (`fs01.corp.local:
+tier0, critical_infrastructure` biçiminde satırlar), ek korunan etiketler, tür
+başına saatlik sınırlar ve dört göz onayı isteyen türler bu ekrandan görülür ve
+değiştirilir. Kaydetmek için gerekçe zorunludur. API: `GET /api/response/policy`
+(`settings.read`; Analyst okuyabilir) ve `PUT /api/response/policy`
+(`settings.write`; Manager ve Admin). Analyst, Senior Analyst ve Viewer politikayı
+değiştiremez (403). PUT altı anahtarın tamamını gönderir; gönderilmeyen anahtar
+varsayılanına döner. `distinct_role_types`, `subdomain_matching_types` ve
+`undo_types` bu istekle değişmez.
+
+Doğrulama: hedefler boş, kontrol karakterli, 253 karakterden uzun ya da hiçbir şey
+adlandırmayan (`unknown`, `none` …) olamaz; etiketler `a-z 0-9 _ . : -` ve en çok
+64 karakterdir; saatlik sınır 0 ile 1000 arasında bir tam sayıdır (`0` o türü
+otomatik yürütmeye kapatır); tür adları bilinen eylem türleridir. En çok 5000
+korunan hedef, 5000 varlık (varlık başına en çok 32 etiket) ve 200 ek etiket;
+istek gövdesi en çok 1 MiB'dir (aşılırsa 413). Hatalı istek 422 döner ve hiçbir
+şey yazılmaz.
+
+**Eşzamanlı düzenleme:** `GET` bir `version` döner; `PUT` bunu geri göndermek
+zorundadır. Politika bu arada değiştiyse (başka bir yönetici ya da görevler
+ayrılığı ekranındaki farklı rol değişikliği) yanıt 409 olur ve hiçbir şey
+yazılmaz; konsol bunu söyler ve güncel politikayı yeniden yükler. Değişiklik tek
+işlemde, satır kilidiyle yazılır. Varsayılan korunan etiketler ve varsayılan dört göz
+türleri kaldırılamaz: istek yalnızca onlara ekler.
+
+**Denetim:** her kabul edilen değişiklik `config_audit_log`'a
+`config_type='response_policy'` ile yazılır: değiştiren kullanıcı, gerekçe, eski
+ve yeni değer (tam JSON). Değişmeyen bir kayıt satır yazmaz. `config_audit_log`
+bu sürümde hash zincirine bağlı değildir (bkz. denetim kayıtları tablosu).
+
+Anahtarlar:
 
 | Anahtar | Anlamı | Varsayılan |
 |---|---|---|
@@ -572,23 +702,39 @@ kullanılır ve satır bunu `role_source` ile söyler. Denetçiye vermek için
 ## Otonomi
 
 Otonomi iki düzeyde belirlenir. Genel anahtarlar her eylem için geçerlidir ve
-otonomi katmanlarının üstündedir. Konsolun üst çubuğundaki çip bunları **Assist**
-(değişiklikten önce sorar) ya da **Act** olarak gösterir
-(`GET /api/config/autonomy`):
+otonomi katmanlarının üstündedir. **GA varsayılanı insan onayıdır:** yeni kurulumda
+her müdahale eylemi bir kişinin onayını bekler (Assist). Konsolun üst çubuğundaki
+çip etkin kipi gösterir (`GET /api/config/autonomy`, `mode` alanı): **Act** yalnızca
+onay zorlanmıyorsa, `DAEMON_AUTO_RESPONSE` açıksa ve en az bir otonomi katmanı
+Autonomous ise görünür; aksi halde **Assist** (değişiklikten önce sorar) görünür.
+Konsolda Act seçilmiş olsa bile hiçbir katman Autonomous değilse her eylem yine
+kişi bekler ve çip bunu Assist olarak gösterir. Katmanlar okunamıyorsa çip **Unknown · approvals
+held** der (`mode: unknown`): kapı o durumda her eylemi bir kişiye bekletir.
 
 | Anahtar | Varsayılan | Etki |
 |---|---|---|
 | `DAEMON_AUTO_RESPONSE` | `true` | `false` ise daemon hiçbir müdahale eylemi önermez ve **onaylanmış** eylemleri de uygulamaz |
-| `DAEMON_FORCE_APPROVAL` | `false` | `true` ise her eylem insan onayı bekler (Assist) |
-| `approval.force_manual_approval` (konsoldan, `POST /api/config/force-manual-approval`, `settings.write`) | kayıt yok = Act | Assist'i kalıcı yapar; ortam değişkeni Assist'i zorluyorsa Act kaydı 409 ile reddedilir |
+| `DAEMON_FORCE_APPROVAL` | `false` (kilit yok) | Bir kilittir, kipin kendisi değildir: `true` ise her eylem insan onayı bekler ve konsoldan Act seçilemez (409). `false` ise seçim konsoldadır |
+| `approval.force_manual_approval` (konsoldan, `POST /api/config/force-manual-approval`, `settings.write`) | Assist (`{"enabled": true}`; kayıt yoksa ya da okunamazsa da Assist). 0.7.1'den donmuş `04_config_tables.sql` satırı Act olarak tohumlar; `63_approval_default_assist.sql` dokunulmamış tohumu yeni ve yükseltilen kurulumda Assist'e çevirir ve `config_audit_log`'a `system:w0.32-default` adıyla bir satır yazar | Kurulum sihirbazı ve **Ayarlar → Limits & autonomy** Assist'i (önerilen) ya da Act'i buraya yazar |
 
 **Düzenlenmiş sektör için önerilen ayar:** `DAEMON_FORCE_APPROVAL=true` (Helm:
 `config.DAEMON_FORCE_APPROVAL`) ve `DAEMON_AUTO_RESPONSE=true` (aksi halde onaylanan
-eylemler de uygulanmaz). Böylece "ortam kazanır" ve konsoldan Act'e geçilemez.
-Kodun varsayılanı Act görünür. Yine de otonomi katmanlarının varsayılanı Approve
-olduğu için, bir yönetici bir katmanı Autonomous yapmadıkça bir kişinin onaylamadığı
-eylem uygulanmaz. Assist bunu yapılandırma düzeyinde sabitler: Autonomous katmanlar
-da insan bekler. Böylece kural denetçiye gösterilebilir olur.
+eylemler de uygulanmaz). Böylece "ortam kazanır" ve konsoldan Act'e geçilemez;
+kural yapılandırma düzeyinde sabitlenir ve denetçiye gösterilebilir olur. Act'e
+geçmek tek başına hiçbir eylemi kişisiz bırakmaz: bunun için bir yöneticinin ayrıca
+bir katmanı Autonomous yapması gerekir (aşağıda). Assist açıkken Autonomous katmanlar
+da insan bekler.
+
+**Her zaman kişi onaylar.** Çevreleme (containment) eylemleri hangi katmanda olursa
+olsun, Assist ya da Act fark etmeksizin, hiçbir zaman kişisiz çalışmaz; bu
+değiştirilemez (`core/autonomy/tiers.py` `ALWAYS_HUMAN`). Konsol bunu "isolating a
+host, disabling or locking an account, blocking on a firewall, quarantining a file"
+diye anlatır. Sınıflar:
+
+- Her zaman kişi: `isolate_host`, `disable_user`, `revoke_sessions`, `access_revoke`, `block_ip`, `waf_block`, `quarantine_file`
+
+Geri alınamayan her eylem (`execute_spl_query`, `custom`) ve geri alma tipleri
+(`unblock_ip`, `unisolate_host`, `enable_user`) de hiçbir zaman Autonomous olamaz.
 
 ### Otonomi katmanları
 
@@ -606,8 +752,10 @@ eylem sınıfı için bir katman tutar (`autonomy_tiers` tablosu):
 Autonomous yalnızca şu koşulların hepsi doğruysa uygulanır, aksi halde eylem
 Approve gibi işlenir:
 
-- Sınıf `isolate_host`, `block_ip`, `block_domain`, `waf_block` ya da
-  `gateway_block`'tur. Eylem hem satırda hem yürütücü kaydında geri alınabilirdir.
+- Otonom olabilen sınıflar: `block_domain`, `gateway_block` (bir alan adı göstergesinin
+  DNS'te ya da güvenli web geçidinde engellenmesi). Eylem hem satırda hem yürütücü
+  kaydında geri alınabilirdir. Yukarıdaki "her zaman kişi" sınıfları için Autonomous
+  yazımı 422 ile reddedilir.
 - Sınıf dört göz onayı istemez. Kategori `*` ya da `other` değildir.
 - Katmanda bir süre (`max_ttl_seconds`, en çok 7 gün) ve bir güven tabanı
   (`min_confidence`) vardır. Eylemin güveni bu tabana ve
@@ -629,6 +777,11 @@ Kategori koddan gelir. Önce sensörün yazdığı alanlar (MITRE tekniği,
 Gönderenin yükte yazdığı kategori alanı okunmaz; eşlenemeyen her alarm `other`'a
 düşer ve `other` hiçbir zaman Autonomous olamaz. Autonomous bir eylem de müdahale
 politikasından (korunan varlıklar, saatlik sınır) geçer.
+
+2.0.0'dan önce `isolate_host`, `block_ip` ya da `waf_block` için Autonomous yazılmış
+bir satır silinmez ve matriste "not applied: a person approves" notuyla görünür; karar
+anında Approve gibi işlenir ve satıra `... is containment; a person approves it`
+gerekçesi yazılır.
 
 **Düzenlenmiş sektör için öneri:** `DAEMON_FORCE_APPROVAL=true` ile tüm katmanları
 insan onayında tutun. Autonomous'u yalnızca değişiklik yönetimi kaydıyla ve Karne
@@ -755,8 +908,8 @@ imhayı yalnızca imha işiyle yapın.
 
 | Kayıt | İçerik | Bütünlük | Nasıl okunur / doğrulanır |
 |---|---|---|---|
-| `config_audit_log` | Her ayar değişikliği: anahtar, eski/yeni değer, değiştiren kullanıcı, gerekçe, zaman; otonomi katmanı değişiklikleri (`config_type='autonomy_tier'`), saklama/imha | zincirsiz | veritabanı; ilgili ekranlar; `GET /api/autonomy/audit` |
-| `case_audit_logs` | Vaka alanı değişiklikleri, düzenleyici an kayıtları, taslaklar | `audit_chain`'de zincirli | Vaka sayfası → Record sekmesi; `python -m core.audit.verify` |
+| `config_audit_log` | Her ayar değişikliği: anahtar, eski/yeni değer (sırlar maskeli), değiştiren kullanıcı, gerekçe, zaman; otonomi katmanı değişiklikleri (`config_type='autonomy_tier'`), saklama/imha; LLM sağlayıcı, beceri, özel iş akışı, kural kaynağı ve SLA politikası değişiklikleri (W0.35) | zincirsiz | veritabanı; ilgili ekranlar; `GET /api/autonomy/audit` |
+| `case_audit_logs` | Vaka alanı değişiklikleri, düzenleyici an kayıtları, taslaklar; kimlik ve kullanıcı yönetimi olayları (`entity_type='auth'`) ve toplu bulgu dışa aktarımları (`entity_type='findings_export'`, W0.35) | `audit_chain`'de zincirli | Vaka sayfası → Record sekmesi; veritabanı; `python -m core.audit.verify` |
 | `approval_actions` | Önerilen her eylem, kararı veren kural, uygulanan otonomi katmanı, araç çağrısının argüman özeti, onaylayan/reddeden, uygulama sonucu | `audit_chain`'de zincirli | onay kuyruğu, vaka Actions sekmesi, `GET /api/v1/approvals`; `python -m core.audit.verify` |
 | `approval_decisions` | Her onay kararı (onay, ilk onay, ikinci onay, red), karar veren ve o anki rolü | yalnızca eklenir, değiştirilemez; zincirsiz | görevler ayrılığı raporu, `GET /api/response/segregation` |
 | `agent_events` (ajan defteri) | Her ajan koşusunun olayları | koşu başına SHA-256 hash zinciri; başı imzalı kontrol noktasında | `GET /api/workflows/runs/{run_id}/verify`, `npm run ledger:verify`, `python -m core.audit.verify --agent-events` |
@@ -765,12 +918,61 @@ imhayı yalnızca imha işiyle yapın.
 | `lesson_events` | Derslerin her geçişi (öneri, replay, terfi, ret, geri alma) | yalnızca eklenir; zincirsiz | `GET /api/lessons/{lesson_id}/events` |
 | Soruşturma gözetim zinciri | Bir soruşturmanın dosyaları ve kayıtları | — | `GET /api/orchestrator/investigations/{investigation_id}/chain-of-custody` |
 
-### İmzalı kontrol noktalarını açma
+### İmza anahtarları (kurulumda)
 
-Zincir (`audit_chain`) kurulumla birlikte çalışır. Kontrol noktaları ise imza
-anahtarı verilene kadar yazılmaz (daemon her aralıkta uyarı loglar):
+Kurulum iki Ed25519 imza anahtarını yoksa üretir: `AUDIT_CHECKPOINT_SIGNING_KEY`
+(daemon'un denetim kontrol noktaları) ve `EVIDENCE_PACK_SIGNING_KEY` (API'nin vaka
+kanıt paketleri). Var olan bir anahtar hiçbir zaman değiştirilmez. Gizli anahtar
+hiçbir çıktıya ya da loga yazılmaz; yalnızca açık anahtar ve anahtar kimliği
+(key id) gösterilir. FIPS modunda da algoritma Ed25519'dur (W3.10 bilinen boşluğu).
 
-1. Anahtar çiftini üretin: `python -m core.audit.checkpoint keygen`. İlk satır
+- **Compose:** `signing-keys` tek seferlik servisi her `up`'ta backend ve daemon'dan
+  önce çalışır (`python -m core.audit.signing_keys provision`) ve anahtarları
+  `vigil_home` birimindeki şifreli sır deposuna (`secrets.enc`) yazar. Depo
+  yazılamazsa `up` durmaz; uyarı verir ve `/api/health` uyarıyı gösterir.
+- **Helm:** `signingKeys.generate=true` (varsayılan) ilk kurulumda her anahtarı
+  kendi Secret'ına üretir: `<release>-vigil-signing-key-checkpoint` (yalnızca
+  daemon'a verilir) ve `<release>-vigil-signing-key-evidence` (yalnızca backend'e).
+  Yükseltmede korunur, `helm uninstall` silmez (`helm.sh/resource-policy: keep`).
+  Aynı anahtar `secrets.existingSecret`/ExternalSecrets'te de varsa sizinki geçerli
+  olur. `helm template`, Argo CD ya da Flux ile (lookup çalışmaz, her render yeni
+  anahtar üretir) iki anahtarı içeren bir Secret'ı kendiniz oluşturup
+  `signingKeys.existingSecret` ile verin ya da anahtarları
+  `secrets.existingSecret`/ExternalSecrets ile verip `signingKeys.generate=false`
+  yapın.
+- **Air-gap (`install.sh`):** Helm şemasını kurduğu için anahtarlar aynı şekilde
+  üretilir. Kurulumun sonunda açık anahtarlar yazdırılır ya da
+  `--signing-keys-out <dosya>` ile dosyaya yazılır.
+
+**Denetçi için açık anahtarlar** (çevrimdışı doğrulama):
+
+```bash
+docker compose -f infra/docker/docker-compose.yml run --rm signing-keys export
+kubectl exec statefulset/<release>-vigil-daemon -- python -m core.audit.signing_keys export --purpose audit_checkpoints
+kubectl exec deploy/<release>-vigil-backend -- python -m core.audit.signing_keys export --purpose evidence_packs
+```
+
+`export` varsayılan olarak `AUDIT_CHECKPOINT_PUBLIC_KEY=…` ve
+`EVIDENCE_PACK_PUBLIC_KEY=…` satırları verir; `--format pem` ya da `--format json`
+da seçilebilir. Konsoldan: `GET /api/audit/signing-keys` (`settings.read`). Bu
+yanıtta kontrol noktası anahtarı backend'de yoksa son kontrol noktasındaki açık
+anahtar `source: latest_checkpoint` ile gösterilir; bu değer veritabanından
+geldiği için kurulumda dışa aktarılan anahtarla karşılaştırın. Durum:
+`python -m core.audit.signing_keys status` (`scripts/autosecops signing-keys …`).
+
+**Uyarı:** imza yapılandırılmamışsa `/api/health` ve `/api/health/ready` yanıtında
+`warnings` listesi `audit_checkpoint_signing_not_configured` (kontrol noktası iş
+kapalı, ya da ne backend'de anahtar ne son iki aralıkta, en az iki saatte, imzalı
+kontrol noktası var) ve/veya `evidence_pack_signing_key_missing` içerir;
+`signing` alanı iki boolean verir. Bu uyarı pod'u hazır olmaktan çıkarmaz.
+
+### İmzalı kontrol noktaları
+
+Zincir (`audit_chain`) kurulumla birlikte çalışır. Kontrol noktaları kurulumda
+üretilen anahtarla imzalanır (yukarıya bakın); anahtar yoksa yazılmaz ve daemon
+her aralıkta uyarı loglar.
+
+1. Anahtarı elle vermek için: `python -m core.audit.checkpoint keygen`. İlk satır
    (`AUDIT_CHECKPOINT_SIGNING_KEY=…`) gizlidir: sır deposuna ya da
    Secret/ExternalSecrets'e koyun ve daemon'a verin. İkinci satır
    (`AUDIT_CHECKPOINT_PUBLIC_KEY=…`) açık anahtardır: doğrulamayı yapacak kişiye,
@@ -809,10 +1011,11 @@ imzalı bir yeniden temel alma kaydı yazar.
 Vaka sayfasında **Evidence pack** düğmesi (`GET /api/cases/{case_id}/evidence-pack`,
 `cases.read`) vakanın imzalı ZIP arşivini indirir (içerik:
 [güvenlik teknik belgesi §5](guvenlik-teknik-belgesi.md#5-denetim-kayıtları-ve-zincir)).
-Kalıcı imza anahtarı için `scripts/autosecops evidence-keygen` çıktısındaki gizli
-anahtarı `EVIDENCE_PACK_SIGNING_KEY` sırrı olarak verin ve açık anahtarı denetçiye
-ayrıca iletin. Anahtar yoksa her paket geçici bir anahtarla imzalanır ve bu manifestte
-yazılıdır. Denetçi paketi ağsız doğrular:
+İmza anahtarı `EVIDENCE_PACK_SIGNING_KEY` kurulumda üretilir (bkz. İmza
+anahtarları); açık anahtarı `signing_keys export` ile alıp denetçiye ayrıca iletin.
+Kendi anahtarınızı vermek için `scripts/autosecops evidence-keygen`. Anahtar yoksa
+her paket geçici bir anahtarla imzalanır, bu manifestte yazılıdır ve `/api/health`
+uyarı verir. Denetçi paketi ağsız doğrular:
 
 ```bash
 scripts/autosecops verify-bundle vaka-paketi.zip --public-key <acik-anahtar>
@@ -832,6 +1035,9 @@ Bu sürümde **olmayanlar**:
 
 AutoSecOps güvenlikle ilgili olayları kurumun SIEM'ine akıtabilir. Aktarım
 **varsayılan olarak kapalıdır**; kapalıyken dosya yazılmaz, bağlantı açılmaz.
+Kimlik olayları aktarım kapalıyken de veritabanına kaydedilir (bkz. "Kimlik ve
+ayar değişikliği kaydı"); aktarım bunların kurum dışında da bir kopyasıdır.
+Banka ve benzeri denetimli kurumlarda aktarımın açık olması önerilir.
 Yönetici API'si (konsol ekranı yoktur):
 
 - `GET /api/compliance/audit-export/config` ve `.../status` (`settings.read`):
@@ -865,11 +1071,54 @@ geçmeyen bir kişi adı) olduğu gibi aktarır. Aktör alanı denetim izinin am
 gereği maskelenmez.
 
 **Çok kopyalı kurulum.** Aktarımı Postgres danışma kilidini alan tek süreç yapar.
-Kimlik doğrulama olayları API sürecinde yerel bir biriktiriciye
-(`$VIGIL_DIR/audit_export/`) yazılır; birden çok API kopyası varsa bu dizin tüm
-kopyaların paylaştığı bir birimde olmalıdır, yoksa lider olmayan kopyaların olayları
-aktarılmaz. Mantıksal geri yüklemeden sonra imleç dosyasını (`cursors.json`)
-silin.
+Kimlik doğrulama olayları veritabanında tutulur (aşağıdaki "Kimlik ve ayar
+değişikliği kaydı"), bu yüzden kopyalar arasında paylaşılan bir disk gerekmez;
+yalnızca başarısız girişlerdeki tanımlayıcı özetinin anahtarı
+(`$VIGIL_DIR/audit_export/identifier.key`) kopyalar arasında aynı olmalıdır ki
+özetler eşleşsin. Mantıksal geri yüklemeden sonra imleç dosyasını
+(`cursors.json`) silin.
+
+### Kimlik ve ayar değişikliği kaydı
+
+W0.35'ten beri aşağıdakiler, SIEM aktarımı açık olsun olmasın, veritabanında
+kalıcı olarak kaydedilir:
+
+- **Kimlik ve kullanıcı yönetimi olayları:** giriş (başarılı, başarısız,
+  kilitleme, MFA hatası), SSO girişi (başarılı, reddedilen), çıkış, MFA kurma,
+  açma, kapatma ve kurtarma kodları, parola değişikliği, parola sıfırlama isteği
+  ve sıfırlama, kullanıcı oluşturma, güncelleme, devre dışı bırakma/etkinleştirme,
+  silme ve rol değişikliği. `case_audit_logs` tablosuna `entity_type = 'auth'`
+  satırı olarak yazılır (`field_name` olay, `action` sonuç, `changed_by` kişi,
+  `ip_address`, `user_agent`; ayrıntı `new_value`'da). Tablo W1.10 zincirindedir:
+  `python -m core.audit.verify` bu satırları da doğrular. Bilinmeyen bir
+  kullanıcı adıyla başarısız girişte yazılan ad saklanmaz, yalnızca anahtarlı
+  özeti ve uzunluğu saklanır. SIEM aktarımında bu olaylar `auth` kaynağıyla
+  gider.
+- **Ayar değişiklikleri** `config_audit_log` tablosuna kim, ne, eski → yeni
+  değer olarak yazılır; sırlar (`api_key`, `password`, `token`, `secret` …
+  anahtarları, URL içindeki kullanıcı:parola, tanınan anahtar biçimleri)
+  `[REDACTED]` olarak saklanır. Yeni kapsananlar (`config_type`):
+  `llm_provider` (LLM sağlayıcı ekleme/değiştirme/silme; bulut sağlayıcı
+  seçimi yurt dışı aktarımın başladığı andır, KVKK md. 9; anahtarın kendisi
+  değil, değişip değişmediği yazılır), `skill` (beceri; gövde 16 000 karaktere
+  kadar ve SHA-256 özeti), `custom_workflow`, `detection_rules` (kaynak ekleme,
+  silme, eşitleme, yeniden yükleme) ve `sla_policy`. Bütçe ayarı ve iş akışı
+  açma/kapama zaten `system_config` değişikliği olarak yazılıyordu.
+  `config_audit_log` W1.10 zincirinde değildir (tehdit modeli R6).
+- **Toplu bulgu dışa aktarımı** (`POST /api/findings/export`): kim, hangi biçim
+  ve seçim (tüm bulgular, gizli kanaryalar hariç), kaç satır ve dosya adı;
+  `case_audit_logs` içinde `entity_type = 'findings_export'` (zincirli). Kayıt
+  yazılamazsa dışa aktarım dosyası silinir ve istek 500 döner.
+- **Vaka yorumu, kanıt ve gözetim zinciri kaydının yazarı** oturumdaki
+  kullanıcıdır; istemcinin gönderdiği `author`, `collected_by` ya da `user`
+  alanı kabul edilir ama yok sayılır. **W0.35'ten önce yazılmış yorum ve kanıt
+  satırlarındaki yazar adı istemcinin gönderdiği metindir** (konsol her zaman
+  `SOC Analyst` gönderiyordu) ve güvenilir değildir; bu satırlar
+  değiştirilmedi. Kimin yazdığını o satırlar için vaka Record sekmesindeki
+  zincirli kayıtlardan ya da erişim kayıtlarından doğrulayın.
+
+Sorgu örneği (psql):
+`SELECT timestamp, field_name, action, changed_by, ip_address FROM case_audit_logs WHERE entity_type = 'auth' ORDER BY audit_id DESC LIMIT 50;`
 
 Alan eşlemesi, biçimler, metrikler (`autosecops_audit_export_*`) ve bilinen sınırlar:
 [core/compliance/AUDIT_EXPORT.md](../../core/compliance/AUDIT_EXPORT.md).
@@ -886,6 +1135,24 @@ Helm, kurulum dışı), doğrulama ve geri alma:
 sürümler için bkz. [kurulum kılavuzu §9](kurulum-internetsiz.md#9-güncelleme-ve-geri-alma).
 Her sürümle birlikte SBOM, imzalı imajlar ve sürüm notları verilmesi
 (Planlı — `wp/w4.7-release`, bu sürümde yok).
+
+### Kendi PostgreSQL sunucunuz
+
+Helm'de veritabanı kullanıcısının adı serbesttir (`postgresql.external.username`
+ya da `postgresql.auth.username`); `deeptempo` olması gerekmez. Bu kullanıcının
+süper kullanıcı olması da gerekmez. Ancak veritabanının sahibi olmalı ve
+CREATEROLE yetkisine sahip olmalıdır. db-init Job'u bu kullanıcıyla bağlanır,
+şemayı kurar ve uygulamaların bağlandığı sahip olmayan `vigil_app` rolünü
+oluşturup parolasını ayarlar. Job bunu her kurulumda ve yükseltmede yaptığı için
+yetki kalıcı olarak gerekir. `pg_trgm` ve `uuid-ossp` uzantılarını veritabanı
+sahibi kendisi oluşturabilir.
+
+**Bitnami alt grafiği (`postgresql.bitnami.enabled=true`).** Alt grafiğin
+oluşturduğu kullanıcının (`postgresql.bitnami.auth.username`) CREATEROLE yetkisi
+yoktur. Bu yüzden `vigil_app` oluşturulmaz ve uygulamalar veritabanına
+bağlanamaz. İki çözüm vardır: bu kullanıcıya bir kez süper kullanıcıyla
+`ALTER ROLE <kullanıcı> CREATEROLE;` verin ve ardından `helm upgrade` yapın, ya da
+kullanıcı adı olarak CREATEROLE yetkisi olan bir kullanıcı verin.
 
 ## Yedekleme ve geri yükleme
 
@@ -1005,7 +1272,7 @@ Hangi anahtar neyi korur:
 | Sır | Korur | Nerede |
 |---|---|---|
 | `JWT_SECRET_KEY` | Oturum belirteçleri, parola sıfırlama bağlantıları, sohbet araç çağrılarının kimlik imzası | Helm: `secrets.jwtSecretKey` ya da Secret. Compose: `.env`; `secrets.enc` ya da durum dizinindeki `jwt_secret` de olabilir ve `secrets.enc` ortamdan önce okunur |
-| Veri anahtarı (`VIGIL_DATA_KEY`) | Kullanıcıların MFA (TOTP) sırları; Helm'de konsoldan girilen tüm sırlar (`platform_secrets`) | Helm: `secrets.dataEncryptionKey` ya da Secret (zorunlu). Compose: tanımlı değilse durum dizinindeki `master.key` |
+| Veri anahtarı (`VIGIL_DATA_KEY`) | Kullanıcıların MFA (TOTP) sırları; Helm'de konsoldan girilen tüm sırlar (`platform_secrets`) | Helm: grafik `<fullname>-data-key` Secret'ına üretir ve korur; `secrets.dataEncryptionKey` ya da kendi Secret'ınız (`dataKey.existingSecret`) önceliklidir. Bu Secret'ı veritabanıyla birlikte yedekleyin. Compose: tanımlı değilse durum dizinindeki `master.key` |
 | `master.key` | Compose ve tek sunucuda `secrets.enc` (konsoldan girilen sırlar) | Durum dizini (`vigil_home` birimi) |
 | `POSTGRES_PASSWORD` | Veritabanı sahibi ve uygulamaların bağlandığı `vigil_app` rolü (ikisi aynı parolayı kullanır) | Helm: `secrets.postgresPassword` ya da Secret. Compose: `.env` |
 | Redis parolası | ARQ kuyruğu ve oturum iptal listesi | Helm: Bitnami alt grafiğinin Secret'ı ya da `redis.external.url`. Gömülü Redis ve Compose Redis'i parolasızdır; erişimi ağ politikasıyla sınırlayın |

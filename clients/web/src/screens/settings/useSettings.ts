@@ -472,8 +472,9 @@ export function useOrchestrator() {
 }
 
 export function useForceManualApproval() {
+  // Assist until read: a person approves by default (W0.32).
   const [state, setState] = useState<ForceManualApproval>({
-    enabled: false,
+    enabled: true,
     environment_wins: false,
   })
   const [phase, setPhase] = useState<Phase>('loading')
@@ -492,8 +493,7 @@ export function useForceManualApproval() {
         setPhase('ready')
       })
       .catch(() => {
-        // The default state is Act; showing it would claim approvals are off
-        // when the stored flag was never read.
+        // Showing either choice would claim a stored flag that was never read.
         if (!cancelled) setPhase('error')
       })
     return () => {

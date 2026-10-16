@@ -14,6 +14,7 @@ from typing import Annotated, Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from core.audit.config_changes import record_change
 from core.llm.bifrost.admin import (
     push_provider_key,
     sync_all_provider_models,
@@ -127,6 +128,47 @@ def _to_response(row: LLMProviderConfig) -> Dict[str, Any]:
     return d
 
 
+AUDIT_CONFIG_TYPE = "llm_provider"
+
+
+def _audit_snapshot(row: LLMProviderConfig) -> Dict[str, Any]:
+    """What the audit row keeps of a provider: where prompts go, never the key.
+
+    ``provider_type`` and ``base_url`` say whether the data leaves the
+    install (a cloud API is a cross-border transfer, KVKK art. 9).
+    """
+    return {
+        "provider_type": row.provider_type,
+        "name": row.name,
+        "base_url": row.base_url,
+        "default_model": row.default_model,
+        "is_active": row.is_active,
+        "is_default": row.is_default,
+        "config": dict(row.config or {}),
+        "has_api_key": bool(row.api_key_ref),
+    }
+
+
+def _audit(
+    db: Any,
+    provider_id: str,
+    action: str,
+    old: Optional[Dict[str, Any]],
+    new: Optional[Dict[str, Any]],
+    user: User,
+) -> None:
+    """One config_audit_log row on the request's session (commits with the change)."""
+    record_change(
+        db,
+        config_type=AUDIT_CONFIG_TYPE,
+        config_key=provider_id,
+        action=action,
+        old=old,
+        new=new,
+        actor=user.username or str(user.user_id),
+    )
+
+
 def _validate_type(provider_type: str) -> None:
     if provider_type not in VALID_PROVIDER_TYPES:
         raise HTTPException(
@@ -202,6 +244,7 @@ async def create_provider(
         config=payload.config or {},
     )
     provider_service.insert(db, row, make_default=payload.is_default)
+    _audit(db, provider_id, "create", None, _audit_snapshot(row), current_user)
     _schedule_catalog_resync(f"created provider {provider_id}")
     return _to_response(row)
 
@@ -218,6 +261,7 @@ async def update_provider(
     row = provider_service.get_provider(db, provider_id)
     if row is None:
         raise HTTPException(status_code=404, detail="provider not found")
+    before = _audit_snapshot(row)
 
     if payload.name is not None:
         row.name = payload.name
@@ -268,6 +312,11 @@ async def update_provider(
         row.is_default = False
 
     provider_service.settle(db, row)
+    after = _audit_snapshot(row)
+    if payload.api_key:
+        after["api_key_rotated"] = True  # that it changed, never the value
+    if after != before:
+        _audit(db, provider_id, "update", before, after, current_user)
     _schedule_catalog_resync(f"updated provider {provider_id}")
     return _to_response(row)
 
@@ -282,6 +331,7 @@ async def delete_provider(
     row = provider_service.get_provider(db, provider_id)
     if row is None:
         raise HTTPException(status_code=404, detail="provider not found")
+    before = _audit_snapshot(row)
 
     # Guard: refuse to delete the only active default for this provider type.
     if row.is_default:
@@ -316,5 +366,6 @@ async def delete_provider(
         )
 
     provider_service.remove(db, row)
+    _audit(db, provider_id, "delete", before, None, current_user)
     _schedule_catalog_resync(f"deleted provider {provider_id}")
     return {"success": True, "provider_id": provider_id}

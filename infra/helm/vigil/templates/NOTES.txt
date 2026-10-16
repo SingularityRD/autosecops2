@@ -20,6 +20,24 @@ Vigil SOC has been installed in namespace {{ .Release.Namespace }} as release "{
    # Then open http://localhost:{{ .Values.backend.service.port }}
 {{- end }}
 
+{{- if or .Values.signingKeys.generate .Values.signingKeys.existingSecret }}
+
+SIGNING KEYS: audit checkpoints and evidence packs are signed with the keys in
+   {{ include "vigil.signingKeys.secretName" (dict "context" . "key" "AUDIT_CHECKPOINT_SIGNING_KEY") }} and {{ include "vigil.signingKeys.secretName" (dict "context" . "key" "EVIDENCE_PACK_SIGNING_KEY") }}.
+   Give whoever verifies offline the public halves (no private key is printed):
+
+{{- if .Values.daemon.enabled }}
+   kubectl -n {{ .Release.Namespace }} exec statefulset/{{ include "vigil.daemon.fullname" . }} -- python -m core.audit.signing_keys export --purpose audit_checkpoints
+{{- end }}
+   kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "vigil.backend.fullname" . }} -- python -m core.audit.signing_keys export --purpose evidence_packs
+{{- else }}
+
+⚠️  SIGNING KEYS ARE NOT PROVISIONED BY THIS CHART (signingKeys.generate=false):
+   supply AUDIT_CHECKPOINT_SIGNING_KEY and EVIDENCE_PACK_SIGNING_KEY through
+   secrets.existingSecret / ExternalSecrets, or audit checkpoints are not written
+   and evidence packs carry a one-off key. /api/health lists the warning.
+{{- end }}
+
 {{- if not .Values.evidence.persistence.enabled }}
 
 ⚠️  EVIDENCE IS NOT PERSISTENT: evidence.persistence.enabled is false, so files
@@ -58,6 +76,20 @@ Vigil SOC has been installed in namespace {{ .Release.Namespace }} as release "{
 No default admin account ships. On first visit the web UI opens a bootstrap
 screen (POST /api/auth/bootstrap) where you create the admin with a password
 of your choosing; it closes as soon as one account exists.
+
+Creating that first admin needs the one-time setup token, so whoever reaches
+the instance first cannot claim it.
+{{- if .Values.secrets.setupToken }}
+It is the value you set in secrets.setupToken.
+{{- else }}
+The backend prints it once, on first start. Read it with:
+
+   kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=backend --prefix --tail=-1 | grep "setup token"
+{{- end }}
+
+Or issue a new one (the old one stops working) with:
+
+   kubectl exec -n {{ .Release.Namespace }} deploy/{{ include "vigil.backend.fullname" . }} -c backend -- python -m core.auth.setup_token regenerate
 {{- end }}
 
 {{- $medic := .Values.medic | default dict }}
@@ -76,7 +108,7 @@ the Secret to rotate, then restart the gateway:
          python -m core.auth.service_account ensure {{ $user }}
 {{- end }}
 
-{{- if and (eq (.Values.config.SECRETS_BACKEND | toString) "database") (not .Values.secrets.dataEncryptionKey) (not .Values.secrets.existingSecret) (not .Values.secrets.externalSecret.enabled) (ne (.Values.config.DEV_MODE | toString) "true") }}
+{{- if and (eq (.Values.config.SECRETS_BACKEND | toString) "database") (not .Values.secrets.dataEncryptionKey) (not .Values.secrets.existingSecret) (not .Values.dataKey.generate) (not .Values.dataKey.existingSecret) (not .Values.secrets.externalSecret.enabled) (ne (.Values.config.DEV_MODE | toString) "true") }}
 
 ⚠️  WARNING: secrets.dataEncryptionKey is empty. The backend will not start
    without VIGIL_DATA_KEY: it encrypts the secrets entered in the console (kept

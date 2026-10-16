@@ -2032,6 +2032,9 @@ describe('case page', () => {
       fireEvent.change(panel.getByPlaceholderText('Write a comment…'), { target: { value: 'hello' } })
       fireEvent.click(panel.getByRole('button', { name: /Post/ }))
       await waitFor(() => expect(casesApi.getComments).toHaveBeenCalledTimes(2))
+      // The author is the signed-in user, recorded by the server (W0.35):
+      // the client sends no name of its own.
+      expect(casesApi.addComment).toHaveBeenCalledWith('case-9', { content: 'hello' })
     })
   })
 })

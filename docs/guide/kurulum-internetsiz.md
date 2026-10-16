@@ -165,6 +165,11 @@ ve bir SBOM eşlik etmez (Planlı — `wp/w4.7-release`, bu sürümde yok).
 - Kural korpusları: `--rules-into-backend` backend pod'unun `~/security-detections`
   dizinine açar; o dizin kalıcı değilse pod yeniden başladığında tekrarlayın ya da
   `--rules-dir` ile kalıcı bir birime açın.
+- İmza anahtarları (W0.36): grafik denetim kontrol noktası ve kanıt paketi imza
+  anahtarlarını yoksa üretir (`signingKeys.generate`, varsayılan açık). Kurulumun
+  sonunda `install.sh` açık anahtarları yazdırır; `--signing-keys-out <dosya>` ile
+  dosyaya yazar. Bunları denetçiye ayrı bir kanaldan verin. Ayrıntı:
+  [yönetici kılavuzu](yonetici-kilavuzu.md#imza-anahtarları-kurulumda).
 
 ### `musteri-values.yaml` içinde mutlaka verilecekler
 
@@ -172,11 +177,12 @@ ve bir SBOM eşlik etmez (Planlı — `wp/w4.7-release`, bu sürümde yok).
 |---|---|
 | `secrets.existingSecret` ya da `secrets.externalSecret.enabled` | JWT anahtarı, Postgres parolası, `AGENT_INTERNAL_TOKEN` gibi sırlar grafikte düz değer olarak durmasın; ExternalSecrets Operator ile kasa (Vault vb.) desteklenir |
 | `secrets.jwtSecretKey` (ya da aynı anahtarı taşıyan Secret) | `DEV_MODE=false` iken backend `JWT_SECRET_KEY` olmadan açılmaz |
-| `secrets.dataEncryptionKey` (ya da Secret'ta `VIGIL_DATA_KEY`) | `DEV_MODE=false` iken backend onsuz açılmaz. Konsoldan girilen sırları (PostgreSQL `platform_secrets`) ve MFA sırlarını şifreler; en az 32 karakter (`openssl rand -base64 32`). Kopyasını kümenin dışında saklayın: kaybolursa bu sırlar çözülemez. Her yükseltmede aynı değer verilmelidir |
+| `secrets.dataEncryptionKey` (ya da Secret'ta `VIGIL_DATA_KEY`) | Boş bırakılırsa grafik ilk kurulumda `<fullname>-data-key` Secret'ına üretir ve her yükseltmede korur (`dataKey.generate`); `helm template`/GitOps'ta kendiniz verin (`dataKey.existingSecret`). `DEV_MODE=false` iken backend anahtarsız açılmaz. Konsoldan girilen sırları (PostgreSQL `platform_secrets`) ve MFA sırlarını şifreler; en az 32 karakter (`openssl rand -base64 32`). Kopyasını kümenin dışında saklayın: kaybolursa bu sırlar çözülemez. Her yükseltmede aynı değer verilmelidir |
 | `secrets.agentInternalToken` | Ajan katmanının `/internal` uçlarına tek kimlik doğrulaması; boşsa iş akışları 503 alır |
 | `secrets.postgresPassword` | Varsayılan değer (`change-me-before-production`) üretimde kullanılmamalı |
 | `stateDirectory.volume` | Varsayılan `emptyDir`'dir. Konsoldan girilen sırlar burada değil, veritabanındadır (`config.SECRETS_BACKEND: "database"`), bu yüzden pod yeniden başlayınca kaybolmaz ve iki backend kopyası aynı değeri görür. Sırları Secret ile vermek de desteklenir (ör. `OIDC_CLIENT_SECRET_<ID>`, `<ENTEGRASYON>_<ALAN>`); konsoldan kaydedilen değer Secret'takini geçersiz kılar |
 | `evidence.persistence` | Vaka kanıt dosyalarının kalıcı birimi; `values-airgap.yaml`'da **kapalıdır**, bu durumda kanıt dosyaları pod yeniden başlayınca kaybolur. Kümede ReadWriteMany sağlayan bir StorageClass varsa `enabled: true`, `accessModes: [ReadWriteMany]`, `storageClassName: <sınıf>` verin. `ReadWriteOnce` birden çok pod bağladığı için reddedilir (bkz. [yönetici kılavuzu](yonetici-kilavuzu.md#kubernetes)) |
+| `postgresql.external.*` (kendi PostgreSQL sunucunuz) | Kullanıcı adı serbesttir (`deeptempo` olması gerekmez) ve süper kullanıcı gerekmez. Bu kullanıcı veritabanının sahibi olmalı ve CREATEROLE yetkisine sahip olmalıdır: db-init Job'u uygulamaların bağlandığı `vigil_app` rolünü oluşturur ve parolasını ayarlar. `pg_trgm` ve `uuid-ossp` uzantılarını veritabanı sahibi kendisi oluşturabilir. Bitnami alt grafiğinin kullanıcısında CREATEROLE yoktur ve `vigil_app` oluşturulmaz: o kullanıcıya süper kullanıcıyla `ALTER ROLE <kullanıcı> CREATEROLE;` verip `helm upgrade` yapın ya da CREATEROLE yetkisi olan bir kullanıcı adı verin (bkz. [yönetici kılavuzu](yonetici-kilavuzu.md#kendi-postgresql-sunucunuz)) |
 | `networkPolicies.egress.extraCIDRs` | Kümenin dışındaki şirket içi hedefler (SIEM, EDR, güvenlik duvarı yönetim arayüzü, NodeLocal DNS `169.254.20.10/32`) |
 | `networkPolicies.daemon.webhookAllowFrom` | Daemon'un webhook portuna alarm itebilecek kaynak CIDR'leri; boşsa yalnız küme içi |
 | `caBundle.existingSecret` | TLS denetleyen bir vekil sunucu ya da kurum içi CA varsa |
@@ -231,8 +237,23 @@ değeri taşıdığı `tests/unit/airgap` testleriyle denetlenir.
 
 2. **İlk yönetici hesabı.** Varsayılan bir yönetici tohumlanmaz. Kullanıcı tablosu
    boşken giriş ekranı ilk hesabı oluşturmayı önerir (`POST /api/auth/bootstrap`);
-   bu uç ilk hesap oluştuğu anda kalıcı olarak kapanır. Hemen ardından bu hesapta
-   MFA'yı açın (bkz. [yönetici kılavuzu](yonetici-kilavuzu.md#kimlik-doğrulama)).
+   bu uç ilk hesap oluştuğu anda kalıcı olarak kapanır. Hesabı oluşturmak tek
+   kullanımlık **kurulum token'ı** ister. Backend bu token'ı ilk açılışta günlüğüne
+   bir kez yazar. Okuyun ya da yenisini üretin (internet gerekmez):
+
+   ```bash
+   kubectl -n autosecops logs -l app.kubernetes.io/component=backend --prefix --tail=-1 \
+     | grep "setup token"
+   # ya da yeni bir token (eskisi geçersiz olur):
+   kubectl -n autosecops exec deploy/<release>-vigil-backend -c backend -- \
+     python -m core.auth.setup_token regenerate
+   ```
+
+   Token'ı giriş ekranındaki **Setup token** alanına yapıştırın. Betikli kurulumda
+   `secrets.setupToken` (en az 24 karakter) değeri token'ı belirler. Ayrıntı:
+   [yönetici kılavuzu — ilk yönetici](yonetici-kilavuzu.md#ilk-yönetici-ve-acil-erişim).
+   Hemen ardından bu hesapta MFA'yı açın (bkz.
+   [yönetici kılavuzu](yonetici-kilavuzu.md#kimlik-doğrulama)).
 3. **Model sağlayıcısı.** Konsolda Ayarlar → AI models altında Bifrost üzerinden
    Ollama modelini (`ollama/<model>`) ekleyip varsayılan yapın. Bulut sağlayıcı
    anahtarları bu ortamda işe yaramaz ve egress politikası tarafından düşürülür.
@@ -315,6 +336,11 @@ Profil uygulandığında bile operatör eylemiyle dışarı çıkabilecek noktal
 - Helm'de db-init Job'u, hata veren bir SQL dosyasını uygulanmış saymaz; önceki
   sürümlerde uygulanmış sayılmış ama tablosu eksik kalan düzenleyici sayaç
   dosyalarını `helm upgrade` sırasında kendiliğinden yeniden uygular.
+- Veritabanı kullanıcısı `deeptempo` olmayan (ya da süper kullanıcı olmayan) bir
+  Helm kurulumunda önceki Job'lar 04, 07, 09, 10, 12, 13 ve 30 numaralı dosyaları
+  uygulanmış saymıyor ve her yükseltmede "not applied" uyarısı veriyordu. Bu
+  sürümde `helm upgrade` bu dosyaları uygular ve kaydeder; elle bir şey
+  yapmanız gerekmez.
 
 ## 10. Sorun giderme
 

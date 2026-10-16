@@ -381,6 +381,17 @@ function VerifyStep({ probe, onRun }: { probe: Probe; onRun: () => void }) {
           </span>
         </div>
       )}
+      {result.executor && (
+        <div className={`int-probe ${result.executor.available ? 'pass' : 'fail'}`}>
+          <span className="int-probe-ic"><Icon name={result.executor.available ? 'check2' : 'close'} size={15} /></span>
+          <span className="int-probe-name">Response actions</span>
+          <span className="int-probe-detail" style={result.executor.available ? { color: 'var(--tx2)' } : undefined}>
+            {result.executor.available
+              ? `Available now, after approval: ${result.executor.action_types.join(', ')}`
+              : 'Not available: enable the integration and save its credentials. No restart is needed.'}
+          </span>
+        </div>
+      )}
       {again}
     </>
   )

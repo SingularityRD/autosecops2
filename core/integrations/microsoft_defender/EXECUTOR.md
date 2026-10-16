@@ -9,12 +9,9 @@ uygular. İki eylem tipi vardır ve ikisi de geri alınabilir:
 | `isolate_host` | `POST /api/machines/{id}/isolate` (`IsolationType`: `Full` varsayılan, `Selective`) | `unisolate_host` |
 | `unisolate_host` | `POST /api/machines/{id}/unisolate` | eski izolasyon tipiyle yeniden `isolate` |
 
-Bu WP executor'ı **hiçbir registry'ye bağlamaz**. Kullanacak olan WP şunu yapar:
-
-```python
-from core.integrations.microsoft_defender.executor import build_executor
-registry.register(build_executor({}))   # kimlik bilgileri entegrasyon yapılandırmasından
-```
+Kayıt: `core/response/executors/wiring.py` (`EXECUTOR_SOURCES`, `LiveExecutorRegistry`). Entegrasyon Ayarlar'da açıkken API ve daemon bu executor'ı
+kendileri kurar; açma, kapatma ve kimlik bilgisi değişikliği yeniden başlatma
+olmadan geçerli olur (W0.37).
 
 ## Dosyalar
 

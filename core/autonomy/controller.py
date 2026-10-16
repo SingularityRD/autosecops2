@@ -7,7 +7,9 @@
 * ``autonomous`` holds only when every one of these is true, else the action
   is treated as ``approve``:
 
-  - the class is in ``AUTONOMOUS_ELIGIBLE`` (reversible by nature);
+  - the class is in ``AUTONOMOUS_ELIGIBLE`` (reversible by nature) and not in
+    ``ALWAYS_HUMAN`` (containment: host isolation, account disable or lock,
+    firewall block, file quarantine);
   - the action is ``reversible`` (the row's claim and, at dispatch, the
     executor registry's);
   - the class is not under the two-person rule;
@@ -37,6 +39,7 @@ from core.autonomy.bounds import BoundReader, BoundStatus, read_bounds, safe_bou
 from core.autonomy.store import SqlTierStore, TierStore
 from core.autonomy.tiers import (
     ACTION_CLASSES,
+    ALWAYS_HUMAN,
     ANY_CATEGORY,
     APPROVE,
     AUTONOMOUS,
@@ -203,7 +206,9 @@ class AutonomyController:
     ) -> list[str]:
         """Why an action may not run autonomously under ``entry``; empty if it may."""
         reasons = []
-        if action_type not in AUTONOMOUS_ELIGIBLE:
+        if action_type in ALWAYS_HUMAN:
+            reasons.append(f"{action_type} is containment; a person approves it")
+        elif action_type not in AUTONOMOUS_ELIGIBLE:
             reasons.append(f"{action_type} is never autonomous")
         if reversibility != "reversible":
             reasons.append(f"reversibility is {reversibility or 'unknown'}")
@@ -498,6 +503,10 @@ class AutonomyController:
                 f"the {category} category holds unknown and unmapped alerts; "
                 "it can never be autonomous"
             )
+        if action_type in ALWAYS_HUMAN:
+            raise PromotionRefused(
+                f"{action_type} is containment; a person always approves it"
+            )
         if action_type not in AUTONOMOUS_ELIGIBLE:
             raise PromotionRefused(
                 f"{action_type} is irreversible or not undoable by ttl; "
@@ -560,6 +569,7 @@ class AutonomyController:
             "categories": list(TIER_CATEGORIES),
             "action_classes": list(ACTION_CLASSES),
             "eligible": sorted(AUTONOMOUS_ELIGIBLE),
+            "always_human": sorted(ALWAYS_HUMAN),
             "max_ttl_seconds": AUTONOMOUS_MAX_TTL_SECONDS,
             "fn_bound_target": FN_BOUND_TARGET,
             "fn_bound_min_reviews": FN_BOUND_MIN_REVIEWS,

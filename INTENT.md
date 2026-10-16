@@ -33,9 +33,10 @@ respond:
   critical_action_floor: 0.70
   # Investigate a high finding at or above this. (DAEMON_HIGH_ACTION_FLOOR)
   high_action_floor: 0.80
-  # Route every action through human approval regardless of confidence.
-  # (DAEMON_FORCE_APPROVAL, or Settings -> Approvals in the UI)
-  force_manual_approval: false
+  # Route every action through human approval regardless of confidence: the
+  # GA default. Settings -> Assist (the default; no row reads Assist) or
+  # DAEMON_FORCE_APPROVAL=true, which locks it so the console cannot choose Act.
+  force_manual_approval: true
   # The rest of the confidence band; higher is tighter for each.
   # Queue a finding for response and let the correlator act. (DAEMON_REVIEW_THRESHOLD)
   review_threshold: 0.85

@@ -19,7 +19,7 @@ from tests.unit.response._autonomy import MemoryTierStore, bounds  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
-PATH = "/api/autonomy/tiers/phishing/waf_block"
+PATH = "/api/autonomy/tiers/phishing/gateway_block"
 PROMOTE = {
     "tier": "autonomous",
     "reason": "Scorecard met",
@@ -119,13 +119,13 @@ def test_a_bound_that_does_not_hold_is_409(client):
 
 def test_check_demotes_and_reports(client):
     http, controller, store, _, _ = client
-    store.rows[("phishing", "waf_block")] = TierEntry(
-        "phishing", "waf_block", AUTONOMOUS, 0.5, 3600, explicit=True
+    store.rows[("phishing", "gateway_block")] = TierEntry(
+        "phishing", "gateway_block", AUTONOMOUS, 0.5, 3600, explicit=True
     )
     controller.bound_reader = bounds(False)
     body = http.post("/api/autonomy/check").json()
     assert body["demoted"][0]["to"] == "approve"
-    assert store.rows[("phishing", "waf_block")].tier == "approve"
+    assert store.rows[("phishing", "gateway_block")].tier == "approve"
 
 
 def test_no_agent_or_mcp_tool_can_set_a_tier():

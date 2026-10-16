@@ -27,6 +27,7 @@ def _clear_intent_env(monkeypatch):
 def _config_service(rows):
     svc = MagicMock()
     svc.get_system_config.side_effect = lambda key, default=None: rows.get(key, default)
+    svc.read_system_config.side_effect = rows.get
     return svc
 
 

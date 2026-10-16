@@ -4,7 +4,7 @@ Since W3.1 nothing is released without a person below the ``autonomous`` tier,
 and the GA default is ``approve``. Tests written before W3.1 that exercise the
 confidence band (auto-approval at or above the threshold) run under
 ``permissive_autonomy()``: every eligible class autonomous in every category,
-with a QA bound that holds. Those tests pass no category, and an alert with
+with a QA bound that holds, and a missing approval row read as Act. Those tests pass no category, and an alert with
 none is ``other``, which is never autonomous (W3.1 round 5); the permissive
 controller reads such an action as ``network`` so the band is what decides.
 The tier rules themselves are tested in tests/unit/autonomy/.
@@ -138,3 +138,22 @@ def autonomous_everywhere(monkeypatch):
     monkeypatch.setattr(
         "core.response.approval_service.AutonomyController", permissive_autonomy
     )
+    # Those tests predate the Assist default too (W0.32): a database with no
+    # approval row reads Act for them, as it did then. A stored row, and a
+    # failed read, decide as in production.
+    monkeypatch.setattr(
+        "core.response.approval_service.ApprovalService._stored_force_manual_approval",
+        _absent_row_is_act,
+    )
+
+
+def _absent_row_is_act(self) -> bool:
+    from core.response import approval_service as module
+
+    try:
+        value = module.get_config_service().read_system_config(
+            module.APPROVAL_CONFIG_KEY
+        )
+    except Exception:  # noqa: BLE001
+        return True
+    return False if value is None else module.stored_force_manual(value)

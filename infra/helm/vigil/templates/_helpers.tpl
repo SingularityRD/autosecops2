@@ -343,3 +343,52 @@ Is an external Redis URL stored in a secret?
 true
 {{- end -}}
 {{- end -}}
+
+{{/*
+W0.36 signing keys. The chart mints one Secret per key
+(<fullname>-signing-key-checkpoint, -evidence); signingKeys.existingSecret names
+one Secret holding both instead. Call with (dict "context" $ "key" KEY).
+*/}}
+{{- define "vigil.signingKeys.secretName" -}}
+{{- $v := .context.Values.signingKeys -}}
+{{- if $v.existingSecret -}}
+{{- $v.existingSecret -}}
+{{- else -}}
+{{- $suffix := ternary "checkpoint" "evidence" (eq .key "AUDIT_CHECKPOINT_SIGNING_KEY") -}}
+{{- printf "%s-signing-key-%s" (include "vigil.fullname" .context) $suffix | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+The signing key of one workload as an envFrom source: the daemon gets the
+checkpoint key, the backend the evidence-pack key. Listed BEFORE vigil.envFrom
+on purpose: Kubernetes lets the last envFrom source win, so a key an operator
+already supplies through secrets.existingSecret / ExternalSecrets keeps
+precedence over the chart-minted one. Optional: a missing key is the backend
+health warning, never a pod that won't start. Nothing when neither
+signingKeys.generate nor signingKeys.existingSecret is set.
+*/}}
+{{- define "vigil.signingKeyEnvFrom" -}}
+{{- $v := .context.Values.signingKeys -}}
+{{- if or $v.generate $v.existingSecret -}}
+- secretRef:
+    name: {{ include "vigil.signingKeys.secretName" . }}
+    optional: true
+{{- end -}}
+{{- end -}}
+
+{{/*
+W0.34: the Secret holding the chart-minted data-encryption key (VIGIL_DATA_KEY).
+vigil.envFrom lists it BEFORE the main Secret on purpose: the last envFrom source wins,
+so secrets.dataEncryptionKey, secrets.existingSecret or an ExternalSecret that
+carries VIGIL_DATA_KEY replaces the minted one. optional so a release with
+dataKey.generate=false still starts.
+*/}}
+{{- define "vigil.dataKey.secretName" -}}
+{{- if .Values.dataKey.existingSecret -}}
+{{- .Values.dataKey.existingSecret -}}
+{{- else -}}
+{{- printf "%s-data-key" (include "vigil.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+

@@ -177,10 +177,10 @@
    "role-admin": "allow"
   },
   "DELETE /api/sla-policies/{policy_id}": {
-   "gate": "login + perm:cases.write",
+   "gate": "login + perm:settings.write",
    "role-viewer": "deny",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
@@ -419,6 +419,14 @@
   "GET /api/attack/techniques/{technique_id}/findings": {
    "gate": "login",
    "role-viewer": "allow",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "GET /api/audit/signing-keys": {
+   "gate": "login + perm:settings.read",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -920,6 +928,22 @@
    "role-manager": "allow",
    "role-admin": "allow"
   },
+  "GET /api/config/setup-progress": {
+   "gate": "login",
+   "role-viewer": "allow",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "GET /api/config/setup-readiness": {
+   "gate": "login",
+   "role-viewer": "allow",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
   "GET /api/config/setup-steps": {
    "gate": "login",
    "role-viewer": "allow",
@@ -1340,6 +1364,14 @@
    "gate": "login + perm:users.read",
    "role-viewer": "deny",
    "role-analyst": "deny",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
+  "GET /api/response/policy": {
+   "gate": "login + perm:settings.read",
+   "role-viewer": "deny",
+   "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
    "role-admin": "allow"
@@ -2652,8 +2684,8 @@
    "role-admin": "allow"
   },
   "POST /api/findings/export": {
-   "gate": "login",
-   "role-viewer": "allow",
+   "gate": "login + perm:findings.write",
+   "role-viewer": "deny",
    "role-analyst": "allow",
    "role-senior-analyst": "allow",
    "role-manager": "allow",
@@ -2964,18 +2996,18 @@
    "role-admin": "allow"
   },
   "POST /api/sla-policies/": {
-   "gate": "login + perm:cases.write",
+   "gate": "login + perm:settings.write",
    "role-viewer": "deny",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
   "POST /api/sla-policies/{policy_id}/set-default": {
-   "gate": "login + perm:cases.write",
+   "gate": "login + perm:settings.write",
    "role-viewer": "deny",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },
@@ -3423,6 +3455,14 @@
    "role-manager": "allow",
    "role-admin": "allow"
   },
+  "PUT /api/config/setup-progress": {
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
   "PUT /api/federation/settings": {
    "gate": "login + perm:settings.write",
    "role-viewer": "deny",
@@ -3479,6 +3519,14 @@
    "role-manager": "allow",
    "role-admin": "allow"
   },
+  "PUT /api/response/policy": {
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
   "PUT /api/services/autostart": {
    "gate": "login + inline:settings.write",
    "role-viewer": "deny",
@@ -3488,10 +3536,10 @@
    "role-admin": "allow"
   },
   "PUT /api/sla-policies/{policy_id}": {
-   "gate": "login + perm:cases.write",
+   "gate": "login + perm:settings.write",
    "role-viewer": "deny",
-   "role-analyst": "allow",
-   "role-senior-analyst": "allow",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
    "role-manager": "allow",
    "role-admin": "allow"
   },

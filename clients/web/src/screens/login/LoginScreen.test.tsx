@@ -21,8 +21,8 @@ vi.mock('../../services/api', () => ({
   },
   // unmocked, this throws inside the mount effect and fails every test here
   bootstrapApi: {
-    status: () => Promise.resolve({ data: { required: false } }),
-    create: () => Promise.resolve({ data: {} }),
+    status: () => bootstrapStatus(),
+    create: (payload: unknown, token: string) => bootstrapCreate(payload, token),
   },
   ssoApi: {
     providers: () => ssoProviders(),
@@ -35,6 +35,10 @@ vi.mock('../../services/api', () => ({
 type SsoList = {
   data: { providers: { id: string; display_name: string }[]; local_login_enabled: boolean }
 }
+const { bootstrapStatus, bootstrapCreate } = vi.hoisted(() => ({
+  bootstrapStatus: vi.fn(() => Promise.resolve({ data: { required: false } })),
+  bootstrapCreate: vi.fn((...args: [unknown, string]) => Promise.resolve({ data: {}, args })),
+}))
 const { ssoProviders } = vi.hoisted(() => ({
   ssoProviders: vi.fn(
     (): Promise<SsoList> =>
@@ -58,6 +62,8 @@ function renderLogin(path = '/login') {
 }
 
 beforeEach(() => {
+  bootstrapStatus.mockClear()
+  bootstrapCreate.mockClear()
   login.mockReset()
   navigate.mockReset()
   ssoProviders.mockClear()
@@ -65,6 +71,53 @@ beforeEach(() => {
 })
 
 describe('LoginScreen', () => {
+  describe('first administrator (W0.33)', () => {
+    const fill = (token: string) => {
+      fireEvent.change(screen.getByLabelText('Setup token'), { target: { value: token } })
+      fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'first' } })
+      fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'first@example.com' } })
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'harbour-lantern-quartz-91' } })
+    }
+
+    beforeEach(() => {
+      bootstrapStatus.mockResolvedValueOnce({ data: { required: true } })
+    })
+
+    it('asks for the setup token and will not submit without it', async () => {
+      renderLogin()
+      expect(await screen.findByLabelText('Setup token')).toHaveAttribute('type', 'password')
+      fill('   ')
+      expect(screen.getByRole('button', { name: /create account/i })).toBeDisabled()
+    })
+
+    it('sends the token apart from the account details', async () => {
+      login.mockResolvedValueOnce(undefined)
+      renderLogin()
+      await screen.findByLabelText('Setup token')
+      fill('  tok-123  ')
+      fireEvent.click(screen.getByRole('button', { name: /create account/i }))
+      await waitFor(() =>
+        expect(bootstrapCreate).toHaveBeenCalledWith(
+          { username: 'first', email: 'first@example.com', password: 'harbour-lantern-quartz-91' },
+          'tok-123',
+        ),
+      )
+      await waitFor(() => expect(navigate).toHaveBeenCalledWith('/'))
+    })
+
+    it("shows the server's reason when the token is refused", async () => {
+      bootstrapCreate.mockRejectedValueOnce({
+        response: { status: 401, data: { detail: 'Setup token missing or wrong.' } },
+      })
+      renderLogin()
+      await screen.findByLabelText('Setup token')
+      fill('wrong')
+      fireEvent.click(screen.getByRole('button', { name: /create account/i }))
+      expect(await screen.findByRole('alert')).toHaveTextContent('Setup token missing or wrong.')
+      expect(login).not.toHaveBeenCalled()
+    })
+  })
+
   it('renders the credential form and brand panel', () => {
     renderLogin()
     expect(screen.getByRole('heading', { name: 'Sign in' })).toBeInTheDocument()

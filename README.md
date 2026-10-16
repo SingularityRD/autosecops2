@@ -100,7 +100,7 @@ An integration is one of two things:
 
 What an integration can do depends on its server: some are read-only lookups, others can act (for example, Microsoft Defender isolation or Carbon Black quarantine). The integrations docs list each one's tools.
 
-Some integrations are marked **Experimental** in Settings: CrowdStrike Falcon, SentinelOne, Microsoft Sentinel, the official Splunk MCP server, Google SecOps, Google Threat Intelligence, Joe Sandbox, vStrike, Atomic Red Team and CAPE Sandbox. AutoSecOps has not run these against a live instance of the product (Atomic Red Team runs an operator's own runner; CAPE needs a KVM host), so they may not work. The label shows on every screen that turns one on and cannot be dismissed; a connector loses it only when it gains a live test. If you run one, tell AutoSecOps support whether it worked and attach a [support bundle](#getting-help-the-support-bundle).
+Some integrations are marked **Experimental** in Settings: CrowdStrike Falcon, SentinelOne, Microsoft Sentinel, the official Splunk MCP server, Google SecOps, Google Threat Intelligence, Joe Sandbox, vStrike, Atomic Red Team, CAPE Sandbox, Microsoft Defender for Endpoint, Entra ID (Azure AD) and Palo Alto PAN-OS. AutoSecOps has not run these against a live instance of the product (Atomic Red Team runs an operator's own runner; CAPE needs a KVM host; the three response executors are tested against recorded vendor answers only), so they may not work. The label shows on every screen that turns one on and cannot be dismissed; a connector loses it only when it gains a live test. If you run one, tell AutoSecOps support whether it worked and attach a [support bundle](#getting-help-the-support-bundle).
 
 Enable and configure integrations under **Settings → Integrations**, or generate one from API docs with the **Custom Integration Builder**. If you build an integration you find useful, someone else will too. Please contribute it.
 
@@ -124,7 +124,7 @@ Then open http://localhost:6988 and create the admin account on the bootstrap sc
 `start.sh` provisions the pinned Python with [uv](https://docs.astral.sh/uv/), installs dependencies, starts PostgreSQL, Redis, and the Bifrost LLM gateway in Docker, starts a host Ollama if one is installed (optional), initializes the schema and reference data, and launches the API, the agent layer, and the frontend. No cloud API key is needed to reach a running UI.
 
 - **`AGENT_INTERNAL_TOKEN`** lets the agent layer talk to the API. Generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Without it the stack still starts, but workflow runs stay queued.
-- **Authentication is on by default.** No account or default password ships; the first visit creates the admin. `start.sh` creates the JWT signing secret at `~/.vigil/jwt_secret`. For an unauthenticated instance on your own machine, set `DEV_MODE=true` in `.env`; the backend announces the bypass on every startup, naming each gate it opens, and says so separately when it is bound to anything but loopback (`BIND_HOST`). `scripts/reset-setup.sh` and `scripts/generate_sample_data.py --api` sign in with `VIGIL_TOKEN`, or `VIGIL_USERNAME` and `VIGIL_PASSWORD`.
+- **Authentication is on by default.** No account or default password ships; the first visit creates the admin with the one-time setup token the backend prints to its log on first start (also in `~/.vigil/setup-token`; `python -m core.auth.setup_token regenerate` issues a new one). `start.sh` creates the JWT signing secret at `~/.vigil/jwt_secret`. For an unauthenticated instance on your own machine, set `DEV_MODE=true` in `.env`; the backend announces the bypass on every startup, naming each gate it opens, and says so separately when it is bound to anything but loopback (`BIND_HOST`). `scripts/reset-setup.sh` and `scripts/generate_sample_data.py --api` sign in with `VIGIL_TOKEN`, or `VIGIL_USERNAME` and `VIGIL_PASSWORD`.
 
 > **Stable vs. development build:** `main` is the active development branch. For a tested build, check out a release tag (`git checkout v<version>`) or pull a published image (`docker pull ghcr.io/singularityrd/autosecops-backend:<version>`). Releases are listed on the [releases page](https://github.com/SingularityRD/autosecops2/releases/latest).
 >
@@ -227,11 +227,10 @@ helm install vigil ./infra/helm/vigil \
   --namespace vigil --create-namespace \
   --set secrets.anthropicApiKey="$ANTHROPIC_API_KEY" \
   --set secrets.postgresPassword="$(openssl rand -hex 24)" \
-  --set secrets.jwtSecretKey="$(python -c 'import secrets; print(secrets.token_urlsafe(64))')" \
-  --set secrets.dataEncryptionKey="$(openssl rand -base64 32)"
+  --set secrets.jwtSecretKey="$(python -c 'import secrets; print(secrets.token_urlsafe(64))')"
 ```
 
-`secrets.dataEncryptionKey` encrypts the secrets entered in the console (kept in PostgreSQL, shared by both backend replicas) and users' MFA secrets. Keep a copy and pass the same value on every upgrade (or keep it in `secrets.existingSecret` as `VIGIL_DATA_KEY`): without it those secrets cannot be read back. Rotation: [administrator guide, "Sır döndürme"](docs/guide/yonetici-kilavuzu.md#sır-döndürme).
+The data-encryption key (`VIGIL_DATA_KEY`) encrypts the secrets entered in the console (kept in PostgreSQL, shared by both backend replicas) and users' MFA secrets. The chart mints it into the Secret `<fullname>-data-key` and keeps it on every upgrade; back that Secret up with the database, because without it those secrets cannot be read back. To bring your own, set `secrets.dataEncryptionKey` or `dataKey.existingSecret` (required with `helm template`, Argo CD or Flux). Rotation: [administrator guide, "Sır döndürme"](docs/guide/yonetici-kilavuzu.md#sır-döndürme).
 
 See the [Helm guide](https://vigilsoc.org/docs/helm/) for values, external Postgres/Redis, ingress, and troubleshooting.
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { configApi, workflowApi } from '../../services/api'
 import { InfoTip } from '../../shared/InfoTip'
+import { ALWAYS_HUMAN_SENTENCE, AUTONOMY_ACT, AUTONOMY_ASSIST } from '../../shared/autonomy'
 import { Icon } from '../../shared/icons'
 import { ConfirmDialog, SettingsCard, Toggle } from '../../shared/ui'
 import {
@@ -37,7 +38,8 @@ export default function WorkflowsStep() {
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState<Set<string>>(new Set())
   const [autoError, setAutoError] = useState<string | null>(null)
-  const [approval, setApproval] = useState<Approval>({ enabled: false, environment_wins: false })
+  // Assist until the server says otherwise: a person approves by default (W0.32).
+  const [approval, setApproval] = useState<Approval>({ enabled: true, environment_wins: false })
   const [approvalPhase, setApprovalPhase] = useState<Phase>('loading')
   const [confirmAct, setConfirmAct] = useState(false)
   const [approvalError, setApprovalError] = useState<string | null>(null)
@@ -186,22 +188,22 @@ export default function WorkflowsStep() {
             {approvalError && <p className="text-sm text-high">{approvalError}</p>}
             <div className="su-choices two su-tiers">
               <ChoiceCard
-                title="Assist · asks before changes"
-                body="Agents use read-only tools on their own, and ask you before anything that changes a system."
+                title={AUTONOMY_ASSIST}
+                body="Agents use read-only tools on their own, and a person approves every response action."
+                badge={<span className="su-chip good">Recommended</span>}
                 selected={!actOn}
                 onSelect={selectAssist}
               />
               <ChoiceCard
-                title="Act · reversible changes on its own"
-                body="Agents may make changes that can be undone, such as ending a session, then tell you. Anything that cannot be undone still asks."
-                badge={<span className="su-chip good">Recommended</span>}
+                title={AUTONOMY_ACT}
+                body="Where an admin has set an autonomy tier to Autonomous, agents may make a reversible change on their own for a set time, such as blocking a domain, then tell you. Every other action still asks."
                 selected={actOn}
                 onSelect={selectAct}
               />
             </div>
             <p className="su-lock">
               <Icon name="lock" size={13} />
-              Actions that cannot be undone, such as isolating a host, always need a person. This cannot be changed.
+              {ALWAYS_HUMAN_SENTENCE}
             </p>
           </div>
         )}
@@ -288,7 +290,7 @@ export default function WorkflowsStep() {
       <ConfirmDialog
         open={confirmAct}
         title="Switch to Act?"
-        body="Act stops forcing manual approval, so autonomous response can proceed on its own."
+        body="Act stops forcing manual approval. Only actions an autonomy tier allows then run on their own; containment still waits for a person."
         confirmLabel="Save"
         danger={false}
         onConfirm={() => {

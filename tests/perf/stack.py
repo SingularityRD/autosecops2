@@ -562,7 +562,11 @@ class LocalStack:
         # Double-submit CSRF: a GET seeds the csrf_token cookie, POSTs echo it.
         c.get("/api/auth/bootstrap")
         csrf = {"X-CSRF-Token": c.cookies.get("csrf_token", "")}
-        created = c.post("/api/auth/bootstrap", json=ADMIN, headers=csrf)
+        # The one-time setup token the backend wrote to its State Directory.
+        token = (self.workdir / "vigil" / "setup-token").read_text().strip()
+        created = c.post(
+            "/api/auth/bootstrap", json=ADMIN, headers={**csrf, "X-Setup-Token": token}
+        )
         if created.status_code != 201:
             raise StackError(f"bootstrap failed: {created.status_code} {created.text}")
         login = c.post(

@@ -50,10 +50,25 @@ INIT_SQL = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _act_chosen():
+    """An admin chose Act: these tests are about the tiers under it.
+
+    The throwaway database has no approval row, which reads Assist (W0.32)
+    and would hold every action before a tier is consulted.
+    """
+    from core.response.approval_service import APPROVAL_CONFIG_KEY
+    from core.storage.config_service import get_config_service
+
+    assert get_config_service(user_id="pytest").set_system_config(
+        APPROVAL_CONFIG_KEY, {"enabled": False}, config_type="approval"
+    )
+
+
 class _Block:
     """A reversible block executor that records its calls."""
 
-    def __init__(self, action_type="waf_block", reversible=True):
+    def __init__(self, action_type="gateway_block", reversible=True):
         self.action_types = frozenset({action_type})
         self.reversible_types = self.action_types if reversible else frozenset()
         self.default_ttl = timedelta(hours=24)
@@ -102,7 +117,7 @@ def _setup(entries=(), holds=True, policy=None, executors=()):
     return service, approvals, store
 
 
-def _create(approvals, action_type=ActionType.WAF_BLOCK, target="198.51.100.7", **kw):
+def _create(approvals, action_type=ActionType.GATEWAY_BLOCK, target="198.51.100.7", **kw):
     kw.setdefault("confidence", 0.95)
     kw.setdefault("category", "phishing")
     return approvals.create_action(
@@ -127,7 +142,7 @@ class TestCreation:
         assert row.parameters["autonomy"]["effective"] == APPROVE
 
     def test_watch_records_nothing(self):
-        _, approvals, _ = _setup([_tier("phishing", "waf_block", WATCH)])
+        _, approvals, _ = _setup([_tier("phishing", "gateway_block", WATCH)])
         before = len(approvals.list_actions(limit=500))
         with pytest.raises(AutonomyWatchOnly):
             _create(approvals)
@@ -148,13 +163,13 @@ class TestCreation:
         assert "action_id" not in out
 
     def test_suggest_is_held_for_a_person(self):
-        _, approvals, _ = _setup([_tier("phishing", "waf_block", SUGGEST)])
+        _, approvals, _ = _setup([_tier("phishing", "gateway_block", SUGGEST)])
         row = _create(approvals, confidence=0.99)
         assert row.status == ActionStatus.PENDING.value
         assert split_decision_rule(row.reason)[1] == "autonomy.tier=suggest"
 
     def test_autonomous_releases_and_caps_the_ttl(self):
-        _, approvals, _ = _setup([_tier("phishing", "waf_block", AUTONOMOUS, ttl=600)])
+        _, approvals, _ = _setup([_tier("phishing", "gateway_block", AUTONOMOUS, ttl=600)])
         row = _create(approvals, parameters={"ttl_seconds": 86400})
         assert row.status == ActionStatus.APPROVED.value
         assert row.approved_by is None
@@ -162,24 +177,24 @@ class TestCreation:
         assert row.parameters["autonomy"]["effective"] == AUTONOMOUS
 
     def test_autonomous_keeps_a_shorter_ttl(self):
-        _, approvals, _ = _setup([_tier("phishing", "waf_block", AUTONOMOUS, ttl=600)])
+        _, approvals, _ = _setup([_tier("phishing", "gateway_block", AUTONOMOUS, ttl=600)])
         row = _create(approvals, parameters={"ttl_seconds": 60})
         assert row.parameters["ttl_seconds"] == 60
 
     def test_autonomous_still_needs_the_confidence_band(self):
         _, approvals, _ = _setup(
-            [_tier("phishing", "waf_block", AUTONOMOUS, floor=0.0)]
+            [_tier("phishing", "gateway_block", AUTONOMOUS, floor=0.0)]
         )
         row = _create(approvals, confidence=0.2)
         assert row.status == ActionStatus.PENDING.value
 
     def test_a_broken_bound_holds_the_action_and_demotes_the_tier(self):
         _, approvals, store = _setup(
-            [_tier("phishing", "waf_block", AUTONOMOUS)], holds=False
+            [_tier("phishing", "gateway_block", AUTONOMOUS)], holds=False
         )
         row = _create(approvals)
         assert row.status == ActionStatus.PENDING.value
-        assert store.rows[("phishing", "waf_block")].tier == APPROVE
+        assert store.rows[("phishing", "gateway_block")].tier == APPROVE
         assert store.audit_rows[-1]["action"] == "demote"
 
     def test_an_irreversible_action_is_never_released(self):
@@ -206,7 +221,7 @@ class TestCreation:
         assert row.parameters["autonomy"]["category"] == "phishing"
 
     def test_workflow_checkpoints_are_not_governed(self):
-        _, approvals, _ = _setup([_tier("other", "waf_block", WATCH)])
+        _, approvals, _ = _setup([_tier("other", "gateway_block", WATCH)])
         row = _create(
             approvals,
             ActionType.WORKFLOW_PHASE,
@@ -221,7 +236,7 @@ class TestDispatch:
     def test_an_autonomous_row_runs_through_the_queue_with_its_ttl(self):
         block = _Block()
         service, approvals, _ = _setup(
-            [_tier("phishing", "waf_block", AUTONOMOUS, ttl=600)], executors=[block]
+            [_tier("phishing", "gateway_block", AUTONOMOUS, ttl=600)], executors=[block]
         )
         row = _create(approvals, target="198.51.100.101")
         results = [
@@ -239,11 +254,11 @@ class TestDispatch:
     def test_a_demotion_after_creation_holds_the_row_at_dispatch(self):
         block = _Block()
         service, approvals, store = _setup(
-            [_tier("phishing", "waf_block", AUTONOMOUS)], executors=[block]
+            [_tier("phishing", "gateway_block", AUTONOMOUS)], executors=[block]
         )
         row = _create(approvals, target="198.51.100.102")
         assert row.status == ActionStatus.APPROVED.value
-        store.rows[("phishing", "waf_block")] = _tier("phishing", "waf_block", APPROVE)
+        store.rows[("phishing", "gateway_block")] = _tier("phishing", "gateway_block", APPROVE)
         service.execute_approved_actions()
         assert [t for t, _ in block.calls if t == "198.51.100.102"] == []
         held = approvals.get_action(row.action_id)
@@ -254,19 +269,19 @@ class TestDispatch:
     def test_a_bound_that_breaks_after_creation_holds_and_demotes(self):
         block = _Block()
         service, approvals, store = _setup(
-            [_tier("phishing", "waf_block", AUTONOMOUS)], executors=[block]
+            [_tier("phishing", "gateway_block", AUTONOMOUS)], executors=[block]
         )
         row = _create(approvals, target="198.51.100.103")
         service.approval_service.autonomy.bound_reader = bounds(False)
         service.execute_approved_actions()
         assert [t for t, _ in block.calls if t == "198.51.100.103"] == []
         assert approvals.get_action(row.action_id).status == ActionStatus.PENDING.value
-        assert store.rows[("phishing", "waf_block")].tier == APPROVE
+        assert store.rows[("phishing", "gateway_block")].tier == APPROVE
 
     def test_an_executor_that_cannot_undo_the_type_holds_the_row(self):
         block = _Block(reversible=False)
         service, approvals, _ = _setup(
-            [_tier("phishing", "waf_block", AUTONOMOUS)], executors=[block]
+            [_tier("phishing", "gateway_block", AUTONOMOUS)], executors=[block]
         )
         row = _create(approvals, reversibility=Reversibility.REVERSIBLE)
         service._dispatch(approvals.get_action(row.action_id))
@@ -279,7 +294,7 @@ class TestDispatch:
             PolicyConfig.from_mapping({"protected_targets": ["198.51.100.66"]})
         )
         service, approvals, _ = _setup(
-            [_tier("phishing", "waf_block", AUTONOMOUS)],
+            [_tier("phishing", "gateway_block", AUTONOMOUS)],
             executors=[block],
             policy=policy,
         )
@@ -305,7 +320,7 @@ class TestRound5Fixes:
     def test_force_manual_at_dispatch_holds_a_released_autonomous_row(self):
         block = _Block()
         service, approvals, _ = _setup(
-            [_tier("phishing", "waf_block", AUTONOMOUS)], executors=[block]
+            [_tier("phishing", "gateway_block", AUTONOMOUS)], executors=[block]
         )
         row = _create(approvals, target="198.51.100.111")
         assert row.status == ActionStatus.APPROVED.value
@@ -321,7 +336,7 @@ class TestRound5Fixes:
         for stored in (lambda: True, lambda: (_ for _ in ()).throw(RuntimeError())):
             block = _Block()
             service, approvals, _ = _setup(
-                [_tier("phishing", "waf_block", AUTONOMOUS)], executors=[block]
+                [_tier("phishing", "gateway_block", AUTONOMOUS)], executors=[block]
             )
             row = _create(approvals, target="198.51.100.112")
             monkeypatch.setattr(approvals, "_stored_force_manual_approval", stored)
@@ -331,27 +346,31 @@ class TestRound5Fixes:
                 approvals.get_action(row.action_id).status == ActionStatus.PENDING.value
             )
 
-    def test_force_manual_holds_an_isolation_row_without_an_executor(self):
-        service, approvals, _ = _setup([_tier("malware", "isolate_host", AUTONOMOUS)])
+    def test_an_isolation_row_is_never_released_by_a_tier(self):
+        # W0.32: isolation is containment, so even a stored Autonomous row on
+        # it (one written before 2.0.0) leaves the action for a person. The
+        # executor-less isolation path therefore only sees rows a person
+        # approved.
+        _, approvals, _ = _setup([_tier("malware", "isolate_host", AUTONOMOUS)])
         row = _create(
             approvals, ActionType.ISOLATE_HOST, "10.0.7.7", category="malware"
         )
-        assert row.status == ActionStatus.APPROVED.value
-        approvals.set_force_manual_approval(True)
-        out = service._dispatch(approvals.get_action(row.action_id))
-        assert out["status"] == ActionStatus.PENDING.value
-        assert approvals.get_action(row.action_id).status == ActionStatus.PENDING.value
+        assert row.status == ActionStatus.PENDING.value
+        assert row.requires_approval is True
+        record = row.parameters["autonomy"]
+        assert (record["configured"], record["effective"]) == (AUTONOMOUS, APPROVE)
+        assert any("containment" in reason for reason in record["reasons"])
 
     # (3) The ttl is capped again at dispatch, to the tier as it is now.
     def test_dispatch_caps_the_ttl_to_the_current_tier(self):
         block = _Block()
         service, approvals, store = _setup(
-            [_tier("phishing", "waf_block", AUTONOMOUS, ttl=3600)], executors=[block]
+            [_tier("phishing", "gateway_block", AUTONOMOUS, ttl=3600)], executors=[block]
         )
         row = _create(approvals, target="198.51.100.113")
         assert row.parameters["ttl_seconds"] == 3600
-        store.rows[("phishing", "waf_block")] = _tier(
-            "phishing", "waf_block", AUTONOMOUS, ttl=300
+        store.rows[("phishing", "gateway_block")] = _tier(
+            "phishing", "gateway_block", AUTONOMOUS, ttl=300
         )
         service._dispatch(approvals.get_action(row.action_id))
         assert [t for t, _ in block.calls] == ["198.51.100.113"]
@@ -362,15 +381,15 @@ class TestRound5Fixes:
     def test_dispatch_caps_the_executor_default_ttl(self):
         block = _Block()  # default_ttl 24h
         service, approvals, store = _setup(
-            [_tier("phishing", "waf_block", AUTONOMOUS, ttl=3600)], executors=[block]
+            [_tier("phishing", "gateway_block", AUTONOMOUS, ttl=3600)], executors=[block]
         )
         row = _create(approvals, target="198.51.100.114")
         params = dict(row.parameters)
         params.pop("ttl_seconds")
         action = approvals.get_action(row.action_id)
         action.parameters = params
-        store.rows[("phishing", "waf_block")] = _tier(
-            "phishing", "waf_block", AUTONOMOUS, ttl=120
+        store.rows[("phishing", "gateway_block")] = _tier(
+            "phishing", "gateway_block", AUTONOMOUS, ttl=120
         )
         service._dispatch(action)
         done = approvals.get_action(row.action_id)
@@ -387,7 +406,7 @@ class TestRound5Fixes:
     )
     def test_a_held_row_does_not_record_effective_autonomous(self, kw):
         _, approvals, _ = _setup(
-            [_tier("phishing", "waf_block", AUTONOMOUS, floor=0.0)]
+            [_tier("phishing", "gateway_block", AUTONOMOUS, floor=0.0)]
         )
         row = _create(approvals, **kw)
         assert row.status == ActionStatus.PENDING.value
@@ -397,7 +416,7 @@ class TestRound5Fixes:
         assert record["reasons"]  # why it is not autonomous
 
     def test_a_force_manual_row_does_not_record_effective_autonomous(self):
-        _, approvals, _ = _setup([_tier("phishing", "waf_block", AUTONOMOUS)])
+        _, approvals, _ = _setup([_tier("phishing", "gateway_block", AUTONOMOUS)])
         approvals.set_force_manual_approval(True)
         row = _create(approvals)
         assert row.status == ActionStatus.PENDING.value
@@ -405,7 +424,7 @@ class TestRound5Fixes:
 
     # (1) ``other`` is never autonomous on the approval path either.
     def test_an_uncategorised_action_is_held_even_under_an_other_tier(self):
-        _, approvals, _ = _setup([_tier("other", "waf_block", AUTONOMOUS)])
+        _, approvals, _ = _setup([_tier("other", "gateway_block", AUTONOMOUS)])
         for category in (None, "other", "ransomware"):
             row = _create(approvals, category=category, confidence=1.0)
             assert row.status == ActionStatus.PENDING.value
@@ -431,7 +450,7 @@ class TestSqlStore:
         controller = AutonomyController(store=SqlTierStore(), bound_reader=bounds(True))
         controller.set_tier(
             category="phishing",
-            action_type="waf_block",
+            action_type="gateway_block",
             tier=AUTONOMOUS,
             actor="alice",
             actor_is_human=True,
@@ -440,13 +459,13 @@ class TestSqlStore:
             min_confidence=0.9,
             max_ttl_seconds=3600,
         )
-        entry = controller.entry_for("phishing", "waf_block")
+        entry = controller.entry_for("phishing", "gateway_block")
         assert entry.tier == AUTONOMOUS and entry.max_ttl_seconds == 3600
         assert entry.min_confidence == pytest.approx(0.9)
 
         controller.bound_reader = bounds(False)
         assert controller.check_all()[0]["to"] == APPROVE
-        assert controller.entry_for("phishing", "waf_block").tier == APPROVE
+        assert controller.entry_for("phishing", "gateway_block").tier == APPROVE
 
         audit = controller.audit()
         assert [a["action"] for a in audit] == ["demote", "promote"]

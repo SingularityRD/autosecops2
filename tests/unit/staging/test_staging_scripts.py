@@ -29,6 +29,7 @@ ADMIN_ENV = {
     "STAGING_ADMIN_USER": "staging-admin",
     "STAGING_ADMIN_EMAIL": "staging-admin@autosecops.local",
     "STAGING_ADMIN_PASSWORD": "Xq7-very-long-test-password-01",
+    "STAGING_SETUP_TOKEN": "fake-setup-token-for-staging-tests",
 }
 
 
@@ -340,6 +341,31 @@ def test_smoke_passes_end_to_end(tmp_path):
     assert doc["result"] == "PASS" and doc["recommended_action"] == "investigate"
     # the password never appears in output
     assert ADMIN_ENV["STAGING_ADMIN_PASSWORD"] not in r.stdout + r.stderr
+
+
+def test_smoke_presents_the_setup_token_in_a_header_and_never_prints_it(tmp_path):
+    with FakeApi(mode="triage", triage_after=0) as api:
+        env = _env(tmp_path, STAGING_BASE_URL=api.url, SMOKE_TRIAGE_TIMEOUT="20", **ADMIN_ENV)
+        r = _run([str(STAGING / "smoke.sh")], env)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert api.state.setup_tokens_seen == [ADMIN_ENV["STAGING_SETUP_TOKEN"]]
+    assert ADMIN_ENV["STAGING_SETUP_TOKEN"] not in r.stdout + r.stderr
+
+
+def test_smoke_without_a_setup_token_stops_at_the_first_admin(tmp_path):
+    no_token = {k: v for k, v in ADMIN_ENV.items() if k != "STAGING_SETUP_TOKEN"}
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # a kubectl that cannot reach a backend, as on a machine with no cluster
+    (bin_dir / "kubectl").write_text("#!/bin/sh\nexit 1\n")
+    (bin_dir / "kubectl").chmod(0o755)
+    with FakeApi(triage_after=0) as api:
+        env = _env(tmp_path, STAGING_BASE_URL=api.url, SMOKE_TRIAGE_TIMEOUT="5",
+                   PATH=f"{bin_dir}:{os.environ['PATH']}", **no_token)
+        r = _run([str(STAGING / "smoke.sh")], env)
+        assert r.returncode != 0
+        assert "kurulum token" in r.stdout + r.stderr
+        assert not api.state.users
 
 
 def test_smoke_second_run_reuses_admin(tmp_path):

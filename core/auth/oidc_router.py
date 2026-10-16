@@ -75,6 +75,7 @@ from core.auth.oidc_accounts import (
     save_providers,
 )
 from core.auth.permissions import permission_gate
+from core.compliance.audit_export import arecord_auth_event, record_auth_event
 from core.config import get_settings
 from core.rate_limit import rate_limit_dependency
 from core.redis_client import get_async_redis
@@ -234,6 +235,15 @@ async def _fail(provider_id: str, exc: OidcError, request: Request) -> RedirectR
     )
     await asyncio.to_thread(
         audit_failure, provider_id, exc.code, exc.detail, _client_ip(request)
+    )
+    await arecord_auth_event(
+        request,
+        "sso_login",
+        outcome="failure",
+        details={
+            "provider_id": printable(provider_id, 64),
+            "reason": printable(exc.code, 64),
+        },
     )
     response = RedirectResponse(
         _app_url(f"/login?sso_error={exc.code}"), status_code=status.HTTP_302_FOUND
@@ -399,6 +409,19 @@ async def sso_callback(
     _clear_flow_cookie(response)
     await asyncio.to_thread(
         audit_success, session, provider_id, login, _client_ip(request)
+    )
+    await asyncio.to_thread(
+        record_auth_event,
+        request,
+        "sso_login",
+        actor=login.user.username,
+        actor_id=login.user.user_id,
+        details={
+            "provider_id": provider_id,
+            "created": login.created,
+            "role_changed": login.role_changed,
+        },
+        session=session,
     )
     logger.info(
         "User signed in via SSO (%s): %s%s",

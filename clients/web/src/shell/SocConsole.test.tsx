@@ -214,7 +214,7 @@ vi.mock('../services/api', () => ({
     // the intent report card shows its own failed state; its contents aren't under test here
     getIntent: () => Promise.reject(new Error('not under test')),
     getAutonomy: vi.fn(() => Promise.resolve({
-      data: { auto_response_enabled: true, force_manual_approval: false },
+      data: { auto_response_enabled: true, force_manual_approval: false, autonomous_tiers: 1, mode: 'act' },
     })),
     getDemoMode: vi.fn(() => Promise.resolve({ data: { enabled: false } })),
     getSetupSteps: vi.fn(() => Promise.resolve({
@@ -318,7 +318,7 @@ afterEach(() => {
   } as never)
   vi.mocked(consoleApi.getRoutability).mockResolvedValue({ data: { providers: { gemini: true } } } as never)
   vi.mocked(configApi.getAutonomy).mockResolvedValue({
-    data: { auto_response_enabled: true, force_manual_approval: false },
+    data: { auto_response_enabled: true, force_manual_approval: false, autonomous_tiers: 1, mode: 'act' },
   } as never)
   vi.mocked(configApi.getDemoMode).mockResolvedValue({ data: { enabled: false } } as never)
   vi.mocked(approvalsApi.needsYou).mockResolvedValue({ data: { count: 0, items: [] } } as never)
@@ -1063,24 +1063,43 @@ describe('SocConsole', () => {
     })
   })
 
-  it('shows Act, and Assist when force-manual is set or auto-response is off', async () => {
+  it('shows the effective mode the API reports, not the flags', async () => {
     const { unmount } = renderConsole()
     expect(await screen.findByText('Act · reversible changes on its own')).toBeInTheDocument()
     expect(screen.getByText('Autonomy', { selector: '.vg-autonomy-label' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'How autonomy is derived' }))
     expect(screen.getByRole('tooltip')).toHaveTextContent('force_manual_approval')
     expect(screen.getByRole('tooltip')).toHaveTextContent('auto_response_enabled')
+    expect(screen.getByRole('tooltip')).toHaveTextContent('autonomy tier')
     unmount()
 
     vi.mocked(configApi.getAutonomy).mockResolvedValueOnce({
-      data: { auto_response_enabled: true, force_manual_approval: true },
+      data: { auto_response_enabled: true, force_manual_approval: true, autonomous_tiers: 1, mode: 'assist' },
     } as never)
     const forced = renderConsole()
     expect(await screen.findByText('Assist · asks before changes')).toBeInTheDocument()
     forced.unmount()
 
+    // K6-13: Act on the flags with every tier at Approve releases nothing
+    // without a person, so the chip says Assist.
     vi.mocked(configApi.getAutonomy).mockResolvedValueOnce({
-      data: { auto_response_enabled: false, force_manual_approval: false },
+      data: { auto_response_enabled: true, force_manual_approval: false, autonomous_tiers: 0, mode: 'assist' },
+    } as never)
+    const noTier = renderConsole()
+    expect(await screen.findByText('Assist · asks before changes')).toBeInTheDocument()
+    noTier.unmount()
+
+    // tiers unreadable: the gate holds every action, so the chip says so
+    vi.mocked(configApi.getAutonomy).mockResolvedValueOnce({
+      data: { auto_response_enabled: true, force_manual_approval: false, autonomous_tiers: null, mode: 'unknown' },
+    } as never)
+    const unknown = renderConsole()
+    expect(await screen.findByText('Unknown · approvals held')).toBeInTheDocument()
+    unknown.unmount()
+
+    // an older API without a mode reads Assist, never Act
+    vi.mocked(configApi.getAutonomy).mockResolvedValueOnce({
+      data: { auto_response_enabled: true, force_manual_approval: false },
     } as never)
     renderConsole()
     expect(await screen.findByText('Assist · asks before changes')).toBeInTheDocument()
@@ -1095,7 +1114,7 @@ describe('SocConsole', () => {
     act.unmount()
 
     vi.mocked(configApi.getAutonomy).mockResolvedValueOnce({
-      data: { auto_response_enabled: true, force_manual_approval: true },
+      data: { auto_response_enabled: true, force_manual_approval: true, autonomous_tiers: 0, mode: 'assist' },
     } as never)
     renderConsole()
     fireEvent.click(await screen.findByRole('button', { name: 'Autonomy · Assist · asks before changes' }))

@@ -38,6 +38,7 @@ import NotFoundScreen from '../screens/notfound/NotFoundScreen'
 import OverviewScreen from '../screens/overview/OverviewScreen'
 import TriageScreen from '../screens/triage/TriageScreen'
 import { VigilLogo } from '../shared/VigilLogo'
+import { ALWAYS_HUMAN_SUMMARY, autonomyLabel } from '../shared/autonomy'
 import {
   foldStatus,
   type FederationRead,
@@ -52,8 +53,6 @@ const PRIMARY_KEYS = ['home', 'overview', 'triage', 'cases', 'workflows', 'setti
 const NAV_GROUPS = [['home'], ['overview'], ['triage', 'cases'], ['workflows', 'settings']]
 const MORE_KEYS = ['dashboard', 'metrics', 'analytics', 'decisions', 'scorecard', 'autoops', 'health']
 
-const AUTONOMY_ACT = 'Act · reversible changes on its own'
-const AUTONOMY_ASSIST = 'Assist · asks before changes'
 
 const SCREENS: Record<ConsoleScreenKey, (props: ConsoleScreenProps) => JSX.Element> = {
   overview: OverviewScreen,
@@ -107,7 +106,7 @@ export default function SocConsole() {
   const { scheme } = useColorScheme()
   const [chatOpen, setChatOpen] = useState(false)
   const [moreOpen, setMoreOpen] = useState(false)
-  const [assist, setAssist] = useState<boolean | null>(null)
+  const [autonomy, setAutonomy] = useState<string | null>(null)
   const [status, setStatus] = useState<StatusFold | null>(null)
   // open setup steps; null when unread or failed, so no chip and no menu count
   const [setupLeft, setSetupLeft] = useState<number | null>(null)
@@ -300,9 +299,7 @@ export default function SocConsole() {
       .getAutonomy()
       .then((res) => {
         if (!live) return
-        const auto = Boolean(res.data?.auto_response_enabled)
-        const force = Boolean(res.data?.force_manual_approval)
-        setAssist(force || !auto)
+        setAutonomy(autonomyLabel(res.data))
       })
       .catch(() => {})
     return () => {
@@ -446,22 +443,22 @@ export default function SocConsole() {
             fill={fill}
           />
           <div className="vg-header-end">
-            {assist !== null && (
+            {autonomy !== null && (
               <div className="vg-autonomy">
                 <button
                   type="button"
                   className="vg-autonomy-link"
-                  aria-label={`Autonomy · ${assist ? AUTONOMY_ASSIST : AUTONOMY_ACT}`}
+                  aria-label={`Autonomy · ${autonomy}`}
                   onClick={() => goSettings('autoinvestigate')}
                 >
                   <span className="vg-autonomy-label">Autonomy</span>
-                  {assist ? AUTONOMY_ASSIST : AUTONOMY_ACT}
+                  {autonomy}
                 </button>
                 <InfoTip
                   label="How autonomy is derived"
-                  source="force_manual_approval and auto_response_enabled."
-                  calculation="Assist when the first is set or the second is off; otherwise Act."
-                  limit="Both are set in Settings › Limits & autonomy."
+                  source="The effective mode from GET /api/config/autonomy: force_manual_approval, auto_response_enabled and the autonomy tiers."
+                  calculation="Act only when approvals are not forced, auto-response is on and at least one autonomy tier is Autonomous; Unknown when the tiers cannot be read (every action is then held); otherwise Assist, and a person approves every action."
+                  limit={`${ALWAYS_HUMAN_SUMMARY} always wait for a person. Set in Settings › Limits & autonomy.`}
                 />
               </div>
             )}

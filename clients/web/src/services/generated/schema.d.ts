@@ -795,6 +795,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/audit/signing-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Signing Keys
+         * @description The public halves of the signing keys, for offline verification.
+         */
+        get: operations["get_api_audit_signing-keys"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/bootstrap": {
         parameters: {
             query?: never;
@@ -809,6 +829,10 @@ export interface paths {
          *     There is no self-service signup and creating a user needs users.write, so
          *     an instance with an empty user table cannot be signed into at all. The
          *     login screen asks this to offer first-account creation instead.
+         *
+         *     An install that needs its first account and has no setup token yet (the
+         *     database was not reachable at startup) gets one issued here; the token
+         *     itself goes to the backend log and State Directory, never this response.
          */
         get: operations["get_api_auth_bootstrap"];
         put?: never;
@@ -818,7 +842,9 @@ export interface paths {
          *
          *     Unauthenticated by necessity — it is the only way to obtain the account
          *     every other user-creating path requires. It closes permanently as soon as
-         *     one user exists, so it is not a signup endpoint.
+         *     one user exists, so it is not a signup endpoint. It also demands the
+         *     one-time setup token (core/auth/setup_token.py): reaching the instance
+         *     first over the network is not enough.
          */
         post: operations["post_api_auth_bootstrap"];
         delete?: never;
@@ -2069,7 +2095,7 @@ export interface paths {
         put?: never;
         /**
          * Add Comment
-         * @description Add comment to case.
+         * @description Add comment to case, authored by the signed-in user.
          */
         post: operations["post_api_cases_case_id_comments"];
         delete?: never;
@@ -2157,7 +2183,7 @@ export interface paths {
         put?: never;
         /**
          * Add Evidence
-         * @description Add evidence to case.
+         * @description Add evidence to case, collected by the signed-in user.
          */
         post: operations["post_api_cases_case_id_evidence"];
         delete?: never;
@@ -2200,7 +2226,7 @@ export interface paths {
         put?: never;
         /**
          * Add Custody Entry
-         * @description Add chain of custody entry.
+         * @description Add chain of custody entry, made by the signed-in user.
          */
         post: operations["post_api_cases_case_id_evidence_evidence_id_chain-of-custody"];
         delete?: never;
@@ -3256,7 +3282,10 @@ export interface paths {
          *     probe: enabled MCP servers are contacted, and if none are enabled every
          *     declared server is probed with a temporary session. Splunk and Elastic are
          *     then also read with their saved URL and credentials (``credentials`` in the
-         *     answer), since a server starts whatever it is pointed at.
+         *     answer), since a server starts whatever it is pointed at; so are the
+         *     response executors (Defender, Entra ID, PAN-OS), with one read-only call
+         *     each. For those, ``executor`` says whether this process can run their
+         *     actions now (still behind the approval gate).
          */
         post: operations["post_api_config_integrations_integration_id_test"];
         delete?: never;
@@ -3494,6 +3523,55 @@ export interface paths {
          *     cryptography imported, and where each backend lives on disk.
          */
         get: operations["get_api_config_secrets_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/config/setup-progress": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Setup Progress
+         * @description The wizard's progress for the whole install (not per browser).
+         */
+        get: operations["get_api_config_setup-progress"];
+        /**
+         * Put Setup Progress
+         * @description Save the wizard's progress. ``completed`` is stored only when the
+         *     install is ready (see GET /setup-readiness); otherwise it is stored as
+         *     ``deferred``. ``{"furthest": 1, "passed": [], "status": "in_progress"}``
+         *     starts the wizard over (scripts/reset-setup.sh).
+         */
+        put: operations["put_api_config_setup-progress"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/config/setup-readiness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Setup Readiness
+         * @description What a working install still lacks: an alert source and a model are
+         *     required; a response integration and a notification route are recommended.
+         *     The setup wizard's summary reads this instead of declaring itself ready.
+         */
+        get: operations["get_api_config_setup-readiness"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5623,6 +5701,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/response/policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Response Policy
+         * @description Protected assets, hourly limits and four-eyes types, stored and in effect.
+         */
+        get: operations["get_api_response_policy"];
+        /**
+         * Put Response Policy
+         * @description Replace the editable keys. Audited (who, reason, old and new value).
+         *
+         *     Read, compared with ``version``, changed and written in one transaction
+         *     under a row lock: 409 when the policy changed since the caller read it.
+         */
+        put: operations["put_api_response_policy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/response/segregation": {
         parameters: {
             query?: never;
@@ -7080,7 +7185,7 @@ export interface paths {
         put?: never;
         /**
          * Add Evidence
-         * @description Add evidence to case.
+         * @description Add evidence to case, collected by the signed-in user.
          */
         post: operations["post_api_v1_cases_case_id_evidence"];
         delete?: never;
@@ -7479,7 +7584,7 @@ export interface paths {
         put?: never;
         /**
          * Create Custom Workflow
-         * @description Create a new custom workflow.
+         * @description Create a new custom workflow. ``created_by`` is the signed-in user.
          */
         post: operations["post_api_workflows_custom"];
         delete?: never;
@@ -8327,17 +8432,35 @@ export interface components {
         };
         /**
          * AutonomyConfig
-         * @description The two flags the console chip folds into Assist or Act.
+         * @description What the console chip shows, and the inputs it is folded from.
          *
          *     Not stored. ``force_manual_approval`` is the env flag OR the
-         *     ``approval.force_manual_approval`` row. ``auto_response_enabled`` is
-         *     ``Settings.daemon_auto_response``.
+         *     ``approval.force_manual_approval`` row (no row is Assist).
+         *     ``auto_response_enabled`` is ``Settings.daemon_auto_response``.
+         *     ``autonomous_tiers`` counts the autonomy tiers set to Autonomous that the
+         *     controller could ever honour (eligible class, a named category); ``None``
+         *     when the tiers could not be read.
+         *
+         *     ``mode`` is the effective mode (W0.32). ``act`` only when approvals are
+         *     not forced, auto-response is on and at least one tier may run an action
+         *     without a person; otherwise every action waits for one and the mode is
+         *     ``assist``. ``unknown`` when the flags would allow Act but the tiers could
+         *     not be read: the gate then holds every action (a tier read failure decides
+         *     approve), but the chip cannot say which tiers would release one.
          */
         AutonomyConfig: {
             /** Auto Response Enabled */
             auto_response_enabled: boolean;
+            /** Autonomous Tiers */
+            autonomous_tiers?: number | null;
             /** Force Manual Approval */
             force_manual_approval: boolean;
+            /**
+             * Mode
+             * @default assist
+             * @enum {string}
+             */
+            mode: "assist" | "act" | "unknown";
         };
         /** AutonomyDemotion */
         AutonomyDemotion: {
@@ -8356,6 +8479,8 @@ export interface components {
         AutonomyMatrix: {
             /** Action Classes */
             action_classes: string[];
+            /** Always Human */
+            always_human?: string[];
             /** Bounds */
             bounds?: {
                 [key: string]: components["schemas"]["BoundModel"];
@@ -8435,7 +8560,9 @@ export interface components {
         };
         /**
          * BootstrapRequest
-         * @description First-admin details.
+         * @description First-admin details. The setup token travels in the ``X-Setup-Token``
+         *     header, not here: a 422 echoes the request body back, and a header is
+         *     never in a response or an access-log line.
          */
         BootstrapRequest: {
             /**
@@ -9598,8 +9725,11 @@ export interface components {
             action: string;
             /** Notes */
             notes?: string | null;
-            /** User */
-            user: string;
+            /**
+             * User
+             * @description Ignored: the entry is made by the signed-in user.
+             */
+            user?: string | null;
         };
         /** ChainResponse */
         ChainResponse: {
@@ -9798,10 +9928,16 @@ export interface components {
         /**
          * CommentAdd
          * @description Add comment to case.
+         *
+         *     The author is the signed-in user (W0.35). ``author`` is still accepted so
+         *     an older client keeps working, and ignored, as ``closed_by`` is on close.
          */
         CommentAdd: {
-            /** Author */
-            author: string;
+            /**
+             * Author
+             * @description Ignored: the author is the signed-in user.
+             */
+            author?: string | null;
             /** Content */
             content: string;
             /** Parent Comment Id */
@@ -10053,7 +10189,10 @@ export interface components {
         };
         /** CustomWorkflowCreate */
         CustomWorkflowCreate: {
-            /** Created By */
+            /**
+             * Created By
+             * @description Ignored: the workflow is created by the signed-in user.
+             */
             created_by?: string | null;
             /** Description */
             description: string;
@@ -10314,6 +10453,24 @@ export interface components {
              */
             months: number;
         };
+        /**
+         * EffectivePolicy
+         * @description What ``ActionPolicy`` applies: the stored values merged with the defaults.
+         */
+        EffectivePolicy: {
+            /** Default Hourly Limit */
+            default_hourly_limit: number;
+            /** Distinct Role Types */
+            distinct_role_types: string[];
+            /** Four Eyes Types */
+            four_eyes_types: string[];
+            /** Hourly Limits */
+            hourly_limits: {
+                [key: string]: number;
+            };
+            /** Protected Tags */
+            protected_tags: string[];
+        };
         /** EndpointCreate */
         EndpointCreate: {
             /**
@@ -10472,8 +10629,11 @@ export interface components {
          * @description Add evidence to case.
          */
         EvidenceAdd: {
-            /** Collected By */
-            collected_by: string;
+            /**
+             * Collected By
+             * @description Ignored: the collector is the signed-in user.
+             */
+            collected_by?: string | null;
             /** Description */
             description?: string | null;
             /** Evidence Type */
@@ -11876,6 +12036,19 @@ export interface components {
             /** Retain Days */
             retain_days: number;
         };
+        /** PolicyDefaults */
+        PolicyDefaults: {
+            /** Default Hourly Limit */
+            default_hourly_limit: number;
+            /** Four Eyes Types */
+            four_eyes_types: string[];
+            /** Hourly Limits */
+            hourly_limits: {
+                [key: string]: number;
+            };
+            /** Protected Tags */
+            protected_tags: string[];
+        };
         /**
          * PostgreSQLConfig
          * @description PostgreSQL database backend configuration.
@@ -12038,6 +12211,25 @@ export interface components {
             local_login_enabled: boolean;
             /** Providers */
             providers: components["schemas"]["PublicProvider"][];
+        };
+        /** PublicSigningKey */
+        PublicSigningKey: {
+            /** Algorithm */
+            algorithm: string;
+            /** Configured */
+            configured: boolean;
+            /** Key Id */
+            key_id?: string | null;
+            /** Public Key */
+            public_key?: string | null;
+            /** Public Key Pem */
+            public_key_pem?: string | null;
+            /** Purpose */
+            purpose: string;
+            /** Secret */
+            secret: string;
+            /** Source */
+            source: string;
         };
         /** PurgeBody */
         PurgeBody: {
@@ -12422,6 +12614,60 @@ export interface components {
             /** Playbook */
             playbook: string;
         };
+        /**
+         * ResponsePolicyUpdate
+         * @description The editable keys, whole: a key left out is reset to its default.
+         */
+        ResponsePolicyUpdate: {
+            /** Asset Tags */
+            asset_tags?: {
+                [key: string]: string[];
+            };
+            /**
+             * Default Hourly Limit
+             * @default 20
+             */
+            default_hourly_limit: number;
+            /** Four Eyes Types */
+            four_eyes_types?: string[];
+            /** Hourly Limits */
+            hourly_limits?: {
+                [key: string]: number;
+            };
+            /** Protected Tags */
+            protected_tags?: string[];
+            /** Protected Targets */
+            protected_targets?: string[];
+            /** Reason */
+            reason: string;
+            /** Version */
+            version: string;
+        };
+        /** ResponsePolicyView */
+        ResponsePolicyView: {
+            /** Action Types */
+            action_types: string[];
+            /** Asset Tags */
+            asset_tags: {
+                [key: string]: string[];
+            };
+            /** Default Hourly Limit */
+            default_hourly_limit: number;
+            defaults: components["schemas"]["PolicyDefaults"];
+            effective: components["schemas"]["EffectivePolicy"];
+            /** Four Eyes Types */
+            four_eyes_types: string[];
+            /** Hourly Limits */
+            hourly_limits: {
+                [key: string]: number;
+            };
+            /** Protected Tags */
+            protected_tags: string[];
+            /** Protected Targets */
+            protected_targets: string[];
+            /** Version */
+            version: string;
+        };
         /** RevertRequest */
         RevertRequest: {
             /**
@@ -12805,6 +13051,82 @@ export interface components {
         ServerEnabledRequest: {
             /** Enabled */
             enabled: boolean;
+        };
+        /** SetupProgress */
+        SetupProgress: {
+            /** Completed At */
+            completed_at?: string | null;
+            /** Completed By */
+            completed_by?: string | null;
+            /** Furthest */
+            furthest: number;
+            /** Passed */
+            passed: number[];
+            /** Started */
+            started: boolean;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "in_progress" | "deferred" | "completed";
+            /** Updated At */
+            updated_at?: string | null;
+            /** Updated By */
+            updated_by?: string | null;
+        };
+        /**
+         * SetupProgressWrite
+         * @description What the wizard saves. Steps are numbered 1..STEP_COUNT.
+         */
+        SetupProgressWrite: {
+            /**
+             * Furthest
+             * @default 1
+             */
+            furthest: number;
+            /** Passed */
+            passed?: number[];
+            /**
+             * Status
+             * @default in_progress
+             * @enum {string}
+             */
+            status: "in_progress" | "deferred" | "completed";
+        };
+        /**
+         * SetupReadiness
+         * @description ``ready`` is true only when every required item is; ``missing`` names
+         *     the required items that are not, ``recommended_missing`` the others.
+         */
+        SetupReadiness: {
+            /** Items */
+            items: components["schemas"]["SetupReadinessItem"][];
+            /** Missing */
+            missing: string[];
+            /** Ready */
+            ready: boolean;
+            /** Recommended Missing */
+            recommended_missing: string[];
+        };
+        /** SetupReadinessItem */
+        SetupReadinessItem: {
+            /** Detail */
+            detail: string;
+            /** Href */
+            href: string;
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Ready */
+            ready: boolean;
+            /** Required */
+            required: boolean;
+        };
+        /** SigningKeysResponse */
+        SigningKeysResponse: {
+            /** Keys */
+            keys: components["schemas"]["PublicSigningKey"][];
         };
         /** SkillCaseResult */
         SkillCaseResult: {
@@ -15226,6 +15548,37 @@ export interface operations {
             };
         };
     };
+    "get_api_audit_signing-keys": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SigningKeysResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_api_auth_bootstrap: {
         parameters: {
             query?: never;
@@ -15249,7 +15602,9 @@ export interface operations {
     post_api_auth_bootstrap: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "X-Setup-Token"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -20074,6 +20429,103 @@ export interface operations {
             };
         };
     };
+    "get_api_config_setup-progress": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupProgress"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "put_api_config_setup-progress": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetupProgressWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupProgress"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_config_setup-readiness": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupReadiness"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     "get_api_config_setup-steps": {
         parameters: {
             query?: never;
@@ -23792,6 +24244,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FourEyesConfig"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_response_policy: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponsePolicyView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_api_response_policy: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResponsePolicyUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponsePolicyView"];
                 };
             };
             /** @description Validation Error */

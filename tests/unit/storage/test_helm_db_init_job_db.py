@@ -25,6 +25,8 @@ import pytest
 import yaml
 from sqlalchemy import create_engine, text
 
+from tests.unit.storage.kubelet_expand import kubelet_expand
+
 pytestmark = [pytest.mark.unit, pytest.mark.external_service, pytest.mark.database]
 
 REPO = Path(__file__).resolve().parents[3]
@@ -88,7 +90,19 @@ def job_script(sql_dir: Path) -> str:
     )
     assert n == 1, "the range over dbInit.sqlFiles moved; update this test"
     assert "{{" not in body
-    return body.replace('"/sql/$f"', f'"{sql_dir}/$f"')
+    # What the kubelet hands the container (W0.39 review): $$ -> $, $(NAME) of
+    # a container env var -> its value. The script must mean the same after it.
+    names = {name: f"<{name}>" for name in job_env_names()}
+    expanded = kubelet_expand(body, names)
+    assert not any(f"<{name}>" in expanded for name in names), "script uses $(NAME)"
+    return expanded.replace('"/sql/$f"', f'"{sql_dir}/$f"')
+
+
+def job_env_names() -> list[str]:
+    """The env var names the db-init container declares."""
+    text = JOB.read_text(encoding="utf-8")
+    env = text[text.index("          env:\n") : text.index("          command:\n")]
+    return re.findall(r"^\s*- name: (\w+)$", env, re.MULTILINE)
 
 
 def run_job(wait_seconds: int = 0) -> subprocess.CompletedProcess:
@@ -128,27 +142,13 @@ def _create_all(engine) -> None:
     Base.metadata.create_all(engine)
 
 
-def chart_role() -> str:
-    """The role the Job logs in as on Helm, which the init SQL GRANTs to by name."""
-    values = yaml.safe_load((CHART / "values.yaml").read_text())
-    return values["postgresql"]["auth"]["username"]
-
-
 @pytest.fixture
 def scratch():
-    # 04/07/09/10/12/13 end with GRANT ... TO <chart user>. A Helm install
-    # always has that role (the Job logs in as it); a test cluster whose login is
-    # some other name (CI's "test") would fail those GRANTs and the files would
-    # never apply, which is not what this test is about. So the role exists here
-    # too, as on Helm, and goes again if this fixture made it.
-    role = chart_role()
+    # No `deeptempo` role is needed: the Job grants to its own user (W0.39,
+    # tests/unit/storage/test_init_sql_any_db_user_db.py), so this also runs on a
+    # cluster whose login is some other name (CI's "test").
     admin = create_engine(_url("postgres"), isolation_level="AUTOCOMMIT")
     with admin.connect() as conn:
-        made_role = not conn.execute(
-            text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": role}
-        ).scalar()
-        if made_role:
-            conn.execute(text(f'CREATE ROLE "{role}" NOLOGIN'))
         conn.execute(text(f"DROP DATABASE IF EXISTS {SCRATCH_DB} WITH (FORCE)"))
         conn.execute(text(f"CREATE DATABASE {SCRATCH_DB}"))
     engine = create_engine(_url(SCRATCH_DB))
@@ -158,8 +158,6 @@ def scratch():
         engine.dispose()
         with admin.connect() as conn:
             conn.execute(text(f"DROP DATABASE IF EXISTS {SCRATCH_DB} WITH (FORCE)"))
-            if made_role:
-                conn.execute(text(f'DROP ROLE IF EXISTS "{role}"'))
         admin.dispose()
 
 
@@ -182,6 +180,8 @@ def test_first_install_does_not_record_files_that_failed_and_upgrade_applies_the
         assert _exists(scratch, table), f"{table} missing after upgrade\n{proc.stdout}"
     recorded = _recorded(scratch)
     assert {"50_regulatory_clocks.sql", "58_broadcast_unique_and_clock_heads.sql"} <= recorded
+    # The DO block 30 is rewritten into survives the kubelet (W0.39 review).
+    assert "30_vigil_app_role.sql" in recorded, proc.stdout
 
 
 def test_second_pass_applies_them_once_the_backend_has_built_its_tables(scratch):

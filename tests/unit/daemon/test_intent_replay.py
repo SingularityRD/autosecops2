@@ -195,6 +195,9 @@ class _FakeConfigService:
     def get_system_config(self, key, default=None):
         return self.rows.get(key, default)
 
+    def read_system_config(self, key):
+        return self.rows.get(key)
+
 
 def test_effective_force_uses_the_db_overlay_and_declared_can_override(monkeypatch):
     svc = _FakeConfigService({"approval.force_manual_approval": {"enabled": True}})

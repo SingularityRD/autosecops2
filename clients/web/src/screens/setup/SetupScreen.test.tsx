@@ -44,6 +44,13 @@ vi.mock('../../services/api', () => ({
     setIntegrations: vi.fn(() => Promise.resolve({ data: {} })),
     getDemoMode: vi.fn(() => Promise.resolve({ data: { enabled: false, source: 'file' } })),
     getSetupSteps: vi.fn(() => Promise.resolve({ data: { steps: [] } })),
+    getSetupReadiness: vi.fn(() =>
+      Promise.resolve({ data: { ready: true, missing: [], recommended_missing: [], items: [] } }),
+    ),
+    getSetupProgress: vi.fn(() =>
+      Promise.resolve({ data: { furthest: 1, passed: [], status: 'in_progress', started: false } }),
+    ),
+    putSetupProgress: vi.fn(() => Promise.resolve({ data: {} })),
     setDemoMode: vi.fn(() => Promise.resolve({ data: { enabled: true } })),
   },
   mcpApi: {
@@ -158,7 +165,7 @@ describe('SetupScreen', () => {
     renderSetup()
     expect(screen.getByText('Step 5 of 5', { selector: '.su-eyebrow' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Finish setup' }))
-    expect(screen.getByText('Setup complete', { selector: '.su-eyebrow' })).toBeInTheDocument()
+    expect(await screen.findByText('Setup complete', { selector: '.su-eyebrow' })).toBeInTheDocument()
     expect(screen.queryByText(/of 5/)).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Go to Home' })).toBeInTheDocument()
     await waitFor(() =>
@@ -242,6 +249,62 @@ describe('SetupScreen', () => {
     expect(screen.getByText('console-home')).toBeInTheDocument()
     expect(localStorage.getItem(SETUP_DISMISSED_KEY)).toBe('1')
     expect(saved()).toEqual({ furthest: 2, passed: [1] })
+  })
+
+  describe('progress on the server (W0.33)', () => {
+    afterEach(() => {
+      vi.mocked(configApi.getSetupProgress).mockResolvedValue({
+        data: { furthest: 1, passed: [], status: 'in_progress', started: false },
+      } as never)
+    })
+
+    const server = (furthest: number, passed: number[], status = 'in_progress') =>
+      // not Once: StrictMode runs the mount effect twice
+      vi.mocked(configApi.getSetupProgress).mockResolvedValue({
+        data: { furthest, passed, status, started: true },
+      } as never)
+
+    it('resumes where another browser or administrator left off', async () => {
+      server(3, [1, 2])
+      renderSetup()
+      expect(await screen.findByText('Step 3 of 5', { selector: '.su-eyebrow' })).toBeInTheDocument()
+      expect(saved()).toEqual({ furthest: 3, passed: [1, 2] })
+    })
+
+    it('does not move a wizard the person has already moved', async () => {
+      let answer: (value: unknown) => void = () => {}
+      vi.mocked(configApi.getSetupProgress).mockReturnValue(
+        new Promise((resolve) => (answer = resolve)) as never,
+      )
+      renderSetup()
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+      await act(async () =>
+        answer({ data: { furthest: 4, passed: [1, 2, 3], status: 'in_progress', started: true } }),
+      )
+      expect(screen.getByText('Step 2 of 5', { selector: '.su-eyebrow' })).toBeInTheDocument()
+    })
+
+    it('saves each Continue to the server', () => {
+      renderSetup()
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+      expect(configApi.putSetupProgress).toHaveBeenLastCalledWith({
+        furthest: 2,
+        passed: [1],
+        status: 'in_progress',
+      })
+    })
+
+    it('Save and finish later records one "deferred" save', () => {
+      localStorage.setItem(SETUP_PROGRESS_KEY, JSON.stringify({ furthest: 2, passed: [1] }))
+      renderSetup()
+      fireEvent.click(screen.getByRole('button', { name: 'Save and finish later' }))
+      expect(configApi.putSetupProgress).toHaveBeenCalledTimes(1)
+      expect(configApi.putSetupProgress).toHaveBeenCalledWith({
+        furthest: 2,
+        passed: [1],
+        status: 'deferred',
+      })
+    })
   })
 
   it('reopening resumes at the saved step', () => {

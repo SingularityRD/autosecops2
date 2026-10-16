@@ -642,6 +642,17 @@ def test_install_with_registry_loader(bundle, built, stubs):
         assert f"docker tag {entry['ref']} {target}" in log
         assert f"docker push {target}" in log
     assert any(line.startswith("kubectl -n soc apply -f ") for line in log)
+    # W0.36: after the chart minted the signing keys, their public halves.
+    exports = [line for line in log if "core.audit.signing_keys export" in line]
+    assert exports == [
+        "kubectl -n soc exec statefulset/autosecops-vigil-daemon -- python -m "
+        "core.audit.signing_keys export --purpose audit_checkpoints",
+        "kubectl -n soc exec deployment/autosecops-vigil-backend -- python -m "
+        "core.audit.signing_keys export --purpose evidence_packs",
+    ]
+    assert log.index(exports[0]) > next(
+        i for i, line in enumerate(log) if line.startswith("helm ")
+    )
     helm = [line for line in log if line.startswith("helm ")]
     assert len(helm) == 1
     assert re.match(
@@ -789,6 +800,10 @@ def test_install_dry_run_prints_and_calls_nothing(bundle, built, stubs):
     proc = _run("install", bundle, built["pub"], stubs, "--dry-run")
     assert proc.returncode == 0, proc.stderr
     assert "+ helm upgrade --install autosecops" in proc.stdout
+    assert (
+        "+ kubectl -n autosecops exec statefulset/autosecops-vigil-daemon -- "
+        "python -m core.audit.signing_keys export --purpose audit_checkpoints"
+    ) in proc.stdout
     assert _calls(stubs[1]) == []
 
 

@@ -43,6 +43,7 @@ class _FakeSession:
     def __init__(self):
         self._store: Dict[str, LLMProviderConfig] = {}
         self._added = []
+        self.audits = []
         self.flushes = 0
 
     @property
@@ -66,6 +67,9 @@ class _FakeSession:
         return self._store.get(pk)
 
     def add(self, row):
+        if not isinstance(row, LLMProviderConfig):
+            self.audits.append(row)  # config_audit_log rows (W0.35)
+            return
         self._added.append(row)
         self._store[row.provider_id] = row
 
@@ -227,6 +231,54 @@ def test_update_rotates_key_and_clears(client, secrets_store):
     assert r.status_code == 200
     assert r.json()["has_api_key"] is False
     assert "llm_provider_openai-prod_api_key" not in secrets_store
+
+
+def test_every_provider_change_is_audited_without_the_key(
+    client, session, secrets_store
+):
+    """U-16/U-21 (W0.35): who added, changed and removed a provider, old -> new.
+
+    A cloud provider is where prompts (and the data in them) leave the
+    install, so its row says the type and URL; the key itself never appears.
+    """
+    client.post(
+        "/api/llm/providers/",
+        json={
+            "provider_id": "openai-prod",
+            "provider_type": "openai",
+            "name": "OpenAI",
+            "default_model": "gpt-4o",
+            "api_key": "sk-live-secret-123456",
+            "config": {"organization": "org-1", "client_secret": "s3cr3t"},
+        },
+    )
+    client.put(
+        "/api/llm/providers/openai-prod",
+        json={"default_model": "gpt-4.1", "api_key": "sk-live-rotated-654321"},
+    )
+    client.put("/api/llm/providers/openai-prod", json={"name": "OpenAI"})  # no-op
+    client.delete("/api/llm/providers/openai-prod")
+
+    rows = [(a.config_type, a.config_key, a.action, a.changed_by) for a in session.audits]
+    assert rows == [
+        ("llm_provider", "openai-prod", "create", "test-admin"),
+        ("llm_provider", "openai-prod", "update", "test-admin"),
+        ("llm_provider", "openai-prod", "delete", "test-admin"),
+    ]
+    create, update, delete = session.audits
+    assert create.old_value is None
+    assert create.new_value["provider_type"] == "openai"
+    assert create.new_value["has_api_key"] is True
+    assert create.new_value["config"] == {
+        "organization": "org-1",
+        "client_secret": "[REDACTED]",
+    }
+    assert update.old_value["default_model"] == "gpt-4o"
+    assert update.new_value["default_model"] == "gpt-4.1"
+    assert update.new_value["api_key_rotated"] is True
+    assert delete.old_value["name"] == "OpenAI" and delete.new_value is None
+    text = repr([(a.old_value, a.new_value) for a in session.audits])
+    assert "sk-live" not in text and "s3cr3t" not in text
 
 
 def test_delete_removes_secret(client, secrets_store):

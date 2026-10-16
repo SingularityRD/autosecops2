@@ -1,7 +1,15 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getAllIntegrations } from '../../config/integrations'
-import { aiConfigApi, budgetsApi, configApi, llmProviderApi, workflowApi } from '../../services/api'
+import {
+  aiConfigApi,
+  budgetsApi,
+  configApi,
+  llmProviderApi,
+  workflowApi,
+  type SetupReadiness,
+} from '../../services/api'
+import { autonomyLabel } from '../../shared/autonomy'
 import { Icon, type IconName } from '../../shared/icons'
 import { markConsoleTourSeen } from '../../shell/consoleTourSeen'
 import { matchesProfile, type InvestigationProfiles } from '../settings/useSettings'
@@ -14,6 +22,7 @@ type Cell = { phase: 'loading' } | { phase: 'ready'; text: string } | { phase: '
 
 type SetupSteps = Awaited<ReturnType<typeof configApi.getSetupSteps>>['data']['steps']
 type Steps = { phase: 'loading' | 'error' } | { phase: 'ready'; steps: SetupSteps }
+type Readiness = { phase: 'loading' | 'error' } | { phase: 'ready'; read: SetupReadiness }
 
 const ROWS: { key: string; label: string; target: SummaryTarget }[] = [
   { key: 'data', label: 'Data', target: 'data' },
@@ -32,11 +41,34 @@ const NEXT: { icon: IconName; title: string; sub: string; to: string }[] = [
 
 const plural = (n: number) => `${n} optional step${n === 1 ? '' : 's'}`
 
+const HEAD = {
+  loading: { eyebrow: 'Checking', tone: '', title: 'Checking what is set up', body: 'Reading what this install can do now.' },
+  error: {
+    eyebrow: 'Not confirmed',
+    tone: ' warn',
+    title: 'Readiness could not be checked',
+    body: 'AutoSecOps could not confirm what is set up. Review the steps below before relying on it.',
+  },
+  ready: {
+    eyebrow: 'Setup complete',
+    tone: ' good',
+    title: 'AutoSecOps is ready',
+    body: 'Triage starts on new alerts as they are collected. The first cases appear on Home, and anything that needs you shows up in Needs your attention.',
+  },
+  missing: {
+    eyebrow: 'Setup not finished',
+    tone: ' warn',
+    title: 'AutoSecOps is not ready yet',
+    body: 'Nothing will be investigated until the items below are in place. Your progress is saved.',
+  },
+} as const
+
 /** Each row reads its own API, so one failing leaves the others standing. */
 export default function SummaryStep({ onChange }: { onChange: (target: SummaryTarget) => void }) {
   const navigate = useNavigate()
   const [cells, setCells] = useState<Record<string, Cell>>({})
   const [setup, setSetup] = useState<Steps>({ phase: 'loading' })
+  const [readiness, setReadiness] = useState<Readiness>({ phase: 'loading' })
 
   useEffect(() => {
     let live = true
@@ -46,6 +78,12 @@ export default function SummaryStep({ onChange }: { onChange: (target: SummaryTa
         .then((text) => live && setCells((prev) => ({ ...prev, [key]: { phase: 'ready', text } })))
         .catch(() => live && setCells((prev) => ({ ...prev, [key]: { phase: 'error' } })))
     }
+
+    // the server's verdict, never this screen's: an empty install is not ready
+    configApi
+      .getSetupReadiness()
+      .then(({ data }) => live && setReadiness({ phase: 'ready', read: data }))
+      .catch(() => live && setReadiness({ phase: 'error' }))
 
     // one read feeds the Notifications row, the footer and the Next card
     configApi
@@ -88,9 +126,7 @@ export default function SummaryStep({ onChange }: { onChange: (target: SummaryTa
     })
     read('autonomy', async () => {
       const { data } = await configApi.getAutonomy()
-      return data.force_manual_approval
-        ? 'Assist · asks before changes'
-        : 'Act · reversible changes on its own'
+      return autonomyLabel(data)
     })
     read('limits', async () => {
       const [{ data }, quota] = await Promise.all([
@@ -121,8 +157,16 @@ export default function SummaryStep({ onChange }: { onChange: (target: SummaryTa
 
   const left = setup.phase === 'ready' ? setup.steps.filter((s) => !s.done).length : 0
 
+  const ready = readiness.phase === 'ready' && readiness.read.ready
+  const items = readiness.phase === 'ready' ? readiness.read.items : []
+  const required = items.filter((i) => i.required && !i.ready)
+  const recommended = items.filter((i) => !i.required && !i.ready)
+  const head =
+    readiness.phase === 'ready' ? HEAD[ready ? 'ready' : 'missing'] : HEAD[readiness.phase]
+
+  // "completed" only when the server says ready; it re-checks and records "deferred" otherwise
   const leave = (to: string, state?: { startTour: true }) => {
-    markSetupDismissed()
+    markSetupDismissed(ready ? 'completed' : 'deferred')
     navigate(to, { replace: true, state })
   }
   const goHome = () => {
@@ -136,18 +180,51 @@ export default function SummaryStep({ onChange }: { onChange: (target: SummaryTa
       <div className="su-scroll">
         <div className="su-col">
           <div className="su-done-head">
-            <span className="su-done-tile" aria-hidden="true">
-              <Icon name="check" size={30} />
+            <span className={`su-done-tile${ready ? '' : ' warn'}`} aria-hidden="true">
+              <Icon name={ready ? 'check' : 'alert'} size={30} />
             </span>
             <div className="su-head">
-              <span className="su-eyebrow good">Setup complete</span>
-              <h1>AutoSecOps is ready</h1>
-              <p>
-                Triage starts on new alerts as they are collected. The first cases appear on Home,
-                and anything that needs you shows up in Needs your attention.
-              </p>
+              <span className={`su-eyebrow${head.tone}`}>{head.eyebrow}</span>
+              <h1>{head.title}</h1>
+              <p>{head.body}</p>
             </div>
           </div>
+
+          {(required.length > 0 || recommended.length > 0) && (
+            <section className="card card-sq settings-card" aria-label="What is missing">
+              <div className="card-h">
+                <div className="settings-card-head">
+                  <h3>{required.length ? 'Still missing' : 'Recommended'}</h3>
+                  <p>
+                    {required.length
+                      ? 'Required before AutoSecOps can work, then recommended.'
+                      : 'AutoSecOps works without these, with less coverage.'}
+                  </p>
+                </div>
+              </div>
+              <div className="card-b su-sum">
+                {[...required, ...recommended].map((item) => (
+                  <div key={item.id} className="su-sum-row">
+                    <span className="su-sum-k">
+                      {item.label}
+                      <span className={`su-req${item.required ? ' must' : ''}`}>
+                        {item.required ? 'Required' : 'Recommended'}
+                      </span>
+                    </span>
+                    <span className="su-sum-v">{item.detail}</span>
+                    <button
+                      type="button"
+                      className="btn"
+                      aria-label={`Fix ${item.label}`}
+                      onClick={() => leave(item.href)}
+                    >
+                      Open
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           <section className="card card-sq settings-card">
             <div className="card-h">
@@ -215,7 +292,11 @@ export default function SummaryStep({ onChange }: { onChange: (target: SummaryTa
       </div>
       <footer className="su-foot">
         <span className="su-foot-note">
-          Setup complete{left > 0 && ` · ${plural(left)} left in Setup`}
+          {ready
+            ? `Setup complete${left > 0 ? ` · ${plural(left)} left in Setup` : ''}`
+            : required.length
+              ? `Not ready · ${required.length} required item${required.length === 1 ? '' : 's'} missing`
+              : 'Setup saved'}
         </span>
         <button className="btn" onClick={takeTour}>
           <Icon name="play" size={15} />

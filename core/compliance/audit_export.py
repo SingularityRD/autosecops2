@@ -8,8 +8,10 @@ source                    read from
 ``agent_events``          the agent ledger table (append-only, hash-chained)
 ``approvals``             ``approval_actions`` state transitions (requested,
                           decided, executed, verified, reversed)
-``auth``                  a local append-only spool written by the auth and
-                          user routers (login/logout/MFA/password/role change)
+``auth``                  ``case_audit_logs`` rows with ``entity_type =
+                          'auth'``, written by the auth and user routers
+                          (login/logout/SSO/MFA/password/user and role
+                          changes) whether or not export is on
 ``config``                ``config_audit_log``
 ``case_audit``            ``case_audit_logs``
 ``audit_checkpoints``     W1.10's signed chain heads (``audit_checkpoints``):
@@ -35,8 +37,8 @@ jittered exponential backoff and never dropped; the reader feeds a bounded
 queue, so a dead receiver stalls reading instead of growing memory.
 
 Off by default: with no ``compliance.audit_export`` system config, or with
-``enabled: false``, nothing is spooled, no state directory is created and no
-connection is opened. The field mapping and operator notes are in
+``enabled: false``, nothing is read, no state directory is created and no
+connection is opened (auth events are still kept in the database). The field mapping and operator notes are in
 ``core/compliance/AUDIT_EXPORT.md``.
 """
 
@@ -48,7 +50,6 @@ import binascii
 import bisect
 import contextlib
 import contextvars
-import fcntl
 import functools
 import hashlib
 import hmac
@@ -87,6 +88,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import DateTime, Integer, String, bindparam, text
 from sqlalchemy.orm import Session
 
+from core.audit.auth_events import AUTH_ENTITY_TYPE
+from core.audit.auth_events import persist as persist_auth_record
+from core.audit.auth_events import record_from_row as auth_record_from_row
 from core.platform.url_safety import (
     ALWAYS_REFUSED_REASONS,
     blocked_reason,
@@ -265,7 +269,14 @@ class AuditExportConfig(_Strict):
         "transaction has held the export horizon this long, e.g. a session "
         "left idle in transaction.",
     )
-    spool_max_bytes: int = Field(256 * 1024 * 1024, ge=1024 * 1024, le=10 * 1024**3)
+    # Accepted so a stored config still loads; ignored since W0.35 (auth events
+    # are kept in case_audit_logs, not in a spool on disk).
+    spool_max_bytes: int = Field(
+        256 * 1024 * 1024,
+        ge=1024 * 1024,
+        le=10 * 1024**3,
+        description="Ignored. Auth events are kept in the database (W0.35).",
+    )
     destinations: list[Destination] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
@@ -5086,130 +5097,8 @@ class FileCursorStore:
 
 
 # ---------------------------------------------------------------------------
-# Auth spool: an append-only, size-bounded JSONL log shared by processes
+# Auth events (kept in case_audit_logs, see core/audit/auth_events.py)
 # ---------------------------------------------------------------------------
-
-
-class AuthSpool:
-    """Auth events written by request handlers, read by the exporter.
-
-    Segments ``auth-<n>.jsonl`` grow to ``segment_bytes`` and roll over. Writes
-    take an ``flock`` so processes sharing the directory interleave whole lines.
-    Past ``max_bytes`` new events are dropped and counted (bounded disk beats
-    a full volume taking the API down); the exporter prunes segments every
-    destination has read past.
-    """
-
-    _NAME = re.compile(r"^auth-(\d{12})\.jsonl$")
-
-    def __init__(
-        self, directory: Path, *, max_bytes: int, segment_bytes: int = 8 * 1024**2
-    ) -> None:
-        self.directory = directory
-        self.max_bytes = max_bytes
-        self.segment_bytes = segment_bytes
-        self.dropped = 0
-        self.written = 0
-
-    def _segments(self) -> list[int]:
-        if not self.directory.is_dir():
-            return []
-        found = []
-        for entry in self.directory.iterdir():
-            m = self._NAME.match(entry.name)
-            if m:
-                found.append(int(m.group(1)))
-        return sorted(found)
-
-    def _path(self, n: int) -> Path:
-        return self.directory / f"auth-{n:012d}.jsonl"
-
-    @contextlib.contextmanager
-    def _locked(self):
-        self.directory.mkdir(parents=True, exist_ok=True)
-        with contextlib.suppress(OSError):
-            os.chmod(self.directory, 0o700)
-        fd = os.open(str(self.directory / ".lock"), os.O_RDWR | os.O_CREAT, 0o600)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            yield
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            os.close(fd)
-
-    def size(self) -> int:
-        total = 0
-        for n in self._segments():
-            with contextlib.suppress(OSError):
-                total += self._path(n).stat().st_size
-        return total
-
-    def append(self, record: dict) -> bool:
-        line = (json.dumps(record, separators=(",", ":"), default=str) + "\n").encode()
-        with self._locked():
-            segments = self._segments()
-            if self.size() + len(line) > self.max_bytes:
-                self.dropped += 1
-                return False
-            n = segments[-1] if segments else 1
-            path = self._path(n)
-            if path.exists() and path.stat().st_size + len(line) > self.segment_bytes:
-                n += 1
-                path = self._path(n)
-            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            try:
-                os.write(fd, line)
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-        self.written += 1
-        return True
-
-    def tail(self) -> dict:
-        segments = self._segments()
-        if not segments:
-            return {"segment": 1, "offset": 0}
-        n = segments[-1]
-        return {"segment": n, "offset": self._path(n).stat().st_size}
-
-    def read(self, cursor: dict, limit: int) -> list[tuple[dict, dict]]:
-        """Up to ``limit`` complete records after ``cursor``, each with its end."""
-        out: list[tuple[dict, dict]] = []
-        segment, offset = int(cursor.get("segment", 1)), int(cursor.get("offset", 0))
-        for n in [s for s in self._segments() if s >= segment]:
-            if n > segment:
-                offset = 0
-            try:
-                with open(self._path(n), "rb") as fh:
-                    fh.seek(offset)
-                    while len(out) < limit:
-                        line = fh.readline()
-                        if not line or not line.endswith(b"\n"):
-                            break  # end, or a write still in progress
-                        offset += len(line)
-                        try:
-                            record = json.loads(line)
-                        except ValueError:
-                            logger.warning("audit export: skipped a corrupt spool line")
-                            continue
-                        out.append((record, {"segment": n, "offset": offset}))
-            except FileNotFoundError:
-                continue
-            if len(out) >= limit:
-                break
-        return out
-
-    def prune(self, keep_from_segment: int) -> int:
-        removed = 0
-        with self._locked():
-            segments = self._segments()
-            for n in segments[:-1]:  # never the segment being written
-                if n < keep_from_segment:
-                    with contextlib.suppress(FileNotFoundError):
-                        self._path(n).unlink()
-                        removed += 1
-        return removed
-
 
 AUTH_SEVERITY = {
     ("login", "success"): 3,
@@ -5226,11 +5115,15 @@ AUTH_SEVERITY = {
     ("mfa_disable", "success"): 7,
     ("mfa_recovery_codes", "success"): 5,
     ("user_create", "success"): 6,
+    ("setup_token", "success"): 6,
+    ("setup_token", "failure"): 6,
     ("user_delete", "success"): 7,
     ("user_update", "success"): 5,
     ("role_change", "success"): 7,
     ("user_deactivate", "success"): 6,
     ("user_activate", "success"): 5,
+    ("sso_login", "success"): 3,
+    ("sso_login", "failure"): 5,
 }
 
 
@@ -5309,28 +5202,6 @@ class Source(ABC):
     @abstractmethod
     def fetch(self, cursor: dict, limit: int) -> list[tuple[AuditEvent, dict]]:
         """Events after ``cursor``, oldest first, each paired with its cursor."""
-
-
-class AuthSpoolSource(Source):
-    name = "auth"
-
-    def __init__(self, spool: AuthSpool) -> None:
-        self.spool = spool
-
-    def initial_cursor(self, start_from: str) -> dict:
-        if start_from == "beginning":
-            segments = self.spool._segments()
-            return {"segment": segments[0] if segments else 1, "offset": 0}
-        return self.spool.tail()
-
-    def fetch(self, cursor: dict, limit: int) -> list[tuple[AuditEvent, dict]]:
-        out = []
-        for record, after in self.spool.read(cursor, limit):
-            try:
-                out.append((auth_event(record), after))
-            except (KeyError, TypeError, ValueError):
-                logger.warning("audit export: skipped a malformed auth record")
-        return out
 
 
 def _json(value: Any) -> Any:
@@ -5531,6 +5402,8 @@ class _IdSource(_DbSource):
     id_col: str
     ts_col: str = "timestamp"
     columns: str
+    # A fixed SQL condition on ``t`` (never user input), or "" for every row.
+    where: str = ""
 
     def initial_cursor(self, start_from: str) -> dict:
         if start_from == "beginning":
@@ -5554,6 +5427,7 @@ class _IdSource(_DbSource):
                     columns=self.columns,
                     keys=[(self.id_col, "id", int(cursor.get("id", 0)))],
                     limit=limit,
+                    where=f" AND {self.where}" if self.where else "",
                     types={self.ts_col: DateTime(), self.id_col: Integer()},
                 )
                 return [
@@ -5563,9 +5437,10 @@ class _IdSource(_DbSource):
                     )
                     for row in rows
                 ]
+            where = f" AND {self.where}" if self.where else ""
             stmt = text(
-                f"SELECT {self.columns} FROM {self.table} "  # nosec B608 - fixed names
-                f"WHERE {self.id_col} > :id ORDER BY {self.id_col} LIMIT :n"
+                f"SELECT {self.columns} FROM {self.table} AS t "  # nosec B608 - fixed names
+                f"WHERE {self.id_col} > :id{where} ORDER BY {self.id_col} LIMIT :n"
             ).columns(**{self.ts_col: DateTime(), self.id_col: Integer()})
             rows = session.execute(
                 stmt, {"id": int(cursor.get("id", 0)), "n": limit}
@@ -5624,6 +5499,8 @@ class CaseAuditSource(_IdSource):
         "audit_id, entity_type, entity_id, action, field_name, old_value, "
         "new_value, change_summary, changed_by, user_agent, ip_address, timestamp"
     )
+    # Auth events share the table; the ``auth`` source sends those.
+    where = f"t.entity_type <> '{AUTH_ENTITY_TYPE}'"
 
     def event(self, row: dict) -> AuditEvent:
         action = str(row["action"])
@@ -5648,6 +5525,27 @@ class CaseAuditSource(_IdSource):
                 "new_value": row["new_value"],
             },
         )
+
+
+class AuthAuditSource(_IdSource):
+    """Login and user-management events, read from ``case_audit_logs``.
+
+    Written by :func:`record_auth_event` whether or not export is on
+    (``core/audit/auth_events.py``), so they are in the W1.10 chain and a
+    destination added later can start from the ``beginning``.
+    """
+
+    name = "auth"
+    table = "case_audit_logs"
+    id_col = "audit_id"
+    columns = (
+        "audit_id, action, field_name, new_value, changed_by, user_agent, "
+        "ip_address, timestamp"
+    )
+    where = f"t.entity_type = '{AUTH_ENTITY_TYPE}'"
+
+    def event(self, row: dict) -> AuditEvent:
+        return auth_event(auth_record_from_row(row))
 
 
 class AuditCheckpointSource(_IdSource):
@@ -6062,7 +5960,6 @@ class ApprovalTransitionSource(_DbSource):
 def build_sources(
     cfg: AuditExportConfig,
     session_scope: Optional[SessionScope],
-    spool: Optional[AuthSpool],
     *,
     clock: Clock = _now,
 ) -> list[Source]:
@@ -6085,8 +5982,8 @@ def build_sources(
             sources.append(CaseAuditSource(session_scope, **db))
         if "audit_checkpoints" in on:
             sources.append(AuditCheckpointSource(session_scope, **db))
-    if "auth" in on and spool is not None:
-        sources.append(AuthSpoolSource(spool))
+        if "auth" in on:
+            sources.append(AuthAuditSource(session_scope, **db))
     return sources
 
 
@@ -6570,7 +6467,7 @@ def _default_host() -> str:
 
 
 class AuditExportService:
-    """Owns the auth spool, the cursors and one pipeline per destination.
+    """Owns the cursors and one pipeline per destination.
 
     Constructed in the API lifespan (``app.state.audit_export``). A supervisor
     task re-reads the config every ``refresh_s`` (or at once after a write
@@ -6600,16 +6497,11 @@ class AuditExportService:
         self.refresh_s = refresh_s
         self.clock = clock
         self.cursors = FileCursorStore(state_dir / "cursors.json")
-        self.spool = AuthSpool(
-            state_dir / "auth_spool",
-            max_bytes=AuditExportConfig().spool_max_bytes,
-        )
         self.config = AuditExportConfig()
         self.config_error: Optional[str] = None
         self.is_leader = False
         self.pipelines: dict[str, Pipeline] = {}
         self._fingerprint: Optional[str] = None
-        self._spool_enabled = False
         self._task: Optional[asyncio.Task] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._wake: Optional[asyncio.Event] = None
@@ -6634,22 +6526,6 @@ class AuditExportService:
         self._horizon_since = 0.0
 
     # -- recording (request path) -----------------------------------------
-
-    @property
-    def spool_enabled(self) -> bool:
-        return self._spool_enabled
-
-    def record_auth(self, action: str, **fields: Any) -> bool:
-        """Spool one auth event. Never raises; a no-op while export is off."""
-        if not self._spool_enabled:
-            return False
-        try:
-            return self.spool.append(auth_record(action, **fields))
-        except Exception as exc:  # noqa: BLE001 - auditing must not break login
-            logger.warning(
-                "audit export: could not spool an auth event (%s)", type(exc).__name__
-            )
-            return False
 
     def identifier_digest(self, value: str) -> str:
         """HMAC-SHA256 of an unauthenticated identifier, keyed per install.
@@ -6692,8 +6568,6 @@ class AuditExportService:
 
     def _adopt(self, cfg: AuditExportConfig) -> None:
         self.config = cfg
-        self.spool.max_bytes = cfg.spool_max_bytes
-        self._spool_enabled = cfg.enabled and cfg.sources.auth
 
     def save_config(self, cfg: AuditExportConfig, actor: str) -> None:
         self.config_store.save(cfg.model_dump(mode="json"), actor)
@@ -6786,7 +6660,6 @@ class AuditExportService:
                     ):
                         # healthy long enough: forgive
                         self._consecutive_restarts[name] = 0
-            await asyncio.to_thread(self._prune_spool)
             await self._check_horizon(cfg)
 
     def _restart_cap(self, cfg: AuditExportConfig) -> float:
@@ -6842,9 +6715,7 @@ class AuditExportService:
         pipeline = Pipeline(
             destination=dest.name,
             transport=build_transport(dest, self.secrets, self.host),
-            sources=build_sources(
-                cfg, self.session_scope, self.spool, clock=self.clock
-            ),
+            sources=build_sources(cfg, self.session_scope, clock=self.clock),
             cursors=self.cursors,
             cfg=cfg,
             redactor=Redactor(redact_pii=cfg.redact_pii),
@@ -6945,18 +6816,6 @@ class AuditExportService:
             "holder": holder,
         }
 
-    def _prune_spool(self) -> None:
-        if not self.config.sources.auth or not self.spool.directory.is_dir():
-            return
-        segments = []
-        for dest in self.config.destinations:
-            cursor = self.cursors.get(dest.name, "auth")
-            if cursor is None:
-                return  # a destination that has not started reading keeps all
-            segments.append(int(cursor.get("segment", 1)))
-        if segments:
-            self.spool.prune(min(segments))
-
     # -- admin ------------------------------------------------------------
 
     async def test_destination(self, name: str) -> dict:
@@ -7024,26 +6883,10 @@ class AuditExportService:
             "leader": self.is_leader,
             "config_error": self.config_error,
             "sources": self.config.sources.enabled(),
-            "spool": {
-                "enabled": self._spool_enabled,
-                "bytes": self.spool.size() if self.spool.directory.is_dir() else 0,
-                "max_bytes": self.spool.max_bytes,
-                "written": self.spool.written,
-                "dropped": self.spool.dropped,
-            },
             "destinations": destinations,
             "restarts": self.restarts,
             "horizon": self.horizon,
         }
-
-
-def audit_export_on(request: Any) -> bool:
-    """Whether auth events are being spooled (cheap; for guarding lookups)."""
-    try:
-        service = getattr(request.app.state, "audit_export", None)
-        return bool(service is not None and service.spool_enabled)
-    except Exception:  # noqa: BLE001 - no app state means no export
-        return False
 
 
 def failed_login_fields(request: Any, identifier: Any, session: Any) -> dict:
@@ -7088,35 +6931,36 @@ def failed_login_fields(request: Any, identifier: Any, session: Any) -> dict:
 async def arecord_auth_event(request: Any, action: str, **fields: Any) -> None:
     """:func:`record_auth_event` for ``async def`` handlers.
 
-    The spool write takes an ``flock`` and ``fsync``s; both block, so they run
-    in a worker thread instead of on the event loop. Never raises.
+    The database write blocks, so it runs in a worker thread instead of on the
+    event loop. Never raises.
     """
-    if request is None or not audit_export_on(request):
-        return
     try:
         await asyncio.to_thread(record_auth_event, request, action, **fields)
     except Exception as exc:  # noqa: BLE001 - auditing must not break the request
         logger.warning("audit export: auth hook failed (%s)", type(exc).__name__)
 
 
-def record_auth_event(request: Any, action: str, **fields: Any) -> None:
-    """Spool an auth event from a request handler. Never raises.
+def record_auth_event(
+    request: Any, action: str, *, session: Optional[Session] = None, **fields: Any
+) -> bool:
+    """Record an auth event in the chained audit log. Never raises.
 
-    Reads the service from ``request.app.state.audit_export`` (absent in tools
-    and some tests: then a no-op) and fills the client address and user agent.
+    Written whether or not export is on (``core/audit/auth_events.py``); the
+    ``auth`` source exports it from there. ``request`` (may be ``None``)
+    supplies the client address and user agent. With ``session`` the row joins
+    the caller's transaction; without one it commits on its own. Returns
+    whether the row was written (or added to ``session``).
     """
-    if request is None:
-        return
     try:
-        service = getattr(request.app.state, "audit_export", None)
-        if service is None or not service.spool_enabled:
-            return
-        client = getattr(request, "client", None)
-        fields.setdefault("src_ip", getattr(client, "host", None))
-        fields.setdefault("user_agent", request.headers.get("user-agent"))
-        service.record_auth(action, **fields)
+        if request is not None:
+            client = getattr(request, "client", None)
+            fields.setdefault("src_ip", getattr(client, "host", None))
+            fields.setdefault("user_agent", request.headers.get("user-agent"))
+        record = auth_record(action, **fields)
     except Exception as exc:  # noqa: BLE001 - auditing must not break the request
-        logger.warning("audit export: auth hook failed (%s)", type(exc).__name__)
+        logger.error("audit: could not build an auth event (%s)", type(exc).__name__)
+        return False
+    return persist_auth_record(record, session=session)
 
 
 # ---------------------------------------------------------------------------
@@ -7144,7 +6988,6 @@ class _Collector:
         ):
             yield GaugeMetricFamily(f"{_METRIC_PREFIX}_{name}", name)
         for name in (
-            "spool_dropped",
             "events_sent",
             "delivery_failures",
             "events_dropped",
@@ -7167,12 +7010,6 @@ class _Collector:
         )
         leader.add_metric([], 1.0 if svc.is_leader else 0.0)
         yield leader
-        dropped = CounterMetricFamily(
-            f"{_METRIC_PREFIX}_spool_dropped",
-            "Auth events dropped because the spool was full.",
-        )
-        dropped.add_metric([], float(svc.spool.dropped))
-        yield dropped
         sent = CounterMetricFamily(
             f"{_METRIC_PREFIX}_events_sent",
             "Events accepted by a destination.",

@@ -191,3 +191,12 @@ async def get_current_user(
         )
 
     return user
+
+
+def principal_name(user: User) -> str:
+    """The name a record attributes to ``user``: the username, else the id.
+
+    Authorship (case comments, evidence, closure) is always the authenticated
+    principal, never a name the client sends about itself (W0.35, SA-13).
+    """
+    return user.username or str(user.user_id)

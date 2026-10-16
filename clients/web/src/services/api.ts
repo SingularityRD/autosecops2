@@ -216,6 +216,14 @@ export const segregationApi = {
     api.put<Schema<'FourEyesConfig'>>(`/response/four-eyes/${encodeURIComponent(actionType)}`, data),
 }
 
+/** response policy: protected assets, hourly limits, four-eyes types (W0.36) */
+export const responsePolicyApi = {
+  get: () => api.get<Schema<'ResponsePolicyView'>>('/response/policy'),
+
+  update: (data: Schema<'ResponsePolicyUpdate'>) =>
+    api.put<Schema<'ResponsePolicyView'>>('/response/policy', data),
+}
+
 /** autonomy tiers per (alert category x action class), W3.1 */
 export const autonomyApi = {
   tiers: () => api.get<Schema<'AutonomyMatrix'>>('/autonomy/tiers'),
@@ -595,7 +603,14 @@ export interface IntegrationTestResult {
   servers?: { name: string; success: boolean; error?: string; missing_credentials?: string[] }[]
   /** the read-only check of the saved URL and credentials, for integrations that have one */
   credentials?: { success: boolean; message: string }
+  /** response executors only: whether this process runs its actions now (after approval) */
+  executor?: { available: boolean; action_types: string[] }
 }
+
+export type SetupReadiness = Schema<'SetupReadiness'>
+export type SetupReadinessItem = Schema<'SetupReadinessItem'>
+export type SetupProgressRead = Schema<'SetupProgress'>
+export type SetupProgressWrite = Schema<'SetupProgressWrite'>
 
 export const configApi = {
   
@@ -620,6 +635,12 @@ export const configApi = {
       demo_enabled: boolean
     }>('/config/setup-steps'),
   resetDemoData: () => api.post('/config/demo-mode/reset'),
+  // What the install still lacks, server-side (setup wizard summary, W0.33)
+  getSetupReadiness: () => api.get<SetupReadiness>('/config/setup-readiness'),
+  // The wizard's progress for the whole install, not per browser
+  getSetupProgress: () => api.get<SetupProgressRead>('/config/setup-progress'),
+  putSetupProgress: (body: SetupProgressWrite) =>
+    api.put<SetupProgressRead>('/config/setup-progress', body),
   
   getIntegrations: () => api.get('/config/integrations'),
   setIntegrations: (data: {
@@ -642,9 +663,12 @@ export const configApi = {
   setTheme: (theme: string) => api.post('/config/theme', { theme }),
 
   getAutonomy: () =>
-    api.get<{ auto_response_enabled: boolean; force_manual_approval: boolean }>(
-      '/config/autonomy',
-    ),
+    api.get<{
+      auto_response_enabled: boolean
+      force_manual_approval: boolean
+      autonomous_tiers: number | null
+      mode: 'assist' | 'act' | 'unknown'
+    }>('/config/autonomy'),
   
   getPostgreSQL: () => api.get('/config/postgresql'),
   setPostgreSQL: (connection_string: string) => api.post('/config/postgresql', { connection_string }),
@@ -1433,7 +1457,10 @@ export const triageApi = {
 
 export const bootstrapApi = {
   status: () => api.get<BootstrapStatus>('/auth/bootstrap'),
-  create: (payload: BootstrapPayload) => api.post('/auth/bootstrap', payload),
+  // The one-time setup token goes in a header, never the body: the backend
+  // prints it to its log and State Directory, and a 422 echoes the body back.
+  create: (payload: BootstrapPayload, setupToken: string) =>
+    api.post('/auth/bootstrap', payload, { headers: { 'X-Setup-Token': setupToken } }),
 }
 
 export type SsoProviders = Schema<'PublicProvidersResponse'>

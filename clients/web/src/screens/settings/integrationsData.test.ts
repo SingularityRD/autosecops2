@@ -62,6 +62,14 @@ describe('EXPERIMENTAL_SERVERS', () => {
     expect(isExperimentalIntegration('okta')).toBe(false)
   })
 
+  it('offers the three response executors as experimental, not WIP (W0.37)', () => {
+    for (const server of ['microsoft-defender', 'azure-ad', 'palo-alto']) {
+      expect(connectorSupport(server), server).toBe('experimental')
+      expect(getIntegrationForServer(server)?.fields?.length, server).toBeGreaterThan(0)
+      expect(isExperimentalIntegration(server), server).toBe(true)
+    }
+  })
+
   it('points users at AutoSecOps support, not the upstream issue tracker', () => {
     expect(EXPERIMENTAL_NOTE).toMatch(/AutoSecOps support/)
     expect(EXPERIMENTAL_NOTE).not.toMatch(/vigil|open an issue|github/i)

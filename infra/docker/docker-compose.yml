@@ -54,6 +54,8 @@ x-intent-env: &intent-env
   DAEMON_MONITOR_THRESHOLD: ${DAEMON_MONITOR_THRESHOLD:-0.70}
   DAEMON_CRITICAL_ACTION_FLOOR: ${DAEMON_CRITICAL_ACTION_FLOOR:-0.70}
   DAEMON_HIGH_ACTION_FLOOR: ${DAEMON_HIGH_ACTION_FLOOR:-0.80}
+  # A lock: true holds every action for a person. false leaves it to Settings,
+  # whose default is Assist (a person approves every action).
   DAEMON_FORCE_APPROVAL: ${DAEMON_FORCE_APPROVAL:-false}
   DAEMON_ESCALATE_SEVERITIES: "${DAEMON_ESCALATE_SEVERITIES:-critical,high}"
   ORCHESTRATOR_ENABLED: ${ORCHESTRATOR_ENABLED:-false}
@@ -205,6 +207,11 @@ services:
       # that key off the volume the secrets live on (admin guide, Sır döndürme).
       VIGIL_DATA_KEY: ${VIGIL_DATA_KEY:-}
       DEV_MODE: ${DEV_MODE:-false}
+      # First-admin setup token. Unset: the backend generates one on first start
+      # and prints it once (`docker compose logs backend | grep "setup token"`;
+      # also /home/vigil/.vigil/setup-token). New one: `docker compose exec
+      # backend python -m core.auth.setup_token regenerate`.
+      VIGIL_SETUP_TOKEN: ${VIGIL_SETUP_TOKEN:-}
       # Chat and run projections. core/config.py defaults this to localhost:6989,
       # which was the agent layer's address while it shared the backend process.
       AGENT_URL: http://agent-serve:6989
@@ -242,6 +249,8 @@ services:
       bifrost:
         condition: service_healthy
       backup-pre-upgrade:
+        condition: service_completed_successfully
+      signing-keys:
         condition: service_completed_successfully
     restart: unless-stopped
     # Host Ollama: implicit on Docker Desktop, required on native Linux Docker.
@@ -311,6 +320,27 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    restart: "no"
+
+  # W0.36: mints AUDIT_CHECKPOINT_SIGNING_KEY and EVIDENCE_PACK_SIGNING_KEY into
+  # the encrypted secrets store (secrets.enc on vigil_home) when absent, before
+  # the backend and daemon start. Never overwrites a key and prints only the
+  # public halves; `docker compose run --rm signing-keys export` prints them
+  # again for whoever verifies. A store it cannot write is a warning here and
+  # on /api/health, not a failed `up`.
+  signing-keys:
+    image: vigil-backend:local
+    build: *backend-build
+    environment:
+      HOME: /home/vigil
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - vigil_home:/home/vigil/.vigil
+    entrypoint: ["python", "-m", "core.audit.signing_keys"]
+    command: ["provision", "--warn-only"]
+    healthcheck:
+      disable: true
+    network_mode: none
     restart: "no"
 
   # ─── Daemon layer (--profile daemon) ──────────────────────────────────────
@@ -435,6 +465,8 @@ services:
       bifrost:
         condition: service_healthy
       backup-pre-upgrade:
+        condition: service_completed_successfully
+      signing-keys:
         condition: service_completed_successfully
     restart: unless-stopped
     # Host Ollama: implicit on Docker Desktop, required on native Linux Docker.

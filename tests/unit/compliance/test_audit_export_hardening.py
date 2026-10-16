@@ -2,7 +2,7 @@
 
 Line breaks in syslog SD and CEF, DNS-rebinding-proof HTTP egress through
 ``core.platform.url_safety``, a pipeline whose sender died is restarted, the
-auth spool's blocking I/O stays off the event loop, and a failed login does
+auth hook's blocking database write stays off the event loop, and a failed login does
 not export what was typed into the username box.
 """
 
@@ -532,28 +532,25 @@ def _request(service):
     )
 
 
-async def test_async_handlers_spool_off_the_event_loop(tmp_path):
-    svc = AuditExportService(
-        state_dir=tmp_path / "ae",
-        config_store=MemoryConfigStore(None),
-        secrets={}.get,
-    )
-    svc._spool_enabled = True
-    seen: list[int] = []
-    real = svc.spool.append
+async def test_async_handlers_record_off_the_event_loop(monkeypatch):
+    seen: list[tuple[int, dict]] = []
 
-    def append(record):
-        seen.append(threading.get_ident())
-        return real(record)
+    def persist(record, session=None):
+        seen.append((threading.get_ident(), record))
+        return True
 
-    svc.spool.append = append
-    await arecord_auth_event(_request(svc), "logout", actor="alice")
-    assert seen and seen[0] != threading.get_ident()
-    ((record, _),) = svc.spool.read({"segment": 1, "offset": 0}, 10)
+    monkeypatch.setattr(ae, "persist_auth_record", persist)
+    await arecord_auth_event(_request(None), "logout", actor="alice")
+    ((thread, record),) = seen
+    assert thread != threading.get_ident()
     assert record["action"] == "logout" and record["actor"] == "alice"
 
 
-async def test_async_hook_is_a_noop_while_export_is_off(tmp_path):
+async def test_async_hook_records_while_export_is_off(tmp_path, monkeypatch):
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        ae, "persist_auth_record", lambda record, session=None: seen.append(record)
+    )
     svc = AuditExportService(
         state_dir=tmp_path / "ae",
         config_store=MemoryConfigStore(None),
@@ -561,6 +558,7 @@ async def test_async_hook_is_a_noop_while_export_is_off(tmp_path):
     )
     await arecord_auth_event(_request(svc), "logout", actor="alice")
     await arecord_auth_event(None, "logout")
+    assert [r["action"] for r in seen] == ["logout", "logout"]
     assert not (tmp_path / "ae").exists()
 
 

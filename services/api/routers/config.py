@@ -1,8 +1,9 @@
 """Configuration API endpoints."""
 
+import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, create_model
@@ -18,6 +19,7 @@ from core.config import (
 from core.deps import (
     provide_demo_data,
     provide_detection_rules,
+    provide_executors,
     provide_integration_bridge,
     provide_mcp_client,
 )
@@ -33,7 +35,15 @@ from core.integrations.integration_secrets import (
 )
 from core.intent import intent_file
 from core.llm.defaults import DEFAULT_MODEL
-from core.response.approval_service import APPROVAL_CONFIG_KEY
+from core.platform.setup_state import (
+    PROGRESS_KEY,
+    SetupProgressWrite,
+    SetupStatus,
+    build_readiness,
+    next_progress,
+    read_progress,
+)
+from core.response.approval_service import APPROVAL_CONFIG_KEY, stored_force_manual
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
 from core.secrets import get_secret, set_secret
 from core.secrets_manager import get_secrets_manager
@@ -765,6 +775,144 @@ def get_setup_steps(
     )
 
 
+class SetupReadinessItem(BaseModel):
+    id: str
+    label: str
+    required: bool
+    ready: bool
+    detail: str
+    href: str
+
+
+class SetupReadiness(BaseModel):
+    """``ready`` is true only when every required item is; ``missing`` names
+    the required items that are not, ``recommended_missing`` the others."""
+
+    ready: bool
+    missing: List[str]
+    recommended_missing: List[str]
+    items: List[SetupReadinessItem]
+
+
+def _readiness_facts() -> dict:
+    """Everything readiness needs from the database and config. Blocking."""
+    from core.response.executors.wiring import EXECUTOR_SOURCES
+    from core.storage.models import FederationSource, LLMProviderConfig
+    from core.storage.unit_of_work import unit_of_work
+
+    loaded = load_integrations_config(get_config_service())
+    secrets_set = _secrets_set_map(loaded.get("integrations") or {})
+    notify = any(
+        (secrets_set.get(iid) or {}).get(field) is True
+        for iid, field in (("slack", "bot_token"), ("pagerduty", "api_token"))
+    )
+    with unit_of_work() as session:
+        federation = (
+            session.query(FederationSource)
+            .filter(FederationSource.enabled.is_(True))
+            .count()
+        )
+        provider_ready = (
+            session.query(LLMProviderConfig.provider_id)
+            .filter(
+                LLMProviderConfig.is_active.is_(True),
+                LLMProviderConfig.is_default.is_(True),
+            )
+            .first()
+            is not None
+        )
+    return {
+        "demo_mode": is_demo_mode(),
+        "enabled_integrations": list(loaded.get("enabled_integrations") or []),
+        "categories": {d.id: d.category for d in iter_descriptors()},
+        "federation_sources": federation,
+        "alerts": findings_data_service.count_findings(),
+        "provider_ready": provider_ready,
+        "executor_integrations": [s.integration_id for s in EXECUTOR_SOURCES],
+        "notify_route": notify,
+    }
+
+
+async def _setup_readiness() -> dict:
+    from core.llm.bifrost import mirror
+
+    facts = await asyncio.to_thread(_readiness_facts)
+    gateway: Optional[bool] = False
+    if not facts["provider_ready"]:
+        try:
+            verdict = await mirror.routability()
+            gateway = any((verdict.get("providers") or {}).values())
+        except Exception as exc:  # noqa: BLE001 - an unreachable gateway is a fact here
+            logger.info(
+                "Setup readiness: model gateway not reachable (%s)", type(exc).__name__
+            )
+            gateway = None
+    return build_readiness(gateway_routable=gateway, **facts)
+
+
+@router.get("/setup-readiness", response_model=SetupReadiness)
+async def get_setup_readiness():
+    """What a working install still lacks: an alert source and a model are
+    required; a response integration and a notification route are recommended.
+    The setup wizard's summary reads this instead of declaring itself ready."""
+    return await _setup_readiness()
+
+
+class SetupProgress(BaseModel):
+    furthest: int
+    passed: List[int]
+    status: SetupStatus
+    started: bool
+    updated_by: Optional[str] = None
+    updated_at: Optional[str] = None
+    completed_by: Optional[str] = None
+    completed_at: Optional[str] = None
+
+
+@router.get("/setup-progress", response_model=SetupProgress)
+def get_setup_progress():
+    """The wizard's progress for the whole install (not per browser)."""
+    return read_progress(get_config_service().read_system_config(PROGRESS_KEY))
+
+
+@router.put(
+    "/setup-progress", response_model=SetupProgress, dependencies=_SETTINGS_WRITE
+)
+async def put_setup_progress(
+    body: SetupProgressWrite,
+    current_user: User = Depends(get_current_active_user),
+):
+    """Save the wizard's progress. ``completed`` is stored only when the
+    install is ready (see GET /setup-readiness); otherwise it is stored as
+    ``deferred``. ``{"furthest": 1, "passed": [], "status": "in_progress"}``
+    starts the wizard over (scripts/reset-setup.sh)."""
+    ready = True
+    if body.status == "completed":
+        ready = (await _setup_readiness())["ready"]
+
+    def _write() -> dict:
+        service = _for_user(current_user)
+        previous = service.read_system_config(PROGRESS_KEY)
+        stored = next_progress(
+            previous,
+            body,
+            actor=str(current_user.username),
+            now=utcnow().isoformat(),
+            ready=ready,
+        )
+        if not service.set_system_config(
+            key=PROGRESS_KEY,
+            value=stored,
+            description="Setup wizard progress",
+            config_type="setup",
+            change_reason=f"Setup wizard: {stored['status']}",
+        ):
+            raise HTTPException(status_code=500, detail="Could not save setup progress")
+        return read_progress(stored)
+
+    return await asyncio.to_thread(_write)
+
+
 def _secrets_set_map(integrations: dict) -> dict:
     """Per-integration ``{secret_field: bool}`` — booleans only, never the
     values, so the wizard can show "saved" without the browser seeing a secret."""
@@ -829,6 +977,7 @@ def set_integrations_config(
     config: IntegrationsConfig,
     current_user: User = Depends(get_current_active_user),
     bridge: IntegrationBridgeService = Depends(provide_integration_bridge),
+    executors: Any = Depends(provide_executors),
 ):
     """
     Set integrations configuration.
@@ -923,8 +1072,35 @@ def set_integrations_config(
             "integrations": sanitized_integrations,
         },
     )
+    # This process's executors follow the save at once; the daemon's re-read
+    # within RELOAD_SECONDS (core.response.executors.wiring).
+    _invalidate_executors(executors)
 
     return {"success": True, "message": "Integrations configuration saved"}
+
+
+def _invalidate_executors(executors: Any) -> None:
+    invalidate = getattr(executors, "invalidate", None)
+    if callable(invalidate):
+        invalidate()
+
+
+def _executor_status(executors: Any, integration_id: str) -> Optional[Dict[str, Any]]:
+    """Whether this integration's response executor is live in this process.
+
+    None for an integration that has no executor. Reads the stored config
+    afresh, so the answer reflects the latest save, not the start-up state.
+    """
+    from core.response.executors.wiring import EXECUTOR_SOURCES
+
+    if not any(s.integration_id == integration_id for s in EXECUTOR_SOURCES):
+        return None
+    action_types_for = getattr(executors, "action_types_for", None)
+    if not callable(action_types_for):
+        return None
+    _invalidate_executors(executors)
+    types = sorted(action_types_for(integration_id))
+    return {"available": bool(types), "action_types": types}
 
 
 def _connected_session(mcp_client: Any, server_name: str) -> Any:
@@ -997,6 +1173,7 @@ async def test_integration(
     current_user: User = Depends(get_current_active_user),
     bridge: IntegrationBridgeService = Depends(provide_integration_bridge),
     mcp_client=Depends(provide_mcp_client),
+    executors: Any = Depends(provide_executors),
 ):
     """Probe the MCP servers behind an integration.
 
@@ -1006,7 +1183,10 @@ async def test_integration(
     probe: enabled MCP servers are contacted, and if none are enabled every
     declared server is probed with a temporary session. Splunk and Elastic are
     then also read with their saved URL and credentials (``credentials`` in the
-    answer), since a server starts whatever it is pointed at.
+    answer), since a server starts whatever it is pointed at; so are the
+    response executors (Defender, Entra ID, PAN-OS), with one read-only call
+    each. For those, ``executor`` says whether this process can run their
+    actions now (still behind the approval gate).
     """
     require_integrations_admin(current_user)
 
@@ -1096,6 +1276,9 @@ async def test_integration(
     }
     if credentials is not None:
         result["credentials"] = credentials
+    executor = _executor_status(executors, integration_id)
+    if executor is not None:
+        result["executor"] = executor
     return result
 
 
@@ -1512,24 +1695,63 @@ def get_intent_report() -> IntentReportResponse:
 
 
 class AutonomyConfig(BaseModel):
-    """The two flags the console chip folds into Assist or Act.
+    """What the console chip shows, and the inputs it is folded from.
 
     Not stored. ``force_manual_approval`` is the env flag OR the
-    ``approval.force_manual_approval`` row. ``auto_response_enabled`` is
-    ``Settings.daemon_auto_response``.
+    ``approval.force_manual_approval`` row (no row is Assist).
+    ``auto_response_enabled`` is ``Settings.daemon_auto_response``.
+    ``autonomous_tiers`` counts the autonomy tiers set to Autonomous that the
+    controller could ever honour (eligible class, a named category); ``None``
+    when the tiers could not be read.
+
+    ``mode`` is the effective mode (W0.32). ``act`` only when approvals are
+    not forced, auto-response is on and at least one tier may run an action
+    without a person; otherwise every action waits for one and the mode is
+    ``assist``. ``unknown`` when the flags would allow Act but the tiers could
+    not be read: the gate then holds every action (a tier read failure decides
+    approve), but the chip cannot say which tiers would release one.
     """
 
     auto_response_enabled: bool
     force_manual_approval: bool
+    autonomous_tiers: Optional[int] = None
+    mode: Literal["assist", "act", "unknown"] = "assist"
+
+
+def _autonomous_tier_count() -> Optional[int]:
+    """Tiers set to Autonomous on a cell the controller may honour; None if unreadable."""
+    try:
+        from core.autonomy import AutonomyController
+
+        matrix = AutonomyController().matrix()
+    except Exception as e:  # noqa: BLE001
+        logger.error("Cannot read autonomy tiers for the console chip: %s", e)
+        return None
+    return sum(
+        1
+        for entry in matrix.get("entries", [])
+        if entry.get("tier") == "autonomous" and entry.get("eligible")
+    )
 
 
 @router.get("/autonomy", response_model=AutonomyConfig)
 def get_autonomy_config() -> AutonomyConfig:
     """Effective response autonomy for the console chip."""
     effective = effective_daemon_config(DaemonConfig.from_env())
+    auto = effective.response.auto_response_enabled
+    forced = effective.response.force_manual_approval
+    tiers = _autonomous_tier_count()
+    if not auto or forced:
+        mode = "assist"
+    elif tiers is None:
+        mode = "unknown"
+    else:
+        mode = "act" if tiers > 0 else "assist"
     return AutonomyConfig(
-        auto_response_enabled=effective.response.auto_response_enabled,
-        force_manual_approval=effective.response.force_manual_approval,
+        auto_response_enabled=auto,
+        force_manual_approval=forced,
+        autonomous_tiers=tiers,
+        mode=mode,
     )
 
 
@@ -1615,10 +1837,8 @@ def _environment_wins() -> bool:
 
 
 def _stored_force_manual(config_service) -> bool:
-    value = config_service.read_system_config(APPROVAL_CONFIG_KEY)
-    if isinstance(value, dict):
-        return bool(value.get("enabled", False))
-    return False
+    """The stored flag; no row is Assist (W0.32)."""
+    return stored_force_manual(config_service.read_system_config(APPROVAL_CONFIG_KEY))
 
 
 @router.get("/force-manual-approval", response_model=ForceManualApprovalResponse)

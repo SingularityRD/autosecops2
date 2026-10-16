@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -29,6 +30,7 @@ if str(REPO) not in sys.path:
 pytestmark = pytest.mark.unit
 
 POLICY_ID = "sla-high"
+MANAGER = SimpleNamespace(user_id="u-mgr", username="mgr")
 
 
 def _session(*, in_use: int, flush_raises: bool = False) -> MagicMock:
@@ -60,7 +62,7 @@ def test_an_unused_policy_is_deleted():
 
     session = _session(in_use=0)
 
-    result = router.delete_sla_policy(POLICY_ID, session=session)
+    result = router.delete_sla_policy(POLICY_ID, session=session, current_user=MANAGER)
 
     assert result["success"] is True
     session.delete.assert_called_once()
@@ -73,7 +75,7 @@ def test_a_missing_policy_is_a_404():
     session.query.return_value.filter.return_value.first.return_value = None
 
     with pytest.raises(HTTPException) as exc:
-        router.delete_sla_policy(POLICY_ID, session=session)
+        router.delete_sla_policy(POLICY_ID, session=session, current_user=MANAGER)
 
     assert exc.value.status_code == 404
 
@@ -84,7 +86,7 @@ def test_a_policy_in_use_is_refused_and_says_how_many():
     session = _session(in_use=3)
 
     with pytest.raises(HTTPException) as exc:
-        router.delete_sla_policy(POLICY_ID, session=session)
+        router.delete_sla_policy(POLICY_ID, session=session, current_user=MANAGER)
 
     assert exc.value.status_code == 409
     assert "3" in exc.value.detail
@@ -98,7 +100,7 @@ def test_the_refusal_does_not_promise_an_escape_that_cannot_work():
     session = _session(in_use=3)
 
     with pytest.raises(HTTPException) as exc:
-        router.delete_sla_policy(POLICY_ID, session=session)
+        router.delete_sla_policy(POLICY_ID, session=session, current_user=MANAGER)
 
     assert "force" not in exc.value.detail.lower()
     assert "deactivat" in exc.value.detail.lower()
@@ -115,7 +117,7 @@ def test_a_reference_that_arrived_after_the_count_is_still_an_answer():
     session = _session(in_use=0, flush_raises=True)
 
     with pytest.raises(HTTPException) as exc:
-        router.delete_sla_policy(POLICY_ID, session=session)
+        router.delete_sla_policy(POLICY_ID, session=session, current_user=MANAGER)
 
     assert exc.value.status_code == 409
     assert "deactivat" in exc.value.detail.lower()

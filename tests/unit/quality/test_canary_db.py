@@ -497,7 +497,7 @@ def test_findings_export_leaves_canaries_out(estate, tmp_path):
     real, can = estate
     out = tmp_path / "findings.json"
 
-    assert DatabaseDataService().export_findings(out, fmt="json")
+    assert DatabaseDataService().export_findings(out, fmt="json") is not None
 
     exported = {f["finding_id"] for f in json.loads(out.read_text())["findings"]}
     assert real in exported

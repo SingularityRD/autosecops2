@@ -220,6 +220,7 @@ app.add_middleware(
         "X-CSRF-Token",
         "X-MFA-Required",
         "X-Requested-With",
+        "X-Setup-Token",
     ],
     expose_headers=["X-MFA-Required"],
 )
@@ -440,7 +441,7 @@ def _build_services(app: FastAPI):
     from core.platform.demo_data_service import DemoDataService
     from core.response.approval_service import ApprovalService, register_pending_gauge
     from core.response.autonomous_response_service import AutonomousResponseService
-    from core.response.executors.wiring import build_executor_registry
+    from core.response.executors.wiring import LiveExecutorRegistry
     from core.storage.database_data_service import DatabaseDataService
     from core.workflows.custom_workflow_service import CustomWorkflowService
     from core.workflows.workflow_ai_generator import WorkflowAIGenerator
@@ -457,7 +458,8 @@ def _build_services(app: FastAPI):
     app.state.approvals = ApprovalService()
     register_pending_gauge(app.state.approvals)
     # One executor registry for the API process (W2.4); the daemon builds its own.
-    app.state.executors = build_executor_registry()
+    # It follows the stored integration config, so Settings needs no restart (W0.37).
+    app.state.executors = LiveExecutorRegistry()
     app.state.response = AutonomousResponseService(
         approvals=app.state.approvals, executors=app.state.executors
     )
@@ -686,6 +688,28 @@ async def _startup(app: FastAPI):
     except Exception as e:
         logger.warning(f"Error loading secrets for MCP servers: {e}")
 
+    # W0.36: an install provisions EVIDENCE_PACK_SIGNING_KEY; say so when it did not.
+    try:
+        from core.audit.signing_keys import EVIDENCE_PACKS, key_status
+
+        if not key_status(EVIDENCE_PACKS).usable:
+            logger.warning(
+                "%s is not configured: evidence packs are signed with a one-off "
+                "key (python -m core.audit.signing_keys provision); "
+                "/api/health reports this under warnings",
+                EVIDENCE_PACKS.secret,
+            )
+    except Exception as e:  # pragma: no cover - best-effort
+        logger.warning("Signing-key startup check failed: %s", e)
+
+    # A fresh install's first-admin setup token (W0.33): issued and printed
+    # once here, so the operator has it before anyone opens the login screen.
+    # Never raises; GET /api/auth/bootstrap issues it if this could not.
+    from core.auth.setup_token import issue_on_startup
+    from core.storage.connection import get_db_manager
+
+    await asyncio.to_thread(issue_on_startup, get_db_manager().session_scope)
+
     if _testing:
         logger.info(
             "TESTING=true — skipping external startup connections "
@@ -863,6 +887,19 @@ async def _health_payload(request: Request) -> dict:
         }
     if schema_block is not None:
         payload["schema"] = schema_block
+    # W0.36: unsigned checkpoints or one-off evidence-pack keys are a warning,
+    # not "degraded": readiness must not pull every pod over a missing key.
+    try:
+        from core.audit.signing_keys import signing_health
+
+        signing = await asyncio.to_thread(signing_health)
+        payload["signing"] = {
+            "audit_checkpoints": signing["audit_checkpoints"],
+            "evidence_packs": signing["evidence_packs"],
+        }
+        payload["warnings"] = list(signing["warnings"])
+    except Exception:
+        logger.exception("Health check could not read the signing-key status")
     return payload
 
 

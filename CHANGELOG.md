@@ -37,6 +37,71 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
 
 ### Changed / contract
 
+* **audit (W0.36):** installation provisions the two Ed25519 signing keys
+  (`AUDIT_CHECKPOINT_SIGNING_KEY`, `EVIDENCE_PACK_SIGNING_KEY`) when absent, so a
+  fresh install writes signed audit checkpoints and signs evidence packs with a
+  pinned key from day one. Compose: a one-shot `signing-keys` service writes them
+  to the encrypted secrets store before the backend and daemon start. Helm:
+  `signingKeys.generate` (default `true`) mints each into its own Secret,
+  `<release>-vigil-signing-key-checkpoint` (daemon only) and
+  `<release>-vigil-signing-key-evidence` (backend only), kept on upgrade and on
+  uninstall; a key you already supply through `secrets.existingSecret` /
+  ExternalSecrets wins, or `signingKeys.existingSecret` names one Secret of
+  your own. The air-gap installer inherits the
+  chart and prints the public keys at the end (`--signing-keys-out FILE`). An
+  existing key is never replaced and no private key is printed or logged.
+  `python -m core.audit.signing_keys {provision,status,export}` and
+  `GET /api/audit/signing-keys` (`settings.read`) export the public keys for
+  offline verification. `/api/health` and `/api/health/ready` gain `signing`
+  (two booleans) and `warnings` (`audit_checkpoint_signing_not_configured`,
+  `evidence_pack_signing_key_missing`); a warning never makes a pod unready.
+  Signatures stay Ed25519 under `FIPS_MODE` (W3.10's documented gap).
+* **response (W0.36):** the response policy is managed in the console (Settings
+  › System › Response policy) and by `GET /api/response/policy`
+  (`settings.read`) and `PUT /api/response/policy` (`settings.write`: Manager,
+  Admin; Analyst gets 403): protected targets, asset tags, extra protected tags,
+  hourly limits per action type and the default limit, and four-eyes action
+  types. Input is validated (422, nothing written); built-in protected tags and
+  four-eyes types can only be added to. Lists and strings are bounded (32 tags
+  per asset) and the body is capped at 1 MiB (413). `GET` returns a `version`
+  that `PUT` must send back: a policy changed in between answers 409 (the
+  console reloads it), and every writer of the row, `PUT
+  /api/response/four-eyes/{type}` included, now changes it in one transaction
+  under a row lock. Every change writes a
+  `config_audit_log` row (`config_type` `response_policy`) with the user, the
+  reason and the old and new policy. `distinct_role_types` keeps its own route.
+
+* **auth (W0.33, security):** creating the first administrator
+  (`POST /api/auth/bootstrap`) needs a one-time setup token in the
+  `X-Setup-Token` header; without it, or with a wrong one, the route answers
+  401 (still 5 attempts a minute). Before, whoever reached a fresh install
+  first over the network became its administrator. On first start with no
+  account the backend generates the token, prints it once to its log and writes
+  it to `<State Directory>/setup-token` (0600); only its SHA-256 is stored
+  (`system_config['auth.setup_token']`), so every replica checks the same one.
+  It works once and is retired with the account it created. No route returns
+  it. `python -m core.auth.setup_token regenerate` (in the backend container)
+  issues a new one; `VIGIL_SETUP_TOKEN` / Helm `secrets.setupToken` choose it
+  for automation. The login screen asks for it. Issue, regeneration and use are
+  in `config_audit_log`; failed and successful uses are auth audit events
+  (`auth.setup_token`).
+* **setup (W0.33):** the setup wizard no longer calls an empty install ready.
+  `GET /api/config/setup-readiness` lists what is missing: an alert source and a
+  model are required, a response integration and a notification route are
+  recommended. The summary page says "AutoSecOps is not ready yet" and names the
+  missing items until the required ones are in place.
+* **setup (W0.33):** wizard progress is kept on the server for the whole install
+  (`GET`/`PUT /api/config/setup-progress`, audited), not per browser. A second
+  administrator or browser continues where the first left off; only accounts
+  with `settings.write` are sent to `/setup`, and "completed" is recorded only
+  when the install is ready (otherwise "deferred").
+* **scripts (W0.33, fix):** `scripts/reset-setup.sh` works on an install that
+  enforces CSRF (every write, the login included, was refused with 403). It
+  sends the double-submit pair, takes the login password on stdin rather than
+  the command line, gains `--wizard` (part of the default and `--all`) to start
+  the saved wizard progress over, and documents running it against Helm through
+  a port-forward.
+
 * **detections (W0.29):** the ATT&CK coverage verdict `loglm` is renamed
   `anomaly` (`rule | anomaly | both | missed`) in `analyze_coverage`,
   `reconstruct_run` and the Dashboard. Findings stored with
@@ -51,6 +116,23 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   every screen that turns one on: the Add integration card, the Connected table,
   the Settings setup drawer and the first-run data source picker and form. The
   label cannot be dismissed; a connector loses it only when it gains a live test.
+* **response (W0.37):** the three response executors the product advertises,
+  Microsoft Defender for Endpoint, Entra ID and Palo Alto PAN-OS, can be
+  connected from Settings → Integrations → Add integration. They were hidden as
+  WIP; they are now **Experimental** (tested against recorded vendor answers,
+  never a live tenant or firewall). Their credential goes to the encrypted
+  secret store and no API response returns it. **Test** makes one read-only
+  call with the saved credential (Defender lists one machine, Entra ID reads one
+  user, PAN-OS runs `show system info`), with no retries, so it fails within
+  seconds when the service cannot be reached; its answer gains an `executor`
+  field (`available`, `action_types`) that the drawer shows as "Response
+  actions".
+* **response (W0.37):** enabling, disabling or re-keying an executor no longer
+  needs a restart. The API and the daemon build a `LiveExecutorRegistry` that
+  re-reads the stored integration config at most every 10 seconds when it is
+  used and rebuilds its executors when that config changed; the API process that
+  saved the change applies it at once. Every action still goes through the
+  response policy and the approval gate.
 * **integrations (W0.28, fix):** the Okta connector could never start. Its entry ran
   `docker run`, but the backend image has no Docker CLI or socket, and it passed
   `OKTA_DOMAIN`, which the server does not read. Okta is now baked into the
@@ -88,8 +170,49 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
 
 <!-- release-notes 2.0.0: generated by release_tool.py render-notes, do not edit -->
 ### Included work packages (66)
+* **helm (W0.39, fix):** the init SQL applies for a database user of any name.
+  Six files frozen since 0.7.1 (04, 07, 09, 10, 12, 13) GRANT to the role
+  `deeptempo` by name, and 30 runs `ALTER ROLE vigil_app NOSUPERUSER`, which
+  only a superuser may say. With another `postgresql.*.username`, or a user that
+  is not a superuser, those files failed and the db-init Job never recorded
+  them. The Job (and compose's `00_apply.sh`) now feeds those GRANTs to psql as
+  `TO CURRENT_USER` (the user owns the tables) and says `NOSUPERUSER` only as a
+  superuser; the SQL files are unchanged. The database user needs to own the
+  database and have `CREATEROLE`, nothing more.
 
-W0.1 upstream sync and hard fork; W0.2 brand; W0.3 CI; W0.4 agent factory and gates; W0.4b gates fixes; W0.5 contracts (init SQL 46–49); W0.6 staging environment; W0.7 eval corpus v1; W0.9 cleanups; W0.10 follow-up fixes of merged WPs (init SQL 58); W0.11 security hotfix (detection-rules git source, clock chain head, Viewer write routes); W0.12 ingest durability (webhook spool); W0.12b spool hardening (W0.12 verifier findings); W0.13 history review: auth API, data/infra/CI, response integrations, triage agents; W0.14 verifier follow-ups (W1.7b, W0.11, W0.13); W0.15 Redis outage no longer re-triages decided findings; W0.16 approval argument bounds (64 KB), escaping and git directory check; W0.17 pre-existing integration test fixes; W0.18 GA follow-ups (W0.15, W3.10, W0.16); W0.19 CI green: Bandit false positives annotated, SSO admin routes check permissions before opening a DB session, Medic redaction list synced with W3.7, test fixes; W0.20 docs merged-list check against the documented base (tests only); W0.21 air-gap image names (ghcr.io/singularityrd/autosecops-*), image download and verification documented, bundle cleanup, model-pull proxy and --ollama-image fixes; W0.22 backend and daemon images scanned in CI before any tag, disabled ghcr push jobs removed; W0.23 scan hardening: PyJWT 2.15.1 (security), Agent Image Trivy pinned by SHA and version, every image fails on a secret finding of any severity; W0.24 desktop app GA readiness: AutoSecOps identity, macOS dmg / Linux AppImage / Windows (preview) installers in the release pipeline, Electron 44 and hardening; W0.25 upstream core and data fixes (10 commits): UTC approval times, Postgres findings in the orchestrator, a re-queued finding joins its open case, CSPRNG session ids, token caps, per-writer ai_enrichment keys; FORK.md upstream radar log; W0.26 upstream hunt, case and console improvements: hunt progress (init SQL 62), case review gating, evidence backup and in-place restore; W0.27 upstream password reset flow and operator-issued reset links; W0.28 upstream connector honesty: Experimental label, Okta connector fixed (baked into the image, pinned to a commit); W0.29 removal of the third-party DeepTempo LogLM connector; W0.30 upstream injection guards (text a subject writes stays out of the verdict; AUTOSECOPS_GUARDS on by default) and agent-layer OTel tracing (only with an OTLP endpoint; content capture off); W0.31 Medic workflow green again; the Medic API does no reverse DNS lookup when it binds, and a TERM during start-up stops Medic cleanly; W1.1 eval harness; W1.2 structured triage and field provenance; W1.3 field provenance (seven adapters, shipped with W1.2); W1.5 canary replays; W1.6 QA sampling and scorecard; W1.7 tool effect classes; W1.7b no model can approve, approvals bound to arguments; W1.8 outbound webhooks and notification dispatch; W1.9 OIDC SSO; W1.10 audit chain extension; W2.1 verdict run; W2.2 alert lanes (init SQL 56); W2.3 local model lane; W2.4 executor registry and action policy; W2.5 Microsoft Defender executor; W2.6 Entra ID executor; W2.7 Palo Alto PAN-OS executor; W2.8 action timeline and revert; W3.1 autonomy controller; W3.2 four-eyes approval (second half; init SQL 61); W3.3 air-gap bundle; W3.4 zero-egress test; W3.5 retention and disposal (KVKK); W3.6 audit export to SIEM; W3.7 per-case evidence pack; W3.8 DORA/NIS2 notification clocks (init SQL 50); W3.9 daemon hot standby; W3.10 FIPS mode; W3.11 lessons; W4.1 load test; W4.2 chaos tests; W4.3 agent red team; W4.5 0.7.1 → 2.0 upgrade path; W4.6 documentation.
+* **audit (W0.35, security):** login and user-management events (login
+  success, failure, lockout and MFA failure, SSO login, logout, MFA and password
+  changes and resets, user create, update, (de)activation and delete, role
+  change) are written to `case_audit_logs` (`entity_type = 'auth'`) whether or
+  not the SIEM export is on, so they are in the W1.10 `audit_chain`. They used
+  to be kept only in the export's on-disk spool, and only while export was on.
+  The export's `auth` source now reads them from the table; the spool, its
+  `status.spool` block and the `autosecops_audit_export_spool_dropped_total`
+  metric are gone, and `spool_max_bytes` is accepted and ignored.
+* **audit (W0.35):** changes to LLM providers (`llm_provider`), skills
+  (`skill`), custom workflows (`custom_workflow`), detection rule sources
+  (`detection_rules`) and SLA policies (`sla_policy`) each write a
+  `config_audit_log` row: who, what, old and new value, with credentials
+  replaced by `[REDACTED]`. A provider's API key is never written, only that it
+  was rotated.
+* **auth (W0.35, breaking):** creating, changing, deleting or defaulting an SLA
+  policy (`/api/sla-policies`) needs `settings.write` instead of `cases.write`:
+  Analyst and Senior Analyst get 403. `POST /api/findings/export` needs
+  `findings.write` (Viewer gets 403), answers with `rows`, and every export is a
+  chained `case_audit_logs` row (`entity_type = 'findings_export'`: who, format,
+  selection, row count); an export that cannot be recorded is deleted and
+  answers 500.
+* **cases (W0.35, security):** the author of a case comment, the collector of
+  case evidence and the user of a chain-of-custody entry are the signed-in user.
+  `author`, `collected_by` and `user` in the request body are optional and
+  ignored (`/api/v1` `EvidenceAdd.collected_by` is now optional; an older client
+  still works). The console no longer sends `'SOC Analyst'` and shows the real
+  author. `created_by` on `POST /api/workflows/custom` is ignored the same way.
+
+<!-- release-notes 2.0.0: generated by release_tool.py render-notes, do not edit -->
+### Included work packages (70)
+
+W0.1 upstream sync and hard fork; W0.2 brand; W0.3 CI; W0.4 agent factory and gates; W0.4b gates fixes; W0.5 contracts (init SQL 46–49); W0.6 staging environment; W0.7 eval corpus v1; W0.9 cleanups; W0.10 follow-up fixes of merged WPs (init SQL 58); W0.11 security hotfix (detection-rules git source, clock chain head, Viewer write routes); W0.12 ingest durability (webhook spool); W0.12b spool hardening (W0.12 verifier findings); W0.13 history review: auth API, data/infra/CI, response integrations, triage agents; W0.14 verifier follow-ups (W1.7b, W0.11, W0.13); W0.15 Redis outage no longer re-triages decided findings; W0.16 approval argument bounds (64 KB), escaping and git directory check; W0.17 pre-existing integration test fixes; W0.18 GA follow-ups (W0.15, W3.10, W0.16); W0.19 CI green: Bandit false positives annotated, SSO admin routes check permissions before opening a DB session, Medic redaction list synced with W3.7, test fixes; W0.20 docs merged-list check against the documented base (tests only); W0.21 air-gap image names (ghcr.io/singularityrd/autosecops-*), image download and verification documented, bundle cleanup, model-pull proxy and --ollama-image fixes; W0.22 backend and daemon images scanned in CI before any tag, disabled ghcr push jobs removed; W0.23 scan hardening: PyJWT 2.15.1 (security), Agent Image Trivy pinned by SHA and version, every image fails on a secret finding of any severity; W0.24 desktop app GA readiness: AutoSecOps identity, macOS dmg / Linux AppImage / Windows (preview) installers in the release pipeline, Electron 44 and hardening; W0.25 upstream core and data fixes (10 commits): UTC approval times, Postgres findings in the orchestrator, a re-queued finding joins its open case, CSPRNG session ids, token caps, per-writer ai_enrichment keys; FORK.md upstream radar log; W0.26 upstream hunt, case and console improvements: hunt progress (init SQL 62), case review gating, evidence backup and in-place restore; W0.27 upstream password reset flow and operator-issued reset links; W0.28 upstream connector honesty: Experimental label, Okta connector fixed (baked into the image, pinned to a commit); W0.29 removal of the third-party DeepTempo LogLM connector; W0.30 upstream injection guards (text a subject writes stays out of the verdict; AUTOSECOPS_GUARDS on by default) and agent-layer OTel tracing (only with an OTLP endpoint; content capture off); W0.31 Medic workflow green again; the Medic API does no reverse DNS lookup when it binds, and a TERM during start-up stops Medic cleanly; W0.32 autonomy defaults match the plan: Assist is the default (a person approves every response action), the header chip shows the effective mode, and containment (host isolation, account disable, firewall blocks) is never autonomous at any tier; W0.35 identity and settings audit: login and user-management events in the chained audit log, LLM provider/skill/workflow/rule source/SLA changes recorded, case comment and evidence author from the server, findings export permissioned and audited; W0.37 Defender, Entra ID and Palo Alto executors connect from the console (Experimental) with a read-only Test call; executor config applies without a restart; W0.39 init SQL applies for a database user of any name (Helm db-init and compose); W1.1 eval harness; W1.2 structured triage and field provenance; W1.3 field provenance (seven adapters, shipped with W1.2); W1.5 canary replays; W1.6 QA sampling and scorecard; W1.7 tool effect classes; W1.7b no model can approve, approvals bound to arguments; W1.8 outbound webhooks and notification dispatch; W1.9 OIDC SSO; W1.10 audit chain extension; W2.1 verdict run; W2.2 alert lanes (init SQL 56); W2.3 local model lane; W2.4 executor registry and action policy; W2.5 Microsoft Defender executor; W2.6 Entra ID executor; W2.7 Palo Alto PAN-OS executor; W2.8 action timeline and revert; W3.1 autonomy controller; W3.2 four-eyes approval (second half; init SQL 61); W3.3 air-gap bundle; W3.4 zero-egress test; W3.5 retention and disposal (KVKK); W3.6 audit export to SIEM; W3.7 per-case evidence pack; W3.8 DORA/NIS2 notification clocks (init SQL 50); W3.9 daemon hot standby; W3.10 FIPS mode; W3.11 lessons; W4.1 load test; W4.2 chaos tests; W4.3 agent red team; W4.5 0.7.1 → 2.0 upgrade path; W4.6 documentation.
 
 ### Not included (4)
 
@@ -99,6 +222,7 @@ The 0.7.1 → 2.0 database upgrade path is W4.5: when it is not in the included
 list above, it is not verified in this release.
 
 New init SQL files in 2.0.0: 46–51, 55–56, 58, 61–62, 64.
+New init SQL files in 2.0.0: 46–51, 55–56, 58, 61–63.
 <!-- /release-notes 2.0.0 -->
 
 ### Release engineering (W4.7)
@@ -118,12 +242,16 @@ New init SQL files in 2.0.0: 46–51, 55–56, 58, 61–62, 64.
 
 ## Upgrade notes (unreleased upstream changes carried into 2.0.0)
 
-* **helm (W0.34, required):** set `secrets.dataEncryptionKey` (at least 32
-  characters, e.g. `openssl rand -base64 32`), or `VIGIL_DATA_KEY` in
-  `secrets.existingSecret` / the ExternalSecret, before upgrading: with
-  `DEV_MODE=false` the backend does not start without it. Keep a copy outside
-  the cluster and pass the same value on every upgrade; database dumps cannot be
-  read back without the key they were taken under. Secrets that were saved in
+* **helm (W0.34):** the chart mints the data-encryption key (`VIGIL_DATA_KEY`)
+  into the Secret `<fullname>-data-key` on the upgrade and keeps it on every
+  later upgrade and on `helm uninstall` (`dataKey.generate`, on by default).
+  Back that Secret up with the database: dumps cannot be read back without the
+  key they were taken under. A key you set in `secrets.dataEncryptionKey`,
+  `secrets.existingSecret` or the ExternalSecret wins. With `helm template`,
+  Argo CD or Flux (no `lookup`) every render would mint a new key: create the
+  Secret yourself and set `dataKey.existingSecret`, or set
+  `secrets.dataEncryptionKey`; with `DEV_MODE=false` the backend does not start
+  without a key. Secrets that were saved in
   the console before the upgrade lived in a pod's `emptyDir` and are already
   lost on any restart: enter them again after the upgrade (they now persist).
   An install that set `config.SECRETS_BACKEND` itself keeps that value; set it
@@ -142,6 +270,70 @@ New init SQL files in 2.0.0: 46–51, 55–56, 58, 61–62, 64.
 * **staging (W0.34):** `bootstrap.sh` writes `dataEncryptionKey` into a new
   `/etc/autosecops-staging/secrets.yaml` only; on an existing VM add
   `dataEncryptionKey: "<value>"` under `secrets:` there before the next nightly run.
+* **autonomy (W0.32, every deployment):** human approval is the default.
+  A person approves every response action until an admin chooses Act.
+  `04_config_tables.sql` (frozen since 0.7.1) still seeds
+  `approval.force_manual_approval` as Act; `63_approval_default_assist.sql`,
+  run after it on new and upgraded databases, moves the row to Assist **only**
+  while it is still that untouched seed (no `updated_by`, no
+  `config_audit_log` entry for the key) and audits the move as
+  `system:w0.32-default`, so a new install's audit log starts with that row. Act or Assist that a person chose in the console is
+  kept, and `DAEMON_FORCE_APPROVAL` (a lock, still `false` by default in Helm,
+  compose and `env.example`) is read as before. An install that relied on the
+  old Act seed and wants Act selects it again in Settings › Limits & autonomy.
+  Containment is never autonomous at any tier: `isolate_host`, `disable_user`,
+  `revoke_sessions`, `access_revoke`, `block_ip`, `waf_block` and
+  `quarantine_file` always wait for a person, and `PUT /api/autonomy/tiers/...`
+  answers 422 for Autonomous on them. Only `block_domain` and `gateway_block` can
+  be Autonomous. An Autonomous row stored earlier for a containment class is kept
+  but no longer applied (the matrix marks it "not applied"; each decision
+  records `... is containment; a person approves it`). `GET /api/config/autonomy`
+  adds `mode` (`assist`, `act`, or `unknown` when the tiers cannot be read and
+  every action is held) and `autonomous_tiers`; the header chip shows Act only
+  when a tier can actually release an action.
+
+* **signing keys (W0.36):** an install that already set
+  `AUDIT_CHECKPOINT_SIGNING_KEY` / `EVIDENCE_PACK_SIGNING_KEY` keeps its keys:
+  Compose's `signing-keys` service never overwrites one, and on Helm a key you
+  supply through `secrets.existingSecret` or ExternalSecrets takes precedence
+  over the chart-minted one (set `signingKeys.generate=false` to not mint unused
+  Secrets). With `helm template`, Argo CD or
+  Flux (no `lookup`) every render would mint new keys: use
+  `signingKeys.existingSecret`. After upgrading, export the public keys
+  (`python -m core.audit.signing_keys export`) and hand them to your auditor; if
+  the keys were newly created, earlier evidence packs remain signed by their
+  one-off keys.
+
+* **helm (W0.39):** nothing to do. On an install whose database user is not
+  `deeptempo` (or is not a superuser), the next `helm upgrade` applies and
+  records 04, 07, 09, 10, 12, 13 and 30, which earlier Jobs left pending with a
+  "not applied" warning on every upgrade. A file frozen since 0.7.1 whose only
+  errors on that re-run say its objects already exist (04's triggers, 12's
+  comment on the column 34 dropped) is recorded.
+
+* **audit (W0.35):** after the upgrade, auth events are written to
+  `case_audit_logs` and exported from there. Auth events still in the old
+  on-disk spool (`$VIGIL_DIR/audit_export/auth_spool/`) when you upgrade are not
+  sent: if SIEM export is on, let it drain first (`GET
+  /api/compliance/audit-export/status` shows the `auth` cursor at the end), then
+  upgrade and delete the directory. A destination's `auth` cursor restarts from
+  the beginning of the table, which holds only events from the upgrade on.
+  Analysts who edited SLA policies need a Manager or Admin now. Comment and
+  evidence rows written before the upgrade keep the author name the client sent
+  (the console always sent `SOC Analyst`); treat it as untrusted. Nothing is
+  rewritten.
+
+* **auth (W0.33):** an install that already has an account needs nothing: no
+  token is issued and the bootstrap route stays closed. A fresh install, and
+  any automation that creates the first admin through `POST /api/auth/bootstrap`
+  (CI, staging, scripted installs), must now send `X-Setup-Token`: read it from
+  the backend log or `<State Directory>/setup-token`, issue one with
+  `python -m core.auth.setup_token regenerate`, or set `VIGIL_SETUP_TOKEN`
+  (Helm `secrets.setupToken`, 24+ characters) before first start. A cross-origin
+  console must allow the new `X-Setup-Token` request header if it sits behind
+  its own CORS proxy. An administrator whose browser had dismissed the wizard
+  before the upgrade carries that over to the server on the first visit
+  (recorded as "deferred"); `scripts/reset-setup.sh --wizard` starts it over.
 
 * **integrations (W0.29):** a configured LogLM connector stops: its card, MCP
   server and console tab are gone and nothing calls the connector any more.
