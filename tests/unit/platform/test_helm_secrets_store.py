@@ -15,7 +15,7 @@ pytestmark = pytest.mark.unit
 
 REPO = Path(__file__).resolve().parents[3]
 CHART = REPO / "infra" / "helm" / "vigil"
-SQL = "63_platform_secrets.sql"
+SQL = "64_platform_secrets.sql"
 
 
 def _values(name: str = "values.yaml") -> dict:

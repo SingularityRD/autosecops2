@@ -71,7 +71,7 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   were unencrypted, existed on one of the two backend replicas and were lost on
   restart. The chart now sets `SECRETS_BACKEND=database`: each value is a
   Fernet token under the data key in PostgreSQL (`platform_secrets`, init SQL
-  63), every replica reads the same rows (another replica sees a save within
+  64), every replica reads the same rows (another replica sees a save within
   5 s), and nothing is written to a file. Keys needed to reach the database are
   refused there; the console's PostgreSQL and platform-database proxy settings
   answer 409 in this mode.

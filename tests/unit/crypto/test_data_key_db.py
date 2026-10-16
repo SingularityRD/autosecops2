@@ -23,7 +23,7 @@ from core.storage.connection import get_db_manager
 pytestmark = [pytest.mark.unit, pytest.mark.external_service, pytest.mark.database]
 
 REPO = Path(__file__).resolve().parents[3]
-INIT_SQL = REPO / "infra" / "database" / "init" / "63_platform_secrets.sql"
+INIT_SQL = REPO / "infra" / "database" / "init" / "64_platform_secrets.sql"
 TOTP = "JBSWY3DPEHPK3PXP"
 KEY_NEW = "data-key-new-for-the-db-tests-00000001"
 KEY_OLD = "data-key-old-for-the-db-tests-00000002"

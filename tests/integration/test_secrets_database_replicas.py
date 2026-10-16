@@ -23,7 +23,7 @@ from sqlalchemy import create_engine, text
 pytestmark = [pytest.mark.integration, pytest.mark.database]
 
 REPO = Path(__file__).resolve().parents[2]
-INIT_SQL = REPO / "infra" / "database" / "init" / "63_platform_secrets.sql"
+INIT_SQL = REPO / "infra" / "database" / "init" / "64_platform_secrets.sql"
 DATA_KEY = "integration-replica-data-key-0000000001"
 
 _POD = r"""

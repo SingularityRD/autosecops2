@@ -469,7 +469,7 @@ dbInit:
     - 58_broadcast_unique_and_clock_heads.sql
     - 61_approval_decisions.sql
     - 62_workflow_runs_progress.sql
-    - 63_platform_secrets.sql
+    - 64_platform_secrets.sql
   resources:
     requests:
       cpu: 50m
