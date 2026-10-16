@@ -13,9 +13,13 @@
 #   airgap.env              W3.4 environment profile for host-native / Compose
 #   k8s/llm-stack.yaml      Bifrost + Ollama for the cluster
 #   models/ollama-models.tar  Ollama model store (only if the model was pulled)
+#   models/LLAMA_NOTICE.txt "Built with Llama", licence and AUP (Llama models)
 #   rules/<clone>.tar.gz    snapshots of local DetectionRulesService clones
 #                           (regular files and directories only: in-tree file
 #                           symlinks are dereferenced, any other link refuses)
+#   rules/<clone>.LICENSE   that clone's own licence file; rules/README-LICENSES.md
+#                           and rules/DRL-1.1.md (rule-licenses/) attribute them
+#   licenses/               LICENSE, NOTICE, THIRD_PARTY_LICENSES of AutoSecOps
 #   docs/                   offline docs (this README and docs/ as a tarball)
 #   install.sh              the installer (verify it before trusting it, README)
 #   manifest.json           what is in the bundle, with every sha256
@@ -170,14 +174,14 @@ images_json="$work/images.json"
 mapfile -t image_rows < <("$PY" -c '
 import json, sys
 for e in json.load(open(sys.argv[1])):
-    print("\t".join((e["ref"], e["local_path"], e["file"])))
+    print("\t".join((e["ref"], e["local_path"], e["file"], e.get("digest") or "")))
 ' "$images_json")
 [ "${#image_rows[@]}" -gt 0 ] || die "no images enumerated"
 
 # --- 1. images --------------------------------------------------------------
 : >"$bundle/images.tsv"
 for row in "${image_rows[@]}"; do
-  IFS=$'\t' read -r ref local_path file <<<"$row"
+  IFS=$'\t' read -r ref local_path file digest <<<"$row"
   dest="$bundle/$file"
   if [ -n "$images_from" ] && [ -f "$images_from/$(basename "$file")" ]; then
     log "image $ref <- $images_from"
@@ -186,8 +190,16 @@ for row in "${image_rows[@]}"; do
     die "$images_from has no $(basename "$file") for $ref"
   else
     command -v docker >/dev/null || die "docker is needed to pull $ref (or use --images-from)"
-    log "image $ref: pull + save"
-    docker pull "$ref" >&2
+    if [ -n "$digest" ]; then
+      # Pinned: pull exactly that digest, then save it under its tag (the name
+      # images.tsv, install.sh and the overlay use).
+      log "image $ref@$digest: pull + save"
+      docker pull "${ref%:*}@$digest" >&2
+      docker tag "${ref%:*}@$digest" "$ref"
+    else
+      log "image $ref: pull + save"
+      docker pull "$ref" >&2
+    fi
     docker save -o "$dest" "$ref"
   fi
   printf '%s\t%s\t%s\n' "$ref" "$local_path" "$file" >>"$bundle/images.tsv"
@@ -234,13 +246,20 @@ else
 fi
 
 # --- 3. Ollama model ----------------------------------------------------------
-model_file=""
+model_file="" ollama_model_is_llama=0
+case "$ollama_model" in llama*|*/llama*) ollama_model_is_llama=1 ;; esac
 if [ "$skip_model" = 1 ]; then
   log "ollama model: skipped"
 elif [ -n "$models_dir" ]; then
   [ -d "$models_dir/models" ] || die "$models_dir has no models/ directory"
   tar_tree "$bundle/models/ollama-models.tar" "$models_dir" models
   model_file="models/ollama-models.tar"
+  # The store's own model names decide the notice, not --ollama-model.
+  ollama_model_is_llama=0
+  # manifests/<registry>/<namespace>/<model>/<tag>; "ollama" itself must not match.
+  if find "$models_dir/models/manifests" -mindepth 3 -maxdepth 3 -iname 'llama*' -print -quit 2>/dev/null | grep -q .; then
+    ollama_model_is_llama=1
+  fi
 else
   # The Ollama image of the LLM stack: --ollama-image when given (any name),
   # else the ollama/ollama reference in k8s/llm-stack.yaml.
@@ -271,6 +290,10 @@ else
     log "WARNING: could not pull Ollama model $ollama_model; bundle has no model (manifest: file=null)"
   fi
 fi
+# Llama licence: "Built with Llama" and the licence/AUP travel with the model.
+if [ -n "$model_file" ] && [ "$ollama_model_is_llama" = 1 ]; then
+  cp "$HERE/LLAMA_NOTICE.txt" "$bundle/models/LLAMA_NOTICE.txt"
+fi
 
 # --- 4. rule corpora ----------------------------------------------------------
 rules_tsv="$work/rules.tsv"
@@ -281,13 +304,33 @@ while read -r clone; do
     log "rules: $clone"
     tar_tree "$bundle/rules/$clone.tar.gz" "$rules_dir" "$clone" z
     printf '%s\trules/%s.tar.gz\n' "$clone" "$clone" >>"$rules_tsv"
+    # The corpus's own licence next to its snapshot (DRL, ELv2, ...).
+    lic=""
+    for f in LICENSE LICENSE.txt LICENSE.md COPYING; do
+      if [ -f "$rules_dir/$clone/$f" ] && [ ! -L "$rules_dir/$clone/$f" ]; then lic="$f"; break; fi
+    done
+    if [ -n "$lic" ]; then
+      cp "$rules_dir/$clone/$lic" "$bundle/rules/$clone.LICENSE"
+    else
+      log "WARNING: $rules_dir/$clone has no LICENSE file; see rules/README-LICENSES.md"
+    fi
   else
     log "WARNING: no local clone $rules_dir/$clone; not in the bundle"
     printf '%s\t\n' "$clone" >>"$rules_tsv"
   fi
 done < <("$PY" "$HERE/airgap_images.py" rules --repo "$REPO")
+if [ -n "$(cut -f2 "$rules_tsv" | tr -d '\n')" ]; then
+  cp "$HERE/rule-licenses/README.md" "$bundle/rules/README-LICENSES.md"
+  cp "$HERE/rule-licenses/DRL-1.1.md" "$bundle/rules/DRL-1.1.md"
+fi
 
-# --- 5. docs + installer --------------------------------------------------------
+# --- 5. licences, docs + installer ----------------------------------------------
+# Apache-2.0 section 4: the licence and NOTICE travel with every distribution.
+mkdir -p "$bundle/licenses"
+for f in LICENSE NOTICE THIRD_PARTY_LICENSES; do
+  [ -f "$REPO/$f" ] || die "missing $REPO/$f"
+  cp "$REPO/$f" "$bundle/licenses/$f"
+done
 cp "$HERE/README.md" "$bundle/docs/README-airgap.md"
 docs=()
 for d in README.md docs infra/helm/vigil/README.md; do [ -e "$REPO/$d" ] && docs+=("$d"); done
@@ -324,7 +367,8 @@ digest = {f["path"]: f["sha256"] for f in files}
 images = []
 for e in json.load(open(images_json)):
     images.append({"ref": e["ref"], "local_path": e["local_path"], "file": e["file"],
-                   "sha256": digest[e["file"]], "sources": e["sources"]})
+                   "sha256": digest[e["file"]], "sources": e["sources"],
+                   **({"pinned_digest": e["digest"]} if e.get("digest") else {})})
 rules = []
 for line in open(rules_tsv):
     clone, _, path = line.rstrip("\n").partition("\t")

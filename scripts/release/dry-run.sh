@@ -18,7 +18,9 @@
 #   3. CycloneDX SBOMs from requirements.lock and every package-lock.json
 #      (the desktop app's is autosecops-<V>-node-desktop.cdx.json),
 #      validated, into DIR
-#   4. SHA256SUMS over DIR, checked back with sha256sum/shasum
+#   4. THIRD_PARTY_LICENSES from the lockfiles (fails when the checked-in
+#      snapshot is stale), LICENSE and NOTICE, into DIR
+#   5. SHA256SUMS over DIR, checked back with sha256sum/shasum
 # Image builds, image SBOMs (syft) and signing need the registry and an OIDC
 # token, so they only run in the tag pipeline.
 set -eu
@@ -38,7 +40,7 @@ while [ $# -gt 0 ]; do
     --version) version="${2:?--version needs a value}"; shift 2 ;;
     --tag) tag="${2:?--tag needs a value}"; shift 2 ;;
     --strict-notes) strict="--strict"; shift ;;
-    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "dry-run: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -86,6 +88,12 @@ mkdir -p "$out"
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$repo" log -1 --format=%ct 2>/dev/null || echo 0)} \
   "$PY" "$tool" --repo "$repo" sboms --out "$out" --version "$version"
 "$PY" "$tool" --repo "$repo" validate-sbom "$out"/autosecops-"$version"-*.cdx.json
+
+step "third-party licences, LICENSE, NOTICE"
+"$PY" "$tool" --repo "$repo" third-party-licenses --check \
+  --out "$out/autosecops-$version-THIRD_PARTY_LICENSES.txt" >/dev/null
+cp "$repo/LICENSE" "$out/autosecops-$version-LICENSE.txt"
+cp "$repo/NOTICE" "$out/autosecops-$version-NOTICE.txt"
 
 step "checksums"
 "$PY" "$tool" --repo "$repo" checksums --dir "$out" >/dev/null

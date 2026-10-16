@@ -66,6 +66,10 @@ ENV PATH=/opt/medic/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     VIGIL_MEDIC_DATA_DIR=/var/lib/vigil-medic
 
+# Apache-2.0 section 4: the licence, NOTICE and the third-party inventory
+# travel with every image (W0.38).
+COPY LICENSE NOTICE THIRD_PARTY_LICENSES /licenses/
+
 USER 10001:10001
 
 # C5 §5.2 values (the llm-worker's): interval 30 s, retries 4, 300 s start-up

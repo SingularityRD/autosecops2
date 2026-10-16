@@ -138,6 +138,8 @@ def built(tmp_path_factory):
     # An in-tree file symlink and a hard link: stored as plain files.
     (rules / "sigma" / "rules" / "link.yml").symlink_to("r.yml")
     os.link(rules / "sigma" / "rules" / "r.yml", rules / "sigma" / "hard.yml")
+    # sigma carries its licence file; security_content has none (a warning).
+    (rules / "sigma" / "LICENSE").write_text("Detection Rule License (DRL) 1.1 link\n")
     bin_dir, calls = _stubs(tmp)
     (bin_dir / "helm").unlink()  # no helm: the chart is packaged with tar
     out = tmp / "dist"
@@ -169,6 +171,7 @@ def built(tmp_path_factory):
         "pub": pub,
         "tmp": tmp,
         "images_dir": images_dir,
+        "stderr": proc.stderr,
     }
 
 
@@ -264,6 +267,66 @@ def test_bundle_layout_and_manifest(built):
         for line in (b / "SHA256SUMS").read_text().splitlines()
     )
     assert set(sums) == {f["path"] for f in manifest["files"]} | {"manifest.json"}
+
+
+def test_bundle_carries_licence_notice_and_inventory(built):
+    """Apache-2.0 section 4 (W0.38): LICENSE and NOTICE travel with the bundle."""
+    lic = built["bundle"] / "licenses"
+    for name in ("LICENSE", "NOTICE", "THIRD_PARTY_LICENSES"):
+        assert (lic / name).read_bytes() == (REPO / name).read_bytes(), name
+    sums = _sums(built["bundle"])
+    assert {"licenses/LICENSE", "licenses/NOTICE"} <= set(sums)
+
+
+def test_rule_snapshots_ship_their_own_licence(built):
+    """Sigma (DRL) and Elastic (ELv2) rules are redistributed: their licence goes
+    next to each snapshot, with the attribution table and the DRL text."""
+    rules = built["bundle"] / "rules"
+    assert (rules / "sigma.LICENSE").read_text() == "Detection Rule License (DRL) 1.1 link\n"
+    assert not (rules / "security_content.LICENSE").exists()
+    assert "security_content has no LICENSE file" in built["stderr"]
+    readme = (rules / "README-LICENSES.md").read_text()
+    for clone in airgap_images.rule_clone_names(REPO):
+        assert f"`{clone}`" in readme, clone
+    assert "Elastic License 2.0" in readme
+    drl = (rules / "DRL-1.1.md").read_text()
+    assert drl.startswith("# Detection Rule License (DRL) 1.1")
+    assert not (built["bundle"] / "models").exists()  # no model, no Llama notice
+
+
+@pytest.mark.parametrize("model, notice", [("llama3.1/8b", True), ("qwen2.5/7b", False)])
+def test_llama_notice_travels_with_a_llama_model(tmp_path, model, notice):
+    key, _pub = _keypair(tmp_path, "release")
+    images_dir = tmp_path / "image-archives"
+    images_dir.mkdir()
+    for entry in _images():
+        (images_dir / Path(entry["file"]).name).write_bytes(b"fake " + os.urandom(16))
+    store = tmp_path / "ollama"
+    manifest = store / "models" / "manifests" / "registry.ollama.ai" / "library" / model
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}\n")
+    bin_dir, calls = _stubs(tmp_path)
+    (bin_dir / "helm").unlink()
+    out = tmp_path / "dist"
+    proc = subprocess.run(
+        [str(BUILD), "--version", VERSION, "--out", str(out), "--images-from",
+         str(images_dir), "--ollama-models-dir", str(store),
+         "--rules-dir", str(tmp_path / "no-rules"), "--key", str(key), "--no-tar"],
+        env=_env(bin_dir, calls, _path_without("helm")),
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    b = out / f"autosecops-airgap-{VERSION}"
+    assert (b / "models" / "ollama-models.tar").is_file()
+    path = b / "models" / "LLAMA_NOTICE.txt"
+    assert path.is_file() is notice
+    if notice:
+        text = path.read_text()
+        assert text.startswith("Built with Llama.")
+        assert "Llama 3.1 Community License" in text and "use-policy" in text
+        assert "models/LLAMA_NOTICE.txt" in _sums(b)
+    assert not (b / "rules").exists()  # no corpora, no rule licence files
 
 
 def test_packaged_chart_has_version_and_no_subcharts(built, tmp_path):
@@ -842,13 +905,75 @@ def test_build_dry_run_enumerates_without_docker(stubs):
         "ghcr.io/singularityrd/autosecops-daemon:0.7.1",
         "ghcr.io/singularityrd/autosecops-agent:0.7.1",
         "postgres:16-alpine",
-        "redis:7-alpine",
+        "redis:7.2.16-alpine",
         "maximhq/bifrost:v2.2.1",
         "curlimages/curl:8.10.1",
     ):
         assert expected in refs
     assert any(r.startswith("ollama/ollama:") for r in refs)
     assert _calls(stubs[1]) == []
+    redis = [ln.split("\t") for ln in proc.stdout.splitlines() if ln.startswith("redis:")]
+    assert [r[3] for r in redis] == [REDIS_DIGEST]  # the pin is in the list
+
+
+REDIS_DIGEST = "sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0"
+
+
+def test_split_digest():
+    assert airgap_images.split_digest(f"redis:7.2.16-alpine@{REDIS_DIGEST}") == (
+        "redis:7.2.16-alpine",
+        REDIS_DIGEST,
+    )
+    assert airgap_images.split_digest("postgres:16-alpine") == ("postgres:16-alpine", None)
+
+
+def test_redis_is_listed_once_with_its_pin_from_helm_and_compose():
+    entry = next(e for e in _images() if e["ref"].startswith("redis:"))
+    assert entry["ref"] == "redis:7.2.16-alpine"
+    assert entry["digest"] == REDIS_DIGEST
+    assert entry["local_path"] == "library/redis:7.2.16-alpine"
+    assert "helm:redis" in entry["sources"] and "compose:redis" in entry["sources"]
+
+
+def test_conflicting_pins_for_one_tag_are_refused():
+    e = airgap_images.Enumerator(REPO, VERSION)
+    e._add(f"redis:7.2.16-alpine@{REDIS_DIGEST}", "helm:redis")
+    with pytest.raises(SystemExit, match="pins"):
+        e._add("redis:7.2.16-alpine@sha256:" + "0" * 64, "compose:redis")
+
+
+def test_pinned_image_is_pulled_by_digest_and_saved_by_tag(tmp_path):
+    key, _pub = _keypair(tmp_path, "release")
+    bin_dir, calls = _stubs(tmp_path)
+    # docker save writes its -o file, so the build can hash it.
+    (bin_dir / "docker").write_text(
+        STUB.replace(
+            "exit 0",
+            '[ "${1:-}" = save ] && [ "${2:-}" = -o ] && echo fake >"$3"\nexit 0',
+        )
+    )
+    (bin_dir / "helm").unlink()
+    out = tmp_path / "dist"
+    proc = subprocess.run(
+        [str(BUILD), "--version", VERSION, "--out", str(out), "--skip-ollama-model",
+         "--rules-dir", str(tmp_path / "no-rules"), "--key", str(key), "--no-tar"],
+        env=_env(bin_dir, calls, _path_without("helm")),
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    log = _calls(calls)
+    pinned = f"redis@{REDIS_DIGEST}"
+    assert f"docker pull {pinned}" in log
+    assert f"docker tag {pinned} redis:7.2.16-alpine" in log
+    b = out / f"autosecops-airgap-{VERSION}"
+    assert (
+        f"docker save -o {b}/images/redis_7.2.16-alpine.tar redis:7.2.16-alpine" in log
+    )
+    assert "docker pull redis:7.2.16-alpine" not in log  # never by the tag alone
+    manifest = json.loads((b / "manifest.json").read_text())
+    redis = next(i for i in manifest["images"] if i["ref"] == "redis:7.2.16-alpine")
+    assert redis["pinned_digest"] == REDIS_DIGEST
 
 
 def test_dry_run_json_and_ollama_override(stubs):

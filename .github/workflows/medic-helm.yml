@@ -43,7 +43,7 @@ env:
 jobs:
   medic-helm-render:
     name: Medic Helm render
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -90,7 +90,7 @@ jobs:
   medic-helm-kind:
     name: Medic on kind (${{ matrix.cni }})
     needs: medic-helm-render
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false

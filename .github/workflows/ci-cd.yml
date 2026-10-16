@@ -12,7 +12,9 @@ permissions:
   contents: read
 
 env:
-  NODE_VERSION: '20'
+  # Node 22 LTS: the major the images ship (Dockerfile.backend web-builder,
+  # Dockerfile.agent); Node 20 reached end of life on 2026-04-30 (W0.38).
+  NODE_VERSION: '22'
 
 jobs:
   # ============================================================================
@@ -27,7 +29,7 @@ jobs:
     # required: CLAUDEAPI is empty when unset and the tests that need it are
     # marked external_service and deselected.
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       
@@ -87,7 +89,7 @@ jobs:
   lint-frontend:
     name: Lint Frontend
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       
@@ -113,7 +115,7 @@ jobs:
   check-generated-api-types:
     name: Generated API Types
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -150,7 +152,7 @@ jobs:
   lint-docker:
     name: Lint Dockerfiles
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       
@@ -180,7 +182,7 @@ jobs:
   build-agent-image:
     name: Agent Image
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -265,7 +267,7 @@ jobs:
   build-service-images:
     name: Service Image (${{ matrix.component }})
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     strategy:
@@ -407,8 +409,8 @@ jobs:
         #   - { os: ubuntu-24.04-arm, arch: aarch64 }   # arm64 Linux
         #   - { os: ubuntu-22.04,     arch: x86_64  }   # older glibc
         include:
-          - { os: ubuntu-latest, arch: x86_64 }
-          - { os: macos-latest,  arch: arm64  }
+          - { os: ubuntu-24.04, arch: x86_64 }
+          - { os: macos-15,  arch: arm64  }
     steps:
       - uses: actions/checkout@v7
 
@@ -468,7 +470,7 @@ jobs:
   test-unit-backend:
     name: Unit Tests - Backend
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       
@@ -512,7 +514,7 @@ jobs:
   test-unit-frontend:
     name: Unit Tests - Frontend
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       
@@ -532,12 +534,12 @@ jobs:
         run: npm run test:run
 
   # The agent layer is a second Node package with its own manifest, so it needs
-  # its own job -- the frontend job above is scoped to frontend/. Node 20 rather
-  # than NODE_VERSION because services/agent/package.json requires it.
+  # its own job -- the frontend job above is scoped to frontend/. Node 22, the
+  # major of the agent image (infra/docker/Dockerfile.agent).
   test-agent-layer:
     name: Unit Tests - Agent Layer
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16-alpine
@@ -553,7 +555,7 @@ jobs:
         ports:
           - 5432:5432
       redis:
-        image: redis:7-alpine
+        image: redis:7.2.16-alpine@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
@@ -570,7 +572,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: services/agent/package-lock.json
 
@@ -624,7 +626,7 @@ jobs:
   schema-snapshot-patch-gate:
     name: Schema Snapshot Patch Gate
     if: github.repository == 'SingularityRD/autosecops2' && github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -653,7 +655,7 @@ jobs:
   test-integration:
     name: Integration Tests
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16-alpine
@@ -671,7 +673,7 @@ jobs:
       # The walking-skeleton test enqueues onto BullMQ and spawns the TypeScript
       # worker, so this job needs Redis and Node as well as Postgres.
       redis:
-        image: redis:7-alpine
+        image: redis:7.2.16-alpine@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
@@ -704,7 +706,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: services/agent/package-lock.json
 
@@ -846,7 +848,7 @@ jobs:
   test-unit-backend-db:
     name: Unit Tests - Backend (DB-backed)
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16-alpine
@@ -918,7 +920,7 @@ jobs:
   test-helm-install-schema:
     name: Helm Install Schema
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         # As the chart's own Postgres runs: its image, database and user, which
@@ -1093,7 +1095,7 @@ jobs:
   security-scan-python:
     name: Security Scan - Python
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       
@@ -1124,7 +1126,7 @@ jobs:
   security-scan-npm:
     name: Security Scan - NPM
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       
@@ -1156,7 +1158,7 @@ jobs:
   # ============================================================================
   build-frontend:
     name: Build Frontend
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [lint-frontend]
     # Runs on PRs too, not just push. This is the only job that type-checks
     # (tsc); gating it to post-merge let type errors land on main. The
@@ -1253,7 +1255,7 @@ jobs:
   # Uncomment when ready to deploy to VMs
   # deploy-staging:
   #   name: Deploy to Staging
-  #   runs-on: ubuntu-latest
+  #   runs-on: ubuntu-24.04
   #   needs: [build-service-images, build-frontend]
   #   if: github.ref == 'refs/heads/main' && github.event_name == 'push'
   #   ... (deployment steps removed for now)

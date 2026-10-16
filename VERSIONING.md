@@ -1,8 +1,9 @@
 # Versioning
 
-Vigil uses semantic versioning. This file says what a caller may rely on across
-releases and how that changes. How `VERSION` itself is bumped is on the
-[releasing page](https://vigilsoc.org/docs/releasing/).
+AutoSecOps uses semantic versioning. This file says what a caller may rely on
+across releases and how that changes. How long each release gets security fixes
+is in [SECURITY.md](SECURITY.md#supported-versions); how a release is tagged and
+published is in [docs/release/](docs/release/).
 
 ## What is frozen
 

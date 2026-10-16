@@ -1,6 +1,7 @@
-# Default values for the Vigil SOC Helm chart.
+# Default values for the AutoSecOps Helm chart (chart name: vigil, kept so
+# existing releases upgrade in place).
 # This is a YAML-formatted file.
-# See https://vigilsoc.org/docs/helm/ for a full reference of all values.
+# See README.md next to this file and docs/guide/yonetici-kilavuzu.md.
 
 # -----------------------------------------------------------------------------
 # Global
@@ -149,7 +150,7 @@ llmWorker:
       cooldownPeriod: 300
       # How often KEDA polls Redis for the queue depth.
       pollingInterval: 15
-      # ARQ default queue name for the Vigil llm-worker (see core/llm/gateway/gateway.py).
+      # ARQ default queue name for the AutoSecOps llm-worker (see core/llm/gateway/gateway.py).
       queueName: "arq:llm"
       # KEDA scales one replica per listLength items queued.
       listLength: "5"
@@ -337,7 +338,9 @@ redis:
   enabled: true
   image:
     repository: redis
-    tag: "7-alpine"
+    # 7.2.x is the last BSD-3-Clause Redis line (7.4+ is RSALv2/SSPL). Pinned by
+    # index digest; the air-gap build pulls this digest (NOTICE, W0.38).
+    tag: "7.2.16-alpine@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0"
     pullPolicy: IfNotPresent
   service:
     port: 6379
@@ -575,7 +578,7 @@ serviceAccount:
 # -----------------------------------------------------------------------------
 # State Directory
 # -----------------------------------------------------------------------------
-# Where Vigil keeps what the database does not: the secrets store, MCP enable
+# Where AutoSecOps keeps what the database does not: the secrets store, MCP enable
 # flags, detection sources. Exported as VIGIL_DIR to the backend, daemon and
 # llm-worker.
 #
@@ -639,7 +642,7 @@ evidence:
 # SSL_CERT_FILE replaces the default store — the PEM should include public CAs
 # as well as the inspecting one. NODE_EXTRA_CA_CERTS appends.
 #
-# This trusts the CA for every host Vigil calls. For a private CA that signs one
+# This trusts the CA for every host AutoSecOps calls. For a private CA that signs one
 # self-hosted server (a Wazuh indexer, an internal Splunk, MISP, PAN-OS or
 # VStrike), set that integration's "CA Certificate Path" in Settings, or
 # <INTEGRATION>_CA_CERT_PATH (e.g. ELASTIC_SIEM_CA_CERT_PATH) via extraEnv,
@@ -830,7 +833,7 @@ config:
   SMTP_PORT: "587"
   SMTP_USER: ""
   SMTP_TLS: "true"
-  SMTP_FROM: "noreply@vigil.local"
+  SMTP_FROM: "noreply@autosecops.local"
 
   # HTTP security headers + CORS
   VIGIL_CORS_ORIGINS: ""

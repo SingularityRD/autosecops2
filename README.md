@@ -1,22 +1,20 @@
-# Vigil SOC
+# AutoSecOps
 
-Vigil is an open source, agentic AI SOC released under Apache 2.0. Your playbooks are plain-text Markdown files, your agent logic is readable code, and your integrations use an open standard ([MCP](https://modelcontextprotocol.io/)). It is a capability you own, not a black box you rent.
+AutoSecOps is an agentic AI Security Operations Center with a human in charge. Agents triage, investigate, hunt and propose responses; every action they take is proposed as an approval request, released by an analyst (or, for a reversible action class an analyst has explicitly made autonomous, under a measured false-negative bound), and recorded in a tamper-evident audit chain. Playbooks are plain-text Markdown files, agent logic is readable code, and integrations use an open standard ([MCP](https://modelcontextprotocol.io/)).
 
-Vigil runs on its own: a local clone, Docker, and any supported LLM provider (a local Ollama model works). Docs and community: [vigilsoc.org](https://vigilsoc.org).
+AutoSecOps runs on your own infrastructure: a local clone, Docker Compose, Kubernetes (Helm), or a fully air-gapped install, with any supported LLM provider (a local Ollama model works, so no data has to leave your network).
 
-**Vigil 1.0 is coming.** We believe it will be the first AI SOC built for a human *on* the loop rather than *in* it. Join the upcoming office hours for a preview.
+AutoSecOps is developed by SingularityRD. It is based on [Vigil](https://github.com/Vigil-SOC/vigil) (Apache-2.0); see [NOTICE](NOTICE) and [Credits](#credits).
 
-The project draws on the founders' experience building [StackStorm](https://github.com/StackStorm/st2) and supporting teams, including Netflix, that used it to reach high levels of automation carefully. One lesson carries through: the system can only demote its own autonomy, and only humans can promote it. Vigil checks projected cost and confidence before acting, and asks a human when either looks off.
-
-Vigil rests on three parts — **agents** you can read, fork, and rewire; **workflows** defined as Markdown files you edit directly; and **integrations** connected over MCP — plus the most important one: **you**. Contribute feedback, code, a star, or memes on Discord.
+Documentation for operators and administrators is in [`docs/guide/`](docs/guide/README.md) (Turkish): scope, installation (also air-gapped), the administrator guide, the security technical document, the threat model and the regulatory mapping.
 
 ---
 
 ## Agents
 
-Vigil ships a set of built-in specialist agents covering the core SOC roles — triage, investigation, threat hunting, correlation, response, reporting, ATT&CK mapping, forensics, threat intel, compliance, malware and network analysis — and you can add your own from the console. The set grows and changes with the project; the built-in definitions live in [`core/agents/builtins.py`](core/agents/builtins.py) and are described at [vigilsoc.org/docs/agents](https://vigilsoc.org/docs/agents/).
+AutoSecOps ships a set of built-in specialist agents covering the core SOC roles — triage, investigation, threat hunting, correlation, response, reporting, ATT&CK mapping, forensics, threat intel, compliance, malware and network analysis — and you can add your own from the console. The set grows and changes with the project; the built-in definitions live in [`core/agents/builtins.py`](core/agents/builtins.py) and the administrator guide describes them.
 
-Every agent can call Vigil's backend tools (findings, cases, approvals, detections, ATT&CK, threat intel, memory, skills) and the tools of whichever MCP integrations you have connected. Each agent's tool list, prompt, model, and extended-thinking budget are visible in its definition.
+Every agent can call AutoSecOps's backend tools (findings, cases, approvals, detections, ATT&CK, threat intel, memory, skills) and the tools of whichever MCP integrations you have connected. Each agent's tool list, prompt, model, and extended-thinking budget are visible in its definition.
 
 Response actions are proposed as approval requests. A request from the Response agent always waits for an analyst. The daemon's auto-responder routes by confidence: 0.85–0.90 gets a quick review, 0.70–0.85 needs analyst review, and below 0.70 escalates (configurable). **High confidence no longer auto-approves on its own.** Every (alert category × action class) has an autonomy tier (Settings → Limits & autonomy), and the default is *Approve*: an analyst releases the action whatever its confidence. An action runs without a person only at the *Autonomous* tier, which an analyst sets per category with an https evidence link, only for reversible, TTL-bounded classes (`isolate_host`, `block_ip`, `block_domain`, `waf_block`, `gateway_block`), and only while that category's sampled false-negative bound holds (≤1% at 95% confidence, n ≥ 299). The `other` category (unknown or unmapped alerts) is never autonomous; force-manual approval stops autonomous actions even after they were released. Deployments that relied on the 0.90 band for hands-off response must set Autonomous tiers explicitly after upgrading. The approval pipeline records `isolate_host` actions but does not execute them; host isolation or quarantine happens only when an agent calls an EDR integration's tool directly.
 
@@ -91,12 +89,12 @@ python scripts/create_workflow.py phishing-triage --agents triage,investigator,r
 
 ## Integrations
 
-Vigil connects agents to your existing tools through [MCP](https://modelcontextprotocol.io/). Integrations span SIEM and log search, EDR/XDR, cloud security (AWS, Azure, GCP), identity, threat intel, sandboxes, detection engineering, ticketing, chat and paging, network security, and data pipelines. The catalogue changes as vendors ship official MCP servers and contributors add new ones; [`mcp-config.json`](mcp-config.json) is the current list, and [vigilsoc.org/docs/integrations](https://vigilsoc.org/docs/integrations/) describes each one.
+AutoSecOps connects agents to your existing tools through [MCP](https://modelcontextprotocol.io/). Integrations span SIEM and log search, EDR/XDR, cloud security (AWS, Azure, GCP), identity, threat intel, sandboxes, detection engineering, ticketing, chat and paging, network security, and data pipelines. The catalogue changes as vendors ship official MCP servers and contributors add new ones; [`mcp-config.json`](mcp-config.json) is the current list, and the [administrator guide](docs/guide/yonetici-kilavuzu.md) describes each one.
 
 An integration is one of two things:
 
 - **An upstream MCP server**: a vendor's or community's own server, pinned to a version in `mcp-config.json` (npx, uvx, Docker, or a remote endpoint).
-- **A vendor slice**: a server Vigil maintains at `core/integrations/<vendor>/tool.py`, used where no suitable upstream server exists. See [vendor slices](https://vigilsoc.org/docs/vendor-slices/).
+- **A vendor slice**: a server AutoSecOps maintains at `core/integrations/<vendor>/tool.py`, used where no suitable upstream server exists.
 
 What an integration can do depends on its server: some are read-only lookups, others can act (for example, Microsoft Defender isolation or Carbon Black quarantine). The integrations docs list each one's tools.
 
@@ -104,17 +102,17 @@ Some integrations are marked **Experimental** in Settings: CrowdStrike Falcon, S
 
 Enable and configure integrations under **Settings → Integrations**, or generate one from API docs with the **Custom Integration Builder**. If you build an integration you find useful, someone else will too. Please contribute it.
 
-**Vigil's own MCP server.** Vigil serves its SOC operations (findings, cases, approvals, hunts) at `/mcp`, the same tools its agents use. The finding, case, and approval tools that mirror frozen `/api/v1` operations are frozen: their names and input schemas are pinned in [`tools/mcp/frozen_tools.snapshot.json`](tools/mcp/frozen_tools.snapshot.json). The rest are served under the `0.x` terms in [`SECURITY.md`](SECURITY.md#supported-versions).
+**AutoSecOps's own MCP server.** AutoSecOps serves its SOC operations (findings, cases, approvals, hunts) at `/mcp`, the same tools its agents use. The finding, case, and approval tools that mirror frozen `/api/v1` operations are frozen: their names and input schemas are pinned in [`tools/mcp/frozen_tools.snapshot.json`](tools/mcp/frozen_tools.snapshot.json). The rest may change in any minor ([`VERSIONING.md`](VERSIONING.md)).
 
-**Detection rules.** The detection-engineering integration ([security-detections-mcp](https://www.npmjs.com/package/security-detections-mcp)) indexes community rule sets (Sigma, Splunk ESCU, Elastic, KQL) for search, coverage analysis, and gap identification. Vigil does not ship the rules; fetch them with `./scripts/setup_detection_repos.sh` (or `SETUP_DETECTION_REPOS=1 ./setup_dev.sh`).
+**Detection rules.** The detection-engineering integration ([security-detections-mcp](https://www.npmjs.com/package/security-detections-mcp)) indexes community rule sets (Sigma, Splunk ESCU, Elastic, KQL) for search, coverage analysis, and gap identification. AutoSecOps does not ship the rules in its images; fetch them with `./scripts/setup_detection_repos.sh` (or `SETUP_DETECTION_REPOS=1 ./setup_dev.sh`). The air-gap bundle can carry snapshots of them; each rule set keeps its own licence (Sigma: DRL 1.1, Elastic: Elastic License 2.0), shipped next to it ([NOTICE](NOTICE)).
 
 ---
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/Vigil-SOC/vigil.git
-cd vigil
+git clone https://github.com/SingularityRD/autosecops2.git
+cd autosecops2
 cp env.example .env   # set AGENT_INTERNAL_TOKEN (see below)
 ./start.sh
 ```
@@ -140,10 +138,10 @@ Then open http://localhost:6988 and create the admin account on the bootstrap sc
 ### Prerequisites
 
 - **Docker** (running): PostgreSQL, Redis, and Bifrost run in containers.
-- **Node.js 20+**: runs the agent layer and the frontend. Without Node, neither starts and workflows cannot run.
+- **Node.js 22 (LTS)**: runs the agent layer and the frontend (Node 20 reached end of life in April 2026; `start.sh` still accepts it). Without Node, neither starts and workflows cannot run.
 - **Git**.
 - **No system Python needed**: `start.sh` provisions the version pinned in `.python-version` with uv, independent of any Python you already have.
-- **An LLM provider** (optional to reach the UI): Anthropic (default), OpenAI, Google Vertex, or Ollama (local, no key). Configure it under **Settings → AI models → Providers & Keys**; see the [Bifrost notes](https://vigilsoc.org/docs/bifrost/). With no provider key, `scripts/local_model.sh` serves a small local model Bifrost can reach and prints the model id to use.
+- **An LLM provider** (optional to reach the UI): Anthropic (default), OpenAI, Google Vertex, or Ollama (local, no key). Configure it under **Settings → AI models → Providers & Keys**. With no provider key, `scripts/local_model.sh` serves a small local model Bifrost can reach and prints the model id to use.
 
 ### Run
 
@@ -223,14 +221,14 @@ On the host, `./start.sh -d` also runs the daemon (`services/daemon/main.py`), o
 ### Install on Kubernetes
 
 ```bash
-helm install vigil ./infra/helm/vigil \
-  --namespace vigil --create-namespace \
+helm install autosecops ./infra/helm/vigil \
+  --namespace autosecops --create-namespace \
   --set secrets.anthropicApiKey="$ANTHROPIC_API_KEY" \
   --set secrets.postgresPassword="$(openssl rand -hex 24)" \
   --set secrets.jwtSecretKey="$(python -c 'import secrets; print(secrets.token_urlsafe(64))')"
 ```
 
-See the [Helm guide](https://vigilsoc.org/docs/helm/) for values, external Postgres/Redis, ingress, and troubleshooting.
+The chart directory keeps its upstream name, `vigil`, so existing releases upgrade in place. See the [chart README](infra/helm/vigil/README.md) and the [administrator guide](docs/guide/yonetici-kilavuzu.md) for values, external Postgres/Redis, ingress, and troubleshooting; for a network without internet access, [infra/airgap/README.md](infra/airgap/README.md).
 
 ### Desktop app
 
@@ -247,7 +245,7 @@ npm run dist                                # installers for this OS into releas
 bash scripts/bundle-image.sh linux/arm64 && npm run dist
 ```
 
-Local builds are ad-hoc signed, not notarized, so macOS reports the app as "damaged". After checking where the file came from, clear the quarantine with `xattr -dr com.apple.quarantine /Applications/AutoSecOps.app`, or use **System Settings → Privacy & Security → Open Anyway**. The app has no auto-updater; its only network traffic is Docker pulling the five images it runs (backend, agent, `postgres:16-alpine`, `redis:7-alpine`, `maximhq/bifrost:v2.2.1`) when they are not already loaded.
+Local builds are ad-hoc signed, not notarized, so macOS reports the app as "damaged". After checking where the file came from, clear the quarantine with `xattr -dr com.apple.quarantine /Applications/AutoSecOps.app`, or use **System Settings → Privacy & Security → Open Anyway**. The app has no auto-updater; its only network traffic is Docker pulling the five images it runs (backend, agent, `postgres:16-alpine`, `redis:7.2.16-alpine` (pinned by digest), `maximhq/bifrost:v2.2.1`) when they are not already loaded.
 
 ### Tests
 
@@ -266,13 +264,13 @@ pytest tests/unit tests/security -m "not external_service"   # same invocation a
 sh scripts/vigil-support/vigil-support.sh   # from a checkout
 ```
 
-Without a checkout, download `vigil-support-<version>.tar.gz` and its `.sha256` from the [release](https://github.com/Vigil-SOC/vigil/releases/latest), verify it, extract it, and run `sh vigil-support/vigil-support.sh`. The AutoSecOps desktop app shows the exact command under **Help → Support Bundle Command…** (also in the tray menu). For a Helm install, run it from your own machine with your current `kubectl` context: `--mode helm [--release NAME --namespace NS]`.
+Without a checkout, download `autosecops-support-<version>.tar.gz` and its `.sha256` from the [release](https://github.com/SingularityRD/autosecops2/releases/latest), verify it, extract it, and run `sh autosecops-support/vigil-support.sh` (the script keeps its internal file name). The bundle it writes is `autosecops-support-<install|host>-<version>-<UTC time>.tar.gz`. The AutoSecOps desktop app shows the exact command under **Help → Support Bundle Command…** (also in the tray menu). For a Helm install, run it from your own machine with your current `kubectl` context: `--mode helm [--release NAME --namespace NS]`.
 
 Re-run with `sudo` to include system logs that need elevation; the bundle still examines, and belongs to, the invoking user's install. `sudo` resets `VIGIL_DIR`, so pass `--state-dir` for a non-default State Directory.
 
 > **DATA NOTICE:** the bundle holds host information: hostname, the full process list with command lines, system logs, and disk usage. Known credential formats are redacted, but secrets in free log text cannot be guaranteed caught. Review it before you share it.
 
-When it finds a Vigil install, the bundle also collects its configuration, health output, container status, and logs. Secrets, keys, and database contents are never included; `SUMMARY.txt` lists what was left out. See [`scripts/vigil-support/README.md`](scripts/vigil-support/README.md).
+When it finds an AutoSecOps install, the bundle also collects its configuration, health output, container status, and logs. Secrets, keys, and database contents are never included; `SUMMARY.txt` lists what was left out. See [`scripts/vigil-support/README.md`](scripts/vigil-support/README.md).
 
 ---
 
@@ -310,7 +308,7 @@ When it finds a Vigil install, the bundle also collects its configuration, healt
 ## Project structure
 
 ```
-vigil/
+autosecops2/
 ├── core/              # Shared Python library: domains (findings, cases, llm,
 │   │                  #   integrations, …) over a storage/platform tier
 │   ├── agents/        # Built-in agent definitions
@@ -324,45 +322,37 @@ vigil/
 ├── clients/
 │   ├── web/           # React + Tailwind frontend
 │   └── desktop/       # Desktop app
-├── tools/mcp/         # Vigil's own MCP server and frozen tool snapshot
+├── tools/mcp/         # AutoSecOps's own MCP server and frozen tool snapshot
 ├── mcp-config.json    # MCP integration catalogue
 └── infra/             # Docker Compose, Helm chart, DB init
 ```
 
 ## Documentation
 
-Guides live at **[vigilsoc.org/docs](https://vigilsoc.org/docs/)**:
-
 | Doc | Contents |
 |-----|----------|
-| [Agents](https://vigilsoc.org/docs/agents/) | Built-in agents and how to customize them |
-| [Integrations](https://vigilsoc.org/docs/integrations/) | MCP integrations and setup |
-| [Detection engineering](https://vigilsoc.org/docs/detection-engineering/) | Rule search, coverage, and gaps |
-| [Chat-driven case management](https://vigilsoc.org/docs/chat-case-management/) | Building cases in natural language |
-| [Configuration](https://vigilsoc.org/docs/configuration/) | Environment variables, secrets, deployment |
-| [Helm](https://vigilsoc.org/docs/helm/) | Chart values, secrets, install |
-| [Splunk testing](https://vigilsoc.org/docs/splunk-testing/) · [Postgres → Splunk](https://vigilsoc.org/docs/postgres-to-splunk/) | Test data and export scripts |
-| [Contributing](https://vigilsoc.org/docs/contributing/) | How to contribute, DCO |
+| [docs/guide/](docs/guide/README.md) | Operator and administrator documentation (Turkish): scope, installation, administration, security, threat model, regulatory mapping |
+| [infra/airgap/README.md](infra/airgap/README.md) | Air-gapped installation bundle: build, verify, install |
+| [infra/helm/vigil/README.md](infra/helm/vigil/README.md) | Helm chart notes |
+| [docs/release/dogrulama.md](docs/release/dogrulama.md) | Verifying release signatures, SBOMs and provenance |
+| [docs/security/vex.md](docs/security/vex.md) | Unfixed image CVEs: VEX and risk acceptance |
 | [SECURITY.md](SECURITY.md) | Vulnerability reporting, supported versions, disclosure |
 | [VERSIONING.md](VERSIONING.md) | What is frozen, what is not, and how the contract changes |
+| [FORK.md](FORK.md) | How this repository relates to upstream Vigil |
 
 ## Contributing
 
-Contributions are welcome: bug fixes, integrations, agent prompts, workflows, or new agents. Join the community on [Discord](https://discord.gg/Kw68sPJU).
-
-1. Fork the repo and create a feature branch.
-2. Make your changes and test them.
-3. Open a pull request with a clear description.
-
-See the [contributing guide](https://vigilsoc.org/docs/contributing/) for the full process.
+Contributions go through pull requests on [SingularityRD/autosecops2](https://github.com/SingularityRD/autosecops2), signed off under the [DCO](DCO). Security issues are not reported in public issues: see [SECURITY.md](SECURITY.md).
 
 ## License
 
-Apache 2.0. See [LICENSE](LICENSE).
+Apache 2.0. See [LICENSE](LICENSE), [NOTICE](NOTICE) and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES) (every Python and Node package with its licence, regenerated at each release). Every image carries these files under `/licenses`.
 
-## References
+## Credits
 
-- [Vigil](https://vigilsoc.org/): project homepage
+AutoSecOps is based on Vigil (Apache-2.0), the open source agentic AI SOC by the Vigil-SOC project. Upstream attribution and the list of what changed are in [NOTICE](NOTICE) and [FORK.md](FORK.md).
+
+- [Vigil](https://github.com/Vigil-SOC/vigil): the upstream project
 - [DeepTempo](https://deeptempo.ai): sponsor of the upstream Vigil project
 - [Model Context Protocol](https://modelcontextprotocol.io/): MCP specification
 - [SOCBench](https://socbench.org): open benchmark for AI in cybersecurity operations

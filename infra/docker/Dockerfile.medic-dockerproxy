@@ -43,6 +43,10 @@ ENV PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
+# Apache-2.0 section 4: the licence, NOTICE and the third-party inventory
+# travel with every image (W0.38).
+COPY LICENSE NOTICE THIRD_PARTY_LICENSES /licenses/
+
 USER 10003:10003
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

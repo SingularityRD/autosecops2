@@ -20,7 +20,7 @@ jobs:
     # workflows run on the default branch of any fork with Actions enabled;
     # skipping (not failing) keeps other forks quiet. Daily: costs Actions minutes.
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Same services, job env, extensions, init_database(), and agent-layer SQL
     # as ci-cd.yml test-integration (and the DB pieces of test-unit-backend-db).
     # DatabaseConfig does not read DATABASE_URL (#752); POSTGRES_* on the job
@@ -43,7 +43,7 @@ jobs:
       # The walking-skeleton test enqueues onto BullMQ and spawns the TypeScript
       # worker, so this job needs Redis and Node as well as Postgres.
       redis:
-        image: redis:7-alpine
+        image: redis:7.2.16-alpine@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
@@ -76,7 +76,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: services/agent/package-lock.json
 
@@ -132,7 +132,7 @@ jobs:
   performance-tests:
     name: Performance Regression Tests
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       
@@ -164,7 +164,7 @@ jobs:
   security-audit:
     name: Security Audit
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -209,7 +209,7 @@ jobs:
   # ============================================================================
   notify:
     name: Notify Results
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [full-test-suite, performance-tests, security-audit]
     if: failure() && github.repository == 'SingularityRD/autosecops2'
     # `secrets` is not available in `if`, so it comes through env to be tested.

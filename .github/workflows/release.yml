@@ -11,7 +11,8 @@
 #                   image serves) -> autosecops-<V>-web.tar.gz
 #   sbom            CycloneDX SBOMs: Python + Node from the lockfiles (offline,
 #                   same code as scripts/release/dry-run.sh) and every image
-#                   platform (syft); images.json with index + platform digests
+#                   platform (syft); images.json with index + platform digests;
+#                   THIRD_PARTY_LICENSES, LICENSE and NOTICE
 #   smoke-test      the pushed images start and answer their health checks
 #   desktop-resources  schema SQL for the desktop app, copied out of the pushed
 #                   backend image (clients/desktop/scripts/prepare-standalone.js)
@@ -242,7 +243,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Build and package
         env:
@@ -317,6 +318,19 @@ jobs:
           set -eu
           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
             python3 scripts/release/release_tool.py sboms --out dist --version "$VERSION"
+
+      # Same code path as the local dry run. --check: the snapshot the images
+      # and the desktop app carry (/licenses/THIRD_PARTY_LICENSES) must be what
+      # the lockfiles say, or the tag fails (W0.38).
+      - name: Third-party licences, LICENSE, NOTICE
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -eu
+          python3 scripts/release/release_tool.py third-party-licenses --check \
+            --out "dist/autosecops-${VERSION}-THIRD_PARTY_LICENSES.txt"
+          cp LICENSE "dist/autosecops-${VERSION}-LICENSE.txt"
+          cp NOTICE "dist/autosecops-${VERSION}-NOTICE.txt"
 
       - name: Image SBOMs (one per platform)
         env:
@@ -821,5 +835,5 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/*
-            support-dist/vigil-support-${{ needs.version.outputs.version }}.tar.gz
-            support-dist/vigil-support-${{ needs.version.outputs.version }}.tar.gz.sha256
+            support-dist/autosecops-support-${{ needs.version.outputs.version }}.tar.gz
+            support-dist/autosecops-support-${{ needs.version.outputs.version }}.tar.gz.sha256

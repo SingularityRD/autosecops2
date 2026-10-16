@@ -102,6 +102,37 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   the saved wizard progress over, and documents running it against Helm through
   a port-forward.
 
+* **licensing (W0.38):** `LICENSE` names its copyright holders (the Vigil-SOC
+  authors and SingularityRD) instead of the appendix template, and a new
+  `NOTICE` credits upstream Vigil, states that its files were modified, and
+  attributes Redis, Llama ("Built with Llama", licence and AUP) and the
+  redistributed rule corpora (Sigma DRL 1.1, Elastic License 2.0).
+  `THIRD_PARTY_LICENSES` lists every Python and Node package with its licence:
+  generated from the lockfiles by `release_tool.py third-party-licenses`,
+  checked in, and checked again by the release. The three files ship in every
+  image (`/licenses`), the desktop app, the air-gap bundle (`licenses/`, plus
+  `rules/<clone>.LICENSE`, `rules/DRL-1.1.md` and `models/LLAMA_NOTICE.txt`),
+  the support-tool archive and the release files.
+* **dependencies (W0.38):** Redis is pinned to `redis:7.2.16-alpine@sha256:29e8589c…`
+  (BSD-3-Clause) in Compose, the desktop app, Helm, CI and the air-gap bundle,
+  replacing the floating `redis:7-alpine` (7.4+, RSALv2/SSPL). The agent image
+  and the backend's Node stages run Node 22 LTS
+  (`node:22.23.3-bookworm-slim@sha256:c3de60bf…`; Node 20 is end of life), CI
+  tests on Node 22, and workflow runners are pinned (`ubuntu-24.04`, `macos-15`).
+* **brand (W0.38):** README, Helm chart metadata and install notes, the login
+  panel, the logo mark and favicon (a neutral placeholder until the AutoSecOps
+  mark exists), the default mail sender (`noreply@autosecops.local`) and the
+  support tool's output say AutoSecOps. The support tool's release asset is
+  `autosecops-support-<V>.tar.gz` (directory `autosecops-support/`) and the
+  bundles it writes are `autosecops-support-<install|host>-<V>-<time>.tar.gz`.
+  Kept on purpose: the chart name `vigil`, `VIGIL_*` variables, the
+  `vigil-support.sh` file name, database names.
+* **security policy (W0.38):** `SECURITY.md` is rewritten for AutoSecOps 2.x:
+  reports go to GitHub private vulnerability reporting on
+  SingularityRD/autosecops2 (no longer upstream's channels), with a support and
+  end-of-life window and disclosure timeline. Unfixed image CVEs are assessed in
+  `docs/security/vex.md` with an OpenVEX file.
+
 * **detections (W0.29):** the ATT&CK coverage verdict `loglm` is renamed
   `anomaly` (`rule | anomaly | both | missed`) in `analyze_coverage`,
   `reconstruct_run` and the Dashboard. Findings stored with
@@ -282,6 +313,20 @@ New init SQL files in 2.0.0: 46–51, 55–56, 58, 61–63.
   its own CORS proxy. An administrator whose browser had dismissed the wizard
   before the upgrade carries that over to the server on the first visit
   (recorded as "deferred"); `scripts/reset-setup.sh --wizard` starts it over.
+
+* **redis (W0.38, every bundled Redis):** Redis moves from 7.4 to the pinned
+  BSD 7.2 line, which cannot read 7.4's data. On first start the Compose,
+  desktop and Helm Redis moves that data to `/data/redis-7.4-data-<UTC>/`
+  (kept for a rollback with the old image; delete it when no longer needed),
+  starts empty and records `revocation_epoch`: the API rejects every token
+  issued before that moment. Everyone signs in again once, and queued work
+  (workflow runs, LLM requests) must be started again. An external Redis
+  (`redis.enabled=false`) is not touched.
+* **mail (W0.38):** the default sender is `noreply@autosecops.local` (was
+  `noreply@vigil.local`). Deployments that send mail should set `SMTP_FROM`
+  to their own address; one that relied on the old default changes sender.
+* **support tool (W0.38):** download `autosecops-support-<V>.tar.gz`
+  (was `vigil-support-<V>.tar.gz`) and run `sh autosecops-support/vigil-support.sh`.
 
 * **integrations (W0.29):** a configured LogLM connector stops: its card, MCP
   server and console tab are gone and nothing calls the connector any more.

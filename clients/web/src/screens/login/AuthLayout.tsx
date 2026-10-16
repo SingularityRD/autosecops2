@@ -43,10 +43,10 @@ export default function AuthLayout({ screenLabel, title, subtitle, message, chil
           </div>
 
           <div className="brand-body">
-            <h1>Vigilant, Open, Trustworthy.</h1>
+            <h1>Autonomy you can audit.</h1>
             <p>
-              Open source and community built, AutoSecOps stands watch beside
-              your analysts on the journey toward greater autonomy.
+              AutoSecOps works beside your analysts: every action it takes is
+              proposed, approved and recorded.
             </p>
           </div>
         </section>

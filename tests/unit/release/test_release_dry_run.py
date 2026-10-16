@@ -69,14 +69,21 @@ def test_dry_run_builds_valid_sboms_offline(tmp_path: Path) -> None:
     assert f"DRY RUN OK: {version}" in proc.stdout
 
     names = sorted(p.name for p in out.iterdir())
+    licences = [
+        f"autosecops-{version}-{n}.txt" for n in ("THIRD_PARTY_LICENSES", "LICENSE", "NOTICE")
+    ]
     expected = sorted(
         [f"autosecops-{version}-{s}.cdx.json" for s, *_ in rt.LOCKFILES]
+        + licences
         + ["SHA256SUMS"]
     )
     assert names == expected
+    # W0.38: the inventory is the checked-in snapshot; LICENSE/NOTICE are the repo's.
+    assert (out / licences[0]).read_bytes() == (REPO / "THIRD_PARTY_LICENSES").read_bytes()
+    assert (out / licences[2]).read_bytes() == (REPO / "NOTICE").read_bytes()
 
     sums = (out / "SHA256SUMS").read_text().splitlines()
-    assert len(sums) == len(rt.LOCKFILES)
+    assert len(sums) == len(rt.LOCKFILES) + len(licences)
     for line in sums:
         digest, name = line.split("  ", 1)
         assert hashlib.sha256((out / name).read_bytes()).hexdigest() == digest
@@ -913,6 +920,9 @@ def _dry_run_fixture(tmp_path: Path) -> Path:
         "scripts/release/dry-run.sh",
         "scripts/release/release_tool.py",
         "docs/release/2.0.0.md",
+        "LICENSE",
+        "NOTICE",
+        "THIRD_PARTY_LICENSES",
         *[rel for _, _, rel, _ in rt.LOCKFILES],
     ]
     for rel in rels:

@@ -290,7 +290,7 @@ class Settings(BaseSettings):
     smtp_port: int = 587
     smtp_user: Optional[str] = None
     smtp_username: Optional[str] = None
-    smtp_from: str = "noreply@vigil.local"
+    smtp_from: str = "noreply@autosecops.local"
     smtp_tls: bool = True
     vigil_email_backend: str = "console"
 

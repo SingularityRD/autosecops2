@@ -137,8 +137,19 @@ Sık kullanılan seçenekler:
 
 Sonuç: `dist/airgap/autosecops-airgap-2.0.0/` ve `dist/airgap/autosecops-airgap-2.0.0.tar`.
 İçerik: `images/`, `images.tsv`, `chart/vigil-2.0.0.tgz`, `values-airgap.yaml`,
-`airgap.env`, `k8s/llm-stack.yaml`, `models/`, `rules/`, `docs/`, `install.sh`,
-`manifest.json`, `SHA256SUMS`, `SHA256SUMS.sig` (veya `.minisig`).
+`airgap.env`, `k8s/llm-stack.yaml`, `models/`, `rules/`, `licenses/`, `docs/`,
+`install.sh`, `manifest.json`, `SHA256SUMS`, `SHA256SUMS.sig` (veya `.minisig`).
+
+Lisans dosyaları (W0.38): `licenses/` AutoSecOps'un `LICENSE`, `NOTICE` ve
+`THIRD_PARTY_LICENSES` dosyalarını taşır. Her kural korpusunun yanında klonun kendi
+lisans dosyası `rules/<klon>.LICENSE` olarak durur (klonda lisans dosyası yoksa
+derleme uyarır); `rules/README-LICENSES.md` ve `rules/DRL-1.1.md`
+(`rule-licenses/`'tan) atfı ve Sigma'nın DRL 1.1 metnini verir. Pakete bir Llama
+modeli girdiyse (`--ollama-model llama3.1:8b` varsayılanı ya da adı `llama` ile
+başlayan bir model deposu) yanına `models/LLAMA_NOTICE.txt` konur ("Built with
+Llama", lisans ve AUP bağlantıları). Özetle sabitlenmiş imajlar (Redis
+`7.2.16-alpine@sha256:…`) o özetle çekilir ve etiketiyle kaydedilir; özet
+`manifest.json`'da `pinned_digest` alanındadır.
 
 Kural ve model tar'larına yalnızca normal dosya ve dizin girer: klon içindeki bir
 dosyaya işaret eden sembolik bağ o dosyanın içeriği olarak, sabit bağlar kopya

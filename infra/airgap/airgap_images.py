@@ -108,6 +108,17 @@ def dig(data: Any, path: Iterable[str], default: Any = None) -> Any:
     return data
 
 
+def split_digest(ref: str) -> tuple:
+    """``name:tag@sha256:…`` -> (``name:tag``, ``sha256:…``); no digest -> (ref, None).
+
+    The bundle pulls the pinned digest and stores the image under its tag: the
+    local registry gets the tag (a pushed single-platform image has a different
+    digest than the multi-platform index that was pinned).
+    """
+    name, sep, digest = ref.partition("@")
+    return (name, digest) if sep else (ref, None)
+
+
 def localize(ref: str, registry: str) -> str:
     """Map an upstream reference to its place in the local registry.
 
@@ -165,7 +176,13 @@ class Enumerator:
 
     # -- collection --------------------------------------------------------
     def _add(self, ref: str, source: str) -> None:
+        ref, digest = split_digest(ref)
         entry = self.images.setdefault(ref, {"ref": ref, "sources": []})
+        if digest:
+            if entry.setdefault("digest", digest) != digest:
+                raise SystemExit(
+                    f"{ref}: {source} pins {digest}, another source {entry['digest']}"
+                )
         if source not in entry["sources"]:
             entry["sources"].append(source)
 
@@ -347,7 +364,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         sys.stdout.write("\n")
     else:
         for entry in images:
-            print(f"{entry['ref']}\t{entry['file']}\t{','.join(entry['sources'])}")
+            print(
+                f"{entry['ref']}\t{entry['file']}\t{','.join(entry['sources'])}"
+                f"\t{entry.get('digest') or ''}"
+            )
     return 0
 
 

@@ -1,4 +1,4 @@
-Vigil SOC has been installed in namespace {{ .Release.Namespace }} as release "{{ .Release.Name }}".
+AutoSecOps has been installed in namespace {{ .Release.Namespace }} as release "{{ .Release.Name }}".
 
 1. Wait for pods to come up:
 
@@ -111,7 +111,7 @@ the Secret to rotate, then restart the gateway:
 {{- if not .Values.secrets.anthropicApiKey }}
 {{- if and (not .Values.secrets.existingSecret) (not .Values.secrets.externalSecret.enabled) }}
 
-⚠️  WARNING: secrets.anthropicApiKey is empty. The AI-powered features of Vigil
+⚠️  WARNING: secrets.anthropicApiKey is empty. The AI-powered features of AutoSecOps
    will return errors until you set it (either via --set secrets.anthropicApiKey=…,
    by pointing secrets.existingSecret at a pre-created Secret, or by configuring
    secrets.externalSecret for the ExternalSecrets Operator).
@@ -147,7 +147,7 @@ the Secret to rotate, then restart the gateway:
 {{- range $old, $new := $retiredConfig }}
 {{- if or (hasKey $.Values.config $old) (hasKey $.Values.extraConfig $old) }}
 
-⚠️  WARNING: {{ $old }} is set but Vigil never reads it, so it has no effect.
+⚠️  WARNING: {{ $old }} is set but AutoSecOps never reads it, so it has no effect.
    {{- if $new }}
    Set {{ $new }} instead.
    {{- else }}
@@ -157,7 +157,7 @@ the Secret to rotate, then restart the gateway:
 {{- end }}
 {{- if or .Values.secrets.existingSecret .Values.secrets.externalSecret.enabled }}
 
-⚠️  NOTE: this chart now renders these Secret keys under the names Vigil reads.
+⚠️  NOTE: this chart now renders these Secret keys under the names AutoSecOps reads.
    If your own Secret still uses the old name, rename the key:
 {{- range $old, $new := $retiredSecret }}
      {{ $old }} -> {{ $new }}

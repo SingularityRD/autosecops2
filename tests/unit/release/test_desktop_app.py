@@ -157,6 +157,16 @@ def test_icons_are_not_the_vigil_mark() -> None:
 # --------------------------------------------------------------------- packaging
 
 
+def test_app_ships_licence_notice_and_inventory(builder: dict) -> None:
+    """Apache-2.0 section 4 (W0.38): <resources>/licenses holds all three."""
+    extra = {e["to"]: e["from"] for e in builder["extraResources"]}
+    for name in ("LICENSE", "NOTICE", "THIRD_PARTY_LICENSES"):
+        src = extra[f"licenses/{name}"]
+        assert (DESKTOP / src).resolve() == (REPO / name).resolve(), name
+        assert (REPO / name).is_file(), name
+
+
+
 def test_targets_dmg_appimage_nsis(builder: dict) -> None:
     mac = builder["mac"]["target"]
     assert [t["target"] for t in mac] == ["dmg"]

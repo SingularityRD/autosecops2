@@ -1,10 +1,11 @@
-# Vigil SOC Helm chart
+# AutoSecOps Helm chart
 
-Production chart for the Vigil API, daemon, workers, and optional in-cluster
-Postgres/Redis.
+Production chart for the AutoSecOps API, daemon, workers, and optional in-cluster
+Postgres/Redis. The chart is named `vigil` (and its directory `infra/helm/vigil`)
+so existing releases upgrade in place; the name is an internal identifier.
 
-Full install, values, and troubleshooting:
-<https://vigilsoc.org/docs/helm-chart/>
+Full install, values, and troubleshooting (Turkish):
+[administrator guide](../../../docs/guide/yonetici-kilavuzu.md).
 
 ## FIPS modu
 

@@ -23,7 +23,7 @@ jobs:
     # not have, and opens release PRs/tags that trigger release.yml). Retarget
     # only together with release.yml.
     if: github.repository == 'Vigil-SOC/vigil'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       # Mint a short-lived token (1-hour TTL, auto-rotated) from the

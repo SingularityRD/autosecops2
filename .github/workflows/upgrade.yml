@@ -21,7 +21,7 @@ jobs:
   upgrade-from-071:
     name: Upgrade - 0.7.1 snapshot to this release
     if: github.repository == 'SingularityRD/autosecops2'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
       postgres:

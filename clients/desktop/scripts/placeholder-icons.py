@@ -8,8 +8,8 @@ rounded square with a light hexagon outline, and the same outline as a
 monochrome macOS template image for the tray.
 
 To replace it, drop the designer's files in with the same names and sizes
-(256x256.png, 512x512.png, icon.icns, tray.png 44x44, tray@2x.png 88x88) and
-delete this script. Needs Pillow; run from anywhere:
+(256x256.png, 512x512.png, icon.icns, tray.png 44x44, tray@2x.png 88x88, and
+clients/web/public/favicon.ico) and delete this script. Needs Pillow; run from anywhere:
 
     python3 clients/desktop/scripts/placeholder-icons.py
 """
@@ -22,6 +22,8 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 OUT = Path(__file__).resolve().parent.parent / "build" / "icons"
+# The web console's favicon is the same placeholder (W0.38).
+FAVICON = Path(__file__).resolve().parents[2] / "web" / "public" / "favicon.ico"
 BG = (12, 15, 20, 255)  # --bg of clients/web/src/styles.css
 FG = (201, 206, 214, 255)  # neutral light grey, no brand colour
 TRAY = (150, 156, 166, 255)
@@ -65,6 +67,10 @@ def tray_icon(size: int) -> Image.Image:
     return img.resize((size, size), Image.LANCZOS)
 
 
+def write_favicon() -> None:
+    app_icon(256).save(FAVICON, sizes=[(16, 16), (32, 32), (48, 48), (64, 64)])
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     app_icon(256).save(OUT / "256x256.png")
@@ -84,7 +90,8 @@ def main() -> None:
     )
     tray_icon(44).save(OUT / "tray.png")
     tray_icon(88).save(OUT / "tray@2x.png")
-    print(f"placeholder icons written to {OUT}")
+    write_favicon()
+    print(f"placeholder icons written to {OUT} and {FAVICON}")
 
 
 if __name__ == "__main__":
