@@ -448,7 +448,16 @@ function queriesBehind(projection: Projection, record: EvidenceRecord): string[]
   return [
     "Queries behind it:",
     "",
-    ...dispatch.calls.map((call) => `- \`${call.tool}\` — \`${call.arguments}\``),
+    // Guards (W0.30 round 10): the arguments as the decider wrote them, handles and
+    // all, never the resolved ones -- the case file is prose, and a subject's value
+    // in it would reach a person as markdown and a model as text. Where the case file
+    // leaves the agent layer each handle becomes a "[subject value N]" marker and its
+    // value travels in the document's subject_values / subject block.
+    ...dispatch.calls.map((call) =>
+      call.dispatched_arguments === undefined
+        ? `- \`${call.tool}\` — \`${call.arguments}\``
+        : `- \`${call.tool}\` — \`${call.arguments}\` (some values written by the subject)`,
+    ),
     "",
   ];
 }

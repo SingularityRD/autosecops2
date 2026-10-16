@@ -31,6 +31,22 @@ export interface Harness<Kinds extends Record<string, unknown> = Record<never, n
 }
 
 export interface TurnConfig {
+  // Experimental (core/guards.ts, W0.30): estate results go to a guarded reader,
+  // and the model sees its findings; handles in arguments are filled in before the
+  // approval gate, so the call a person approves is the call that executes.
+  guards?: {
+    // The ref of this turn's nth result.
+    refAt(n: number): string;
+    read(tool: string, args: string, ref: string, result: ToolResult, wrapped: Wrapped): Promise<{ shown: string; read: unknown }>;
+    failed(tool: string, ref: string, wrapped: Wrapped): string;
+    resolve(rawArgs: string): string;
+    // The values a resolve filled in, for the approval a person reads: each one is
+    // text the subject could have written, and the card says so.
+    filled(rawArgs: string): { handle: string; value: string }[];
+    // Every value the turn's handles stand for, by key, so the workflow can journal
+    // them and resolve handles before anything leaves the agent layer.
+    values(): Record<string, string>;
+  };
   run_id: string;
   run_kind: RunKind;
   role: string;
@@ -80,6 +96,13 @@ export interface Attempt {
   // Set by invoke. Absent when the attempt never ran: a refusal, a rejection,
   // or a result served from an earlier pass of the ledger.
   duration_ms?: number;
+  // Experimental guards (core/guards.ts): what the model was shown in place
+  // of wrapped.text, and the reader's findings it was rendered from.
+  shown?: string;
+  read?: unknown;
+  // The arguments as dispatched, when guards filled handles into args (the model's
+  // own words, handles unresolved). Absent when the two are the same.
+  dispatched_args?: string;
 }
 
 // tool and args are null when the run parked on a checkpoint the harness did not

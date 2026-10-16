@@ -1,3 +1,4 @@
+import { SpanKind } from "@opentelemetry/api";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import pg from "pg";
@@ -7,6 +8,8 @@ import { LedgerRepository } from "./ledger/repository.js";
 import { verifyLedger, type VerifyResult } from "./ledger/verify.js";
 import { poolConfig } from "./core/db.js";
 import { errorFields, logger } from "./core/log.js";
+import { failed, initTracing, shutdownTracing, traced } from "./core/tracing.js";
+import { outbound, outboundLedger } from "./core/outbound.js";
 import type { RunKind } from "./contracts/events.js";
 import type { ToolPrincipal } from "./contracts/tool.js";
 import { FRESH } from "./core/budget.js";
@@ -115,6 +118,7 @@ export async function streamChat(state: State, request: ChatRequest, res: Server
     }
   } catch (error) {
     log.error("chat turn failed", { run_id: request.run_id, ...errorFields(error) });
+    failed(error);
     res.write(sse({ error: error instanceof Error ? error.message : String(error) }));
   }
   res.end();
@@ -157,13 +161,28 @@ function refuse(res: ServerResponse, status: number, detail: string): void {
 }
 
 // A route that threw: logged with the run, then answered as the refusal it is.
-function fail(res: ServerResponse, status: number, route: string, runId: string, error: unknown): void {
+// The detail can quote ledger content -- a narrator's error over a guarded run's
+// prose -- so it answers through the same outbound conversion as a read (W0.30).
+async function fail(res: ServerResponse, status: number, route: string, runId: string, error: unknown): Promise<void> {
   log.error("request failed", { route, run_id: runId, status, ...errorFields(error) });
-  refuse(res, status, error instanceof Error ? error.message : String(error));
+  failed(error);
+  const body = await outbound(runId, { detail: error instanceof Error ? error.message : String(error) }).catch(() => ({ detail: "the request failed" }));
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
 }
 
 // A run folded by the workflow that owns it. The events stay ours: a reader gets
 // what the run decided or what it saw, never how either was written down.
+// Every read route that returns ledger content answers through the outbound choke
+// point (W0.30 round 4): a guarded run's handles become their values, escaped and
+// marked as the subject's, in the response only. The stored ledger is not touched,
+// so it stays replayable.
+async function sendJson(state: State, res: ServerResponse, runId: string, body: unknown): Promise<void> {
+  const converted = await outbound(runId, body, state);
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify(converted));
+}
+
 async function foldedBy(state: State, runId: string, view: "projection" | "distil", options?: ProjectionOptions): Promise<unknown | null> {
   const events = await state.read(runId);
   const opened = events[0];
@@ -183,8 +202,7 @@ async function readFold(state: State, runId: string, view: "projection" | "disti
     return fail(res, 502, view, runId, error);
   }
   if (folded === null) return refuse(res, 404, `no readable run: ${runId}`);
-  res.writeHead(200, { "content-type": "application/json" });
-  res.end(JSON.stringify(folded));
+  return sendJson(state, res, runId, folded);
 }
 
 // A fresh account of a run, on demand. Served here rather than queued as a directive
@@ -205,8 +223,7 @@ async function writeNarrative(state: State, runId: string, res: ServerResponse, 
 
   try {
     const narrative = await narrateRun(hunt, runId, written, build);
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(narrative));
+    await sendJson(state, res, runId, narrative);
   } catch (error) {
     return fail(res, 502, "narrate", runId, error);
   }
@@ -219,16 +236,8 @@ async function writeNarrative(state: State, runId: string, res: ServerResponse, 
 async function readReplay(state: State, runId: string, decisionId: string | null, res: ServerResponse): Promise<void> {
   const events = await state.read(runId);
   const opened = events[0];
-  if (opened?.run_kind === "investigate") {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(investigateReplay(runId, events)));
-    return;
-  }
-  if (opened?.run_kind === "root_cause") {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(rootCauseReplay(runId, events)));
-    return;
-  }
+  if (opened?.run_kind === "investigate") return sendJson(state, res, runId, investigateReplay(runId, events));
+  if (opened?.run_kind === "root_cause") return sendJson(state, res, runId, rootCauseReplay(runId, events));
   if (opened === undefined || !isHuntLike(opened.run_kind)) return refuse(res, 404, `no hunt to replay: ${runId}`);
 
   let report: ReplayReport;
@@ -247,14 +256,12 @@ async function readReplay(state: State, runId: string, decisionId: string | null
     report.reproduced = one.filter((decision) => decision.mismatch === null).length;
     report.inexact = one.filter((decision) => !decision.exact).length;
   }
-  res.writeHead(200, { "content-type": "application/json" });
-  res.end(JSON.stringify(report));
+  return sendJson(state, res, runId, report);
 }
 
 async function readEvents(state: State, runId: string, snapshots: boolean, res: ServerResponse): Promise<void> {
   const events = await state.read(runId, snapshots ? { snapshots: true } : {});
-  res.writeHead(200, { "content-type": "application/json" });
-  res.end(JSON.stringify({ events }));
+  return sendJson(state, res, runId, { events });
 }
 
 async function readVerify(runId: string, verify: VerifyRun | undefined, res: ServerResponse): Promise<void> {
@@ -282,12 +289,20 @@ async function openChat(state: State, req: IncomingMessage, res: ServerResponse,
   // Headers before the first token, so the reader is streaming rather than
   // buffering a response it will be handed all at once.
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-  await streamChat(state, request, res, build);
+  const attributes = {
+    "gen_ai.operation.name": "invoke_agent",
+    "gen_ai.agent.name": "chat",
+    "vigil.run_id": request.run_id,
+    ...(request.agent_id === undefined ? {} : { "gen_ai.agent.id": request.agent_id }),
+  };
+  await traced("invoke_agent chat", attributes, () => streamChat(state, request, res, build), { kind: SpanKind.SERVER, parent: req.headers });
 }
 
 export type VerifyRun = (runId: string) => Promise<VerifyResult>;
 
 export function chatServer(state: State, ready: Ready, build: HarnessFactory = harnessFor, verify?: VerifyRun): Server {
+  // Where fail()'s outbound conversion reads a guarded run's handle values.
+  outboundLedger(state);
   return createServer((req, res) => {
     void (async () => {
       // Before the auth check, because the kubelet has no token. These say only
@@ -305,7 +320,11 @@ export function chatServer(state: State, ready: Ready, build: HarnessFactory = h
       if (distilled !== null) return readFold(state, distilled[1] as string, "distil", res);
 
       const asked = req.method === "POST" ? NARRATE.exec(url) : null;
-      if (asked !== null) return writeNarrative(state, asked[1] as string, res, build);
+      if (asked !== null) {
+        const runId = asked[1] as string;
+        const attributes = { "gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "narrate", "vigil.run_id": runId };
+        return traced("invoke_agent narrate", attributes, () => writeNarrative(state, runId, res, build), { kind: SpanKind.SERVER, parent: req.headers });
+      }
 
       // Parsed rather than matched raw because this route takes a query. Node accepts
       // request-targets URL rejects (absolute-form with a bad host), so a throw here
@@ -360,6 +379,7 @@ export function serveReady(pool: pg.Pool): Ready {
 // loaded this module and exited. Its own pool: serve is a separate Deployment from
 // the worker now, and a pool cannot be shared across processes.
 if (process.argv[1] !== undefined && import.meta.url.endsWith(process.argv[1].split("/").pop() ?? "")) {
+  initTracing("vigil-agent-serve");
   const pool = new pg.Pool(poolConfig());
   // Cached: unauthenticated probes would otherwise take a connection each out of
   // the pool this process serves chat from.
@@ -367,7 +387,8 @@ if (process.argv[1] !== undefined && import.meta.url.endsWith(process.argv[1].sp
     verifyLedger(pool, runId),
   ).listen(chatPort());
   const stop = () => {
-    serving.close();
+    // Flushed once the open chats have drained, so their spans are not the ones lost.
+    serving.close(() => void shutdownTracing());
     void pool.end();
   };
   process.on("SIGTERM", stop);

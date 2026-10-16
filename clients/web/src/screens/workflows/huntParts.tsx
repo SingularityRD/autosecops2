@@ -5,6 +5,8 @@ import { Icon } from '../../shared/icons'
 import { TextInput } from '../../shared/ui'
 import { workflowApi } from '../../services/api'
 import { errMsg, type HuntEvidence, type HuntGap, type HuntView } from './runRead'
+import { displaySafe } from '../decisions/ToolCallDetail'
+import { SubjectValuesBox, mergeSubjectValues, referencedIn, subjectValuesOf } from '../../shared/SubjectValues'
 
 /** A gap the projection reports live. query_intent belongs to the dispatch, which
  *  the finalized report joins in and a live read cannot, so the summary carries it. */
@@ -100,7 +102,8 @@ export function OpenCheckpoint({ hunt }: { hunt: HuntView }) {
       style={{ background: 'var(--poor-bg)', borderColor: 'var(--poor-ln)' }}
     >
       <span className="text-[12px] font-bold text-[var(--poor)]">Stopped · needs you</span>
-      <span className="text-[14px] font-bold text-[var(--tx0)] break-words" style={{ whiteSpace: 'pre-wrap' }}>{open.question}</span>
+      <span className="text-[14px] font-bold text-[var(--tx0)] break-words" style={{ whiteSpace: 'pre-wrap' }}>{displaySafe(open.question)}</span>
+      <SubjectValuesBox rows={mergeSubjectValues(referencedIn([open.question], subjectValuesOf(hunt.subject_values)), subjectValuesOf(open.context?.['subject_values']))} />
       <span className="text-[12px] leading-[1.45] text-[var(--tx2)]">
         {words.why}
         {unbound.length > 0 && ` No tool here answers ${unbound.join(', ')}.`}

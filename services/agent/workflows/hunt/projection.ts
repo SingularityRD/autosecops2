@@ -185,6 +185,8 @@ export function huntProjection(runId: string, events: readonly HuntEvent[], opti
   const open = [...view.checkpoints.values()].find((checkpoint) => !answered.has(checkpoint.checkpoint_id));
   const report = reportIn(events);
 
+  // Guards (W0.30): handles stay as journaled; serve.ts answers through
+  // core/outbound.ts, which turns them into markers plus subject_values.
   return {
     run_id: runId,
     name: view.hunt.name,

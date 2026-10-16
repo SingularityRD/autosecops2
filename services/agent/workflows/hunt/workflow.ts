@@ -329,6 +329,7 @@ function handoffsOf(events: readonly HuntEvent[], projection: Projection): Termi
 // what is pushed the moment a handoff lands and what rides out on the terminal are
 // the same case, titled the same way.
 function toTerminalHandoff(handoff: Handoff, projection: Projection): TerminalHandoff {
+  // Handles stay as written; core/outbound.ts converts them where this is posted.
   return {
     case_id: handoff.case_id,
     title: projection.hypotheses.get(handoff.hypothesis_id)?.statement ?? handoff.rationale,

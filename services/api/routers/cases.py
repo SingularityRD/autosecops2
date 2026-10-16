@@ -17,7 +17,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, field_validator
 
-from core.agents.projections import read_events
+from core.agents.projections import read_event_log
 from core.auth.auth_service import AuthService
 from core.auth.permissions import permission_gate
 from core.cases import case_journal_service, case_records_service
@@ -701,13 +701,15 @@ async def get_case_record(case_id: str, session: UnitOfWorkSession):
     )
     latest = refs[0][0] if refs else None
     events: list = []
+    subject_values: list = []
     run_id = None
     investigation_id = None
     if latest is not None:
         investigation_id = latest["investigation_id"]
         run_id = latest["run_id"]
         try:
-            events = await read_events(run_id) or []
+            log = await read_event_log(run_id)
+            events, subject_values = log if log is not None else ([], [])
         except Exception as exc:  # noqa: BLE001 — the operator is owed the reason
             logger.error("could not read the record for %s: %s", case_id, exc)
             raise HTTPException(status_code=502, detail=str(exc)) from None
@@ -717,6 +719,8 @@ async def get_case_record(case_id: str, session: UnitOfWorkSession):
         "run_id": run_id,
         "investigation_id": investigation_id,
         "rows": merge_record(events, audits, case.get("activities") or []),
+        # W0.30: values the subject wrote, named as [subject value N] in the rows.
+        "subject_values": subject_values,
     }
 
 

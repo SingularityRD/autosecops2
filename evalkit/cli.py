@@ -26,7 +26,12 @@ from evalkit.backends import (
 from evalkit.corpus import DEFAULT_SUITES, REPO_ROOT, load_suites, parse_suite_list
 from evalkit.report import build_report, write_report
 from evalkit.runner import CaseResult, run_cases
-from evalkit.triage import ADAPTER_VERSION, PROVENANCE_MODES, prompt_version
+from evalkit.triage import (
+    ADAPTER_VERSION,
+    PROVENANCE_MODES,
+    prompt_version,
+    set_subject_guards,
+)
 
 logger = logging.getLogger("evalkit")
 
@@ -98,6 +103,7 @@ def run_meta(backend: Any, args: argparse.Namespace, started_at: str) -> Dict[st
         "prompt_version": prompt_version(),
         "adapter": ADAPTER_VERSION,
         "provenance": args.provenance,
+        "subject_guards": getattr(args, "subject_guards", "off"),
         "git_sha": _git_sha(),
         "started_at": started_at,
         "finished_at": _now(),
@@ -145,6 +151,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
         backend = recorder
 
+    set_subject_guards(getattr(args, "subject_guards", "off") == "on")
     started_at = _now()
     results = asyncio.run(
         execute(
@@ -205,6 +212,12 @@ def _add_common(p: argparse.ArgumentParser, *, backend_default: str) -> None:
     p.add_argument("--limit", type=int, default=None, help="first N cases per suite")
     p.add_argument("--concurrency", type=int, default=4)
     p.add_argument("--provenance", choices=PROVENANCE_MODES, default="off")
+    p.add_argument(
+        "--subject-guards",
+        choices=("off", "on"),
+        default="off",
+        help="withhold steering ADVERSARY-INFLUENCEABLE values (W0.30)",
+    )
     p.add_argument("--no-verify", action="store_true", help="skip manifest sha256")
     p.add_argument("--max-errors", type=int, default=None)
     p.add_argument("--triggered-by", default="evalkit")

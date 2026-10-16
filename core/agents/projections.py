@@ -6,12 +6,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.config import get_settings
 from core.secrets import get_secret
+from core.telemetry import inject_traceparent
 from core.workflows.workflow_run_service import LIST_RUNS_MAX, WorkflowRunService
 
 logger = logging.getLogger(__name__)
@@ -34,11 +36,31 @@ def agent_route(path: str) -> str:
     return f"{get_settings().agent_url.rstrip('/')}{path}"
 
 
+# W0.30: a guarded agent run's handle ({{h:...}}) means something only inside that
+# run. The agent layer converts every response it serves; as defence in depth no
+# read here ever hands one on verbatim -- it becomes a neutral marker.
+# A whole handle, or what is left of one a truncation cut short ("{{h:dabc" or
+# "{{h:dabc}" at the end of a clipped error).
+_HANDLE = re.compile(r"\{\{h:[A-Za-z0-9_.:-]*(?:\}\}|\}(?!\}))?")
+HANDLE_MARKER = "[a value the subject wrote, withheld]"
+
+
+def neutralise_handles(value: Any) -> Any:
+    """``value`` with every ``{{h:...}}`` in its strings replaced by a marker."""
+    if isinstance(value, str):
+        return _HANDLE.sub(HANDLE_MARKER, value) if "{{h:" in value else value
+    if isinstance(value, list):
+        return [neutralise_handles(v) for v in value]
+    if isinstance(value, dict):
+        return {k: neutralise_handles(v) for k, v in value.items()}
+    return value
+
+
 def _headers() -> Dict[str, str]:
     token = get_secret("AGENT_INTERNAL_TOKEN") or ""
     if not token:
         raise RuntimeError("AGENT_INTERNAL_TOKEN is not configured")
-    return {"Authorization": f"Bearer {token}"}
+    return {**inject_traceparent(), "Authorization": f"Bearer {token}"}
 
 
 def _note_read(ok: bool, message: str, *args: Any) -> None:
@@ -76,7 +98,7 @@ async def _read_fold(
         _note_read(False, "%s for %s answered %s", view, run_id, response.status_code)
         return None
     _note_read(True, "")
-    return response.json()
+    return neutralise_handles(response.json())
 
 
 # None means "nothing to report yet" and is not an error: a run enqueued a moment
@@ -124,9 +146,9 @@ async def write_narrative(run_id: str) -> Dict[str, Any]:
         raise RuntimeError(f"could not reach the agent layer: {exc!r}") from None
 
     if response.status_code != 200:
-        detail = response.text[:400]
+        detail = neutralise_handles(response.text)[:400]
         raise RuntimeError(f"the agent layer answered {response.status_code}: {detail}")
-    return response.json()
+    return neutralise_handles(response.json())
 
 
 async def read_replay(
@@ -151,13 +173,22 @@ async def read_replay(
     if response.status_code == 404:
         return None
     if response.status_code != 200:
-        detail = response.text[:400]
+        detail = neutralise_handles(response.text)[:400]
         raise RuntimeError(f"the agent layer answered {response.status_code}: {detail}")
-    return response.json()
+    return neutralise_handles(response.json())
 
 
 async def read_events(run_id: str) -> Optional[List[Dict[str, Any]]]:
-    """The run's ledger, without snapshots.
+    """The run's ledger, without snapshots. See :func:`read_event_log`."""
+    log = await read_event_log(run_id)
+    return None if log is None else log[0]
+
+
+async def read_event_log(
+    run_id: str,
+) -> Optional[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]]:
+    """The run's ledger, without snapshots, and the subject-written values its
+    prose names as ``[subject value N]`` (W0.30; ``[]`` for an unguarded run).
 
     None is serve's 404. Anything else that is not an event list raises,
     because an operator opened Record and is owed the reason. Snapshots stay
@@ -175,13 +206,15 @@ async def read_events(run_id: str) -> Optional[List[Dict[str, Any]]]:
     if response.status_code == 404:
         return None
     if response.status_code != 200:
-        detail = response.text[:400]
+        detail = neutralise_handles(response.text)[:400]
         raise RuntimeError(f"the agent layer answered {response.status_code}: {detail}")
-    body = response.json()
+    body = neutralise_handles(response.json())
     events = body.get("events") if isinstance(body, dict) else None
     if not isinstance(events, list):
         raise RuntimeError("the agent layer returned no event list")
-    return events
+    values = body.get("subject_values") if isinstance(body, dict) else None
+    rows = [v for v in (values or []) if isinstance(v, dict)]
+    return events, rows
 
 
 async def read_verify(run_id: str) -> Optional[Dict[str, Any]]:
@@ -203,9 +236,9 @@ async def read_verify(run_id: str) -> Optional[Dict[str, Any]]:
     if response.status_code == 404:
         return None
     if response.status_code != 200:
-        detail = response.text[:400]
+        detail = neutralise_handles(response.text)[:400]
         raise RuntimeError(f"the agent layer answered {response.status_code}: {detail}")
-    return response.json()
+    return neutralise_handles(response.json())
 
 
 THREAT_HUNT_WORKFLOW_ID = "threat-hunt"

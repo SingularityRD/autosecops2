@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -26,6 +27,13 @@ from core.response.checkpoints import (
 from core.routing import Auth, RouterMeta
 from core.storage.schemas.base import _iso_utc
 from core.time import utcnow
+from core.workflows.subject_values import (
+    SubjectValue,
+    as_dicts,
+    for_model,
+    with_markdown_block,
+    with_plain_block,
+)
 from core.workflows.workflow_run_service import WorkflowRunService
 
 router = APIRouter()
@@ -82,6 +90,8 @@ class TerminalHandoff(BaseModel):
     case_id: str
     title: str
     markdown: str = ""
+    # W0.30: values the subject wrote, referenced as [subject value N] in the prose.
+    subject_values: List[SubjectValue] = Field(default_factory=list)
 
 
 class TerminalUpdate(BaseModel):
@@ -90,6 +100,7 @@ class TerminalUpdate(BaseModel):
     summary: str = ""
     cost_usd: Optional[float] = None
     handoffs: List[TerminalHandoff] = Field(default_factory=list)
+    subject_values: List[SubjectValue] = Field(default_factory=list)
 
 
 class CitedFindings(BaseModel):
@@ -100,6 +111,7 @@ class StatusUpdate(BaseModel):
     status: Literal["running", "paused"]
     reason: Optional[str] = None
     cost_usd: Optional[float] = None
+    subject_values: List[SubjectValue] = Field(default_factory=list)
 
 
 class ProgressUpdate(BaseModel):
@@ -114,6 +126,7 @@ class CheckpointRaised(BaseModel):
     raised_at: str = ""
     run_kind: str = ""
     context: Optional[Dict[str, Any]] = None
+    subject_values: List[SubjectValue] = Field(default_factory=list)
 
 
 class Decision(BaseModel):
@@ -205,8 +218,11 @@ def record_status(
     run_service: WorkflowRunService = Depends(provide_workflow_runs),
 ) -> None:
     authorise(authorization, "run status")
+    reason = update.reason
+    if reason:
+        reason = with_plain_block(reason, update.subject_values)
     run_service.set_status(
-        run_id, update.status, reason=update.reason, cost_usd=update.cost_usd
+        run_id, update.status, reason=reason, cost_usd=update.cost_usd
     )
 
 
@@ -225,6 +241,38 @@ def record_progress(
     )
 
 
+def _with_subject_blocks(update: TerminalUpdate) -> TerminalUpdate:
+    """The terminal's prose with the subject's values appended as a block: the
+    summary and case files are markdown (a fenced block), the reason plain."""
+    values = update.subject_values
+    if not values:
+        return update
+    return update.model_copy(
+        update={
+            "summary": (
+                with_markdown_block(update.summary, values)
+                if update.summary
+                else update.summary
+            ),
+            "reason": (
+                with_plain_block(update.reason, values)
+                if update.reason
+                else update.reason
+            ),
+            "handoffs": [
+                h.model_copy(
+                    update={
+                        "markdown": with_markdown_block(
+                            h.markdown, list(values) + list(h.subject_values)
+                        )
+                    }
+                )
+                for h in update.handoffs
+            ],
+        }
+    )
+
+
 @router.post("/{run_id}/terminal", status_code=204)
 def record_terminal(
     run_id: str,
@@ -234,6 +282,7 @@ def record_terminal(
     approvals: ApprovalService = Depends(provide_approvals),
 ) -> None:
     authorise(authorization, "run outcome")
+    update = _with_subject_blocks(update)
 
     withdraw_for_run(
         run_id,
@@ -285,6 +334,14 @@ def record_handoff(
     run_service: WorkflowRunService = Depends(provide_workflow_runs),
 ) -> None:
     authorise(authorization, "run handoff")
+    if handoff.subject_values:
+        handoff = handoff.model_copy(
+            update={
+                "markdown": with_markdown_block(
+                    handoff.markdown, handoff.subject_values
+                )
+            }
+        )
     origin = _origin_case(run_id, run_service)
     _process_handoff(run_id, handoff, origin, _source_is_hunt(run_id), run_service)
 
@@ -305,6 +362,10 @@ def record_findings(
         _link_findings(case_id, run_id, cited.finding_ids)
 
 
+# A guarded hunt's handle (services/agent/core/guards.ts), never an id.
+_HANDLE = re.compile(r"\{\{h:[A-Za-z0-9_.:-]+\}\}")
+
+
 # Once per finding: link_finding answers False for one already on the case, so a
 # push the agent layer repeats (a resume starts with nothing marked sent) adds no
 # second audit row. An id the hunt invented names no finding and is not linked.
@@ -313,7 +374,14 @@ def _link_findings(case_id: str, run_id: str, finding_ids: List[str]) -> None:
     from core.storage.database_data_service import DatabaseDataService
 
     data = DatabaseDataService()
+    unresolved = 0
     for finding_id in dict.fromkeys(finding_ids):
+        if _HANDLE.search(finding_id):
+            # W0.30: a guarded hunt's handle ({{h:...}}) is not an id. The agent
+            # layer resolves handles before pushing, so one arriving here is a
+            # defect to see, not a finding to skip in silence.
+            unresolved += 1
+            continue
         try:
             if not data.get_finding(finding_id):
                 continue
@@ -331,6 +399,21 @@ def _link_findings(case_id: str, run_id: str, finding_ids: List[str]) -> None:
                 run_id,
                 case_id,
             )
+    if unresolved:
+        logger.warning(
+            "hunt %s pushed %d unresolved guard handle(s) as finding ids; "
+            "not linked to case %s",
+            run_id,
+            unresolved,
+            case_id,
+        )
+        _add_activity(
+            case_id,
+            "finding_link_skipped",
+            f"Hunt {run_id} cited {unresolved} alert(s) by a value it could not "
+            "resolve; they were not linked",
+            {"run_id": run_id, "reason": "unresolved_handle", "count": unresolved},
+        )
 
 
 # Files the handoff on a case and, for a hunt, tees up the backward run. Both the
@@ -602,7 +685,10 @@ _RCA_FINDING_CHARS = 8000
 
 
 def _rca_finding(handoff: TerminalHandoff) -> str:
-    finding = handoff.markdown.strip() or handoff.title
+    # Markers only (W0.30): the subject block a guarded hunt's case file carries is
+    # for people. This text is the root-cause lead's model context, which the
+    # guards keep subject text out of; "[subject value N]" names what it may search.
+    finding = for_model(handoff.markdown).strip() or handoff.title
     if len(finding) <= _RCA_FINDING_CHARS:
         return finding
     # No id named: handoff.case_id is the agent's own, not the Vigil case anyone
@@ -674,12 +760,24 @@ def record_checkpoint(
     # Idempotent per checkpoint inside raise_for_checkpoint, because a parked run
     # is announced on every sweep and would otherwise queue the question each time.
     context, tool_call = split_tool_call(raised.context)
+    # W0.30: the values a guarded run's prose names by marker, and those a gated
+    # call's arguments were filled from (context.subject_values), as one list.
+    values = list(raised.subject_values) + [
+        SubjectValue.model_validate(v)
+        for v in (context.pop("subject_values", None) or [])
+        if isinstance(v, dict)
+    ]
+    description = raised.question
+    if values and tool_call is None:
+        description = with_plain_block(description, values)
+    if values:
+        context["subject_values"] = as_dicts(values)
     try:
         raise_for_checkpoint(
             run_id=run_id,
             checkpoint_id=raised.checkpoint_id,
             title=raised.question[:120] or raised.checkpoint_class,
-            description=raised.question,
+            description=description,
             reason=_CHECKPOINT_REASONS.get(
                 raised.checkpoint_class, "The run is waiting on your answer."
             ),

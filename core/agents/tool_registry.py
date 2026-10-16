@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import functools
 import inspect
 import json
 import logging
@@ -602,9 +603,64 @@ _OWNED = frozenset(
 )
 
 
+# W0.30 round 9: every caller of this module is a model's tool call (chat, /mcp,
+# in-process MCP, /internal/tools/invoke). So the answer of every tool this module
+# owns is made model-facing where it returns, once, for all of them: subject blocks
+# stripped to markers, subject_values rows withheld, and a subject's text inside an
+# approval's arguments replaced by its marker (core/workflows/subject_values.py
+# for_model_deep). The stored rows are untouched; this is a new object.
+def _model_facing(fn: Callable[..., Any]) -> Callable[..., Any]:
+    from core.workflows.subject_values import for_model_deep
+
+    if inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def wrapped_async(*args: Any, **kwargs: Any) -> Any:
+            return for_model_deep(await fn(*args, **kwargs))
+
+        wrapped_async.__model_facing__ = True  # type: ignore[attr-defined]
+        return wrapped_async
+
+    @functools.wraps(fn)
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        result = fn(*args, **kwargs)
+        if inspect.isawaitable(result):
+
+            async def later() -> Any:
+                return for_model_deep(await result)
+
+            return later()
+        return for_model_deep(result)
+
+    wrapped.__model_facing__ = True  # type: ignore[attr-defined]
+    return wrapped
+
+
+for _name in _OWNED:
+    globals()[_name] = _model_facing(globals()[_name])
+_case_records = _model_facing(_case_records)
+_INTEL_TOOLS = {name: _model_facing(fn) for name, fn in _INTEL_TOOLS.items()}
+_MEMORY_TOOLS = {name: _model_facing(fn) for name, fn in _MEMORY_TOOLS.items()}
+del _name
+
+
 # Returns (result, handled). handled is False only when the name is no backend
 # tool at all, which is the caller's cue to try MCP.
 async def execute_backend_tool(
+    tool_name: str,
+    tool_input: Optional[Args],
+    registry: Optional["MCPRegistry"] = None,
+) -> Tuple[Any, bool]:
+    # The owned, intel and memory tools are already model-facing where they return
+    # (_model_facing above); this covers the rest -- security detections, integration
+    # discovery, skills -- the same way. Idempotent, so applying it twice is safe.
+    from core.workflows.subject_values import for_model_deep
+
+    result, handled = await _execute_backend_tool(tool_name, tool_input, registry)
+    return for_model_deep(result), handled
+
+
+async def _execute_backend_tool(
     tool_name: str,
     tool_input: Optional[Args],
     registry: Optional["MCPRegistry"] = None,

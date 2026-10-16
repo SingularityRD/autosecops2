@@ -742,4 +742,8 @@ class WorkflowsService:
                 "No specific target provided. Use available tools to identify relevant findings and cases."
             )
 
-        return "\n\n".join(parts)
+        # A model's context (W0.30): the case description carries the subject
+        # block for people; the workflow's model reads the markers only.
+        from core.workflows.subject_values import for_model
+
+        return for_model("\n\n".join(parts))

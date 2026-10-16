@@ -9259,6 +9259,11 @@ export interface components {
             rows: components["schemas"]["CaseRecordRow"][];
             /** Run Id */
             run_id?: string | null;
+            /**
+             * Subject Values
+             * @default []
+             */
+            subject_values: components["schemas"]["CaseSubjectValue"][];
         };
         /** CaseRecordRow */
         CaseRecordRow: {
@@ -9468,6 +9473,21 @@ export interface components {
             /** Total */
             total: number;
         };
+        /** CaseSubjectValue */
+        CaseSubjectValue: {
+            /**
+             * Field
+             * @default value
+             */
+            field: string;
+            /** Ref */
+            ref: number;
+            /**
+             * Value
+             * @default
+             */
+            value: string;
+        };
         /**
          * CaseSuccessResponse
          * @description Mutation that only reports whether it landed.
@@ -9663,6 +9683,8 @@ export interface components {
              * @default
              */
             run_kind: string;
+            /** Subject Values */
+            subject_values?: components["schemas"]["SubjectValue"][];
         };
         /** CitedFindings */
         CitedFindings: {
@@ -12996,6 +13018,23 @@ export interface components {
              * @enum {string}
              */
             status: "running" | "paused";
+            /** Subject Values */
+            subject_values?: components["schemas"]["SubjectValue"][];
+        };
+        /** SubjectValue */
+        SubjectValue: {
+            /**
+             * Field
+             * @default value
+             */
+            field: string;
+            /** Ref */
+            ref: number;
+            /**
+             * Value
+             * @default
+             */
+            value: string;
         };
         /**
          * SubmitFeedbackRequest
@@ -13168,6 +13207,8 @@ export interface components {
              * @default
              */
             markdown: string;
+            /** Subject Values */
+            subject_values?: components["schemas"]["SubjectValue"][];
             /** Title */
             title: string;
         };
@@ -13184,6 +13225,8 @@ export interface components {
              * @default
              */
             reason: string;
+            /** Subject Values */
+            subject_values?: components["schemas"]["SubjectValue"][];
             /**
              * Summary
              * @default

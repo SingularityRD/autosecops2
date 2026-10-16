@@ -8,7 +8,7 @@ import { Markdown } from '../../shared/Markdown'
 import { type Workflow, type AgentTemplate, type Skill, prettyHandle, skillUsageText } from '../../data/appData'
 import { useWorkflows, useAgents, useAgentMeta, useSkills, workflowsOffered, modelSource, type Phase } from './useWorkflowsData'
 import { TITLES } from '../../data/data'
-import { ToolCallDetail, questionOf, toolCallOf } from '../decisions/ToolCallDetail'
+import { ToolCallDetail, displaySafe, questionOf, toolCallOf } from '../decisions/ToolCallDetail'
 import { approvalsApi, workflowApi, agentsApi, findingsApi, casesApi, type GeneratedDraft, type ReplayReport } from '../../services/api'
 import DescribeDialog from './DescribeDialog'
 import WorkflowReaderPane from './WorkflowReaderPane'
@@ -20,6 +20,7 @@ import { Cost } from '../../shared/cost'
 import { COMMANDS, LIVE_COMMANDS } from '../../shell/commandBarModel'
 import { WatchRun } from './WatchRun'
 import { triggerLabels } from './triggers'
+import { SubjectValuesBox, referencedIn, subjectValuesOf } from '../../shared/SubjectValues'
 import { OpenCheckpoint, bearings, hypothesisColor, liveGap, provenanceTag, type Bearing } from './huntParts'
 import {
   IN_FLIGHT, callLine, errMsg, fmtDuration, runStatusColor, useInvestigateReplay, useRunDetail,
@@ -1503,6 +1504,7 @@ function HuntAccount({ hunt, report, gaps, onGo, rewrite }: { hunt: HuntView; re
           <CopyReport md={report} />
         </div>
         <ReportBody md={withoutHeader(report)} />
+        <SubjectValuesBox rows={referencedIn([report], subjectValuesOf(hunt.subject_values))} />
       </>
     )
   }
@@ -1513,6 +1515,7 @@ function HuntAccount({ hunt, report, gaps, onGo, rewrite }: { hunt: HuntView; re
       <VerdictStrip hunt={hunt} onGo={onGo} />
       <OpenedOn hunt={hunt} onGo={onGo} />
       <Incidents md={account.what_happened} />
+      <SubjectValuesBox rows={referencedIn([account.summary, account.what_happened, ...(account.next_steps ?? []).map(String)], subjectValuesOf(hunt.subject_values))} />
       <div className="hunt-account-foot">
         <span className="muted text-[11.5px]">
           {hunt.evidence_count} record(s) gathered · {gaps} blind spot(s)
@@ -2719,7 +2722,7 @@ function HuntCheckpoints({ checkpoints }: { checkpoints: HuntCheckpoint[] }) {
             {checkpoints.map((c) => (
               <tr key={c.checkpoint_id}>
                 <td className="muted tight">{c.class}</td>
-                <td>{c.question}</td>
+                <td>{displaySafe(c.question)}</td>
                 <td className="muted">
                   {c.resolution ? `${c.resolution.answer} by ${c.resolution.actor}${c.resolution.text ? ` — ${c.resolution.text}` : ''}` : 'still pending'}
                 </td>

@@ -78,3 +78,22 @@ def test_a_hunt_with_no_case_links_nothing():
     _push(data, ["demo2-ts-001"], context={})
 
     assert "finding_ids" not in data.cases["case-1"]
+
+
+def test_an_unresolved_guard_handle_is_flagged_not_dropped_in_silence(caplog):
+    # W0.30: the agent layer resolves {{h:...}} handles before it pushes; one that
+    # still arrives is logged and recorded on the case, and never linked.
+    data = _Data({"title": "hunt"}, {"demo2-ts-001"})
+
+    with caplog.at_level("WARNING", logger="core.workflows.run_bridge_router"):
+        _push(data, ["{{h:d1a2b3c4q1.1.finding_id}}", "demo2-ts-001"])
+
+    case = data.cases["case-1"]
+    assert case["finding_ids"] == ["demo2-ts-001"]
+    skipped = [
+        a for a in case["activities"] if a["activity_type"] == "finding_link_skipped"
+    ]
+    assert [a["details"] for a in skipped] == [
+        {"run_id": "run-1", "reason": "unresolved_handle", "count": 1}
+    ]
+    assert "unresolved guard handle" in caplog.text
