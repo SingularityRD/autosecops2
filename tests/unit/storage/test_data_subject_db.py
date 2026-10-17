@@ -8,6 +8,7 @@ through the API, and every lookup is on the request's audit trail.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -170,18 +171,21 @@ def test_a_closed_request_allows_no_lookup(client):
     )
 
 
-def test_every_route_needs_settings_write(client, monkeypatch):
-    monkeypatch.setattr(
+def test_every_route_needs_settings_write(client):
+    # A context patch, not monkeypatch: authenticate_app already patches this
+    # attribute, and monkeypatch (set up earlier by autouse fixtures) would undo
+    # last and put authenticate_app's mock back for every later test.
+    with patch(
         "core.auth.auth_service.AuthService.check_permission",
-        lambda user_id, perm, session=None: perm != "settings.write",
-    )
-    assert client.get(f"{PREFIX}/requests").status_code == 403
-    assert (
-        client.post(
-            f"{PREFIX}/requests", json={"identifier": WHO, "kind": "access"}
-        ).status_code
-        == 403
-    )
+        side_effect=lambda user_id, perm, session=None: perm != "settings.write",
+    ):
+        assert client.get(f"{PREFIX}/requests").status_code == 403
+        assert (
+            client.post(
+                f"{PREFIX}/requests", json={"identifier": WHO, "kind": "access"}
+            ).status_code
+            == 403
+        )
 
 
 def test_masking():
