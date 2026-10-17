@@ -37,6 +37,15 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
 
 ### Changed / contract
 
+* **upstream (W0.43):** taken from upstream Vigil: `start.sh` waits for the LLM
+  worker and daemon before printing Ready; a parked hunt's investigation reads
+  paused, frees its slot and is announced once; a run that fails before its
+  ledger opens reports failed; a wrong current password on change-password
+  answers 400; the console names the dropped `Secure` cookie on a plain-HTTP
+  sign-in; the autonomy badge follows a save without a reload; running on
+  Windows through WSL2 (LF line endings, WSL-aware `start.sh`); Shodan's MCP
+  server 1.0.34. `POST /api/config/secrets/reinit` is removed and
+  migrate-to-encrypted fails and is audited instead of reporting success.
 * **audit (W0.36):** installation provisions the two Ed25519 signing keys
   (`AUDIT_CHECKPOINT_SIGNING_KEY`, `EVIDENCE_PACK_SIGNING_KEY`) when absent, so a
   fresh install writes signed audit checkpoints and signs evidence packs with a
