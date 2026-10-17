@@ -259,7 +259,9 @@ def test_every_provider_change_is_audited_without_the_key(
     client.put("/api/llm/providers/openai-prod", json={"name": "OpenAI"})  # no-op
     client.delete("/api/llm/providers/openai-prod")
 
-    rows = [(a.config_type, a.config_key, a.action, a.changed_by) for a in session.audits]
+    rows = [
+        (a.config_type, a.config_key, a.action, a.changed_by) for a in session.audits
+    ]
     assert rows == [
         ("llm_provider", "openai-prod", "create", "test-admin"),
         ("llm_provider", "openai-prod", "update", "test-admin"),
@@ -428,3 +430,85 @@ def test_update_clear_last_of_type_blanks_bifrost_key(
     r = client.put("/api/llm/providers/openai-solo", json={"api_key": ""})
     assert r.status_code == 200
     assert ("openai", "") in bifrost_pushes
+
+
+# --- W0.53: the model-change gate -----------------------------------------------
+
+
+def _gate(state):
+    return lambda db, model, pv, **kw: {
+        "state": state,
+        "model": model,
+        "prompt_version": pv,
+        "suites": {},
+        "reasons": [] if state == "passed" else ["no run"],
+    }
+
+
+def test_making_a_model_default_returns_and_audits_the_gate(
+    client, session, secrets_store, monkeypatch
+):
+    monkeypatch.setattr("core.quality.model_gate.evaluate", _gate("not_evaluated"))
+    r = client.post(
+        "/api/llm/providers/",
+        json={
+            "provider_type": "ollama",
+            "name": "Gated",
+            "base_url": "http://localhost:11434",
+            "default_model": "qwen2.5:7b",
+            "is_default": True,
+        },
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["model_gate"]["state"] == "not_evaluated"
+    assert session.audits[-1].new_value["model_gate"] == "not_evaluated"
+
+
+def test_an_enforced_gate_refuses_a_model_that_has_not_passed(
+    client, secrets_store, monkeypatch
+):
+    from core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "model_gate_enforce", True)
+    monkeypatch.setattr("core.quality.model_gate.evaluate", _gate("failed"))
+    r = client.post(
+        "/api/llm/providers/",
+        json={
+            "provider_type": "ollama",
+            "name": "Refused",
+            "base_url": "http://localhost:11434",
+            "default_model": "bad-model",
+            "is_default": True,
+        },
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["model_gate"]["state"] == "failed"
+    monkeypatch.setattr("core.quality.model_gate.evaluate", _gate("passed"))
+    ok = client.post(
+        "/api/llm/providers/",
+        json={
+            "provider_type": "ollama",
+            "name": "Passed",
+            "base_url": "http://localhost:11434",
+            "default_model": "good-model",
+            "is_default": True,
+        },
+    )
+    assert ok.status_code == 201 and ok.json()["model_gate"]["state"] == "passed"
+
+
+def test_a_non_default_provider_is_not_gated(client, secrets_store, monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("not gated")
+
+    monkeypatch.setattr("core.quality.model_gate.evaluate", boom)
+    r = client.post(
+        "/api/llm/providers/",
+        json={
+            "provider_type": "ollama",
+            "name": "Side",
+            "base_url": "http://localhost:11434",
+            "default_model": "x",
+        },
+    )
+    assert r.status_code == 201 and r.json()["model_gate"] is None

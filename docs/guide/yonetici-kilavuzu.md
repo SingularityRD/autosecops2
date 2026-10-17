@@ -923,6 +923,25 @@ kurulumun dışına bir şey çıkmaz; internetsiz kurulumda da çalışır. `se
 verisinin bulunduğu bir kurulumda çalıştırmayın ya da tanıtımdan sonra kaldırın.
 
 
+### Model değişikliği kapısı (W0.53)
+
+Bir sağlayıcının modeli varsayılan yapıldığında (ya da varsayılan sağlayıcının modeli
+değiştirildiğinde) o model, triyaj isteminin bugünkü sürümü için son değerlendirme
+koşularına karşı denetlenir: ayrılmış korpusta (`corpus-v1/test`, `test_unseen`) F1 ≥
+`MODEL_GATE_MIN_F1` (0.85), injection paketinde saldırı başarısı ≤ `MODEL_GATE_MAX_ASR`
+(0.05), varsa müşterinin kendi incelemelerinden (`customer`) koşu da aynı F1 eşiğinde.
+Koşular `python -m evalkit run --db` ile yazılır; denetim
+`python -m evalkit gate --model <ad>` ile de yapılır (geçerse çıkış 0).
+
+Sonuç API yanıtında (`model_gate`) döner ve ayar değişikliği kaydına yazılır.
+`MODEL_GATE_ENFORCE=true` iken geçmeyen model varsayılan yapılamaz (409); kapalıyken
+(varsayılan) yalnızca bildirilir. Canlıda da: zararsız bir kararın yalnız saldırganın
+yazabildiği alanlara dayandığı için belirsize düşürülmesi ve yönlendirici değerlerin
+istemden çıkarılması sayılır (`soc_daemon_injection_benign_downgraded_total`,
+`soc_daemon_injection_value_withheld_total`); Helm alarm kuralı bunlar bir saatte onu
+aşınca uyarır.
+
+
 ### Dersler
 
 Bir analist düzeltmesi (ör. "bu adresten gelen Entra uyarıları bizim

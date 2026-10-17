@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import ValidationError
 
 from core.contracts.verdict import (
+    NO_SENSOR_CITATION_GAP,
     ProvenanceMap,
     Verdict,
     validate_verdict,
@@ -1628,6 +1629,9 @@ class FindingProcessor:
             # W0.30: an ADVERSARY-INFLUENCEABLE value that steers the reviewer
             # is withheld whole (core/llm/subject_guards.py).
             groups, _withheld = guard_groups(groups)
+            if _withheld:
+                # W0.53: live injection signal (soc_daemon_injection_value_withheld_total).
+                _count_daemon("injection_value_withheld", len(_withheld))
 
         def data(value: Any) -> str:
             text = str(value)
@@ -1820,6 +1824,10 @@ Rules:
             prompt_version=TRIAGE_PROMPT_VERSION,
         )
         result = _storable(legacy_triage_fields(verdict))
+        if NO_SENSOR_CITATION_GAP in verdict.gaps:
+            # W0.53: a benign verdict that cited only attacker-writable fields:
+            # the shape an injected "this is fine" takes. Counted live.
+            _count_daemon("injection_benign_downgraded")
 
         if result.get("severity"):
             finding["severity"] = result["severity"]

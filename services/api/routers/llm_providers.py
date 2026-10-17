@@ -120,6 +120,41 @@ class LLMProviderResponse(BaseModel):
     last_error: Optional[str]
     created_at: Optional[str]
     updated_at: Optional[str]
+    # W0.53: set when this change made a model a default (core/quality/model_gate.py)
+    model_gate: Optional[Dict[str, Any]] = None
+
+
+def _model_gate(db, model: str) -> Dict[str, Any]:
+    """The gate for ``model`` at the daemon's triage prompt version; 409 when
+    enforced and not passed."""
+    from core.config import get_settings
+    from core.quality import model_gate
+    from services.daemon.processor import TRIAGE_PROMPT_VERSION
+
+    try:
+        result = model_gate.evaluate(
+            db, model, TRIAGE_PROMPT_VERSION, **model_gate.thresholds()
+        )
+    except Exception as exc:  # noqa: BLE001 - the gate must not break the save
+        result = {
+            "state": "unavailable",
+            "model": model,
+            "prompt_version": TRIAGE_PROMPT_VERSION,
+            "suites": {},
+            "reasons": [f"eval runs could not be read ({type(exc).__name__})"],
+        }
+    if get_settings().model_gate_enforce and result["state"] != "passed":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"Model {model} has not passed the eval gate "
+                    f"({result['state']}); run python -m evalkit run --db for it first"
+                ),
+                "model_gate": result,
+            },
+        )
+    return result
 
 
 def _to_response(row: LLMProviderConfig) -> Dict[str, Any]:
@@ -222,6 +257,7 @@ async def create_provider(
         raise HTTPException(
             status_code=409, detail=f"provider_id '{provider_id}' already exists"
         )
+    gate = _model_gate(db, payload.default_model) if payload.is_default else None
 
     api_key_ref: Optional[str] = None
     if payload.api_key:
@@ -244,9 +280,12 @@ async def create_provider(
         config=payload.config or {},
     )
     provider_service.insert(db, row, make_default=payload.is_default)
-    _audit(db, provider_id, "create", None, _audit_snapshot(row), current_user)
+    snapshot = _audit_snapshot(row)
+    if gate is not None:
+        snapshot["model_gate"] = gate["state"]
+    _audit(db, provider_id, "create", None, snapshot, current_user)
     _schedule_catalog_resync(f"created provider {provider_id}")
-    return _to_response(row)
+    return {**_to_response(row), "model_gate": gate}
 
 
 @router.put("/{provider_id}", response_model=LLMProviderResponse)
@@ -262,6 +301,18 @@ async def update_provider(
     if row is None:
         raise HTTPException(status_code=404, detail="provider not found")
     before = _audit_snapshot(row)
+    # W0.53: a model becoming (or staying) the default after a model change.
+    new_model = (
+        payload.default_model
+        if payload.default_model is not None
+        else row.default_model
+    )
+    will_be_default = (
+        payload.is_default if payload.is_default is not None else row.is_default
+    )
+    gate = None
+    if will_be_default and (new_model != row.default_model or not row.is_default):
+        gate = _model_gate(db, new_model)
 
     if payload.name is not None:
         row.name = payload.name
@@ -315,10 +366,12 @@ async def update_provider(
     after = _audit_snapshot(row)
     if payload.api_key:
         after["api_key_rotated"] = True  # that it changed, never the value
+    if gate is not None:
+        after["model_gate"] = gate["state"]
     if after != before:
         _audit(db, provider_id, "update", before, after, current_user)
     _schedule_catalog_resync(f"updated provider {provider_id}")
-    return _to_response(row)
+    return {**_to_response(row), "model_gate": gate}
 
 
 @router.delete("/{provider_id}")
