@@ -124,6 +124,37 @@ describe('RegulatoryClocks', () => {
     expect(screen.getByText('NIS2 incident notification').closest('li')).toHaveAttribute('data-state', 'running')
   })
 
+  it('shows the KVKK 72-hour board clock and drafts the board notification', async () => {
+    vi.mocked(regulatoryApi.clocks).mockResolvedValue({
+      data: status({
+        clocks: [
+          clock({
+            key: 'kvkk.board_notification',
+            regime: 'kvkk',
+            label: 'KVKK Kurul bildirimi (veri ihlali)',
+            state: 'running',
+            met_by: 'notified_at',
+            due_at: '2026-03-05T09:00:00+00:00',
+            bound_to: 'aware_at',
+            waiting_for: null,
+            remaining_seconds: 48 * 3600,
+          }),
+        ],
+      }),
+    } as never)
+    vi.mocked(regulatoryApi.draft).mockResolvedValue({
+      data: { title: 'KVKK Kurul veri ihlali bildirimi', cited_ids: ['case:c-1'], markdown: '# Taslak\n' },
+    } as never)
+    render(<RegulatoryClocks caseId="c-1" />)
+    fireEvent.click(await screen.findByRole('tab', { name: 'KVKK' }))
+    const row = screen.getByText('KVKK Kurul bildirimi (veri ihlali)').closest('li')!
+    expect(row).toHaveAttribute('data-state', 'running')
+    expect(row.textContent).toContain('from ihlalden haberdar olundu')
+    expect(screen.getByRole('button', { name: 'Record İlgili kişilere bildirildi' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Kurul bildirimi' }))
+    await waitFor(() => expect(regulatoryApi.draft).toHaveBeenCalledWith('c-1', { regime: 'kvkk', kind: 'board_notification' }))
+  })
+
   it('asks for a reason before changing a recorded instant', async () => {
     vi.mocked(regulatoryApi.record).mockResolvedValue({ data: { changed: true, event: null, status: status() } } as never)
     render(<RegulatoryClocks caseId="c-1" />)

@@ -10,7 +10,7 @@ change writes a ``config_audit_log`` row naming the signed-in user.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -39,6 +39,8 @@ class RegulatoryConfigResponse(BaseModel):
     timezone: str
     durations: Dict[str, DurationModel]
     defaults: Dict[str, DurationModel]
+    # Duration keys that are an in-house target, not a limit set by a text (W0.42).
+    targets: List[str] = Field(default_factory=list)
 
 
 class RegulatoryConfigUpdate(BaseModel):

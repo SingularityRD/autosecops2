@@ -40,6 +40,20 @@ from core.compliance.regulatory_service import ClockEvent
 KINDS: Dict[str, tuple] = {
     "dora": ("initial", "intermediate", "final"),
     "nis2": ("early_warning", "notification", "intermediate", "final"),
+    "kvkk": ("board_notification",),
+    "bddk": ("notification", "final"),
+    "usom": ("notification",),
+}
+
+# Turkish authorities get the draft in Turkish (W0.42, K4).
+TURKISH_REGIMES = frozenset({"kvkk", "bddk", "usom"})
+_TR_HEADINGS = {
+    "Incident identification": "Olayın tanımı",
+    "Key instants": "Önemli anlar",
+    "Detected activity": "Tespit edilen etkinlik",
+    "Evidence collected": "Toplanan kanıtlar",
+    "Actions recorded on the case": "Vakada kayıtlı işlemler",
+    "Reporting deadlines": "Bildirim süreleri",
 }
 
 TITLES = {
@@ -50,6 +64,10 @@ TITLES = {
     ("nis2", "notification"): "NIS2 incident notification",
     ("nis2", "intermediate"): "NIS2 intermediate report",
     ("nis2", "final"): "NIS2 final report",
+    ("kvkk", "board_notification"): "KVKK Kişisel Veri İhlali Bildirimi (Kurul)",
+    ("bddk", "notification"): "BDDK siber olay bildirimi",
+    ("bddk", "final"): "BDDK siber olay sonuç raporu",
+    ("usom", "notification"): "USOM / SOME siber olay bildirimi",
 }
 
 # What the regulator asks for that a case does not record. Listed, never invented.
@@ -84,6 +102,36 @@ TO_COMPLETE = {
         "Type of threat or root cause that likely triggered the incident",
         "Applied and ongoing mitigation measures",
         "Cross-border impact, where applicable",
+    ],
+    # Kurul's breach notification form asks for these; a case does not hold them.
+    ("kvkk", "board_notification"): [
+        "İhlalin başlangıç ve bitiş tarihi ve saati",
+        "İhlalden etkilenen kişi sayısı ve kayıt sayısı (tahmini)",
+        "Etkilenen kişisel veri kategorileri (özel nitelikli veriler ayrıca)",
+        "İlgili kişi grupları (çalışan, müşteri, öğrenci vb.)",
+        "İhlalin olası sonuçları",
+        "Alınan ve alınması planlanan tedbirler",
+        "İlgili kişilere bildirim yapılıp yapılmadığı, yapılmadıysa gerekçesi",
+        "Veri sorumlusu irtibat kişisi",
+        "72 saati aşan bildirimde gecikmenin gerekçesi",
+    ],
+    ("bddk", "notification"): [
+        "Etkilenen bankacılık hizmetleri ve sistemleri",
+        "Müşterilere etkisi (etkilenen müşteri sayısı, hizmet kesintisi süresi)",
+        "Olayın kaynağı ve türü (biliniyorsa)",
+        "Alınan acil önlemler",
+        "Kurumun bu olay türü için teyit ettiği bildirim süresi ve kanalı",
+    ],
+    ("bddk", "final"): [
+        "Kök neden analizi",
+        "Doğrudan ve dolaylı zarar",
+        "Kalıcı düzeltici önlemler ve alınan dersler",
+    ],
+    ("usom", "notification"): [
+        "Etkilenen sistemler ve IP / alan adları",
+        "Saldırı göstergeleri (IoC), varsa",
+        "Olayın sürüp sürmediği",
+        "Sektörel SOME irtibat bilgisi",
     ],
 }
 
@@ -237,6 +285,11 @@ def template_sections(
             "lines": _clock_lines(clocks, regime, case_cite),
         }
     )
+    if regime in TURKISH_REGIMES:
+        for section in sections:
+            section["heading"] = _TR_HEADINGS.get(
+                section["heading"], section["heading"]
+            )
     return sections
 
 

@@ -108,8 +108,11 @@ class ClockEventsResponse(BaseModel):
     chain: ChainResponse
 
 
+Regime = Literal["dora", "nis2", "kvkk", "bddk", "usom"]
+
+
 class RecordInstantRequest(BaseModel):
-    regime: Literal["dora", "nis2"]
+    regime: Regime
     instant: str = Field(min_length=1, max_length=40)
     # null clears the instant (needs a reason when one was recorded).
     value: Optional[datetime] = None
@@ -162,8 +165,15 @@ class DraftsResponse(BaseModel):
 
 
 class GenerateDraftRequest(BaseModel):
-    regime: Literal["dora", "nis2"]
-    kind: Literal["initial", "intermediate", "final", "early_warning", "notification"]
+    regime: Regime
+    kind: Literal[
+        "initial",
+        "intermediate",
+        "final",
+        "early_warning",
+        "notification",
+        "board_notification",
+    ]
 
 
 def _actor(user: User) -> str:
