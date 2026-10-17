@@ -452,6 +452,11 @@
       "id": "W0.47",
       "topic": "işletim rehberi: boyutlandırma başlangıç değerleri, port ve güvenlik duvarı matrisi, bağlantılı Helm kurulumu, çıkış prosedürü",
       "topic_en": "operations guide: sizing starting points, port and firewall matrix, connected Helm install, exit procedure"
+    },
+    {
+      "id": "W0.48",
+      "topic": "ilgili kişi başvuruları (KVKK md. 11, 13): 30 günlük kayıt, başvuruya bağlı arama ve dışa aktarım, her arama denetim izinde; kimlik bilgisi saklanmaz",
+      "topic_en": "data-subject requests (KVKK art. 11, 13): a 30-day register, search and export tied to a request, each lookup audited; the identifier is not stored"
     }
   ],
   "highlights": [
@@ -740,6 +745,12 @@
         "W0.45"
       ],
       "text": "**AI kararı ekranda:** triyaj kuyruğu her alarmın AI kararını (kötü amaçlı / zararsız / belirsiz ve güven) gösterir; satır açılınca kararın dayandığı alanlar ve her birini kimin yazdığı (sensör, saldırgan denetiminde, üçüncü taraf — modelden değil koddan), göremedikleri ve önerilen eylem (her zaman onaylı) görünür (W0.45)."
+    },
+    {
+      "when": [
+        "W0.48"
+      ],
+      "text": "**İlgili kişi başvuruları:** KVKK başvurusu kaydedilir ve 30 günlük süresi izlenir; kişinin verisi bulgu, vaka, yorum ve kullanıcı kayıtlarında aranır ve dışa aktarılır, her arama başvurunun denetim izine yazılır (W0.48)."
     }
   ],
   "upgrade_notes": [
