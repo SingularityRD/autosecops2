@@ -233,7 +233,7 @@ describe('TriageScreen', () => {
     await screen.findByLabelText('Intake strip')
     const headers = screen.getAllByRole('columnheader').map((th) => th.textContent)
     expect(headers).toEqual([
-      'Kind', 'Source', 'Alert, in the source’s words', 'Score', 'Arrived', 'Picked up in', 'What happened', 'Grouped into, and why',
+      'Kind', 'Source', 'Alert, in the source’s words', 'AI verdict', 'Score', 'Arrived', 'Picked up in', 'What happened', 'Grouped into, and why',
     ].map((name) => expect.stringContaining(name)))
     // nothing sorts
     expect(document.querySelector('th.sortable')).toBeNull()
@@ -315,7 +315,7 @@ describe('TriageScreen', () => {
     const panel = await screen.findByLabelText('Expanded row')
     // drawn as its own full-width row directly under the clicked row
     expect(panel.closest('tr')?.previousElementSibling).toBe(screen.getByText('Odd login').closest('tr'))
-    expect(panel.closest('td')).toHaveAttribute('colspan', '8')
+    expect(panel.closest('td')).toHaveAttribute('colspan', '9')
     expect(panel).toHaveTextContent('Severity bandcritical')
     expect(panel).toHaveTextContent('Time to live4 h')
     expect(panel).toHaveTextContent('In the last quarter of its waitNo')
@@ -337,6 +337,57 @@ describe('TriageScreen', () => {
     // a second click on the row closes it
     fireEvent.click(screen.getByText('Odd login'))
     expect(screen.queryByLabelText('Expanded row')).not.toBeInTheDocument()
+  })
+
+  it('shows the AI verdict with what it cites and who wrote each field (W0.45)', async () => {
+    const base = payload()
+    const detection = {
+      ...base.rows[0],
+      verdict: {
+        state: 'verdict' as const,
+        verdict: 'malicious' as const,
+        confidence: 0.86,
+        category: 'network',
+        cited_fields: [
+          { field: 'entity_context.src_ips', authored: 'sensor' as const },
+          { field: 'title', authored: 'adversary' as const },
+        ],
+        gaps: ['no EDR telemetry for the host'],
+        recommended_action: { type: 'block_ip', target: '203.0.113.9' },
+        model: 'local-qwen',
+        prompt_version: 'triage-v3',
+        at: '2026-10-01T00:00:03',
+      },
+    }
+    vi.mocked(triageApi.get).mockResolvedValue({ data: payload({ rows: [detection, base.rows[1]] }) } as never)
+    renderScreen()
+    await screen.findByLabelText('Intake strip')
+    expect(screen.getByText('Malicious · 86%')).toHaveClass('tq-pill', 'v-malicious')
+    fireEvent.click(screen.getByText('Odd login'))
+    const panel = await screen.findByLabelText('Expanded row')
+    expect(panel).toHaveTextContent('Categorynetwork')
+    expect(panel).toHaveTextContent('block_ip → 203.0.113.9 (needs approval)')
+    expect(within(panel).getByText('entity_context.src_ips').closest('.tq-cite')).toHaveTextContent('from the sensor')
+    expect(within(panel).getByText('title').closest('.tq-cite')).toHaveClass('adversary')
+    expect(within(panel).getByText('title').closest('.tq-cite')).toHaveTextContent('attacker-controlled')
+    expect(panel).toHaveTextContent('no EDR telemetry for the host')
+    expect(panel).toHaveTextContent('local-qwen · prompt triage-v3 · 2026-10-01 00:00 UTC')
+  })
+
+  it('says when triage failed, when a verdict is unreadable, and when there is none yet', async () => {
+    const base = payload()
+    const rows = [
+      { ...base.rows[0], id: 11, description: 'one', verdict: { state: 'failed' as const, error: 'LLM call failed' } },
+      { ...base.rows[0], id: 12, description: 'two', verdict: { state: 'unreadable' as const } },
+      { ...base.rows[0], id: 13, description: 'three', verdict: null },
+    ]
+    vi.mocked(triageApi.get).mockResolvedValue({ data: payload({ rows }) } as never)
+    renderScreen()
+    await screen.findByLabelText('Intake strip')
+    expect(screen.getByText('Triage failed')).toHaveAttribute('title', 'LLM call failed')
+    expect(screen.getByText('Unreadable')).toHaveClass('v-unreadable')
+    fireEvent.click(screen.getByText('three'))
+    expect(await screen.findByLabelText('Expanded row')).toHaveTextContent('Not triaged by AI yet.')
   })
 
   it('shows a detection by its title, with the description in the cell title, else the finding id', async () => {
