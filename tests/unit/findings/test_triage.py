@@ -73,6 +73,7 @@ def _finding(finding_id: str, severity: str, **kw) -> None:
                 title=kw.get("title"),
                 description=kw.get("description"),
                 entity_context=kw.get("entity_context"),
+                ai_enrichment=kw.get("ai_enrichment"),
                 created_at=kw.get("created_at", NOW),
             )
         )
@@ -411,3 +412,70 @@ def test_route_returns_the_strip(client):
     assert body["arrival_info"] == (
         "Arrivals count every finding stored today. The list is the intake rows."
     )
+
+
+# --- W0.45: the structured verdict is on the row --------------------------------
+
+VERDICT = {
+    "verdict": "malicious",
+    "confidence": 0.86,
+    "category": "network",
+    "cited_fields": [
+        {"field": "entity_context.src_ips", "authored": "sensor"},
+        {"field": "title", "authored": "adversary"},
+    ],
+    "gaps": ["no EDR telemetry for the host"],
+    "recommended_action": {"type": "block_ip", "target": "203.0.113.9"},
+    "model": "local-qwen",
+    "prompt_version": "triage-v3",
+}
+
+
+def test_a_triaged_detection_carries_its_verdict():
+    _finding(
+        "tr-v1",
+        "high",
+        ai_enrichment={
+            "ai_triage": {"timestamp": "2099-07-01T11:59:00", "verdict": VERDICT},
+            "enrichment": {"big": "x" * 1000},
+        },
+    )
+    rid = _trigger(state="queued", finding_id="tr-v1")
+    row = _by_id(triage_payload(now=NOW, day=DAY))[rid]
+    v = row["verdict"]
+    assert v["state"] == "verdict"
+    assert (v["verdict"], v["confidence"], v["category"]) == (
+        "malicious",
+        0.86,
+        "network",
+    )
+    assert v["cited_fields"] == VERDICT["cited_fields"]
+    assert v["gaps"] == ["no EDR telemetry for the host"]
+    assert v["recommended_action"] == {"type": "block_ip", "target": "203.0.113.9"}
+    assert (v["model"], v["prompt_version"], v["at"]) == (
+        "local-qwen",
+        "triage-v3",
+        "2099-07-01T11:59:00",
+    )
+
+
+@pytest.mark.parametrize(
+    "enrichment,expected",
+    [
+        (None, None),
+        ({}, None),
+        (
+            {"ai_triage_error": "LLM call failed: timeout"},
+            {"state": "failed", "error": "LLM call failed: timeout"},
+        ),
+        (
+            {"ai_triage": {"verdict": {**VERDICT, "confidence": "high"}}},
+            {"state": "unreadable"},
+        ),
+        ({"ai_triage": {"verdict": {**VERDICT, "extra": 1}}}, {"state": "unreadable"}),
+    ],
+)
+def test_no_failed_or_malformed_verdict(enrichment, expected):
+    _finding("tr-v2", "low", ai_enrichment=enrichment)
+    rid = _trigger(state="queued", finding_id="tr-v2")
+    assert _by_id(triage_payload(now=NOW, day=DAY))[rid]["verdict"] == expected

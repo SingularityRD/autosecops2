@@ -12,6 +12,7 @@ import type { ConsoleScreenProps } from '../../shared/types'
 import { parseSourceEvidence } from '../../data/sourceEvidence'
 import { SourceEvidenceSection } from '../dashboard/SourceEvidenceSection'
 import { triageApi, type TriagePayload, type TriageRow, type TriageSource } from '../../services/api'
+import { VerdictBody, VerdictPill } from '../../shared/AiVerdict'
 
 const POLL_MS = 10_000
 const ROW_CAP = 200 // the server stops at this many rows
@@ -237,6 +238,12 @@ function Expanded({ row, data }: { row: TriageRow; data: TriagePayload }) {
       <BreakdownRow label="Source trust"><NotMeasured align="end" tip={tips.trust} /></BreakdownRow>
       <BreakdownRow label="Weight"><NotMeasured align="end" tip={tips.weight} /></BreakdownRow>
       <BreakdownRow label="Score against a floor"><NotMeasured align="end" tip={tips.score} /></BreakdownRow>
+      {row.kind === 'detection' && (
+        <>
+          <span className="tq-h">AI verdict</span>
+          <VerdictBody verdict={row.verdict} />
+        </>
+      )}
       {row.kind === 'detection' && <div className="tq-evidence"><EvidenceBody row={row} /></div>}
       <div className="tq-actions">
         {row.source_link && (
@@ -311,6 +318,11 @@ const TriageScreen: (props: ConsoleScreenProps) => JSX.Element = ({ openCase, se
         const full = row.title && row.description ? row.description : text
         return <span className="tq-alert" title={full === BLANK ? undefined : full}>{text}</span>
       },
+    },
+    {
+      key: 'verdict',
+      label: 'AI verdict',
+      render: (row) => (row.kind === 'detection' ? <VerdictPill verdict={row.verdict} /> : BLANK),
     },
     {
       key: 'score',
