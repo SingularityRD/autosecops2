@@ -117,7 +117,14 @@ Release sayfası "Latest" görünüyordu; pre-release işaretlenmeli (insan).
 | P5 bildirim | W0.46 | Kısmi: e-posta listesi ve Teams; SMS yok |
 | O1, G14, O3, O7 | W0.47 | Belgelendi (boyutlandırma ölçülmedi; grafik bir Helm deposunda yayımlanmıyor) |
 | K2 ilgili kişi hakları | W0.48 | Kısmi: kayıt, arama, dışa aktarım; silme saklama araçlarıyla |
-| T5, G12, G13, G18, O2, O4, G15 | — | Açık |
+| T5 müşteri verisiyle eval + POC raporu | W0.49 | Kapandı |
+| G18 demo tezi | W0.50 | Kapandı (air-gap'te çalışır) |
+| G13 air-gap metrikleri, alarmlar, pano | W0.51 | Kapandı |
+| G12 belgeler ve analist kılavuzu | W0.52 | Kapandı (konsol İngilizce kalır) |
+| G15 model kapısı, canlı injection sayaçları | W0.53 | Kapandı (kapı varsayılan olarak zorlanmaz) |
+| O2 OpenShift | W0.54 | Önizleme (gerçek kümede doğrulanmadı) |
+| O4 LLM yığını Helm'de | W0.55 | Kapandı (gerçek kümede doğrulanmadı) |
+| P5 SMS, K2 silme aracı, Fortinet/Check Point yürütücüleri | — | Açık (müşteri talebiyle) |
 | T2, T4, P1, H1–H6, K3, K5, K6 | — | Sahip kararı / hukuk / ölçüm bekliyor |
 
 ## 5. Önerilen sıra
