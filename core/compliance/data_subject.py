@@ -14,14 +14,23 @@ Search reads findings (title, description, entity_context), cases (title,
 description, notes, assignee), case comments (author, content) and users
 (user name, e-mail, full name). It is a case-insensitive substring match: the
 results are candidates for the person handling the request, not a decision.
-Erasure is not done here: the retention tools (anonymise or delete per data
-class, legal holds) are the way, after the legal assessment; the chained audit
-logs are kept as the law that requires them allows.
+Erasure (W0.59, K2: ``erase``): for an open ``erasure`` request, every
+case-insensitive occurrence of the identifier in the text of findings (title,
+description, entity_context, ai_enrichment), cases (title, description, notes,
+timeline) and case comments is replaced with ``[erased]``. Rows tied to a case
+under legal hold, and every row of a data class under a class-wide hold, are
+left as they are and counted. User accounts are not changed here (deactivate
+or delete them in user management), and nothing chained is touched: the
+hash-chained ledgers and the audit logs are kept for the legal obligation they
+serve and leave through the retention tools (``core/compliance/retention.py``).
+The request records what was erased, per source, without the identifier.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -306,3 +315,159 @@ def _record_lookup(
         actor=actor,
         reason=f"data subject request {what}",
     )
+
+
+ERASED = "[erased]"
+
+# (source, table, key, text columns, JSON columns, how a row finds its cases)
+_ERASE_SOURCES = (
+    (
+        "findings",
+        "findings",
+        "finding_id",
+        ("title", "description"),
+        ("entity_context", "ai_enrichment"),
+        "SELECT case_id FROM case_findings WHERE finding_id = :k",
+    ),
+    (
+        "cases",
+        "cases",
+        "case_id",
+        ("title", "description"),
+        ("notes", "timeline"),
+        "SELECT :k AS case_id",
+    ),
+    (
+        "case_comments",
+        "case_comments",
+        "comment_id",
+        ("content",),
+        (),
+        "SELECT case_id FROM case_comments WHERE comment_id = :k",
+    ),
+)
+# The retention data class whose class-wide legal hold covers each source.
+_HOLD_CLASS = {"findings": "findings", "cases": "cases", "case_comments": "cases"}
+
+
+def _redact(value: Any, pattern: "re.Pattern[str]") -> Any:
+    """``value`` with every match replaced, walking JSON structures."""
+    if isinstance(value, str):
+        return pattern.sub(ERASED, value)
+    if isinstance(value, list):
+        return [_redact(v, pattern) for v in value]
+    if isinstance(value, dict):
+        return {
+            _redact(k, pattern) if isinstance(k, str) else k: _redact(v, pattern)
+            for k, v in value.items()
+        }
+    return value
+
+
+def _class_held(session: Session, data_class: str) -> bool:
+    if (
+        session.execute(text("SELECT to_regclass('retention_policies')")).scalar()
+        is None
+    ):
+        return False
+    row = session.execute(
+        text(
+            "SELECT legal_hold FROM retention_policies"
+            " WHERE tenant_id = 'default' AND data_class = :c"
+        ),
+        {"c": data_class},
+    ).scalar()
+    return bool(row)
+
+
+def erase(
+    session: Session,
+    request_id: str,
+    identifier: str,
+    *,
+    actor: str,
+    confirm: bool,
+) -> Dict[str, Any]:
+    """Replace the identifier with ``[erased]`` where erasure is allowed."""
+    from core.compliance.retention import list_legal_holds
+
+    request = get(session, request_id)
+    _check(request, identifier)
+    if request.get("kind") != "erasure":
+        raise ValueError("only an erasure request can erase")
+    if not confirm:
+        raise ValueError("confirm must be true: erasure cannot be undone")
+    pattern = re.compile(re.escape(identifier.strip()), re.IGNORECASE)
+    held_cases = set(list_legal_holds(session))
+    params = {"p": _like(identifier)}
+    results: Dict[str, Dict[str, int]] = {}
+    for source, table, key, texts, jsons, cases_sql in _ERASE_SOURCES:
+        columns = texts + jsons
+        where = " OR ".join(
+            [f"{c} ILIKE :p" for c in texts]
+            + [f"CAST({c} AS TEXT) ILIKE :p" for c in jsons]
+        )
+        # Fixed SQL per source; the identifier is only ever a bound parameter.
+        rows = (
+            session.execute(
+                text(
+                    f"SELECT {key}, {', '.join(columns)} FROM {table} WHERE {where}"
+                ),  # nosec B608
+                params,
+            )
+            .mappings()
+            .all()
+        )
+        counts = {"matched": len(rows), "erased": 0, "held": 0}
+        class_held = _class_held(session, _HOLD_CLASS[source])
+        for row in rows:
+            cases = {
+                c
+                for c in session.execute(text(cases_sql), {"k": row[key]}).scalars()
+                if c
+            }
+            if class_held or cases & held_cases:
+                counts["held"] += 1
+                continue
+            new = {c: _redact(row[c], pattern) for c in columns}
+            sets = [f"{c} = :{c}" for c in texts] + [
+                f"{c} = CAST(:{c} AS jsonb)" for c in jsons
+            ]
+            values = {c: new[c] for c in texts}
+            values.update(
+                {c: None if new[c] is None else json.dumps(new[c]) for c in jsons}
+            )
+            session.execute(
+                text(
+                    f"UPDATE {table} SET {', '.join(sets)} WHERE {key} = :k"
+                ),  # nosec B608
+                {**values, "k": row[key]},
+            )
+            counts["erased"] += 1
+        results[source] = counts
+    users = session.execute(
+        text(
+            "SELECT count(*) FROM users WHERE username ILIKE :p OR email ILIKE :p"
+            " OR full_name ILIKE :p"
+        ),
+        params,
+    ).scalar()
+    outcome = {
+        "results": results,
+        "user_accounts_matched": int(users or 0),
+        "not_erased_here": (
+            "user accounts (user management); chained ledgers and audit logs "
+            "(kept for their legal obligation; the retention tools remove them)"
+        ),
+    }
+    record_change(
+        session,
+        config_type=CONFIG_TYPE,
+        config_key=request_id,
+        action="erase",
+        old=None,
+        new=outcome,
+        actor=actor,
+        reason="data subject request erasure",
+    )
+    return {"request_id": request_id, **outcome}

@@ -2499,6 +2499,14 @@
    "role-manager": "allow",
    "role-admin": "allow"
   },
+  "POST /api/compliance/data-subject/requests/{request_id}/erase": {
+   "gate": "login + perm:settings.write",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
   "POST /api/compliance/data-subject/requests/{request_id}/export": {
    "gate": "login + perm:settings.write",
    "role-viewer": "deny",

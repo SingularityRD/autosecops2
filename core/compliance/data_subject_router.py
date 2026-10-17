@@ -43,6 +43,23 @@ class LookupBody(BaseModel):
     identifier: str = Field(..., min_length=3, max_length=320)
 
 
+class EraseBody(LookupBody):
+    confirm: bool = False
+
+
+class EraseCounts(BaseModel):
+    matched: int
+    erased: int
+    held: int
+
+
+class EraseView(BaseModel):
+    request_id: str
+    results: Dict[str, EraseCounts]
+    user_accounts_matched: int
+    not_erased_here: str
+
+
 class CloseBody(BaseModel):
     outcome: str = Field(..., min_length=1, max_length=2000)
 
@@ -147,6 +164,31 @@ def export_request(
 ) -> Dict[str, Any]:
     """The matching records, for the reply to the data subject."""
     return _lookup(data_subject.export, session, request_id, body, user)
+
+
+@router.post("/requests/{request_id}/erase", response_model=EraseView)
+def erase_request(
+    request_id: str,
+    body: EraseBody,
+    session: UnitOfWorkSession,
+    user: User = Depends(_admin),
+) -> Dict[str, Any]:
+    """Erase the identifier from findings, cases and comments (erasure requests
+    only, ``confirm`` required; legal holds respected; cannot be undone)."""
+    try:
+        return data_subject.erase(
+            session,
+            request_id,
+            body.identifier,
+            actor=_actor(user),
+            confirm=body.confirm,
+        )
+    except data_subject.RequestNotFound:
+        raise HTTPException(404, "No such request") from None
+    except data_subject.RequestClosed:
+        raise HTTPException(409, "The request is closed") from None
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
 
 
 @router.post("/requests/{request_id}/close", response_model=RequestView)
