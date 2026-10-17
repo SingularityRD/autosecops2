@@ -40,6 +40,15 @@ def _is_otel_enabled() -> bool:
     return get_settings().vigil_otel_enabled
 
 
+def _is_metrics_only() -> bool:
+    """W0.51: Prometheus metrics served locally, without OTEL export or traces."""
+    settings = get_settings()
+    return (
+        bool(getattr(settings, "vigil_metrics_enabled", False))
+        and not settings.vigil_otel_enabled
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fallback no-op classes (used when OTEL is disabled or SDK missing)
 # ---------------------------------------------------------------------------
@@ -132,6 +141,38 @@ class _FallbackNoOpMeter:
 # ---------------------------------------------------------------------------
 # Internal initialization
 # ---------------------------------------------------------------------------
+
+
+def _do_init_metrics_only(service_name: str) -> None:
+    """A MeterProvider with only the Prometheus reader (W0.51).
+
+    It registers on prometheus_client's default REGISTRY, which the backend's
+    /metrics route and the daemon's :9090 listener already serve. No OTLP
+    exporter and no tracer provider: nothing is sent anywhere, so an air-gapped
+    install can be scraped by its own Prometheus.
+    """
+    from opentelemetry import metrics
+    from opentelemetry.exporter.prometheus import PrometheusMetricReader
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.resources import Resource
+
+    global _meter_provider
+
+    settings = get_settings()
+    resource = Resource.create(
+        {
+            "service.name": service_name,
+            "service.version": settings.release_version,
+            "deployment.environment": settings.environment,
+            "vigil.component": service_name,
+        }
+    )
+    meter_provider = MeterProvider(
+        resource=resource, metric_readers=[PrometheusMetricReader()]
+    )
+    metrics.set_meter_provider(meter_provider)
+    _meter_provider = meter_provider
+    logger.info("Prometheus metrics enabled for '%s' (no OTEL export)", service_name)
 
 
 def _do_init(service_name: str) -> None:
@@ -242,7 +283,8 @@ def init_telemetry(service_name: str) -> bool:
     """
     global _initialized
 
-    if not _is_otel_enabled():
+    metrics_only = _is_metrics_only()
+    if not _is_otel_enabled() and not metrics_only:
         logger.debug("VIGIL_OTEL_ENABLED is not set — telemetry disabled")
         return False
 
@@ -250,7 +292,11 @@ def init_telemetry(service_name: str) -> bool:
         return True
 
     try:
-        _do_init(service_name)
+        if metrics_only:
+            # Meters work, tracers stay the API's no-op proxy (no provider set).
+            _do_init_metrics_only(service_name)
+        else:
+            _do_init(service_name)
         _initialized = True
         return True
     except Exception as exc:

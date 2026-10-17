@@ -1,0 +1,24 @@
+{{- if .Values.observability.grafanaDashboard.enabled }}
+# W0.51: the AutoSecOps dashboard for the Grafana sidecar
+# (files/grafana/autosecops.json; the scrape jobs are filled in here).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vigil.fullname" . }}-grafana-dashboard
+  {{- with .Values.observability.grafanaDashboard.namespace }}
+  namespace: {{ . }}
+  {{- else }}
+  namespace: {{ $.Release.Namespace }}
+  {{- end }}
+  labels:
+    {{- include "vigil.labels" . | nindent 4 }}
+    {{- with .Values.observability.grafanaDashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  autosecops.json: |-
+    {{- .Files.Get "files/grafana/autosecops.json"
+        | replace "__DAEMON__" (include "vigil.daemon.fullname" .)
+        | replace "__BACKEND__" (printf "%s-backend" (include "vigil.fullname" .))
+        | nindent 4 }}
+{{- end }}

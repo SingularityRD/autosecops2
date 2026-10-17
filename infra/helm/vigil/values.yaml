@@ -1114,6 +1114,24 @@ observability:
     labels: {}
     relabelings: []
     metricRelabelings: []
+    # W0.51: also scrape the backend's /metrics (port http). It carries the
+    # audit export, backup and HTTP request metrics. /metrics is served without
+    # a login: keep it off the public ingress (see the operations guide).
+    backend: true
+  # W0.51: alert rules (Prometheus Operator PrometheusRule CRD). The metrics
+  # exist with config.VIGIL_METRICS_ENABLED=true (local only, no OTEL export,
+  # the air-gap default) or with OTEL on.
+  prometheusRule:
+    enabled: false
+    namespace: ""
+    labels: {}
+  # W0.51: a Grafana dashboard as a ConfigMap for the Grafana sidecar
+  # (label grafana_dashboard: "1" by default).
+  grafanaDashboard:
+    enabled: false
+    namespace: ""
+    labels:
+      grafana_dashboard: "1"
 
 # -----------------------------------------------------------------------------
 # NetworkPolicies (issue #111)

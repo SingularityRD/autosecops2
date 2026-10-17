@@ -642,13 +642,13 @@
       "site": "core/telemetry.py",
       "category": "gated",
       "kinds": {
-        "otel-exporter": 4
+        "otel-exporter": 5
       },
       "switches": {
         "VIGIL_OTEL_ENABLED": "off",
         "OTEL_EXPORTER_OTLP_ENDPOINT": "internal"
       },
-      "note": "OTLP exporter; inert unless VIGIL_OTEL_ENABLED."
+      "note": "OTLP exporter; inert unless VIGIL_OTEL_ENABLED. W0.51: VIGIL_METRICS_ENABLED adds only a PrometheusMetricReader (served on the process's own /metrics, pulled by a local scraper); it sends nothing."
     },
     {
       "site": "core/threat_intel/threat_feed_service.py",
