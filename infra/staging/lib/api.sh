@@ -83,10 +83,10 @@ api_ensure_admin() {
   fi
   log "ilk yönetici hesabı oluşturuluyor: $STAGING_ADMIN_USER"
   local body token
-  token="$(api_setup_token)" && [ -n "$token" ] || {
+  if ! token="$(api_setup_token)" || [ -z "$token" ]; then
     log "kurulum token'ı alınamadı (STAGING_SETUP_TOKEN ya da kubectl exec)"
     return 1
-  }
+  fi
   body="$(json_from_env username=STAGING_ADMIN_USER email=STAGING_ADMIN_EMAIL \
       password=STAGING_ADMIN_PASSWORD full_name=STAGING_ADMIN_USER)"
   # Here-string, not a pipe: a pipe would run api_call in a subshell and lose

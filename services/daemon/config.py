@@ -42,7 +42,7 @@ class SyslogConfig:
     """The syslog listener (W0.41, services/daemon/syslog_listener.py)."""
 
     enabled: bool = False
-    bind_host: str = "0.0.0.0"
+    bind_host: str = "0.0.0.0"  # nosec B104 - set from DAEMON_BIND_HOST in from_env
     tcp_port: int = 5514
     udp_port: int = 0  # 0: no UDP listener
     # Senders read from; empty refuses every one (syslog has no credential).
