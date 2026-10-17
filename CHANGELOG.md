@@ -44,6 +44,15 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **compliance (W0.48):** data-subject requests (KVKK art. 11, 13). Register a
+  request (`POST /api/compliance/data-subject/requests`: kind, received time,
+  reference); it is due in 30 days and the list shows days left and overdue
+  ones. The register keeps the identifier's SHA-256 and a masked hint, not the
+  identifier. Search and export are tied to an open request and its
+  identifier, look through findings, cases, case comments and users, and each
+  is recorded on the request's audit trail. Erasure and rectification stay with
+  the retention tools after the legal assessment. All routes need
+  `settings.write`.
 * **docs (W0.47):** an operations guide (`docs/guide/isletim-rehberi.md`):
   sizing starting points from the chart's requests and limits (stated as not
   measured), the port and firewall matrix for Helm and Compose, installing the

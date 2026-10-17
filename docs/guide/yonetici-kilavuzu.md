@@ -92,6 +92,7 @@ bunu değişiklik yönetimi sürecinize alın.
 | Kanarya ayarları ve sonuçları (`/api/quality/canaries`) | `settings.write` **ve** Admin rolü (Manager göremez) |
 | Giden webhook uç noktaları (`/api/webhook-endpoints`) | `settings.write` |
 | Düzenleyici sayaç ayarları (`/api/compliance/regulatory-clocks/config`) | okuma `settings.read`, yazma `settings.write` |
+| İlgili kişi başvuruları (`/api/compliance/data-subject/requests`) | `settings.write` (okuma dahil) |
 | Vakada düzenleyici an kaydı (`POST /api/cases/{case_id}/regulatory/events`) | `cases.write` |
 | Uygulanmış eylemi geri alma (`POST /api/response/actions/{action_id}/revert`, gerekçe zorunlu) | `ai_decisions.approve` |
 | Saklama politikası, yasal saklama, imha çalıştırma (`/api/compliance/retention/...`) | okuma `settings.read`, yazma ve imha `settings.write` |
@@ -971,6 +972,35 @@ Elle silme yolları da vardır: tek vaka silme (`cases.delete`), tüm bulguları
 (`POST /api/orchestrator/investigations/purge`, `settings.write`). Bu silmeler geri
 alınamaz, yasal saklamaya bakmaz ve imha tutanağına girmez. Düzenlenmiş kurulumda
 imhayı yalnızca imha işiyle yapın.
+
+### İlgili kişi başvuruları (KVKK md. 11, 13)
+
+Bir kişi verisini sorduğunda, düzeltilmesini ya da silinmesini istediğinde
+(W0.48), önce başvuruyu kaydedin:
+`POST /api/compliance/data-subject/requests` (`identifier`: e-posta, kullanıcı adı,
+IP ya da ana makine adı; `kind`: `access`, `rectification`, `erasure`, `objection`
+ya da `other`; `received_at`, `reference`). Başvurunun süresi alındığı andan 30
+gündür; `GET /api/compliance/data-subject/requests` her birinin kalan gününü ve
+gecikip gecikmediğini gösterir. Kayıt kimlik bilgisinin kendisini değil, SHA-256
+özetini ve maskeli bir ipucunu (`z***@kurum.example`) tutar.
+
+Arama ve dışa aktarım başvuruya bağlıdır ve aynı kimlik bilgisini ister:
+`POST /api/compliance/data-subject/requests/{request_id}/search` her kaynakta
+eşleşme sayısını ve kimlikleri, `.../export` kayıtların kendisini döner
+(bulgular: başlık, açıklama, varlık bağlamı; vakalar; vaka yorumları;
+kullanıcılar; kaynak başına en çok 200 kayıt, sayılar tamdır). Kimlik bilgisi
+istek gövdesinde gider, URL'de ya da erişim loglarında görünmez. Eşleşme büyük/
+küçük harf duyarsız metin aramasıdır: her sonucu kişiye göndermeden önce
+gözden geçirin. Her arama ve dışa aktarım `config_audit_log`'a başvurunun
+numarasıyla yazılır. Yanıt verildiğinde `.../close` (`outcome`) ile kapatın;
+kapalı başvuruda arama yapılamaz.
+
+Silme ve düzeltme bu uçlarla yapılmaz: saklama araçlarını (sınıf başına
+`anonymise` ya da `delete`, bkz. [Saklama ve imha](#saklama-ve-imha)) hukuki
+değerlendirmeden sonra kullanın. Zincirli denetim kayıtları (`audit_chain`,
+`case_audit_logs`) bütünlük için silinmez; bunların saklanması yasal yükümlülüğe
+dayanır.
+
 
 ## Denetim kayıtları ve dışa aktarım
 

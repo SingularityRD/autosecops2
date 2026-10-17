@@ -2849,6 +2849,84 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/compliance/data-subject/requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Requests */
+        get: operations["get_api_compliance_data-subject_requests"];
+        put?: never;
+        /**
+         * Register Request
+         * @description Register a request; it is due 30 days after it was received.
+         */
+        post: operations["post_api_compliance_data-subject_requests"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/compliance/data-subject/requests/{request_id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Close Request */
+        post: operations["post_api_compliance_data-subject_requests_request_id_close"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/compliance/data-subject/requests/{request_id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export Request
+         * @description The matching records, for the reply to the data subject.
+         */
+        post: operations["post_api_compliance_data-subject_requests_request_id_export"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/compliance/data-subject/requests/{request_id}/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Search Request
+         * @description Where the identifier appears: counts and ids per source.
+         */
+        post: operations["post_api_compliance_data-subject_requests_request_id_search"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/compliance/regulatory-clocks/config": {
         parameters: {
             query?: never;
@@ -9884,6 +9962,11 @@ export interface components {
             /** Waiting For */
             waiting_for?: string | null;
         };
+        /** CloseBody */
+        CloseBody: {
+            /** Outcome */
+            outcome: string;
+        };
         /**
          * ClosureCategory
          * @description What closing the Case determined.
@@ -11582,6 +11665,24 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** LookupBody */
+        LookupBody: {
+            /** Identifier */
+            identifier: string;
+        };
+        /** LookupView */
+        LookupView: {
+            /** Generated At */
+            generated_at?: string | null;
+            /** Note */
+            note?: string | null;
+            /** Request Id */
+            request_id: string;
+            /** Results */
+            results: {
+                [key: string]: components["schemas"]["SourceResult"];
+            };
+        };
         /**
          * MFACodeRequest
          * @description A current TOTP or recovery code, proving the caller still holds the
@@ -12509,6 +12610,20 @@ export interface components {
             /** Refresh Token */
             refresh_token?: string | null;
         };
+        /** RegisterBody */
+        RegisterBody: {
+            /** Identifier */
+            identifier: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "access" | "rectification" | "erasure" | "objection" | "other";
+            /** Received At */
+            received_at?: string | null;
+            /** Reference */
+            reference?: string | null;
+        };
         /** RegulatoryConfigResponse */
         RegulatoryConfigResponse: {
             /** Defaults */
@@ -12598,6 +12713,43 @@ export interface components {
             replay: {
                 [key: string]: unknown;
             };
+        };
+        /** RequestView */
+        RequestView: {
+            /** Closed At */
+            closed_at?: string | null;
+            /** Days Left */
+            days_left?: number | null;
+            /** Due At */
+            due_at?: string | null;
+            /** Identifier Hint */
+            identifier_hint: string;
+            /** Kind */
+            kind: string;
+            /** Outcome */
+            outcome?: string | null;
+            /**
+             * Overdue
+             * @default false
+             */
+            overdue: boolean;
+            /** Received At */
+            received_at?: string | null;
+            /** Reference */
+            reference?: string | null;
+            /** Registered At */
+            registered_at?: string | null;
+            /** Registered By */
+            registered_by?: string | null;
+            /** Request Id */
+            request_id: string;
+            /** State */
+            state: string;
+        };
+        /** RequestsView */
+        RequestsView: {
+            /** Requests */
+            requests: components["schemas"]["RequestView"][];
         };
         /**
          * ResolutionStepAdd
@@ -13275,6 +13427,15 @@ export interface components {
              * @constant
              */
             version: 1;
+        };
+        /** SourceResult */
+        SourceResult: {
+            /** Count */
+            count: number;
+            /** Items */
+            items: unknown[];
+            /** Truncated */
+            truncated: boolean;
         };
         /** SsoAdminConfig */
         SsoAdminConfig: {
@@ -19076,6 +19237,183 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_compliance_data-subject_requests": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestsView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "post_api_compliance_data-subject_requests": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "post_api_compliance_data-subject_requests_request_id_close": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloseBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "post_api_compliance_data-subject_requests_request_id_export": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LookupBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LookupView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "post_api_compliance_data-subject_requests_request_id_search": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LookupBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LookupView"];
                 };
             };
             /** @description Validation Error */
