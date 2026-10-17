@@ -381,17 +381,25 @@ function VerifyStep({ probe, onRun }: { probe: Probe; onRun: () => void }) {
           </span>
         </div>
       )}
-      {result.executor && (
-        <div className={`int-probe ${result.executor.available ? 'pass' : 'fail'}`}>
-          <span className="int-probe-ic"><Icon name={result.executor.available ? 'check2' : 'close'} size={15} /></span>
-          <span className="int-probe-name">Response actions</span>
-          <span className="int-probe-detail" style={result.executor.available ? { color: 'var(--tx2)' } : undefined}>
-            {result.executor.available
-              ? `Available now, after approval: ${result.executor.action_types.join(', ')}`
-              : 'Not available: enable the integration and save its credentials. No restart is needed.'}
-          </span>
-        </div>
-      )}
+      {result.executor && (() => {
+        // Registered is not usable: with a failed credential check every action
+        // would fail at the vendor (W0.44).
+        const credsFailed = result.credentials ? !result.credentials.success : false
+        const ready = result.executor.available && !credsFailed
+        return (
+          <div className={`int-probe ${ready ? 'pass' : 'fail'}`}>
+            <span className="int-probe-ic"><Icon name={ready ? 'check2' : 'close'} size={15} /></span>
+            <span className="int-probe-name">Response actions</span>
+            <span className="int-probe-detail" style={ready ? { color: 'var(--tx2)' } : undefined}>
+              {ready
+                ? `Available now, after approval: ${result.executor.action_types.join(', ')}`
+                : result.executor.available
+                  ? 'Not usable yet: the credential check above failed, so every action would fail. Fix the credentials and test again.'
+                  : 'Not available: enable the integration and save its credentials. No restart is needed.'}
+            </span>
+          </div>
+        )
+      })()}
       {again}
     </>
   )

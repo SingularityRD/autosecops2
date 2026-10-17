@@ -181,9 +181,13 @@ async def test_entra_reads_one_user_and_reports_a_refusal(monkeypatch, nothing_s
 
     def request(self, method, path, *, params=None, json=None, headers=None):
         calls.append((method, path, dict(params or {})))
-        raise GraphError("Graph GET /users returned HTTP 403 (Authorization_RequestDenied)")
+        raise GraphError(
+            "Graph GET /users returned HTTP 403 (Authorization_RequestDenied)"
+        )
 
-    monkeypatch.setattr("core.integrations.azure_ad.client.GraphClient.request", request)
+    monkeypatch.setattr(
+        "core.integrations.azure_ad.client.GraphClient.request", request
+    )
 
     ok, message = await credential_check.check_credentials("azure-ad")
 
@@ -238,3 +242,82 @@ async def test_palo_alto_runs_one_operational_read(monkeypatch, nothing_stored):
     assert calls == [
         ("GET", {"type": "op", "cmd": "<show><system><info></info></system></show>"})
     ]
+
+
+# --- W0.44: the target may be private, never cloud metadata; messages scrubbed --
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "http://169.254.169.254:8089",
+        "https://169.254.170.2",
+        "https://[fd00:ec2::254]",
+        "169.254.10.10",  # link-local, where metadata services live
+        "https://[::ffff:169.254.169.254]",
+    ],
+)
+async def test_a_metadata_or_link_local_target_is_refused_before_any_call(
+    monkeypatch, address
+):
+    _resolved(
+        monkeypatch,
+        server_url=address,
+        hostname=address,
+        username="u",
+        password="p",
+        api_key="k",
+    )
+
+    def boom(*a, **k):
+        raise AssertionError("no call may be made")
+
+    monkeypatch.setattr(
+        "core.integrations.splunk.client.SplunkService.test_connection", boom
+    )
+    for integration in ("splunk", "palo-alto"):
+        ok, message = await credential_check.check_credentials(integration)
+        assert ok is False
+        assert message.startswith("Refused:"), message
+
+
+async def test_a_private_target_is_still_checked(monkeypatch):
+    _resolved(
+        monkeypatch,
+        server_url="https://10.20.30.40:8089",
+        username="u",
+        password="p",
+        verify_ssl=True,
+        ca_cert_path=None,
+    )
+    monkeypatch.setattr(
+        "core.integrations.splunk.client.SplunkService.test_connection",
+        lambda self: (True, "Connected to Splunk 9.2"),
+    )
+    assert await credential_check.check_credentials("splunk") == (
+        True,
+        "Connected to Splunk 9.2",
+    )
+
+
+async def test_a_vendor_message_is_scrubbed_and_bounded(monkeypatch):
+    _resolved(
+        monkeypatch,
+        server_url="https://s:8089",
+        username="u",
+        password="p",
+        verify_ssl=True,
+        ca_cert_path=None,
+    )
+    echoed = (
+        "HTTP 401: Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig "
+        + "x" * 1000
+    )
+    monkeypatch.setattr(
+        "core.integrations.splunk.client.SplunkService.test_connection",
+        lambda self: (False, echoed),
+    )
+    ok, message = await credential_check.check_credentials("splunk")
+    assert ok is False
+    assert "eyJhbGci" not in message
+    assert len(message) <= credential_check.MESSAGE_MAX

@@ -229,6 +229,41 @@ def resolve_allowed_addresses(
     return addresses
 
 
+def refuse_metadata_target(url_or_host: str, port: int = 443) -> None:
+    """For an integration's own server, which may well be private (an on-prem
+    firewall, SIEM or Splunk): refuse only what no such server is, a cloud
+    metadata address, a link-local one (where metadata services live) or a
+    scoped one (W0.44).
+
+    Resolves the host and checks every address. An unresolvable host is left
+    to the client, whose own error says so. The check is at call time; it does
+    not pin the address the client then connects to.
+    """
+    text = str(url_or_host or "").strip()
+    host = urlparse(text if "://" in text else f"https://{text}").hostname
+    if not host:
+        raise UrlSafetyError("no host in the configured address")
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError):
+        return
+    for info in infos:
+        addr = str(info[4][0])
+        if "%" in addr:
+            raise UrlSafetyError(f"{host} resolves to a scoped address")
+        ip = ipaddress.ip_address(addr)
+        if str(ip) in CLOUD_METADATA_ADDRESSES:
+            raise UrlSafetyError(f"{host} resolves to a cloud metadata address")
+        if ip.version == 6:
+            embedded = _embedded_ipv4(ip)
+            if embedded is not None:
+                ip = embedded
+        if str(ip) in CLOUD_METADATA_ADDRESSES:
+            raise UrlSafetyError(f"{host} resolves to a cloud metadata address")
+        if ip.is_link_local:
+            raise UrlSafetyError(f"{host} resolves to a link-local address")
+
+
 def validate_provider_url(
     url: str,
     *,

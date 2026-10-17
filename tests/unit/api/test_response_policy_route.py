@@ -251,6 +251,32 @@ def test_a_body_over_the_cap_is_413_and_nothing_is_written(client):
     assert state["writes"] == []
 
 
+def test_a_chunked_body_over_the_cap_is_413_without_being_read_whole(client):
+    """No Content-Length: the cap stops the read at the first chunk past it (W0.44)."""
+    http, state = client
+    sent = []
+
+    def chunks():
+        for _ in range(64):
+            sent.append(1)
+            yield b" " * 65536
+
+    response = http.put(
+        "/api/response/policy",
+        content=chunks(),
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 413
+    assert state["writes"] == []
+
+
+def test_a_valid_body_still_parses_after_the_cap(client):
+    http, state = client
+    stale_free = http.get("/api/response/policy").json()["version"]
+    response = http.put("/api/response/policy", json=_body(version=stale_free))
+    assert response.status_code == 200, response.text
+
+
 def test_the_largest_valid_policy_fits_the_cap():
     import json
 

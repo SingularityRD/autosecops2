@@ -94,3 +94,52 @@ def test_a_user_without_a_username_is_named_by_id(recorder):
         )
     )
     assert recorder[0][2] == "u-9"
+
+
+def test_a_relationship_is_created_by_the_signed_in_user(monkeypatch):
+    """W0.44: ``created_by`` from the client is accepted and ignored."""
+    seen = {}
+
+    def add_relationship(session, case_id, **kw):
+        seen.update(kw)
+        return SimpleNamespace(**kw)
+
+    monkeypatch.setattr(
+        cases_api.case_records_service, "add_relationship", add_relationship
+    )
+    monkeypatch.setattr(cases_api.CaseRelationshipSchema, "dump", lambda rel: vars(rel))
+    data = cases_api.RelationshipAdd(
+        related_case_id="c-2", relationship_type="duplicate", created_by="mallory"
+    )
+    asyncio.run(cases_api.add_relationship("c-1", data, session=None, current_user=ANA))
+    assert seen["created_by"] == "ana"
+    asyncio.run(
+        cases_api.add_relationship(
+            "c-1",
+            cases_api.RelationshipAdd(
+                related_case_id="c-3", relationship_type="related"
+            ),
+            session=None,
+            current_user=ANA,
+        )
+    )
+    assert seen["created_by"] == "ana"
+
+
+def test_an_escalation_is_from_the_signed_in_user(monkeypatch):
+    """W0.44: ``escalated_from`` from the client is accepted and ignored."""
+    calls = []
+
+    class _Workflow:
+        def escalate_case(self, *args):
+            calls.append(args)
+            return True
+
+    monkeypatch.setattr(
+        "core.cases.case_workflow_service.CaseWorkflowService", _Workflow
+    )
+    data = cases_api.EscalationAdd(
+        escalated_from="the-ciso", escalated_to="ir-team", reason="ransomware"
+    )
+    asyncio.run(cases_api.escalate_case("c-1", data, current_user=ANA))
+    assert calls == [("c-1", "ana", "ir-team", "ransomware", "high")]

@@ -2139,7 +2139,7 @@ export interface paths {
         put?: never;
         /**
          * Escalate Case
-         * @description Escalate case.
+         * @description Escalate case, from the signed-in user.
          */
         post: operations["post_api_cases_case_id_escalate"];
         delete?: never;
@@ -2526,7 +2526,7 @@ export interface paths {
         put?: never;
         /**
          * Add Relationship
-         * @description Link related case.
+         * @description Link related case, recorded as the signed-in user's.
          */
         post: operations["post_api_cases_case_id_relationships"];
         delete?: never;
@@ -10571,11 +10571,14 @@ export interface components {
         };
         /**
          * EscalationAdd
-         * @description Escalate case.
+         * @description Escalate case. It is escalated from the signed-in user (W0.44).
          */
         EscalationAdd: {
-            /** Escalated From */
-            escalated_from: string;
+            /**
+             * Escalated From
+             * @description Ignored: the case is escalated by the signed-in user.
+             */
+            escalated_from?: string | null;
             /** Escalated To */
             escalated_to: string;
             /** Reason */
@@ -12571,11 +12574,14 @@ export interface components {
         };
         /**
          * RelationshipAdd
-         * @description Add case relationship.
+         * @description Add case relationship. The creator is the signed-in user (W0.44).
          */
         RelationshipAdd: {
-            /** Created By */
-            created_by: string;
+            /**
+             * Created By
+             * @description Ignored: the creator is the signed-in user.
+             */
+            created_by?: string | null;
             /** Notes */
             notes?: string | null;
             /** Related Case Id */

@@ -712,11 +712,13 @@ async def update_task(
 
 # Case Relationships
 class RelationshipAdd(BaseModel):
-    """Add case relationship."""
+    """Add case relationship. The creator is the signed-in user (W0.44)."""
 
     related_case_id: str
     relationship_type: str
-    created_by: str
+    created_by: Optional[str] = Field(
+        None, description="Ignored: the creator is the signed-in user."
+    )
     notes: Optional[str] = None
 
 
@@ -726,16 +728,19 @@ class RelationshipAdd(BaseModel):
     response_model=CaseRelationshipSchema,
 )
 async def add_relationship(
-    case_id: str, data: RelationshipAdd, session: UnitOfWorkSession
+    case_id: str,
+    data: RelationshipAdd,
+    session: UnitOfWorkSession,
+    current_user: User = Depends(get_current_user),
 ):
-    """Link related case."""
+    """Link related case, recorded as the signed-in user's."""
 
     rel = case_records_service.add_relationship(
         session,
         case_id,
         related_case_id=data.related_case_id,
         relationship_type=data.relationship_type,
-        created_by=data.created_by,
+        created_by=principal_name(current_user),
         notes=data.notes,
     )
     return CaseRelationshipSchema.dump(rel)
@@ -754,9 +759,11 @@ async def get_relationships(case_id: str, session: UnitOfWorkSession):
 
 # Case Escalation
 class EscalationAdd(BaseModel):
-    """Escalate case."""
+    """Escalate case. It is escalated from the signed-in user (W0.44)."""
 
-    escalated_from: str
+    escalated_from: Optional[str] = Field(
+        None, description="Ignored: the case is escalated by the signed-in user."
+    )
     escalated_to: str
     reason: str
     urgency_level: str = "high"
@@ -765,13 +772,21 @@ class EscalationAdd(BaseModel):
 @router.post(
     "/{case_id}/escalate", dependencies=_CASES_WRITE, response_model=CaseSuccessResponse
 )
-async def escalate_case(case_id: str, data: EscalationAdd):
-    """Escalate case."""
+async def escalate_case(
+    case_id: str,
+    data: EscalationAdd,
+    current_user: User = Depends(get_current_user),
+):
+    """Escalate case, from the signed-in user."""
     from core.cases.case_workflow_service import CaseWorkflowService
 
     workflow_service = CaseWorkflowService()
     success = workflow_service.escalate_case(
-        case_id, data.escalated_from, data.escalated_to, data.reason, data.urgency_level
+        case_id,
+        principal_name(current_user),
+        data.escalated_to,
+        data.reason,
+        data.urgency_level,
     )
     if not success:
         raise HTTPException(status_code=500, detail="Failed to escalate case")

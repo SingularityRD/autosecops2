@@ -11,7 +11,8 @@
 #   *.py (backend)        py:flake8/black/isort (changed files in services/ core/),
 #                         py:import-linter, py:pytest (test dirs related to the change
 #                         + tests/unit/_ratchets; --full: tests/unit tests/security)
-#   infra/, env.example   py:pytest tests/unit/_ratchets, plus tests/unit/<area> for
+#   infra/, env.example   py:pytest tests/unit/_ratchets (and test_upgrade_database.py),
+#                         plus tests/unit/<area> for
 #                         infra/<area>/** (and tests/unit/platform for infra/helm/**)
 #   services/medic*/**    <svc>:ruff (check + format), <svc>:pytest (uv, as medic.yml;
 #                         venv in <git-dir>/wp-venvs/<svc>, never services/<svc>/.venv)
@@ -242,6 +243,8 @@ while IFS= read -r f; do
 done < <(printf '%s\n' "${changed[@]}" | grep -E '\.py$' | grep -Ev "$medic_re")
 if [ ${#pyf[@]} -gt 0 ] || [ "$deleted_py" = 1 ] || any '^(infra/|env\.example$|docker-compose|start\.sh$|shutdown_all\.sh$|scripts/.*\.py$)'; then
   add tests/unit/_ratchets
+  # The frozen 0.7.1 init SQL and upgrade-path ratchet lives outside _ratchets (W0.44).
+  add tests/unit/test_upgrade_database.py || true
 fi
 # Non-Python infra (shell, templates, values): the tests that read them live in
 # tests/unit/<area> (infra/staging -> tests/unit/staging, infra/airgap ->

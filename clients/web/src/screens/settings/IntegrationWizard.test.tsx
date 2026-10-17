@@ -156,6 +156,22 @@ describe('IntegrationWizard drawer', () => {
     expect(screen.getByText(/Entra ID could not be reached/)).toBeInTheDocument()
   })
 
+  it('a registered executor whose credential check fails is not shown as available (W0.44)', async () => {
+    const defender = { ...okta, id: 'microsoft-defender', name: 'Microsoft Defender for Endpoint' }
+    test.mockResolvedValueOnce({
+      data: {
+        success: false,
+        servers: [{ name: 'microsoft-defender', success: true }],
+        credentials: { success: false, message: 'Microsoft Defender returned HTTP 401' },
+        executor: { available: true, action_types: ['isolate_host'] },
+      },
+    } as never)
+    open({ integration: defender })
+    fireEvent.click(screen.getByRole('button', { name: 'Save and verify' }))
+    expect(await screen.findByText(/Not usable yet: the credential check above failed/)).toBeInTheDocument()
+    expect(screen.queryByText(/Available now/)).not.toBeInTheDocument()
+  })
+
   it('error: a 400 says to save first; an unavailable MCP client is its own state', async () => {
     test.mockRejectedValueOnce({ response: { status: 400, data: { detail: 'Integration not configured' } } })
     open()
