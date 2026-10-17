@@ -86,8 +86,12 @@ def reviewed_rows(
 def export_reviewed(
     path: Path, *, tenant_id: str = "default", include_inconclusive: bool = False
 ) -> int:
+    from core.storage.connection import get_db_manager
     from core.storage.unit_of_work import unit_of_work
 
+    manager = get_db_manager()
+    if manager.engine is None:
+        manager.initialize()
     with unit_of_work() as session:
         rows = reviewed_rows(
             session, tenant_id=tenant_id, include_inconclusive=include_inconclusive
