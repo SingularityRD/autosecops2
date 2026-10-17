@@ -33,30 +33,6 @@ def _audit_checkpoint_interval() -> int:
     return 0 if interval <= 0 else max(60, interval)
 
 
-def _last_scheduled_hunt_at() -> Optional[datetime]:
-    """When the newest scheduled hunt was queued; None if none was or the read failed.
-
-    Intel rows share kind "schedule" but must not hold back the hunt.
-    """
-    try:
-        from sqlalchemy import func
-
-        from core.storage.models import IntakeTrigger
-
-        with get_db_manager().session_scope() as session:
-            return (
-                session.query(func.max(IntakeTrigger.created_at))
-                .filter(
-                    IntakeTrigger.kind == "schedule",
-                    IntakeTrigger.payload["trigger_type"].astext == "scheduled",
-                )
-                .scalar()
-            )
-    except Exception as e:  # noqa: BLE001 -- a hunt with no history still runs
-        logger.warning("could not read the last scheduled hunt: %s", e)
-        return None
-
-
 @dataclass
 class ScheduledTask:
     """Represents a scheduled task."""
@@ -66,6 +42,7 @@ class ScheduledTask:
     interval: int  # seconds
     last_run: Optional[datetime] = None
     enabled: bool = True
+    run_on_start: bool = False
 
 
 class TaskScheduler:
@@ -106,6 +83,7 @@ class TaskScheduler:
                 func=self._run_threat_hunt,
                 interval=self.config.threat_hunt_interval,
                 enabled=True,
+                run_on_start=False,
             )
         )
 
@@ -116,6 +94,7 @@ class TaskScheduler:
                     func=self._generate_report,
                     interval=self.config.report_interval,
                     enabled=True,
+                    run_on_start=False,
                 )
             )
 
@@ -126,6 +105,7 @@ class TaskScheduler:
                     func=self._run_cleanup,
                     interval=self.config.cleanup_interval,
                     enabled=True,
+                    run_on_start=False,
                 )
             )
 
@@ -150,6 +130,7 @@ class TaskScheduler:
                     func=self._run_probe_sweep,
                     interval=self.config.probe_interval,
                     enabled=True,
+                    run_on_start=False,
                 )
             )
 
@@ -173,6 +154,7 @@ class TaskScheduler:
                 func=self._run_health_check,
                 interval=300,
                 enabled=True,
+                run_on_start=True,
             )
         )
 
@@ -196,6 +178,7 @@ class TaskScheduler:
                     func=self._run_sandbox_poll,
                     interval=_sandbox_poll_interval(),
                     enabled=True,
+                    run_on_start=False,
                 )
             )
 
@@ -210,6 +193,7 @@ class TaskScheduler:
                         func=self._run_threat_feed_poll,
                         interval=ThreatFeedPoller.poll_interval_seconds(),
                         enabled=True,
+                        run_on_start=True,
                     )
                 )
         except Exception as e:  # noqa: BLE001
@@ -246,10 +230,14 @@ class TaskScheduler:
         await refresh_gateway_rates()
         rates_refresher = asyncio.create_task(run_gateway_rates_refresher())
 
-        # The hunt's clock survives a restart; the other tasks run on the first tick.
+        # Run startup tasks
         for task in self._tasks:
-            if task.name == "threat_hunt":
-                task.last_run = await asyncio.to_thread(_last_scheduled_hunt_at)
+            if task.run_on_start and task.enabled:
+                try:
+                    await task.func()
+                    task.last_run = utcnow()
+                except Exception as e:
+                    logger.error(f"Startup task {task.name} failed: {e}")
 
         # Main scheduling loop
         while not shutdown_event.is_set():
