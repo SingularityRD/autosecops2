@@ -477,6 +477,11 @@
       "id": "W0.52",
       "topic": "analist kılavuzu; belge seti güncel tabanı anlatır, SBOM ve imzalı imajlar var olarak belgelendi",
       "topic_en": "analyst guide; the guide set describes the current base, SBOMs and signed images documented as present"
+    },
+    {
+      "id": "W0.53",
+      "topic": "model değişikliği kapısı (varsayılan model son eval koşularına karşı denetlenir, MODEL_GATE_ENFORCE ile zorlanır) ve canlı injection sayaçları",
+      "topic_en": "model-change gate (a default model is checked against the latest eval runs, enforced with MODEL_GATE_ENFORCE) and live injection counters"
     }
   ],
   "highlights": [
