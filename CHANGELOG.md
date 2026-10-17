@@ -44,6 +44,15 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **quality (W0.49):** a POC on the customer's own alerts. `GET /api/qa/poc-report`
+  (`settings.read`, JSON or a Markdown download) counts what the install measured
+  over a window: alerts by source, AI triage verdicts, lanes, analyst review and
+  the Scorecard bounds, canaries, cases, proposed response actions and the latest
+  offline eval runs; a section whose tables are missing says so and canaries are
+  left out. The Analytics and Metrics **Export report** buttons, which did
+  nothing, download it. `python -m evalkit export-reviewed` writes the findings
+  analysts reviewed as labelled cases and `python -m evalkit run --cases <file>`
+  scores the triage path against them. A POC guide (`docs/guide/poc-kilavuzu.md`).
 * **compliance (W0.48):** data-subject requests (KVKK art. 11, 13). Register a
   request (`POST /api/compliance/data-subject/requests`: kind, received time,
   reference); it is due in 30 days and the list shows days left and overdue

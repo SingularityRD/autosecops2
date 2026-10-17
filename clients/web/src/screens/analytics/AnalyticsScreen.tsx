@@ -11,6 +11,7 @@ import {
   type HeatmapCell,
   type TimeRange,
 } from './useAnalytics'
+import { daysForRange, downloadPocReport } from '../../data/pocReport'
 
 const TH_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const TH_DAY_FULL = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -430,7 +431,7 @@ export default function AnalyticsScreen() {
           <button className="btn ghost icon" title="Refresh" onClick={reload}>
             <Icon name="refresh" />
           </button>
-          <button className="btn primary">
+          <button className="btn primary" title="Download the POC report for this range (Markdown)" onClick={() => void downloadPocReport(daysForRange(range))}>
             <Icon name="download" /> Export report
           </button>
         </div>

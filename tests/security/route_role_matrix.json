@@ -1312,6 +1312,14 @@
    "role-manager": "allow",
    "role-admin": "allow"
   },
+  "GET /api/qa/poc-report": {
+   "gate": "login + perm:settings.read",
+   "role-viewer": "deny",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
   "GET /api/qa/samples": {
    "gate": "login",
    "role-viewer": "allow",

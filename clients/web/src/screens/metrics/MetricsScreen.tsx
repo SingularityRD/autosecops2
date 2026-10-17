@@ -3,6 +3,7 @@ import { Icon } from '../../shared/icons'
 import { EmptyState } from '../../shared/ui'
 import { Pie, GroupedBars, Trend } from '../../shared/charts'
 import { useCaseMetrics, type CaseMetricsData } from './useCaseMetrics'
+import { downloadPocReport } from '../../data/pocReport'
 
 const RANGES: [string, number][] = [
   ['7d', 7],
@@ -56,7 +57,7 @@ export default function MetricsScreen() {
         </div>
         <div className="flex-1" />
         <button className="btn ghost icon" title="Refresh" onClick={reload}><Icon name="refresh" /></button>
-        <button className="btn primary"><Icon name="download" /> Export report</button>
+        <button className="btn primary" title="Download the POC report for this range (Markdown)" onClick={() => void downloadPocReport(days)}><Icon name="download" /> Export report</button>
       </div>
 
       {phase === 'loading' && <EmptyState loading icon="bars" title="Loading case metrics…" />}

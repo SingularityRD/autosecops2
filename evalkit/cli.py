@@ -23,7 +23,15 @@ from evalkit.backends import (
     describe,
     resolve_live_target,
 )
-from evalkit.corpus import DEFAULT_SUITES, REPO_ROOT, load_suites, parse_suite_list
+from evalkit.corpus import (
+    CUSTOMER_SUITE,
+    DEFAULT_SUITES,
+    REPO_ROOT,
+    load_cases_file,
+    load_suites,
+    parse_suite_list,
+    sha256_file,
+)
 from evalkit.report import build_report, write_report
 from evalkit.runner import CaseResult, run_cases
 from evalkit.triage import (
@@ -82,9 +90,13 @@ async def execute(
     concurrency: int = 4,
     limit: Optional[int] = None,
     verify: bool = True,
+    cases_file: Optional[Path] = None,
 ) -> Dict[str, List[CaseResult]]:
     version = prompt_version()
     cases = load_suites(suites, verify=verify, limit=limit)
+    if cases_file is not None:
+        cases[CUSTOMER_SUITE] = load_cases_file(cases_file, limit=limit)
+        suites = tuple(suites) + (CUSTOMER_SUITE,)
     out: Dict[str, List[CaseResult]] = {}
     for suite in suites:
         out[suite] = await run_cases(
@@ -110,6 +122,11 @@ def run_meta(backend: Any, args: argparse.Namespace, started_at: str) -> Dict[st
         "triggered_by": args.triggered_by,
         "limit": args.limit,
     }
+    if getattr(args, "cases", None):
+        meta["cases_file"] = {
+            "path": Path(args.cases).name,
+            "sha256": sha256_file(Path(args.cases)),
+        }
     budget = getattr(backend, "budget", None) or getattr(
         getattr(backend, "inner", None), "budget", None
     )
@@ -138,7 +155,11 @@ def _summary_line(report: Dict[str, Any]) -> str:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    suites = parse_suite_list(args.suite)
+    # With --cases and no --suite, only the customer's cases are run (W0.49).
+    if getattr(args, "cases", None) and args.suite is None:
+        suites: Sequence[str] = ()
+    else:
+        suites = parse_suite_list(args.suite or ",".join(DEFAULT_SUITES))
     try:
         backend = make_backend(args)
     except BudgetExceeded as exc:
@@ -161,6 +182,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             concurrency=args.concurrency,
             limit=args.limit,
             verify=not args.no_verify,
+            cases_file=Path(args.cases) if getattr(args, "cases", None) else None,
         )
     )
     if recorder is not None:
@@ -195,8 +217,14 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 def _add_common(p: argparse.ArgumentParser, *, backend_default: str) -> None:
     p.add_argument(
+        "--cases",
+        default=None,
+        help="also score this JSONL of your own labelled alerts (suite 'customer'); "
+        "alone, without --suite, only these are run",
+    )
+    p.add_argument(
         "--suite",
-        default=",".join(DEFAULT_SUITES),
+        default=None,
         help="comma list of train,dev,test,test_unseen,injection "
         "(default: %(default)s)",
     )
@@ -255,7 +283,32 @@ def build_parser() -> argparse.ArgumentParser:
     ci = sub.add_parser("ci", help="replay the committed cassette; fail on any miss")
     _add_common(ci, backend_default="cassette")
     ci.set_defaults(func=cmd_run, record=None, overwrite=False, max_errors=0)
+
+    reviewed = sub.add_parser(
+        "export-reviewed",
+        help="write the findings analysts reviewed (QA sampling) as labelled cases",
+    )
+    reviewed.add_argument("--out", required=True, help="JSONL file to write")
+    reviewed.add_argument("--tenant", default="default")
+    reviewed.add_argument(
+        "--include-inconclusive",
+        action="store_true",
+        help="keep reviews whose verdict is inconclusive",
+    )
+    reviewed.set_defaults(func=cmd_export_reviewed)
     return parser
+
+
+def cmd_export_reviewed(args: argparse.Namespace) -> int:
+    from evalkit.reviewed import export_reviewed
+
+    n = export_reviewed(
+        Path(args.out),
+        tenant_id=args.tenant,
+        include_inconclusive=args.include_inconclusive,
+    )
+    print(f"evalkit: wrote {n} reviewed case(s) to {args.out}")
+    return 0 if n else 1
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
