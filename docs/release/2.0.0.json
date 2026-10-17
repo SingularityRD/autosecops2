@@ -432,6 +432,11 @@
       "id": "W0.41",
       "topic": "syslog alımı (CEF, LEEF 1.0/2.0, FortiGate key=value, Wazuh JSON; TCP/TLS/UDP dinleyici varsayılan kapalı ve izin listeli, HTTP /ingest/syslog) ve IBM QRadar offense alımı (Deneysel, salt okuma)",
       "topic_en": "syslog intake (CEF, LEEF 1.0/2.0, FortiGate key=value, Wazuh JSON; TCP/TLS/UDP listener off by default and allowlisted, HTTP /ingest/syslog) and IBM QRadar offense ingestion (Experimental, read only)"
+    },
+    {
+      "id": "W0.44",
+      "topic": "sertleştirme: entegrasyon testi bulut metadata adresini reddeder ve iletileri temizler; e-posta değişikliği denetim kaydında; vaka ilişkisi ve yükseltme oturumdaki kullanıcıdan; politika gövde sınırı parçalı gövdede; ilk denetim noktası yeniden denenir",
+      "topic_en": "hardening: the integration test refuses cloud metadata targets and scrubs its messages; email change is audited; case relationship and escalation come from the session; the policy body cap holds for chunked bodies; the first audit checkpoint is retried"
     }
   ],
   "highlights": [
