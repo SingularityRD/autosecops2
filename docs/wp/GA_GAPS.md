@@ -110,7 +110,7 @@ Release sayfası "Latest" görünüyordu; pre-release işaretlenmeli (insan).
 |---|---|---|
 | T1, G1, G2, G3, G4, G5, G6, G7, G8, G9, G10, G11, G16, G17, K1, O6, O8, T6 | W0.32–W0.39 | Kapandı (batch 1) |
 | P3 Türkçe vaka raporu PDF | W0.40 | Kapandı |
-| P4 syslog/CEF/LEEF + QRadar | W0.41 | Kapandı (QRadar Deneysel; Fortinet/Check Point yürütücüsü yok) |
+| P4 syslog/CEF/LEEF + QRadar | W0.41 | Kapandı (QRadar Deneysel; yürütücüler W0.57, W0.60) |
 | K4 KVKK/BDDK/USOM saatleri | W0.42 | Kapandı (BDDK/USOM süreleri kurum içi hedef) |
 | Batch-1 doğrulayıcı takipleri | W0.44 | Kapandı |
 | T3 AI kararı UI'da | W0.45 | Kapandı (triyaj kuyruğu, bulgu penceresi) |
@@ -124,7 +124,7 @@ Release sayfası "Latest" görünüyordu; pre-release işaretlenmeli (insan).
 | G15 model kapısı, canlı injection sayaçları | W0.53 | Kapandı (kapı varsayılan olarak zorlanmaz) |
 | O2 OpenShift | W0.54 | Önizleme (gerçek kümede doğrulanmadı) |
 | O4 LLM yığını Helm'de | W0.55 | Kapandı (gerçek kümede doğrulanmadı) |
-| P4 FortiGate yürütücüsü | W0.57 | Kapandı (Deneysel; Check Point müşteri talebiyle) |
+| P4 FortiGate ve Check Point yürütücüleri | W0.57, W0.60 | Kapandı (Deneysel: canlı cihazda doğrulanmadı) |
 | P5 SMS | W0.58 | Kapandı (HTTPS ağ geçidi ya da ağ içi aktarıcı) |
 | K2 silme | W0.59 | Kapandı (hesaplar kullanıcı yönetiminden; zincirli ve denetim kayıtları yasal yükümlülükle saklanır, saklama araçlarıyla çıkar) |
 | T2, T4, P1, H1–H6, K3, K5, K6 | — | Sahip kararı / hukuk / ölçüm bekliyor |

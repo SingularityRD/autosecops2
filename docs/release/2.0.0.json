@@ -512,6 +512,11 @@
       "id": "W0.59",
       "topic": "İlgili kişi başvurusunda silme: bulgu, vaka ve yorumlarda kimlik bilgisi [erased] ile değiştirilir, yasal saklama korunur",
       "topic_en": "erasure for a data-subject request: the identifier is replaced with [erased] in findings, cases and comments; legal holds respected"
+    },
+    {
+      "id": "W0.60",
+      "topic": "Check Point yürütücüsü (Deneysel): block_ip, ağ geçidinin çektiği Generic Data Center beslemesine ekler; her engellemede policy install yok, internetsiz çalışır",
+      "topic_en": "Check Point executor (Experimental): block_ip adds to a Generic Data Center feed the gateway polls; no policy install per block, works air-gapped"
     }
   ],
   "highlights": [

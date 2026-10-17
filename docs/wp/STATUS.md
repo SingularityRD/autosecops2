@@ -4,7 +4,7 @@
 Hedef: düzenlenmiş sektör GA, 30 Ekim 2026 (31 Ekim tampon). Plan: `docs/wp/NORTHSTAR_PLAN.md`.
 Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) → yalnızca spec + diff gören bağımsız doğrulayıcı → PASS → `integration`'a merge → tam test + gates → `integration` ve `main` push.
 
-**`main` == `integration` == bu commit (W0.57 sonrası; GA boşlukları listesi §4b)** (remote `target` = SingularityRD/autosecops2). Ürün sürümü **2.0.0** (`release_tool.py check-versions`); sürüm notları `docs/release/2.0.0.md` (92 dahil, 4 hariç: W0.8, W1.4, W2.9, W4.4). **`v2.0.0` etiketi yok.**
+**`main` == `integration` == bu commit (W0.60 sonrası; GA boşlukları listesi §4b)** (remote `target` = SingularityRD/autosecops2). Ürün sürümü **2.0.0** (`release_tool.py check-versions`); sürüm notları `docs/release/2.0.0.md` (95 dahil, 4 hariç: W0.8, W1.4, W2.9, W4.4). **`v2.0.0` etiketi yok.**
 
 ## 1. main'de (doğrulandı, birleşti)
 
@@ -72,7 +72,7 @@ Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) → yalnızca spe
 
 ### 16–17 Ekim — GA boşlukları (`docs/wp/GA_GAPS.md` §4b)
 
-W0.32–W0.57 bu oturumda birleşti. Doğrulayıcı ajanlar kullanıcı tarafından
+W0.32–W0.60 bu oturumda birleşti. Doğrulayıcı ajanlar kullanıcı tarafından
 durduruldu; W0.40 sonrası paketler bağımsız doğrulayıcı yerine gates
 (`RESULT: PASS`), ilgili tam test kümeleri ve main CI ile birleşti.
 
@@ -83,10 +83,12 @@ durduruldu; W0.40 sonrası paketler bağımsız doğrulayıcı yerine gates
 | W0.44–W0.48 | Sertleştirme, AI kararı UI'da, e-posta/Teams bildirimi, işletim rehberi, ilgili kişi başvuruları |
 | W0.49–W0.53 | POC raporu ve müşteri eval'i, demo senaryosu, air-gap metrikleri, analist kılavuzu, model kapısı |
 | W0.54–W0.57 | OpenShift (önizleme), Helm'de LLM yığını, DB test sırası (main CI), FortiGate yürütücüsü |
+| W0.58–W0.60 | SMS bildirimi, ilgili kişi başvurusunda silme, Check Point yürütücüsü |
 
-Açık (müşteri talebiyle): P5 SMS, K2 silme aracı (denetim zinciriyle çatışma —
-hukuk kararı), Check Point yürütücüsü. Canlı ortamda doğrulanmayanlar: OpenShift,
-Helm LLM yığını, Deneysel yürütücüler ve QRadar.
+Mühendislik listesinde açık boşluk yok. Canlı ortamda doğrulanmayanlar (ilk müşteri
+kurulumunda ya da staging'de denenmeli): OpenShift, Helm LLM yığını, Deneysel
+yürütücüler (Defender, Entra ID, PAN-OS, FortiGate, Check Point) ve QRadar. Sahip
+kararları ve hukuk maddeleri §3'te.
 
 ## 4. Birleşmiş ama takip gerektiren (engelleyici değil)
 
