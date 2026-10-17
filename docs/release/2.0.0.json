@@ -482,6 +482,11 @@
       "id": "W0.53",
       "topic": "model değişikliği kapısı (varsayılan model son eval koşularına karşı denetlenir, MODEL_GATE_ENFORCE ile zorlanır) ve canlı injection sayaçları",
       "topic_en": "model-change gate (a default model is checked against the latest eval runs, enforced with MODEL_GATE_ENFORCE) and live injection counters"
+    },
+    {
+      "id": "W0.54",
+      "topic": "OpenShift desteği (önizleme): openshift.enabled sabit kullanıcı kimliklerini SCC'ye bırakır, isteğe bağlı Route; imajlar 0 grubuna yazılabilir",
+      "topic_en": "OpenShift support (preview): openshift.enabled leaves fixed uids to the SCC, an optional Route; images group-0 writable"
     }
   ],
   "highlights": [
