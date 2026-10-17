@@ -42,6 +42,7 @@ _BUILTIN_ADAPTER_MODULES = (
     "core.integrations.elastic.adapter",
     "core.integrations.microsoft_defender.adapter",
     "core.integrations.opensearch.adapter",
+    "core.integrations.qradar.adapter",
     "core.integrations.splunk.adapter",
 )
 

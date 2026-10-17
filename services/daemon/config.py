@@ -1,6 +1,7 @@
+import ipaddress
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Tuple, Union
 
 from core.config import DEFAULT_REDIS_URL, get_settings
 from core.ingestion.kafka_config import KafkaConfig  # re-exported for DaemonConfig
@@ -31,6 +32,38 @@ class PollingConfig:
     webhook_enabled: bool = True
     webhook_port: int = 8081
     webhook_token: str = ""  # required bearer for /ingest; empty = fail closed
+
+
+Network = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
+
+
+@dataclass
+class SyslogConfig:
+    """The syslog listener (W0.41, services/daemon/syslog_listener.py)."""
+
+    enabled: bool = False
+    bind_host: str = "0.0.0.0"
+    tcp_port: int = 5514
+    udp_port: int = 0  # 0: no UDP listener
+    # Senders read from; empty refuses every one (syslog has no credential).
+    allowed_sources: Tuple[Network, ...] = field(default_factory=tuple)
+    tls_cert: str = ""
+    tls_key: str = ""
+    tls_client_ca: str = ""
+
+
+def parse_allowed_sources(text: str) -> Tuple[Network, ...]:
+    """``"10.0.0.0/8, 192.0.2.7"`` as networks; a bad entry stops start-up."""
+    out: List[Network] = []
+    for part in (text or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(ipaddress.ip_network(part, strict=False))
+        except ValueError as e:
+            raise ValueError(f"DAEMON_SYSLOG_ALLOWED_SOURCES: {part!r}: {e}") from None
+    return tuple(out)
 
 
 # The triage reply is one JSON verdict, but thinking models (Gemini 2.5, OpenAI
@@ -161,6 +194,7 @@ class DaemonConfig:
     llm_queue: LLMQueueConfig = field(default_factory=LLMQueueConfig)
     kafka: KafkaConfig = field(default_factory=KafkaConfig)
     spool: IngestSpoolConfig = field(default_factory=IngestSpoolConfig)
+    syslog: SyslogConfig = field(default_factory=SyslogConfig)
 
     # Logging
     log_level: str = "INFO"
@@ -187,6 +221,17 @@ class DaemonConfig:
         config.polling.webhook_enabled = settings.daemon_webhook_enabled
         config.polling.webhook_port = settings.daemon_webhook_port
         config.polling.webhook_token = get_secret("DAEMON_WEBHOOK_TOKEN") or ""
+
+        config.syslog.enabled = settings.daemon_syslog_enabled
+        config.syslog.bind_host = settings.daemon_bind_host
+        config.syslog.tcp_port = settings.daemon_syslog_tcp_port
+        config.syslog.udp_port = settings.daemon_syslog_udp_port
+        config.syslog.allowed_sources = parse_allowed_sources(
+            settings.daemon_syslog_allowed_sources
+        )
+        config.syslog.tls_cert = settings.daemon_syslog_tls_cert
+        config.syslog.tls_key = settings.daemon_syslog_tls_key
+        config.syslog.tls_client_ca = settings.daemon_syslog_tls_client_ca
 
         config.processing.auto_triage_enabled = settings.daemon_auto_triage
         config.processing.auto_enrich_enabled = settings.daemon_auto_enrich

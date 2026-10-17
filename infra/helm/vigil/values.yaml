@@ -88,6 +88,28 @@ daemon:
     health: 9091    # always-on /health and /status
   service:
     type: ClusterIP
+  # Syslog listener (W0.41): CEF, LEEF, FortiGate key=value and Wazuh JSON
+  # alerts. Off by default. Syslog has no credential, so only senders in
+  # allowedSources (CIDRs) are read, and with the list empty every sender is
+  # refused; the NetworkPolicy (when enabled) opens the ports to the same
+  # CIDRs. tls.existingSecret names a Secret with tls.crt and tls.key (and
+  # ca.crt for mutual TLS with tls.clientCA: true). With leader election only
+  # the leader listens: a sender reaching the standby is refused and must
+  # reconnect (rsyslog and syslog-ng do). Relays that forward over HTTP can
+  # use POST /ingest/syslog on the webhook port instead.
+  syslog:
+    enabled: false
+    tcpPort: 5514
+    udpPort: 0          # 0: no UDP (lossy, spoofable)
+    allowedSources: []
+    tls:
+      existingSecret: ""
+      clientCA: false
+    service:
+      # Syslog senders are usually outside the cluster: LoadBalancer or
+      # NodePort to reach them. Kept separate from the daemon Service.
+      type: ClusterIP
+      annotations: {}
   resources:
     requests:
       cpu: 500m

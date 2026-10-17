@@ -41,6 +41,8 @@ const SERVER_SUPPORT: Record<string, Exclude<ConnectorSupport, 'supported'>> = {
   // the response executors: unit-tested against recorded vendor answers, never
   // against a live tenant or firewall (W0.37)
   'microsoft-defender': 'experimental', 'azure-ad': 'experimental', 'palo-alto': 'experimental',
+  // unit-tested against recorded offense answers, no live console yet (W0.41)
+  'qradar': 'experimental',
 }
 
 export function connectorSupport(server: string): ConnectorSupport {
@@ -84,7 +86,7 @@ export const MCP_CATEGORIES: McpCategory[] = [
   { label: 'Internal / Platform', servers: ['security-detections'] },
   { label: 'Reference Servers', servers: ['github'] },
   { label: 'EDR / XDR', servers: ['crowdstrike', 'sentinelone', 'carbon-black', 'microsoft-defender'] },
-  { label: 'SIEM / Data Lake', servers: ['splunk', 'splunk-selfhosted', 'elastic', 'opensearch', 'azure-sentinel', 'gcp-secops', 'cribl-stream'] },
+  { label: 'SIEM / Data Lake', servers: ['splunk', 'splunk-selfhosted', 'elastic', 'opensearch', 'qradar', 'azure-sentinel', 'gcp-secops', 'cribl-stream'] },
   { label: 'Threat Intelligence', servers: ['virustotal', 'gcp-threat-intel', 'shodan', 'alienvault-otx', 'misp', 'firecrawl', 'cloudforce_one'] },
   { label: 'Cloud Security', servers: ['aws-security', 'gcp-scc', 'palo-alto'] },
   { label: 'Identity & Access', servers: ['okta', 'azure-ad'] },
@@ -106,6 +108,7 @@ export const SERVER_DESCRIPTIONS = new Map(Object.entries({
   'splunk-selfhosted': 'Run SPL searches against a self-hosted Splunk over its REST API (port 8089) for log analysis, correlation searches, and alert triage. Server URL and credentials are configured in Settings.',
   elastic: 'Query Elasticsearch and Elastic Security for logs, IOC hits, and detection alerts. Requires an Elasticsearch URL and API key or username/password.',
   opensearch: 'Query OpenSearch for logs and IOC hits, and ingest Security Analytics findings. Requires an OpenSearch URL and username/password.',
+  qradar: 'List and read IBM QRadar offenses, and ingest new offenses as findings. Requires the console URL and an authorized service token.',
   'azure-sentinel': 'Query Microsoft Sentinel via KQL for security logs, incidents, and custom detection rules.',
   'gcp-secops': 'Query Google SecOps (Chronicle) for UDM security events, detection rules, and threat investigation.',
   'cribl-stream': 'Manage Cribl Stream data pipelines — inspect routes, check data flow, and troubleshoot ingestion.',

@@ -37,6 +37,8 @@ DOC_NAMES = {
         "microsoft-defender": "Microsoft Defender",
         "azure-ad": "Entra ID (Azure AD)",
         "palo-alto": "Palo Alto",
+        # W0.41
+        "qradar": "IBM QRadar",
     },
     "wip": {
         "carbon-black": "Carbon Black",
