@@ -447,6 +447,11 @@
       "id": "W0.46",
       "topic": "vaka olayları e-posta dağıtım listesine ve Microsoft Teams kanalına (Workflows webhook, Adaptive Card); Teams internetsiz profilde kapalı; ana dal CI düzeltmeleri",
       "topic_en": "case events to an email distribution list and a Microsoft Teams channel (Workflows webhook, Adaptive Card); Teams off in the air-gap profile; main CI fixes"
+    },
+    {
+      "id": "W0.47",
+      "topic": "işletim rehberi: boyutlandırma başlangıç değerleri, port ve güvenlik duvarı matrisi, bağlantılı Helm kurulumu, çıkış prosedürü",
+      "topic_en": "operations guide: sizing starting points, port and firewall matrix, connected Helm install, exit procedure"
     }
   ],
   "highlights": [
