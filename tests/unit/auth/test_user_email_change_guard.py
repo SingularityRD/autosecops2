@@ -357,6 +357,40 @@ def test_changing_your_own_email_to_a_free_or_the_same_address(session, monkeypa
     assert changed is True and payload == {"email": "maria@corp.example"}
 
 
+def test_changing_your_own_email_is_an_audited_auth_event(session, monkeypatch):
+    """PUT /api/auth/me with a new email: sessions end and a chained
+    ``email_change`` row says who, without the addresses (W0.44)."""
+    from services.api.routers import auth as auth_router
+
+    monkeypatch.setattr(auth_router.UserSchema, "dump", lambda u: {"email": u.email})
+    monkeypatch.setattr(auth_router, "revoke_all_for_user", AsyncMock())
+    events = []
+
+    async def record(request, action, **fields):
+        events.append((action, fields))
+
+    monkeypatch.setattr(auth_router, "arecord_auth_event", record)
+    me = session.get(User, "u-mgr")
+    asyncio.run(
+        auth_router.update_current_user(
+            MagicMock(), None, "maria@corp.example", current_user=me, session=session
+        )
+    )
+    assert [a for a, _ in events] == ["email_change"]
+    fields = events[0][1]
+    assert fields["actor"] == "u-mgr" and fields["target_id"] == "u-mgr"
+    assert "maria@corp.example" not in repr(fields)
+    auth_router.revoke_all_for_user.assert_awaited_once_with("u-mgr")
+
+    events.clear()
+    asyncio.run(
+        auth_router.update_current_user(
+            MagicMock(), "Maria", None, current_user=me, session=session
+        )
+    )
+    assert events == []  # a name change is not an auth event
+
+
 # Two concurrent requests, each removing a different one of the two Admins,
 # must not both succeed (verifier round 8). Needs real PostgreSQL row
 # visibility and locking; SQLite cannot show the race. Marked

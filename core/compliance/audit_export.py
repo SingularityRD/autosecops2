@@ -5107,6 +5107,7 @@ AUTH_SEVERITY = {
     ("login", "mfa_failure"): 6,
     ("logout", "success"): 2,
     ("password_change", "success"): 5,
+    ("email_change", "success"): 6,
     ("password_reset_request", "success"): 4,
     ("password_reset", "success"): 6,
     ("mfa_setup", "success"): 4,

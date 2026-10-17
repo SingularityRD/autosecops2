@@ -199,13 +199,52 @@ _CHECKS: Dict[str, Callable[[], Awaitable[Outcome]]] = {
 }
 
 
+# The operator-set address each check calls (W0.44): it may be private, but
+# never a cloud metadata or link-local address, where a token or the reply
+# would leak credentials. Defender's api_base is optional (default public).
+_TARGETS: Dict[str, Callable[[], Optional[str]]] = {
+    SPLUNK.id: lambda: resolve(SPLUNK).get("server_url"),
+    ELASTIC.id: lambda: resolve(ELASTIC).get("elasticsearch_url"),
+    MICROSOFT_DEFENDER.id: lambda: _stored(MICROSOFT_DEFENDER.id).get("api_base"),
+    PALO_ALTO.id: lambda: resolve(PALO_ALTO).get("hostname"),
+}
+
+# A message shown in the console is at most this long.
+MESSAGE_MAX = 300
+
+
+def _safe(message: str) -> str:
+    """A vendor's error text may echo a request or a token: scrub it (W0.44)."""
+    from core.compliance.audit_export import redact_text
+
+    return redact_text(str(message))[:MESSAGE_MAX]
+
+
+def _refused_target(integration_id: str) -> Optional[str]:
+    from core.platform.url_safety import UrlSafetyError, refuse_metadata_target
+
+    target = _TARGETS.get(integration_id)
+    address = target() if target else None
+    if not address:
+        return None
+    try:
+        refuse_metadata_target(str(address))
+    except UrlSafetyError as exc:
+        return f"Refused: {exc}"
+    return None
+
+
 async def check_credentials(integration_id: str) -> Optional[Outcome]:
     """``(ok, message)`` for the saved settings, or ``None`` when no check exists."""
     check = _CHECKS.get(integration_id)
     if check is None:
         return None
     try:
-        return await check()
+        refused = await asyncio.to_thread(_refused_target, integration_id)
+        if refused:
+            return False, refused
+        ok, message = await check()
+        return ok, _safe(message)
     except Exception as exc:  # noqa: BLE001
         # The class name only: a client error can carry the URL it was given.
         logger.warning(

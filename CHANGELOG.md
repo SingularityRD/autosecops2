@@ -44,6 +44,22 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **hardening (W0.44):** follow-ups from the batch-1 reviews.
+  The integration **Test** refuses a saved address that is, or resolves to, a
+  cloud metadata, link-local or scoped address before any call (private
+  addresses stay allowed), and every message it shows is scrubbed of tokens and
+  bounded. A registered response executor whose credential check fails is shown
+  as "Not usable yet", not "Available now". Changing your own email
+  (`PUT /api/auth/me`) is a chained `email_change` auth event (who and when, not
+  the addresses). A case relationship's creator and an escalation's sender are
+  the signed-in user; the client's `created_by` / `escalated_from` are accepted
+  and ignored. The response-policy body cap now holds for a chunked body with
+  no Content-Length (the read stops at 1 MB). On a fresh install the first
+  audit checkpoint is retried each minute (up to 30 times) while its table does
+  not exist yet, instead of an hour later, so the signing health warning does
+  not stand for an hour. The kubelet-expansion ratchet catches any upper-case
+  `$(NAME)` in a command, wherever the variable is defined; gates always run the
+  upgrade ratchet with the others.
 * **compliance (W0.42):** the case's regulatory clocks cover KVKK, BDDK and
   USOM / SOME next to DORA and NIS2. KVKK: the Board notification is due 72 hours
   after awareness (law 6698 art. 12/5, Board decision 2019/10), with the data

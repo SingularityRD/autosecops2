@@ -665,6 +665,7 @@ def _apply_profile_update(
 
 @router.put("/me")
 async def update_current_user(
+    request: Request,
     full_name: Optional[str] = None,
     email: Optional[EmailStr] = None,
     *,
@@ -697,6 +698,16 @@ async def update_current_user(
                     current_user.username,
                     exc,
                 )
+            # The address is where a password reset goes (W0.44): who changed
+            # it and when is chained; the addresses themselves are not logged.
+            await arecord_auth_event(
+                request,
+                "email_change",
+                actor=current_user.username,
+                actor_id=current_user.user_id,
+                target_id=current_user.user_id,
+                details={"sessions_revoked": True},
+            )
 
         logger.info(f"User profile updated: {current_user.username}")
         return payload

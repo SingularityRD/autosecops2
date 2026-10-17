@@ -8,6 +8,10 @@ export default defineConfig({
     // shell.css is read as text by CommandBar.test.tsx, which asserts the disabled treatment exists
     css: { include: [/shell\.css/] },
     environment: 'jsdom',
+    // The full suite runs ~90 files in parallel; under that load the screen
+    // tests (SocConsole, SetupScreen) took over the 5 s default while passing
+    // alone in 1-2 s (W0.44). A real hang still fails, at 20 s.
+    testTimeout: 20_000,
     setupFiles: './src/test/setup.ts',
     // Don't pick up test files inside agent worktrees — those copies of
     // the repo lack node_modules and crash the run with "Cannot find

@@ -65,6 +65,37 @@ def audited(monkeypatch):
 MGR = SimpleNamespace(user_id="u-mgr", username="mgr")
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        "api_key",
+        "apiKey",
+        "API-KEY",
+        "openai_api_key",
+        "private_key",
+        "signing_key",
+        "access_key",
+        "client_secret",
+        "passphrase",
+        "ssh_pass",
+        "auth_token",
+        "Authorization",
+        "credentials",
+    ],
+)
+def test_a_credential_key_is_redacted_whatever_its_value_looks_like(key):
+    """W0.44: the key name alone hides the value; nothing about it is a known
+    token shape, so only the key rule can catch it."""
+    out = redact({key: "plain-looking-value", "nested": {key: 12345}})
+    assert out[key] == REDACTED
+    assert out["nested"][key] == REDACTED
+
+
+@pytest.mark.parametrize("key", ["max_tokens", "tokenizer", "keyboard", "passive"])
+def test_a_key_that_only_resembles_a_credential_is_kept(key):
+    assert redact({key: "v"}) == {key: "v"}
+
+
 def test_adding_and_removing_a_rule_source_is_audited(audited):
     service = _Rules()
     request = rules_api.AddSourceRequest(

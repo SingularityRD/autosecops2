@@ -33,6 +33,13 @@ def _audit_checkpoint_interval() -> int:
     return 0 if interval <= 0 else max(60, interval)
 
 
+# A task returns this when it could not do its work yet (W0.44): it runs again
+# at the next minute's check instead of a whole interval later.
+RETRY_SOON = object()
+# How many times in a row the audit checkpoint waits for its table at start.
+_CHECKPOINT_START_RETRIES = 30
+
+
 @dataclass
 class ScheduledTask:
     """Represents a scheduled task."""
@@ -234,8 +241,8 @@ class TaskScheduler:
         for task in self._tasks:
             if task.run_on_start and task.enabled:
                 try:
-                    await task.func()
-                    task.last_run = utcnow()
+                    if await task.func() is not RETRY_SOON:
+                        task.last_run = utcnow()
                 except Exception as e:
                     logger.error(f"Startup task {task.name} failed: {e}")
 
@@ -256,8 +263,8 @@ class TaskScheduler:
                 if should_run:
                     try:
                         logger.info(f"Running scheduled task: {task.name}")
-                        await task.func()
-                        task.last_run = now
+                        if await task.func() is not RETRY_SOON:
+                            task.last_run = now
                         self.stats["tasks_run"] += 1
                     except Exception as e:
                         logger.error(f"Scheduled task {task.name} failed: {e}")
@@ -497,7 +504,20 @@ class TaskScheduler:
         if manager.engine is None:
             manager.initialize()
         checkpoint = await asyncio.to_thread(run_checkpoint, manager.engine)
-        return checkpoint.id if checkpoint is not None else None
+        if checkpoint is not None:
+            self._checkpoint_retries = None
+            return checkpoint.id
+        # On a fresh install the daemon can start before audit_chain exists:
+        # with a key, try again next minute rather than an interval later, so
+        # the health warning does not stand for an hour (W0.44). Bounded.
+        from core.audit.checkpoint import signing_key_from_secrets
+
+        left = getattr(self, "_checkpoint_retries", _CHECKPOINT_START_RETRIES)
+        if left and await asyncio.to_thread(signing_key_from_secrets) is not None:
+            self._checkpoint_retries = left - 1
+            return RETRY_SOON
+        self._checkpoint_retries = 0
+        return None
 
     async def _run_canary_sweep(self):
         """Score canaries past their window, then inject one if due (W1.5)."""

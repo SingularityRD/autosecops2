@@ -486,7 +486,9 @@ def test_concurrent_create_skips(scratch_db, tmp_path: Path):
     second = _run_create(env, repo, passphrase)
     out, err = first.communicate(timeout=180)
     assert second.returncode != 0
-    assert second.stderr.strip() == SKIPPED_MESSAGE
+    # The last line: a deployment on the shipped default Postgres password
+    # also gets that warning first (W0.44).
+    assert second.stderr.strip().splitlines()[-1] == SKIPPED_MESSAGE
     assert first.returncode == 0, err
     assert out.strip()
     subprocess.check_call(

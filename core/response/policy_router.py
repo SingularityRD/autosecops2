@@ -25,6 +25,7 @@ import re
 from typing import Annotated, Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.auth.permissions import require_permission
@@ -42,7 +43,41 @@ from core.response.policy_store import PolicyConflict, read_policy, update_polic
 from core.routing import Auth, RouterMeta
 from core.storage.models import User
 
-router = APIRouter()
+
+class _CappedRequest(Request):
+    """A request whose body is read in chunks and refused past the cap (W0.44).
+
+    FastAPI reads and parses the body before any dependency runs, so the cap
+    has to sit in the read itself: a chunked body with no Content-Length is
+    never buffered whole before the 413.
+    """
+
+    async def body(self) -> bytes:
+        if not hasattr(self, "_body"):
+            chunks = []
+            size = 0
+            async for chunk in self.stream():
+                size += len(chunk)
+                if size > MAX_BODY_BYTES:
+                    raise HTTPException(
+                        413, f"The policy is limited to {MAX_BODY_BYTES} bytes"
+                    )
+                chunks.append(chunk)
+            self._body = b"".join(chunks)
+        return self._body
+
+
+class _CappedRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def capped(request: Request):
+            return await handler(_CappedRequest(request.scope, request.receive))
+
+        return capped
+
+
+router = APIRouter(route_class=_CappedRoute)
 
 ROUTER_META = RouterMeta(
     prefix="/api/response",
@@ -259,6 +294,7 @@ async def body_cap(request: Request) -> None:
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
         raise HTTPException(413, f"The policy is limited to {MAX_BODY_BYTES} bytes")
+    # The actual size is capped while it is read (_CappedRequest, W0.44).
     if len(await request.body()) > MAX_BODY_BYTES:
         raise HTTPException(413, f"The policy is limited to {MAX_BODY_BYTES} bytes")
 

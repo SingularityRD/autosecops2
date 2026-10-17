@@ -85,3 +85,15 @@ def test_infra_change_runs_its_area_tests(tmp_path, path, expected, absent):
         assert t in line, line
     for t in absent:
         assert t not in line, line
+
+
+def test_an_infra_change_also_runs_the_upgrade_ratchet(tmp_path):
+    """W0.44: the frozen init SQL ratchet lives outside _ratchets."""
+    repo = _repo(tmp_path)
+    (repo / "tests" / "unit" / "test_upgrade_database.py").write_text(
+        "def test_x(): pass\n"
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "ratchet")
+    line = _targets(repo, "infra/helm/vigil/templates/job.yaml")
+    assert "tests/unit/test_upgrade_database.py" in line
