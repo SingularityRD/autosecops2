@@ -1,7 +1,7 @@
 # AutoSecOps 2.0 — Belge seti
 
 > **English summary.** Customer documentation for AutoSecOps 2.0 (regulated-sector
-> release candidate). Every page describes the code at `main` @ `b8795def`.
+> release candidate). Every page describes the code at `main` @ `3c7d30b5`.
 > Features from work packages that are not merged yet are marked **Planlı**
 > ("planned") with the branch that carries them and are *not* part of this
 > release. Start with [kapsam.md](kapsam.md) (release scope), then the install
@@ -9,7 +9,7 @@
 > model and the regulatory mapping (not legal advice).
 
 Bu dizin, düzenlenmiş sektör (banka, kamu, kritik altyapı) müşterisine verilen
-belge setidir. Belgeler yalnızca bu sürümün kodunda (`main` @ `b8795def`) olanı
+belge setidir. Belgeler yalnızca bu sürümün kodunda (`main` @ `3c7d30b5`) olanı
 anlatır. Henüz birleşmemiş bir iş paketinin getireceği özellik, satırında
 **Planlı** işareti ve onu taşıyan dalın adıyla yazılır ve bu sürüme dahil değildir.
 Örnek: injection setinin ≤ %5 kapısı (Planlı — `wp/w1.4-injection-set`, bu sürümde yok).
@@ -18,6 +18,7 @@ anlatır. Henüz birleşmemiş bir iş paketinin getireceği özellik, satırın
 |---|---|---|
 | [Sürüm kapsamı](kapsam.md) | herkes, önce bunu okuyun | Bu sürümde olan / olmayan; iş paketi → dal tablosu |
 | [İnternetsiz kurulum kılavuzu](kurulum-internetsiz.md) | kurulum mühendisi | İmzalı paketin üretilmesi, doğrulanması, kurulumu; `airgap.env` profili; sıfır egress kanıtı |
+| [Analist kılavuzu](analist-kilavuzu.md) | SOC analisti | Triyaj kuyruğu ve AI kararı (alıntılanan alanlar ve yazarları), vaka çalışması, rapor ve kanıt paketi, düzenleyici sayaçlar, onaylar, Karne incelemesi, dersler |
 | [Yönetici kılavuzu](yonetici-kilavuzu.md) | AutoSecOps yöneticisi | Kullanıcılar, roller ve izinler, kimlik doğrulama (OIDC SSO, FIPS modu), entegrasyonlar, müdahale politikası ve onaylar, görevler ayrılığı raporu, otonomi katmanları, yerel model şeridi, dersler, saklama ve imha, denetim kayıtları ve doğrulaması, SIEM'e denetim aktarımı, kanıt paketi, sürüm yükseltme, yedekleme ve sıcak yedek, masaüstü uygulaması (kurulum, veri konumları, güncelleme, kaldırma, doğrulama) |
 | [Güvenlik teknik belgesi](guvenlik-teknik-belgesi.md) | güvenlik mimarı, denetçi | Mimari, güven sınırları, köken/karar sözleşmesi, onaylar, denetim zinciri, egress denetimi, sırlar, kriptografi |
 | [Tehdit modeli](tehdit-modeli.md) | güvenlik ekibi, pentest | Bileşen başına STRIDE, uygulanmış önlemler, açık riskler |

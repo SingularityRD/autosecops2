@@ -1,6 +1,6 @@
 # Güvenlik teknik belgesi
 
-> **English summary.** Security architecture of AutoSecOps at `main` @ `b8795def`: components and data flows (with the durable webhook ingest
+> **English summary.** Security architecture of AutoSecOps at `main` @ `3c7d30b5`: components and data flows (with the durable webhook ingest
 > spool), eight trust boundaries, the provenance/verdict contract (enforced on
 > the live daemon triage path, with known limits; analysis fields in a payload
 > are dropped), the human-approval rule, per-category autonomy tiers (default
@@ -508,5 +508,5 @@ imajdadır. Ayrıntı: [docs/fips.md](../fips.md).
 - Yük ve kaos test araçları (`tests/perf/`,
   [docs/operations/load-chaos-runbook.md](../operations/load-chaos-runbook.md))
   isteğe bağlıdır; CI'da koşmaz ve bu sürüm için kapasite ölçümü yoktur.
-- SBOM, imzalı imajlar ve sürüm notları (Planlı — `wp/w4.7-release`, bu sürümde yok).
+- SBOM, imzalı imajlar ve sürüm notları: her sürüm etiketinde `.github/workflows/release.yml` CycloneDX SBOM'ları (Python, Node, imaj başına) ve anahtarsız cosign imzaları üretir; doğrulama [docs/release/dogrulama.md](../release/dogrulama.md).
 - Dış pentest (Planlı — dal yok, W4.4, bu sürümde yok).
