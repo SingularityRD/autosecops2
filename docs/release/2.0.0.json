@@ -457,6 +457,11 @@
       "id": "W0.48",
       "topic": "ilgili kişi başvuruları (KVKK md. 11, 13): 30 günlük kayıt, başvuruya bağlı arama ve dışa aktarım, her arama denetim izinde; kimlik bilgisi saklanmaz",
       "topic_en": "data-subject requests (KVKK art. 11, 13): a 30-day register, search and export tied to a request, each lookup audited; the identifier is not stored"
+    },
+    {
+      "id": "W0.49",
+      "topic": "müşteri verisiyle ölçüm: POC raporu (JSON/Markdown), analist incelemelerinden etiketli eval kümesi (evalkit export-reviewed, --cases), çalışan Export report düğmeleri, POC kılavuzu",
+      "topic_en": "measurement on the customer's own data: POC report (JSON/Markdown), a labelled eval set from analyst reviews (evalkit export-reviewed, --cases), working Export report buttons, POC guide"
     }
   ],
   "highlights": [
@@ -751,6 +756,12 @@
         "W0.48"
       ],
       "text": "**İlgili kişi başvuruları:** KVKK başvurusu kaydedilir ve 30 günlük süresi izlenir; kişinin verisi bulgu, vaka, yorum ve kullanıcı kayıtlarında aranır ve dışa aktarılır, her arama başvurunun denetim izine yazılır (W0.48)."
+    },
+    {
+      "when": [
+        "W0.49"
+      ],
+      "text": "**POC raporu ve müşteri verisiyle ölçüm:** Analytics/Metrics'teki Export report kurulumun ölçtüğünü (alım, triyaj kararları, analist incelemesi ve Karne, kanaryalar, vakalar, müdahaleler, eval koşuları) Markdown olarak indirir; analistlerin incelediği alarmlar etiketli bir değerlendirme kümesine çevrilip triyaj yoluna karşı çevrimdışı ölçülür (W0.49)."
     }
   ],
   "upgrade_notes": [
