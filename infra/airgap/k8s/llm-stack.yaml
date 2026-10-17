@@ -21,8 +21,23 @@ metadata:
 data:
   # First-boot seed: Ollama is the only provider. No cloud provider keys exist
   # in an air-gapped install, and the egress policy below would drop them anyway.
+  # Bifrost v2 downloads its pricing and model-parameter catalogs from
+  # getbifrost.ai at start-up and exits when it cannot (W0.61, found on a live
+  # offline start). Air-gapped, both come from these files: empty catalogs,
+  # so Bifrost reports no per-token cost; AutoSecOps counts tokens itself.
+  pricing.json: |
+    {}
+  model-parameters.json: |
+    {}
   config.json: |
     {
+      "framework": {
+        "pricing": {
+          "pricing_url": "file:///app/seed/pricing.json",
+          "model_parameters_url": "file:///app/seed/model-parameters.json",
+          "pricing_sync_interval": 86400
+        }
+      },
       "client": {
         "enable_logging": true,
         "disable_content_logging": false
@@ -116,6 +131,9 @@ spec:
             - name: seed
               mountPath: /app/data/config.json
               subPath: config.json
+              readOnly: true
+            - name: seed
+              mountPath: /app/seed
               readOnly: true
           readinessProbe:
             httpGet:

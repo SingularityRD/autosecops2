@@ -591,6 +591,11 @@ llmStack:
     # GEMINI_API_KEY (any of them) seed those providers on first boot. Empty:
     # no cloud provider is seeded; add one later in the console.
     providerKeysSecret: ""
+    # Bifrost v2 downloads pricing and model-parameter catalogs from
+    # getbifrost.ai at start-up and exits without them. true (or
+    # networkPolicies.egress.inClusterOnly) seeds empty catalogs instead:
+    # Bifrost then starts offline and reports no per-token cost.
+    offlineCatalog: false
     # Cloud providers seeded from providerKeysSecret.
     providers:
       - anthropic

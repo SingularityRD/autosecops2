@@ -44,6 +44,13 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **fix (W0.61, live trial):** Bifrost v2 exits at start-up when it cannot
+  download its pricing and model-parameter catalogs from getbifrost.ai, so an
+  air-gapped install had no LLM gateway; the air-gap manifest and the chart
+  (`llmStack.bifrost.offlineCatalog`, or `networkPolicies.egress.inClusterOnly`)
+  now seed empty catalogs from a ConfigMap. Two workers creating the schema on
+  a fresh database no longer race (advisory lock). The Test button works for
+  executors with no MCP server (FortiGate, Check Point).
 * **response (W0.60):** a Check Point executor (Experimental). `block_ip`
   puts the address on a block list that AutoSecOps serves as a Generic Data
   Center feed (`/api/feeds/checkpoint/blocklist`, or `.txt` one per line) for

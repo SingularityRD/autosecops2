@@ -253,6 +253,10 @@ _CHECKS: Dict[str, Callable[[], Awaitable[Outcome]]] = {
 }
 
 
+def has_credential_check(integration_id: str) -> bool:
+    return integration_id in _CHECKS
+
+
 # The operator-set address each check calls (W0.44): it may be private, but
 # never a cloud metadata or link-local address, where a token or the reply
 # would leak credentials. Defender's api_base is optional (default public).
