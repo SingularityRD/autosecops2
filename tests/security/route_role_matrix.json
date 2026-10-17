@@ -720,6 +720,14 @@
    "role-manager": "allow",
    "role-admin": "allow"
   },
+  "GET /api/cases/{case_id}/report.pdf": {
+   "gate": "login + perm:cases.read",
+   "role-viewer": "allow",
+   "role-analyst": "allow",
+   "role-senior-analyst": "allow",
+   "role-manager": "allow",
+   "role-admin": "allow"
+  },
   "GET /api/cases/{case_id}/sla": {
    "gate": "login",
    "role-viewer": "allow",

@@ -337,6 +337,9 @@ export interface CaseRecordResponse {
 }
 
 export const casesApi = {
+  /** The case report as a PDF (Turkish text included); each download is audited. */
+  downloadReport: (id: string) =>
+    api.get<Blob>(`/cases/${encodeURIComponent(id)}/report.pdf`, { responseType: 'blob' }),
   getAll: (params?: {
     state?: string
     workflow?: string

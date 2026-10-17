@@ -604,7 +604,34 @@ function AgentsTable({ fold, phase, state }: { fold: RunFold | null; phase: Phas
 }
 
 /** ⋯ menu in the head row. Same pattern as the console's More menu: closes on outside click and Escape. */
-function CaseMenu({ onEdit, onMerge, onDelete }: { onEdit: () => void; onMerge: () => void; onDelete?: () => void }) {
+/** Save the case report PDF through the browser; a failure is shown, not swallowed. */
+async function downloadCaseReport(id: string): Promise<void> {
+  try {
+    const res = await casesApi.downloadReport(id)
+    const url = URL.createObjectURL(res.data)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${id}-report.pdf`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  } catch {
+    window.alert('The case report could not be generated. Try again, or check the server log.')
+  }
+}
+
+function CaseMenu({
+  onEdit,
+  onMerge,
+  onDelete,
+  onReport,
+}: {
+  onEdit: () => void
+  onMerge: () => void
+  onDelete?: () => void
+  onReport?: () => void
+}) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -652,6 +679,11 @@ function CaseMenu({ onEdit, onMerge, onDelete }: { onEdit: () => void; onMerge: 
         <div className="vg-more-menu dh-menu" role="menu" aria-label="Case actions">
           <button type="button" role="menuitem" onClick={pick(onEdit)}><Icon name="edit" size={14} /> Edit</button>
           <button type="button" role="menuitem" onClick={pick(onMerge)}><Icon name="link" size={14} /> Merge</button>
+          {onReport && (
+            <button type="button" role="menuitem" onClick={pick(onReport)}>
+              <Icon name="download" size={14} /> Download report (PDF)
+            </button>
+          )}
           {onDelete && (
             <button type="button" role="menuitem" className="danger" onClick={pick(onDelete)}>
               <Icon name="trash" size={14} /> Delete case
@@ -1068,7 +1100,14 @@ export function CasePage({
           <span aria-hidden>›</span>
           <span className="mono">{id.startsWith('case-') ? id : `Case ${id}`}</span>
           <div className="dh-crumb-end">
-            {c && <CaseMenu onEdit={onEdit} onMerge={onMerge} onDelete={canDelete ? onDelete : undefined} />}
+            {c && (
+              <CaseMenu
+                onEdit={onEdit}
+                onMerge={onMerge}
+                onDelete={canDelete ? onDelete : undefined}
+                onReport={() => void downloadCaseReport(id)}
+              />
+            )}
             {onExpand && (
               <button type="button" className="btn ghost icon" aria-label="Expand" title="Expand" onClick={onExpand}>
                 <Icon name="fit" size={15} />

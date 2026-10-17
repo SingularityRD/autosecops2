@@ -11,6 +11,8 @@ try:
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import inch
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.platypus import (
         PageBreak,
         Paragraph,
@@ -25,6 +27,25 @@ except ImportError:
     REPORTLAB_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+# The PDF's font. ReportLab's built-in Helvetica is WinAnsi-encoded, so a case
+# written in Turkish printed ş, ğ, ı and İ as black boxes (P3). DejaVu Sans
+# (Bitstream Vera licence, fonts/LICENSE-DejaVu.txt) ships with the code so the
+# report needs no system font.
+FONT = "AutoSecOpsSans"
+FONT_BOLD = "AutoSecOpsSans-Bold"
+_FONT_DIR = Path(__file__).resolve().parent / "fonts"
+
+
+def _register_fonts() -> None:
+    """Register the bundled fonts once; safe to call again."""
+    if FONT in pdfmetrics.getRegisteredFontNames():
+        return
+    pdfmetrics.registerFont(TTFont(FONT, str(_FONT_DIR / "DejaVuSans.ttf")))
+    pdfmetrics.registerFont(TTFont(FONT_BOLD, str(_FONT_DIR / "DejaVuSans-Bold.ttf")))
+    pdfmetrics.registerFontFamily(
+        FONT, normal=FONT, bold=FONT_BOLD, italic=FONT, boldItalic=FONT_BOLD
+    )
 
 
 def _text(value: object) -> str:
@@ -44,7 +65,13 @@ class ReportService:
             raise ImportError(
                 "reportlab is not installed. Please install it with: pip install reportlab"
             )
+        _register_fonts()
         self.styles = getSampleStyleSheet()
+        # Every sample style (and so every style below that inherits one) uses
+        # the bundled font; headings keep their bold weight.
+        for style in self.styles.byName.values():
+            bold = "Bold" in getattr(style, "fontName", "")
+            style.fontName = FONT_BOLD if bold else FONT
         self._setup_custom_styles()
 
     def _setup_custom_styles(self):
@@ -149,12 +176,13 @@ class ReportService:
             metadata_table.setStyle(
                 TableStyle(
                     [
+                        ("FONTNAME", (0, 0), (-1, -1), FONT),
                         ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#ecf0f1")),
                         ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
                         ("ALIGN", (0, 0), (0, -1), "LEFT"),
                         ("ALIGN", (1, 0), (1, -1), "LEFT"),
-                        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-                        ("FONTNAME", (1, 0), (1, -1), "Helvetica"),
+                        ("FONTNAME", (0, 0), (0, -1), FONT_BOLD),
+                        ("FONTNAME", (1, 0), (1, -1), FONT),
                         ("FONTSIZE", (0, 0), (-1, -1), 10),
                         ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
                         ("TOPPADDING", (0, 0), (-1, -1), 6),
@@ -200,10 +228,11 @@ class ReportService:
                 timeline_table.setStyle(
                     TableStyle(
                         [
+                            ("FONTNAME", (0, 0), (-1, -1), FONT),
                             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3498db")),
                             ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
                             ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-                            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                            ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD),
                             ("FONTSIZE", (0, 0), (-1, 0), 10),
                             ("BACKGROUND", (0, 1), (-1, -1), colors.white),
                             ("GRID", (0, 0), (-1, -1), 1, colors.grey),
@@ -258,10 +287,11 @@ class ReportService:
                 activities_table.setStyle(
                     TableStyle(
                         [
+                            ("FONTNAME", (0, 0), (-1, -1), FONT),
                             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#9b59b6")),
                             ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
                             ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-                            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                            ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD),
                             ("FONTSIZE", (0, 0), (-1, 0), 10),
                             ("BACKGROUND", (0, 1), (-1, -1), colors.white),
                             ("GRID", (0, 0), (-1, -1), 1, colors.grey),
@@ -300,6 +330,7 @@ class ReportService:
                     step_table.setStyle(
                         TableStyle(
                             [
+                                ("FONTNAME", (0, 0), (-1, -1), FONT),
                                 (
                                     "BACKGROUND",
                                     (0, 0),
@@ -308,7 +339,7 @@ class ReportService:
                                 ),
                                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
                                 ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-                                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                                ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD),
                                 ("FONTSIZE", (0, 0), (-1, 0), 10),
                                 ("BACKGROUND", (0, 1), (-1, -1), colors.white),
                                 ("GRID", (0, 0), (-1, -1), 1, colors.grey),
@@ -366,10 +397,11 @@ class ReportService:
                 findings_table.setStyle(
                     TableStyle(
                         [
+                            ("FONTNAME", (0, 0), (-1, -1), FONT),
                             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e74c3c")),
                             ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
                             ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-                            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                            ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD),
                             ("FONTSIZE", (0, 0), (-1, 0), 9),
                             ("BACKGROUND", (0, 1), (-1, -1), colors.white),
                             ("GRID", (0, 0), (-1, -1), 1, colors.grey),
@@ -429,6 +461,7 @@ class ReportService:
                     finding_table.setStyle(
                         TableStyle(
                             [
+                                ("FONTNAME", (0, 0), (-1, -1), FONT),
                                 (
                                     "BACKGROUND",
                                     (0, 0),
@@ -437,7 +470,7 @@ class ReportService:
                                 ),
                                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
                                 ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-                                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                                ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD),
                                 ("FONTSIZE", (0, 0), (-1, 0), 9),
                                 ("BACKGROUND", (0, 1), (-1, -1), colors.white),
                                 ("GRID", (0, 0), (-1, -1), 1, colors.grey),

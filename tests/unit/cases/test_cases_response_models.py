@@ -11,15 +11,28 @@ from services.api.routers import cases
 pytestmark = pytest.mark.unit
 
 
+# Routes that answer with a file, not JSON: their OpenAPI entry names the media
+# type instead of a model (W0.40: the case report PDF).
+FILE_ROUTES = {"/{case_id}/report.pdf"}
+
+
 def test_every_cases_route_declares_response_model():
     missing = [
         f"{sorted(route.methods)} {route.path}"
         for route in [*cases.router.routes, *v1_cases.router.routes]
-        if isinstance(route, APIRoute) and route.response_model is None
+        if isinstance(route, APIRoute)
+        and route.response_model is None
+        and route.path not in FILE_ROUTES
     ]
     assert not missing, "cases routes without response_model:\n  " + "\n  ".join(
         missing
     )
+
+
+def test_file_routes_declare_their_media_type():
+    for route in cases.router.routes:
+        if isinstance(route, APIRoute) and route.path in FILE_ROUTES:
+            assert "application/pdf" in route.responses[200]["content"], route.path
 
 
 def test_get_case_documents_ids_not_inlined_findings():
