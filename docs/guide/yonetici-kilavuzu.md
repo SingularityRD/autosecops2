@@ -491,7 +491,7 @@ Katalogdaki her MCP sunucusunun tek bir destek durumu vardır
 | Durum | Bağlayıcılar | Konsolda |
 |---|---|---|
 | Destekli | Listede adı geçmeyen her bağlayıcı (ör. Splunk (Self-Hosted), Elastic, Okta, VirusTotal) | Etiketsiz |
-| Deneysel (**Experimental**) | CrowdStrike Falcon, SentinelOne, Microsoft Sentinel, resmî Splunk MCP sunucusu, Google SecOps, Google Threat Intelligence, Joe Sandbox, vStrike, Atomic Red Team, CAPE Sandbox, Microsoft Defender for Endpoint, Entra ID (Azure AD), Palo Alto PAN-OS | Bir bağlayıcıyı açan her ekranda etiket: Add integration kartı, Connected tablosu, Ayarlar kurulum çekmecesi, ilk kurulumdaki veri kaynağı seçimi ve formu (formda gerekçe metniyle) |
+| Deneysel (**Experimental**) | CrowdStrike Falcon, SentinelOne, Microsoft Sentinel, resmî Splunk MCP sunucusu, Google SecOps, Google Threat Intelligence, Joe Sandbox, vStrike, Atomic Red Team, CAPE Sandbox, Microsoft Defender for Endpoint, Entra ID (Azure AD), Palo Alto PAN-OS, IBM QRadar | Bir bağlayıcıyı açan her ekranda etiket: Add integration kartı, Connected tablosu, Ayarlar kurulum çekmecesi, ilk kurulumdaki veri kaynağı seçimi ve formu (formda gerekçe metniyle) |
 | Sunulmuyor (WIP) | Carbon Black, Hybrid Analysis, ANY.RUN, AlienVault OTX, Slack, MISP, IP Geolocation, URL Analysis, Microsoft Teams | Add integration'da yok; önceden açılmışsa Connected tablosunda WIP etiketiyle |
 
 "Destekli", canlı bir ürün örneğine karşı test edilebilen bağlayıcı demektir:
@@ -505,6 +505,61 @@ ama canlı bir kiracıya ya da güvenlik duvarına karşı hiç çalıştırılm
 olduğunda bu durumdan çıkar. Birini kullanırsanız sonucu bir destek paketiyle
 birlikte AutoSecOps desteğine bildirin (bkz.
 [Loglar ve destek paketi](#loglar-ve-destek-paketi)).
+
+**IBM QRadar (W0.41).** **Add integration → IBM QRadar**: konsol adresi ve bir
+yetkili hizmet belirteci (Admin › Authorized Services; offense okuyabilen bir
+güvenlik profili yeter, AutoSecOps QRadar'a hiçbir şey yazmaz). Alarm toplama
+yeni offense'ları bulgu olarak çeker (varsayılan 120 sn): ilk çalışmada en yeni
+offense numarasını alır ve geçmişi çekmez, sonra her turda o numaradan büyük
+offense'ları en eskiden başlayarak okur. "Offense filter" alanı çekilenleri
+daraltır (ör. `status = 'OPEN' and magnitude >= 5`; yalnızca harf, rakam, boşluk
+ve `_ .,=<>!'()-`). Önem derecesi QRadar'ın büyüklüğünden (magnitude 1–10) gelir;
+`offense_source` türüne göre kaynak IP, hedef IP ya da kullanıcı adı olur. Bir
+offense ilk görüldüğünde okunur; QRadar ona sonradan olay ekledikçe bulgu
+güncellenmez, offense kapatma da QRadar'a geri yazılmaz. İnceleme ajanı
+`qradar_list_offenses` ve `qradar_get_offense` (salt okuma) araçlarını kullanır.
+Bağlayıcı **Deneysel**'dir: kayıtlı yanıtlarla test edildi, canlı bir konsola
+karşı hiç çalıştırılmadı.
+
+**Syslog, CEF ve LEEF alımı (W0.41).** Daemon, QRadar, ArcSight, FortiGate,
+Logsign ve Wazuh'un syslog çıkışını doğrudan alır. Okunan gövdeler: CEF
+(`CEF:0|...`), LEEF 1.0 ve 2.0, FortiGate `key=value` kaydı (`devid=` ve
+`logid=` taşıyan) ve JSON (Wazuh `rule.description`, `rule.level`); başlık RFC
+5424, RFC 3164 ya da yok. Bunlardan biri olmayan satır (sıradan syslog
+gürültüsü) bulgu olmaz, `unparsed` olarak sayılır. Aynı satır iki kez gelirse
+bir bulgu olur. Bulgunun `data_source` değeri `syslog`'dur ve webhook
+güvenilirlik haritasını alır: yalnızca IP olarak çözülen adresler sensör, ad ve
+metinler saldırgan yazımıdır.
+
+İki yol vardır:
+
+- **Dinleyici** (TCP, TLS, UDP): varsayılan kapalı. `DAEMON_SYSLOG_ENABLED=true`,
+  `DAEMON_SYSLOG_TCP_PORT` (5514), `DAEMON_SYSLOG_ALLOWED_SOURCES` (virgülle CIDR
+  listesi). Syslog'da kimlik bilgisi olmadığından yalnızca bu listedeki
+  adreslerden okunur; liste boşsa her gönderici reddedilir. TLS (RFC 5425) için
+  `DAEMON_SYSLOG_TLS_CERT` ve `DAEMON_SYSLOG_TLS_KEY`, karşılıklı TLS için ek
+  olarak `DAEMON_SYSLOG_TLS_CLIENT_CA`. TCP çerçeveleme RFC 6587: sekiz basamağa
+  kadar uzunluk öneki (octet counting) ya da satır başına bir mesaj; bir mesaj en
+  çok 64 KB. UDP yalnızca `DAEMON_SYSLOG_UDP_PORT` verilirse açılır (kayıplı ve
+  sahte adresle gönderilebilir; tercih etmeyin). Kuyruk dolarsa TCP bağlantısı
+  okunmaz, gönderici kendi kuyruğunda bekletir; UDP'de alınamayan datagram
+  `dropped` olarak sayılır.
+  Helm: `daemon.syslog.enabled`, `tcpPort`, `udpPort`, `allowedSources`,
+  `tls.existingSecret` (`tls.crt`, `tls.key`, karşılıklı TLS için `ca.crt` ve
+  `tls.clientCA: true`) ve `service.type` (küme dışındaki göndericiler için
+  `LoadBalancer`; ayrı `<ad>-daemon-syslog` Service'i, webhook portunu açmaz).
+  `networkPolicies.enabled` iken aynı CIDR'lar için kural eklenir. Sıcak yedekte
+  yalnızca lider dinler: yedeğe düşen bağlantı reddedilir ve gönderici yeniden
+  bağlanır (rsyslog, syslog-ng bunu yapar). Compose'da daemon servisine port
+  eşlemesini (`5514:5514`) kendiniz ekleyin.
+- **HTTP:** `POST /ingest/syslog` (webhook portu, `DAEMON_WEBHOOK_TOKEN` ile
+  `Authorization: Bearer`), gövde `text/plain`, satır başına bir mesaj, istek
+  başına en çok 5000 satır ve 4 MB. HTTP ile ileten aktarıcılar için (rsyslog
+  `omhttp`, syslog-ng `http()`). 200 her bulgunun kalıcı olduğunu söyler; kuyruk
+  doluysa 503 ve `Retry-After`.
+
+Sayaçlar daemon `/status` çıktısında `poller.syslog` altında: `lines`, `findings`,
+`unparsed`, `refused`, `dropped`.
 
 **Okta.** Okta MCP sunucusu backend imajına bir commit'e sabitlenmiş uv aracı
 olarak gömülüdür; başlatmak için internet gerekmez, air-gap kurulumda da açılır.

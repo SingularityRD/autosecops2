@@ -1,0 +1,36 @@
+{{- if and .Values.daemon.enabled .Values.daemon.syslog.enabled }}
+{{- $syslog := .Values.daemon.syslog }}
+{{- if not (or $syslog.tcpPort $syslog.udpPort) }}
+{{- fail "daemon.syslog.enabled needs tcpPort or udpPort" }}
+{{- end }}
+# W0.41: the syslog listener, apart from the daemon Service so it can be a
+# LoadBalancer without exposing the webhook, metrics or health ports.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vigil.daemon.fullname" . }}-syslog
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vigil.componentLabels" (dict "context" . "component" "daemon") | nindent 4 }}
+  {{- with $syslog.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $syslog.service.type }}
+  ports:
+    {{- if $syslog.tcpPort }}
+    - name: syslog-tcp
+      port: {{ $syslog.tcpPort }}
+      targetPort: syslog-tcp
+      protocol: TCP
+    {{- end }}
+    {{- if $syslog.udpPort }}
+    - name: syslog-udp
+      port: {{ $syslog.udpPort }}
+      targetPort: syslog-udp
+      protocol: UDP
+    {{- end }}
+  selector:
+    {{- include "vigil.componentSelectorLabels" (dict "context" . "component" "daemon") | nindent 4 }}
+{{- end }}

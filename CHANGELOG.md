@@ -44,6 +44,25 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **ingest (W0.41):** syslog intake. The daemon reads CEF, LEEF 1.0/2.0,
+  FortiGate `key=value` and Wazuh JSON alerts from syslog (RFC 5424, RFC 3164
+  or no header) and stores them as findings (`data_source = "syslog"`, webhook
+  provenance: only parsed IP addresses are sensor). A listener on TCP (RFC 6587
+  framing), TLS (RFC 5425, optionally mutual) or UDP is off by default
+  (`DAEMON_SYSLOG_ENABLED`) and reads only from `DAEMON_SYSLOG_ALLOWED_SOURCES`;
+  an empty list refuses every sender. `POST /ingest/syslog` on the webhook port
+  takes the same lines over HTTP with the webhook token. Both admit like
+  `/ingest`: into the ingest spool, with TCP back-pressure while it is full. A
+  plain syslog line that is none of these formats is counted, not stored.
+  Helm: `daemon.syslog.*` (ports, allowed CIDRs, TLS Secret, a separate
+  `-daemon-syslog` Service, NetworkPolicy rule).
+* **integrations (W0.41):** IBM QRadar (Experimental). New offenses are
+  ingested as findings by alert collection (cursor: the last offense id; no
+  backfill on enable; an optional offense filter), with magnitude as severity
+  and the offense source as source IP, destination IP or user name by offense
+  type. The investigation agent gets two read-only tools,
+  `qradar_list_offenses` and `qradar_get_offense`. Nothing is written back to
+  QRadar.
 * **compliance (W0.42):** the case's regulatory clocks cover KVKK, BDDK and
   USOM / SOME next to DORA and NIS2. KVKK: the Board notification is due 72 hours
   after awareness (law 6698 art. 12/5, Board decision 2019/10), with the data

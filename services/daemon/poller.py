@@ -16,7 +16,7 @@
 import asyncio
 import hmac
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.config import get_settings
 from core.federation.runner import FederationRunner
@@ -25,6 +25,7 @@ from core.ingestion.dedup import RedisDedupSet
 from core.ingestion.handoff import envelope
 from core.ingestion.spool import IngestSpool, SpoolError, SpoolFull
 from core.ingestion.spool import count as spool_count
+from core.ingestion.syslog_formats import parse_line as parse_syslog_line
 from core.webhook_rejections import (
     BAD_TOKEN,
     DISABLED,
@@ -40,6 +41,9 @@ logger = logging.getLogger(__name__)
 _BUSY_RETRY_AFTER = 5
 # Without a spool: how long the webhook waits for the rows before a 503.
 _SYNC_STORE_TIMEOUT = 15.0
+# /ingest/syslog bounds (W0.41): a request is a relay's batch, not a dump.
+_SYSLOG_BODY_MAX = 4 * 1024 * 1024
+_SYSLOG_LINES_MAX = 5000
 
 
 def normalize_mitre_predictions(raw: Any, finding_id: str) -> Dict[str, float]:
@@ -105,6 +109,14 @@ class DataPoller:
             "webhook_busy": 0,
             "webhook_not_stored": 0,
             "webhook_rejections": {},
+            # W0.41: lines read by the syslog listener and /ingest/syslog.
+            "syslog": {
+                "lines": 0,
+                "findings": 0,
+                "unparsed": 0,
+                "refused": 0,
+                "dropped": 0,
+            },
             "federation": self._federation.stats,
         }
 
@@ -157,40 +169,56 @@ class DataPoller:
 
     async def _accept_spooled(self, findings: List[Dict[str, Any]]):
         """200 once ``findings`` are fsync'd in the spool; 503 if they cannot be."""
-        from aiohttp import web
+        return _answer(*await self._admit_spooled(findings, "webhook"))
 
+    async def _accept_stored(self, findings: List[Dict[str, Any]]):
+        """No spool: 200 only once every row is stored, else 503."""
+        return _answer(*await self._admit_stored(findings, "webhook"))
+
+    async def admit(
+        self, findings: List[Dict[str, Any]], via: str
+    ) -> Tuple[int, Optional[str]]:
+        """Hand ``findings`` on as the webhook does: ``(taken, None)`` once all
+        are durable, else ``(taken, why)`` and the sender should retry (W0.41:
+        the syslog listener and ``/ingest/syslog`` share this)."""
+        if self._spool is not None:
+            return await self._admit_spooled(findings, via)
+        return await self._admit_stored(findings, via)
+
+    async def _admit_spooled(
+        self, findings: List[Dict[str, Any]], via: str
+    ) -> Tuple[int, Optional[str]]:
         spool = self._spool
         assert spool is not None
         try:
-            taken = await asyncio.to_thread(spool.append, findings, "webhook")
+            taken = await asyncio.to_thread(spool.append, findings, via)
         except SpoolFull as e:
             self.stats["webhook_busy"] += 1
             spool_count("rejected", reason="full")
-            logger.warning("Webhook answered 503: %s", e)
-            return _busy(0, "ingest busy: spool full")
+            logger.warning("Ingest (%s) answered busy: %s", via, e)
+            return 0, "ingest busy: spool full"
         except SpoolError as e:
             self.stats["webhook_busy"] += 1
             spool_count("rejected", reason="error")
-            logger.error("Webhook answered 503, ingest spool unusable: %s", e)
-            return _busy(0, "ingest unavailable: spool write failed")
+            logger.error("Ingest (%s) answered busy, ingest spool unusable: %s", via, e)
+            return 0, "ingest unavailable: spool write failed"
         spool_count("appended", len(taken))
         # Marked after the spool holds them: a marked id is always on disk or
         # stored, so skipping a re-send of it loses nothing.
         for finding_id in taken:
             await self._webhook_dedup.mark_processed(finding_id)
         self.stats["webhook_findings"] += len(taken)
-        return web.json_response({"status": "ok", "ingested": len(taken)})
+        return len(taken), None
 
-    async def _accept_stored(self, findings: List[Dict[str, Any]]):
-        """No spool: 200 only once every row is stored, else 503."""
-        from aiohttp import web
-
+    async def _admit_stored(
+        self, findings: List[Dict[str, Any]], via: str
+    ) -> Tuple[int, Optional[str]]:
         if self._output_queue is None:
-            return _busy(0, "ingest not ready: no processor queue")
+            return 0, "ingest not ready: no processor queue"
         pending = []
         busy = False
         for finding_data in findings:
-            item = envelope(finding_data, "webhook")
+            item = envelope(finding_data, via)
             item["ack"] = ack = new_ack()
             try:
                 self._output_queue.put_nowait(item)
@@ -217,11 +245,49 @@ class DataPoller:
         self.stats["webhook_findings"] += stored
         if busy:
             self.stats["webhook_busy"] += 1
-            return _busy(stored, "ingest busy: processor queue full")
+            return stored, "ingest busy: processor queue full"
         if stored < len(pending):
             self.stats["webhook_not_stored"] += len(pending) - stored
-            return _busy(stored, "ingest unavailable: findings not stored")
-        return web.json_response({"status": "ok", "ingested": stored})
+            return stored, "ingest unavailable: findings not stored"
+        return stored, None
+
+    async def ingest_syslog_lines(
+        self, lines: List[str], peer: Optional[str], via: str
+    ) -> Tuple[int, int, Optional[str]]:
+        """Parse ``lines`` (W0.41) and admit the findings they carry.
+
+        Returns ``(ingested, unparsed, why)``; ``why`` is set when the batch
+        was not all taken and the sender should retry it.
+        """
+        stats = self.stats["syslog"]
+        stats["lines"] += len(lines)
+        findings: List[Dict[str, Any]] = []
+        seen = set()
+        unparsed = 0
+        for line in lines:
+            try:
+                finding = parse_syslog_line(line, peer=peer)
+            except Exception as e:  # one odd line must not drop its batch
+                logger.debug("syslog line not read: %s", e)
+                finding = None
+            if finding is None:
+                unparsed += 1
+                continue
+            if finding["finding_id"] in seen:
+                continue
+            seen.add(finding["finding_id"])
+            findings.append(finding)
+        stats["unparsed"] += unparsed
+        fresh = [
+            f
+            for f in findings
+            if not await self._webhook_dedup.is_processed(f["finding_id"])
+        ]
+        if not fresh:
+            return 0, unparsed, None
+        taken, why = await self.admit(fresh, via)
+        stats["findings"] += taken
+        return taken, unparsed, why
 
     def _webhook_app(self):
         from aiohttp import web
@@ -317,6 +383,61 @@ class DataPoller:
                 logger.error(f"Webhook error: {e}")
                 return web.json_response({"error": str(e)}, status=400)
 
+        async def handle_syslog(request: web.Request) -> web.Response:
+            """Syslog lines over HTTP (W0.41): ``text/plain``, one line each.
+
+            For a relay that forwards over HTTP (rsyslog omhttp, syslog-ng
+            http(), Logsign, a QRadar or ArcSight forwarder). Same bearer as
+            /ingest; a line that is not CEF, LEEF, FortiGate or JSON is
+            counted, not stored. 200 means every finding is durable.
+            """
+            token = self.config.webhook_token
+            if not token:
+                reject(request, NO_SECRET, "DAEMON_WEBHOOK_TOKEN is not set")
+                return web.json_response(
+                    {"error": "ingest disabled: server missing DAEMON_WEBHOOK_TOKEN"},
+                    status=503,
+                )
+            presented = (
+                request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            )
+            if not hmac.compare_digest(presented, token):
+                reject(request, BAD_TOKEN)
+                return web.json_response({"error": "unauthorized"}, status=401)
+            if request.content_length and request.content_length > _SYSLOG_BODY_MAX:
+                return web.json_response({"error": "body too large"}, status=413)
+            chunks: List[bytes] = []
+            size = 0
+            try:
+                async for chunk in request.content.iter_chunked(65536):
+                    size += len(chunk)
+                    if size > _SYSLOG_BODY_MAX:
+                        return web.json_response(
+                            {"error": "body too large"}, status=413
+                        )
+                    chunks.append(chunk)
+            except Exception as e:
+                return web.json_response({"error": str(e)}, status=400)
+            body = b"".join(chunks)
+            lines = [
+                line
+                for line in body.decode("utf-8", "replace").split("\n")
+                if line.strip()
+            ]
+            if len(lines) > _SYSLOG_LINES_MAX:
+                return web.json_response(
+                    {"error": f"at most {_SYSLOG_LINES_MAX} lines per request"},
+                    status=413,
+                )
+            ingested, unparsed, why = await self.ingest_syslog_lines(
+                lines, request.remote, "syslog"
+            )
+            if why is not None:
+                return _busy(ingested, why)
+            return web.json_response(
+                {"status": "ok", "ingested": ingested, "unparsed": unparsed}
+            )
+
         async def health_check(request: web.Request) -> web.Response:
             """Health check endpoint."""
             return web.json_response({"status": "healthy"})
@@ -324,8 +445,17 @@ class DataPoller:
         app = web.Application()
         app.router.add_post("/ingest", handle_webhook)
         app.router.add_post("/webhook", handle_webhook)
+        app.router.add_post("/ingest/syslog", handle_syslog)
         app.router.add_get("/health", health_check)
         return app
+
+
+def _answer(ingested: int, why: Optional[str]):
+    from aiohttp import web
+
+    if why is None:
+        return web.json_response({"status": "ok", "ingested": ingested})
+    return _busy(ingested, why)
 
 
 def _busy(ingested: int, message: str):

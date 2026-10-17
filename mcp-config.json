@@ -94,6 +94,15 @@
       }
     },
 
+    "qradar": {
+      "command": "python3",
+      "args": ["core/integrations/qradar/tool.py"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "_setup_note": "IBM QRadar SIEM, read only: list and read offenses. Configure in Settings (console URL and an authorized service token). Offenses are also ingested by the federation runner. The tool reads via resolve(); there is no required env placeholder."
+      }
+    },
+
     "pagerduty": {
       "command": "uvx",
       "args": ["pagerduty-mcp==1.1.0", "--enable-write-tools"],

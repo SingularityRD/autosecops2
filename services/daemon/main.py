@@ -71,6 +71,7 @@ class SOCDaemon:
 
         # Components (lazy loaded)
         self._poller = None
+        self._syslog = None
         self._kafka_ingestor = None
         self._processor = None
         self._responder = None
@@ -136,6 +137,11 @@ class SOCDaemon:
         get_db_manager()
 
         self._poller = DataPoller(self.config.polling)
+        if self.config.syslog.enabled:
+            from services.daemon.syslog_listener import SyslogListener
+
+            # W0.41: shares the poller's spool and dedup, so it admits like /ingest.
+            self._syslog = SyslogListener(self.config.syslog, self._poller)
         self._kafka_ingestor = KafkaIngestor(self.config.kafka)
         self._processor = FindingProcessor(
             self.config.processing, response_config=self.config.response
@@ -408,6 +414,10 @@ class SOCDaemon:
 
         if self._poller:
             start("poller", self._poller, "Data poller")
+
+        syslog = getattr(self, "_syslog", None)
+        if syslog:
+            start("syslog", syslog, "Syslog listener")
 
         if self._kafka_ingestor:
             start("kafka", self._kafka_ingestor, "Kafka ingestor")

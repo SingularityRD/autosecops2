@@ -412,6 +412,18 @@
       "note": "Vendor connector; runs only when the 'palo_alto' integration is enabled with credentials (or its MCP server is enabled). The air-gap profile enables none. Shared PAN-OS client (tool + block_ip executor); only the operator-configured firewall host."
     },
     {
+      "site": "core/integrations/qradar/client.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 1
+      },
+      "gates": [
+        "integration:qradar",
+        "mcp-server:qradar"
+      ],
+      "note": "Vendor connector (W0.41); runs only when the 'qradar' integration is enabled with a console URL and token (or its MCP server is enabled). Read only. The air-gap profile enables none; an on-premises QRadar keeps this traffic on the customer network."
+    },
+    {
       "site": "core/integrations/slack/tool.py",
       "category": "gated",
       "kinds": {
