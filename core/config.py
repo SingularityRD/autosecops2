@@ -301,6 +301,10 @@ class Settings(BaseSettings):
     # Observability
     sentry_dsn: str = ""
     vigil_otel_enabled: bool = False
+    # W0.51: Prometheus metrics on the processes' own /metrics (backend) and
+    # :9090 (daemon), with no OTEL export and no tracing. For air-gapped
+    # installs scraped by their own Prometheus. Ignored when OTEL is on.
+    vigil_metrics_enabled: bool = False
     # Process log output: "json" (one object per line) or plain "text".
     vigil_log_format: Literal["json", "text"] = "json"
     otel_exporter_otlp_endpoint: str = "http://localhost:4317"

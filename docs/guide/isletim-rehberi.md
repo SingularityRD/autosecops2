@@ -110,6 +110,27 @@ helm upgrade --install autosecops infra/helm/vigil \
 - Bulut model sağlayıcısı kullanacaksanız anahtarını konsoldan girin; bu durumda
   bulgu içeriği sağlayıcıya gider (KVKK md. 9 değerlendirmesi kurumundur).
 
+## 3b. İzleme: metrikler, alarmlar, pano (W0.51)
+
+- **Metrikler:** `VIGIL_METRICS_ENABLED=true` backend'in `/metrics` ucunda ve
+  daemon'un 9090 portunda Prometheus metriklerini açar; OTEL dışa aktarımı ve iz
+  (trace) yoktur, hiçbir şey kurulumun dışına gönderilmez. İnternetsiz profilde
+  açıktır. `VIGIL_OTEL_ENABLED=true` ise OTEL yolu kullanılır (bu ayar yok sayılır).
+- **Toplama (Prometheus Operator):** `observability.serviceMonitor.enabled` daemon
+  için, `observability.serviceMonitor.backend` (varsayılan açık) backend için
+  ServiceMonitor oluşturur.
+- **Alarmlar:** `observability.prometheusRule.enabled` şu kuralları kurar: daemon ya
+  da backend erişilemez, SIEM'e denetim aktarımı durdu ya da teslimler başarısız,
+  iki gündür başarılı yedek yok, bilinen cevaplı sınama (probe) beklenen kararı
+  almadı, webhook reddi yükseldi.
+- **Pano:** `observability.grafanaDashboard.enabled` Grafana sidecar'ı için bir
+  ConfigMap kurar (`grafana_dashboard: "1"` etiketi): hedeflerin durumu, bekleyen
+  onaylar, son yedekten geçen süre, denetim aktarım kuyruğu, LLM çağrı hızı, maliyet
+  ve süresi, webhook retleri, sınamalar.
+- **Güvenlik:** backend `/metrics` oturum açmadan yanıt verir. Konsolu yayımlayan
+  ingress ya da ters vekilde bu yolu dışarıya kapatın; toplayıcı küme içinden
+  servis adresine bağlanır.
+
 ## 4. Çıkış prosedürü
 
 Hizmet sona erdiğinde ya da başka bir ürüne geçerken izlenecek sıra. Her adımın

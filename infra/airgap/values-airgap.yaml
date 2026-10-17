@@ -102,6 +102,7 @@ config:
 
   # Telemetry
   VIGIL_OTEL_ENABLED: "false"
+  VIGIL_METRICS_ENABLED: "true"
   # Agent-layer spans never carry prompts, responses or tool I/O (W0.30).
   VIGIL_OTEL_CAPTURE_CONTENT: "false"
 

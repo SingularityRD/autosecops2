@@ -44,6 +44,13 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **observability (W0.51):** `VIGIL_METRICS_ENABLED` serves Prometheus metrics
+  on the backend `/metrics` and the daemon's :9090 with no OTEL export and no
+  tracing; it is on in the air-gap profile, so an air-gapped install can be
+  scraped by its own Prometheus. The chart adds a backend ServiceMonitor, an
+  optional PrometheusRule (daemon or backend down, audit export stalled or
+  failing, no backup in two days, a known-answer probe missed, webhook
+  rejections) and an optional Grafana dashboard ConfigMap.
 * **demo (W0.50):** `python -m core.platform.demo_scenario seed` writes one
   coherent incident into the database that shows the claim: findings with
   verdicts that cite fields and who wrote them, a case, a host isolation waiting

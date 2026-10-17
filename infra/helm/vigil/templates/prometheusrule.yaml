@@ -1,0 +1,84 @@
+{{- if .Values.observability.prometheusRule.enabled }}
+{{- /*
+W0.51: alerts on metrics AutoSecOps itself exports. Names are those the
+Prometheus reader emits (dots become underscores) and the prometheus_client
+collectors (audit export, backup). The `up` rules match the ServiceMonitor jobs.
+*/ -}}
+{{- $daemon := include "vigil.daemon.fullname" . }}
+{{- $backend := printf "%s-backend" (include "vigil.fullname" .) }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "vigil.fullname" . }}
+  {{- with .Values.observability.prometheusRule.namespace }}
+  namespace: {{ . }}
+  {{- else }}
+  namespace: {{ $.Release.Namespace }}
+  {{- end }}
+  labels:
+    {{- include "vigil.labels" . | nindent 4 }}
+    {{- with .Values.observability.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: autosecops.availability
+      rules:
+        - alert: AutoSecOpsDaemonDown
+          expr: up{job="{{ $daemon }}"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: AutoSecOps daemon metrics endpoint is down
+            description: No alert intake, triage or response while the daemon is down.
+        - alert: AutoSecOpsBackendDown
+          expr: up{job="{{ $backend }}"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: AutoSecOps backend metrics endpoint is down
+    - name: autosecops.integrity
+      rules:
+        - alert: AutoSecOpsAuditExportStalled
+          expr: max(autosecops_audit_export_cursor_commit_stalled) > 0 or max(autosecops_audit_export_xid_horizon_stalled) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Audit export to the SIEM is stalled
+            description: Audit events are queued but not reaching the SIEM; see the admin guide, audit export.
+        - alert: AutoSecOpsAuditExportFailing
+          expr: sum(increase(autosecops_audit_export_delivery_failures_total[15m])) > 0 and max(autosecops_audit_export_enabled) == 1
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Audit export deliveries are failing
+        - alert: AutoSecOpsBackupStale
+          expr: time() - max(vigil_backup_last_success_timestamp_seconds) > 2 * 86400
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: No successful AutoSecOps backup in two days
+    - name: autosecops.quality
+      rules:
+        - alert: AutoSecOpsProbeMissed
+          expr: sum(increase(vigil_probe_results_total{outcome!="hit"}[1h])) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: A known-answer probe was not triaged as expected
+            description: The daemon's self-test did not get the expected verdict; check the Health screen.
+        - alert: AutoSecOpsWebhookRejections
+          expr: sum(increase(vigil_webhook_rejections_total[15m])) > 20
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Many ingest webhook requests are being rejected
+            description: A sender may have a wrong token or point at a disabled integration.
+{{- end }}
