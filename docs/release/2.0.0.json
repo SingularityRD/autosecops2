@@ -487,6 +487,11 @@
       "id": "W0.54",
       "topic": "OpenShift desteği (önizleme): openshift.enabled sabit kullanıcı kimliklerini SCC'ye bırakır, isteğe bağlı Route; imajlar 0 grubuna yazılabilir",
       "topic_en": "OpenShift support (preview): openshift.enabled leaves fixed uids to the SCC, an optional Route; images group-0 writable"
+    },
+    {
+      "id": "W0.55",
+      "topic": "Helm grafiğinde isteğe bağlı LLM yığını: Bifrost ve Ollama (llmStack), sağlayıcı anahtarları hazır bir Secret'tan, Bifrost'a yalnız modeli çağıran bileşenler erişir",
+      "topic_en": "optional in-chart LLM stack: Bifrost and Ollama (llmStack), provider keys from an existing Secret, only model callers reach Bifrost"
     }
   ],
   "highlights": [
