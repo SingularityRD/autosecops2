@@ -7,9 +7,12 @@ import { countdown, INSTANTS, liveState, type Regime } from './regulatoryFormat'
 const REGIMES: { id: Regime; label: string }[] = [
   { id: 'dora', label: 'DORA' },
   { id: 'nis2', label: 'NIS2' },
+  { id: 'kvkk', label: 'KVKK' },
+  { id: 'bddk', label: 'BDDK' },
+  { id: 'usom', label: 'USOM' },
 ]
 
-const KINDS: Record<Regime, { id: 'initial' | 'intermediate' | 'final' | 'early_warning' | 'notification'; label: string }[]> = {
+const KINDS: Record<Regime, { id: 'initial' | 'intermediate' | 'final' | 'early_warning' | 'notification' | 'board_notification'; label: string }[]> = {
   dora: [
     { id: 'initial', label: 'Initial' },
     { id: 'intermediate', label: 'Intermediate' },
@@ -21,6 +24,12 @@ const KINDS: Record<Regime, { id: 'initial' | 'intermediate' | 'final' | 'early_
     { id: 'intermediate', label: 'Intermediate' },
     { id: 'final', label: 'Final' },
   ],
+  kvkk: [{ id: 'board_notification', label: 'Kurul bildirimi' }],
+  bddk: [
+    { id: 'notification', label: 'Bildirim' },
+    { id: 'final', label: 'Sonuç raporu' },
+  ],
+  usom: [{ id: 'notification', label: 'Bildirim' }],
 }
 
 const TICK_MS = 15_000
@@ -42,7 +51,8 @@ const STATE_WORD: Record<RegulatoryClock['state'], string> = {
 }
 
 function instantLabel(regime: Regime, id: string | null | undefined): string {
-  return INSTANTS[regime].find((i) => i.id === id)?.label.toLowerCase() ?? id ?? ''
+  const locale = regime === 'dora' || regime === 'nis2' ? 'en' : 'tr'
+  return INSTANTS[regime].find((i) => i.id === id)?.label.toLocaleLowerCase(locale) ?? id ?? ''
 }
 
 function detailOf(error: unknown, fallback: string): string {

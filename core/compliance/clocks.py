@@ -1,4 +1,4 @@
-"""Regulatory notification clocks for a case: DORA and NIS2. Pure functions.
+"""Regulatory notification clocks for a case: DORA, NIS2, KVKK, BDDK, USOM. Pure functions.
 
 Every clock runs from a start instant recorded on the case and is met by
 another recorded instant. Nothing here reads the database or the wall clock:
@@ -21,6 +21,24 @@ NIS2 (Directive (EU) 2022/2555, Art. 23(4)):
     nis2.final          due 1 month after the incident notification (notified_at),
                         met by final_at
 
+KVKK (6698 sayılı Kanun md. 12/5 and Kişisel Verileri Koruma Kurulu decision
+2019/10): a personal data breach is notified to the Board without delay and at
+the latest within 72 hours of the controller becoming aware of it (W0.42):
+
+    kvkk.board_notification  due 72h after awareness (aware_at), met by notified_at;
+                             subjects_notified_at records when the people
+                             concerned were told (no fixed hour limit: "as soon
+                             as reasonably possible")
+
+BDDK (bank cyber incidents) and USOM / sectoral SOME (national CERT) clocks are
+in-house targets, not hour limits taken from a text here: their defaults (24h,
+then a final report one month after the notification) are what the tenant
+replaces with the time its compliance unit has confirmed for its sector.
+
+    bddk.notification   due 24h after awareness, met by notified_at
+    bddk.final          due 1 month after the notification, met by final_at
+    usom.notification   due 24h after awareness, met by notified_at
+
 Durations are configurable per tenant (:class:`ClockConfig`). An hour duration
 is elapsed time: 24h across a DST change is 24 real hours, so the local wall
 clock moves by one hour. A month duration is calendar arithmetic in the
@@ -36,7 +54,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-REGIMES: Tuple[str, ...] = ("dora", "nis2")
+REGIMES: Tuple[str, ...] = ("dora", "nis2", "kvkk", "bddk", "usom")
 
 # The instants a case can carry, per regime. Each is a fact with an actor and a
 # time; changing one is an audited event (core/compliance/regulatory_service.py).
@@ -49,6 +67,9 @@ INSTANTS: Dict[str, Tuple[str, ...]] = {
         "final_at",
     ),
     "nis2": ("aware_at", "early_warning_at", "notified_at", "final_at"),
+    "kvkk": ("aware_at", "notified_at", "subjects_notified_at"),
+    "bddk": ("aware_at", "notified_at", "final_at"),
+    "usom": ("aware_at", "notified_at"),
 }
 
 DEFAULT_TIMEZONE = "Europe/Istanbul"
@@ -112,7 +133,22 @@ DEFAULT_DURATIONS: Dict[str, Duration] = {
     "nis2.early_warning_after_awareness": Duration(hours=24),
     "nis2.notification_after_awareness": Duration(hours=72),
     "nis2.final_after_notification": Duration(months=1),
+    # KVKK Kurul decision 2019/10: at the latest 72 hours.
+    "kvkk.board_after_awareness": Duration(hours=72),
+    # In-house targets: replace with what the compliance unit confirmed.
+    "bddk.notification_after_awareness": Duration(hours=24),
+    "bddk.final_after_notification": Duration(months=1),
+    "usom.notification_after_awareness": Duration(hours=24),
 }
+
+# Durations that are a target the tenant sets, not a limit from a text (W0.42).
+TARGET_DURATIONS = frozenset(
+    {
+        "bddk.notification_after_awareness",
+        "bddk.final_after_notification",
+        "usom.notification_after_awareness",
+    }
+)
 
 
 def _zone(name: str) -> ZoneInfo:
@@ -171,6 +207,7 @@ class ClockConfig:
             "timezone": self.timezone,
             "durations": {k: v.to_dict() for k, v in self.durations.items()},
             "defaults": {k: v.to_dict() for k, v in DEFAULT_DURATIONS.items()},
+            "targets": sorted(TARGET_DURATIONS),
         }
 
 
@@ -277,6 +314,38 @@ CLOCKS: Tuple[ClockDef, ...] = (
         starts=(("notified_at", "nis2.final_after_notification"),),
         met_by="final_at",
         requires="notified_at",
+    ),
+    ClockDef(
+        key="kvkk.board_notification",
+        regime="kvkk",
+        label="KVKK Kurul bildirimi (veri ihlali)",
+        starts=(("aware_at", "kvkk.board_after_awareness"),),
+        met_by="notified_at",
+        requires="aware_at",
+    ),
+    ClockDef(
+        key="bddk.notification",
+        regime="bddk",
+        label="BDDK siber olay bildirimi (kurum içi hedef)",
+        starts=(("aware_at", "bddk.notification_after_awareness"),),
+        met_by="notified_at",
+        requires="aware_at",
+    ),
+    ClockDef(
+        key="bddk.final",
+        regime="bddk",
+        label="BDDK sonuç raporu (kurum içi hedef)",
+        starts=(("notified_at", "bddk.final_after_notification"),),
+        met_by="final_at",
+        requires="notified_at",
+    ),
+    ClockDef(
+        key="usom.notification",
+        regime="usom",
+        label="USOM / SOME bildirimi (kurum içi hedef)",
+        starts=(("aware_at", "usom.notification_after_awareness"),),
+        met_by="notified_at",
+        requires="aware_at",
     ),
 )
 
@@ -445,6 +514,13 @@ INSTANT_ORDER: Dict[str, Tuple[Tuple[str, str], ...]] = {
         ("early_warning_at", "final_at"),
         ("notified_at", "final_at"),
     ),
+    "kvkk": (("aware_at", "notified_at"), ("aware_at", "subjects_notified_at")),
+    "bddk": (
+        ("aware_at", "notified_at"),
+        ("aware_at", "final_at"),
+        ("notified_at", "final_at"),
+    ),
+    "usom": (("aware_at", "notified_at"),),
 }
 
 

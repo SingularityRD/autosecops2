@@ -915,7 +915,7 @@ imhayı yalnızca imha işiyle yapın.
 | `approval_decisions` | Her onay kararı (onay, ilk onay, ikinci onay, red), karar veren ve o anki rolü | yalnızca eklenir, değiştirilemez; zincirsiz | görevler ayrılığı raporu, `GET /api/response/segregation` |
 | `agent_events` (ajan defteri) | Her ajan koşusunun olayları | koşu başına SHA-256 hash zinciri; başı imzalı kontrol noktasında | `GET /api/workflows/runs/{run_id}/verify`, `npm run ledger:verify`, `python -m core.audit.verify --agent-events` |
 | `audit_checkpoints` | Ajan defteri ve `audit_chain` başlarının Ed25519 imzalı kontrol noktaları | imzalı, birbirine bağlı | `python -m core.audit.verify` |
-| `regulatory_clock_events` | DORA/NIS2 başlangıç anları | vaka başına hash zinciri; güncelleme ve `TRUNCATE` tetikleyiciyle reddedilir | `GET /api/cases/{case_id}/regulatory/events` (zincir kontrolü dahil) |
+| `regulatory_clock_events` | DORA, NIS2, KVKK, BDDK ve USOM başlangıç anları | vaka başına hash zinciri; güncelleme ve `TRUNCATE` tetikleyiciyle reddedilir | `GET /api/cases/{case_id}/regulatory/events` (zincir kontrolü dahil) |
 | `lesson_events` | Derslerin her geçişi (öneri, replay, terfi, ret, geri alma) | yalnızca eklenir; zincirsiz | `GET /api/lessons/{lesson_id}/events` |
 | Soruşturma gözetim zinciri | Bir soruşturmanın dosyaları ve kayıtları | — | `GET /api/orchestrator/investigations/{investigation_id}/chain-of-custody` |
 

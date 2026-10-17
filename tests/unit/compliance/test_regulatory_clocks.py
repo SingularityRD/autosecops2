@@ -317,6 +317,11 @@ def test_defaults_match_the_regulations():
         "nis2.early_warning_after_awareness": Duration(hours=24),
         "nis2.notification_after_awareness": Duration(hours=72),
         "nis2.final_after_notification": Duration(months=1),
+        # W0.42: KVKK Board decision 2019/10; BDDK and USOM are in-house targets.
+        "kvkk.board_after_awareness": Duration(hours=72),
+        "bddk.notification_after_awareness": Duration(hours=24),
+        "bddk.final_after_notification": Duration(months=1),
+        "usom.notification_after_awareness": Duration(hours=24),
     }
     assert ClockConfig().timezone == "Europe/Istanbul"
 

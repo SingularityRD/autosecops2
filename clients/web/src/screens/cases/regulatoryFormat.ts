@@ -1,6 +1,6 @@
 import type { RegulatoryClock } from '../../services/regulatoryApi'
 
-export type Regime = 'dora' | 'nis2'
+export type Regime = 'dora' | 'nis2' | 'kvkk' | 'bddk' | 'usom'
 
 /** The instants each regime records, in the order they happen. */
 export const INSTANTS: Record<Regime, { id: string; label: string }[]> = {
@@ -16,6 +16,20 @@ export const INSTANTS: Record<Regime, { id: string; label: string }[]> = {
     { id: 'early_warning_at', label: 'Early warning sent' },
     { id: 'notified_at', label: 'Incident notification sent' },
     { id: 'final_at', label: 'Final report sent' },
+  ],
+  kvkk: [
+    { id: 'aware_at', label: 'İhlalden haberdar olundu' },
+    { id: 'notified_at', label: 'Kurula bildirildi' },
+    { id: 'subjects_notified_at', label: 'İlgili kişilere bildirildi' },
+  ],
+  bddk: [
+    { id: 'aware_at', label: 'Olaydan haberdar olundu' },
+    { id: 'notified_at', label: 'BDDK’ya bildirildi' },
+    { id: 'final_at', label: 'Sonuç raporu gönderildi' },
+  ],
+  usom: [
+    { id: 'aware_at', label: 'Olaydan haberdar olundu' },
+    { id: 'notified_at', label: 'USOM’a bildirildi' },
   ],
 }
 

@@ -44,6 +44,18 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **compliance (W0.42):** the case's regulatory clocks cover KVKK, BDDK and
+  USOM / SOME next to DORA and NIS2. KVKK: the Board notification is due 72 hours
+  after awareness (law 6698 art. 12/5, Board decision 2019/10), with the data
+  subjects' notification recorded as its own instant. BDDK: notification 24
+  hours after awareness, final report one month after notification. USOM / SOME:
+  notification 24 hours after awareness. The BDDK and USOM durations are in-house
+  targets, not limits from a text: their clocks say so ("kurum içi hedef"),
+  `GET /api/compliance/regulatory-clocks/config` lists them under `targets`, and
+  each is a tenant setting like the others. Report drafts for the three regimes
+  have Turkish titles, headings and to-complete lists (KVKK Board notification,
+  BDDK notification and final report, USOM notification). Init SQL 65 widens the
+  instant and report-kind constraints; the case page has KVKK, BDDK and USOM tabs.
 * **upstream (W0.43):** taken from upstream Vigil: `start.sh` waits for the LLM
   worker and daemon before printing Ready; a parked hunt's investigation reads
   paused, frees its slot and is announced once; a run that fails before its

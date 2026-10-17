@@ -10957,12 +10957,12 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "initial" | "intermediate" | "final" | "early_warning" | "notification";
+            kind: "initial" | "intermediate" | "final" | "early_warning" | "notification" | "board_notification";
             /**
              * Regime
              * @enum {string}
              */
-            regime: "dora" | "nis2";
+            regime: "dora" | "nis2" | "kvkk" | "bddk" | "usom";
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -12473,7 +12473,7 @@ export interface components {
              * Regime
              * @enum {string}
              */
-            regime: "dora" | "nis2";
+            regime: "dora" | "nis2" | "kvkk" | "bddk" | "usom";
             /** Value */
             value?: string | null;
         };
@@ -12516,6 +12516,8 @@ export interface components {
             durations: {
                 [key: string]: components["schemas"]["DurationModel"];
             };
+            /** Targets */
+            targets?: string[];
             /** Timezone */
             timezone: string;
         };

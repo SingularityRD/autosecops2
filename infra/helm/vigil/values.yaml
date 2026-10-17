@@ -474,6 +474,7 @@ dbInit:
     - 62_workflow_runs_progress.sql
     - 63_approval_default_assist.sql
     - 64_platform_secrets.sql
+    - 65_regulatory_tr_regimes.sql
   resources:
     requests:
       cpu: 50m

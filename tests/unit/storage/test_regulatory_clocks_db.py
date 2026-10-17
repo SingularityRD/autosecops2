@@ -32,6 +32,7 @@ SQL = (
     / "50_regulatory_clocks.sql"
 )
 HEADS_SQL = SQL.with_name("58_broadcast_unique_and_clock_heads.sql")
+TR_SQL = SQL.with_name("65_regulatory_tr_regimes.sql")
 NOW = datetime(2026, 3, 2, 12, 0, tzinfo=timezone.utc)
 CASE = "W38-TEST-CASE"
 
@@ -47,6 +48,9 @@ def session():
             heads = HEADS_SQL.read_text(encoding="utf-8")
             conn.execute(text(heads))
             conn.execute(text(heads))
+            tr = TR_SQL.read_text(encoding="utf-8")
+            conn.execute(text(tr))
+            conn.execute(text(tr))
             conn.execute(
                 text(
                     "INSERT INTO cases (case_id, title, status, priority, timeline, created_at, updated_at) "
@@ -138,6 +142,8 @@ def test_rows_cannot_be_updated(session):
     [
         ("nis2", "classification_at", None, None),  # not a NIS2 instant
         ("gdpr", "aware_at", None, None),
+        ("kvkk", "final_at", None, None),  # not a KVKK instant (W0.42)
+        ("usom", "final_at", None, None),
         (
             "nis2",
             "aware_at",
@@ -155,6 +161,42 @@ def test_the_table_refuses_what_the_service_refuses(
         "INSERT INTO regulatory_clock_events (case_id, seq, regime, instant, value, previous_value, "
         "actor, reason, prev_hash, row_hash) VALUES (:c, 1, :r, :i, now(), :p, 'a', :reason, '', 'x')",
         {"c": CASE, "r": regime, "i": instant, "p": previous, "reason": reason},
+    )
+
+
+def test_turkish_regimes_record_and_draft(session):
+    """65 lets KVKK, BDDK and USOM rows in, and only their own instants and kinds (W0.42)."""
+    store = SqlClockStore(session)
+    service = RegulatoryService(store, now=lambda: NOW)
+    aware = datetime(2026, 3, 2, 8, tzinfo=timezone.utc)
+    service.record_instant(CASE, "kvkk", "aware_at", aware, "ayse")
+    service.record_instant(CASE, "kvkk", "subjects_notified_at", NOW, "ayse")
+    service.record_instant(CASE, "bddk", "final_at", NOW, "ayse")
+    service.record_instant(CASE, "usom", "notified_at", NOW, "ayse")
+    kvkk = next(
+        c
+        for c in service.status(CASE)["clocks"]
+        if c["key"] == "kvkk.board_notification"
+    )
+    assert kvkk["due_at"] == "2026-03-05T08:00:00+00:00"
+    events = service.events(CASE)
+    pack = build_evidence_pack(
+        {"case_id": CASE, "title": "Sızıntı"}, clock_events=events
+    )
+    clocks = evaluate(fold_instants(events), service.config(), NOW)
+    for regime, kind in (
+        ("kvkk", "board_notification"),
+        ("bddk", "final"),
+        ("usom", "notification"),
+    ):
+        store.add_draft(generate_draft(pack, regime, kind, clocks, events, "ayse", NOW))
+    assert len(store.drafts(CASE)) == 3
+    _refused(
+        session,
+        "INSERT INTO regulatory_report_drafts (case_id, regime, kind, generator, body, "
+        "pack_digest, created_by) VALUES (:c, 'kvkk', 'final', 'template', "
+        "CAST('{}' AS jsonb), 'd', 'a')",
+        {"c": CASE},
     )
 
 
