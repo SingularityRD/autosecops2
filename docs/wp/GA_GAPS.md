@@ -104,6 +104,22 @@ Release sayfası "Latest" görünüyordu; pre-release işaretlenmeli (insan).
 - **Kalite:** e-posta karşılaştırması büyük/küçük harfe duyarlı (`Ali@`≠`ali@`), OIDC'de Türkçe `İ` katlama hatası; ~287 yerde 200 + `{"error"}` (bazıları istisna metniyle); e2e test yok; 11 test görmeyen core modülü; upstream yüzeyleri (Skills, AutoOps, LogLM, VStrike, masaüstü) belgesiz ama açık — GA'da gizle veya "Önizleme" (K6-*).
 - **Profesyonel hizmetler ve satış:** saha keşif/kabul tutanağı, analist eğitim müfredatı, kurulum runbook'u, rakip karşılaştırması, LTS/backport politikası, müşteri portalı/teslim kanalı (S-29…37).
 
+## 4b. Kapanış durumu (17 Ekim 2026, `main`)
+
+| Boşluk | WP | Durum |
+|---|---|---|
+| T1, G1, G2, G3, G4, G5, G6, G7, G8, G9, G10, G11, G16, G17, K1, O6, O8, T6 | W0.32–W0.39 | Kapandı (batch 1) |
+| P3 Türkçe vaka raporu PDF | W0.40 | Kapandı |
+| P4 syslog/CEF/LEEF + QRadar | W0.41 | Kapandı (QRadar Deneysel; Fortinet/Check Point yürütücüsü yok) |
+| K4 KVKK/BDDK/USOM saatleri | W0.42 | Kapandı (BDDK/USOM süreleri kurum içi hedef) |
+| Batch-1 doğrulayıcı takipleri | W0.44 | Kapandı |
+| T3 AI kararı UI'da | W0.45 | Kapandı (triyaj kuyruğu, bulgu penceresi) |
+| P5 bildirim | W0.46 | Kısmi: e-posta listesi ve Teams; SMS yok |
+| O1, G14, O3, O7 | W0.47 | Belgelendi (boyutlandırma ölçülmedi; grafik bir Helm deposunda yayımlanmıyor) |
+| K2 ilgili kişi hakları | W0.48 | Kısmi: kayıt, arama, dışa aktarım; silme saklama araçlarıyla |
+| T5, G12, G13, G18, O2, O4, G15 | — | Açık |
+| T2, T4, P1, H1–H6, K3, K5, K6 | — | Sahip kararı / hukuk / ölçüm bekliyor |
+
 ## 5. Önerilen sıra
 
 1. **Bu hafta, mühendislik (rc.2 için):** T1 otonomi varsayılanı, G1 kurulum token'ı, G2/G3 sırlar, G6 yazar sahteciliği, G7 dışa aktarma yetkisi, K1 kimlik olaylarını kalıcı kaydet, G5 eksik denetim kayıtları, G4 imza anahtarı kurulumu, O6 politika UI/API, T6 executor bağlama, G8/G9/O8 marka-lisans-SECURITY dosyaları, G10/G11 bağımlılık sabitleme, G16, G17. Sonra rc.2.
