@@ -41,6 +41,8 @@ DOC_NAMES = {
         "qradar": "IBM QRadar",
         # W0.57
         "fortigate": "FortiGate",
+        # W0.60
+        "checkpoint": "Check Point",
     },
     "wip": {
         "carbon-black": "Carbon Black",

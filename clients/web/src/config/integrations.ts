@@ -861,6 +861,23 @@ const INTEGRATIONS: IntegrationMetadata[] = [
     docs_url: 'https://docs.fortinet.com/document/fortigate/7.4.0/administration-guide',
   },
   {
+    id: 'checkpoint',
+    name: 'Check Point',
+    category: 'Network Security',
+    description: 'Block and unblock an IP on Check Point gateways: AutoSecOps serves the block list as a Generic Data Center feed the gateway polls, used by a drop rule (W0.60). No policy install per block; every action is approved first.',
+    functionality_type: 'Network Protection',
+    fields: [
+      {
+        name: 'feed_token',
+        label: 'Feed Token',
+        type: 'password',
+        required: true,
+        helpText: 'A long random value. The gateway sends it as Authorization: Bearer (or ?token=) when it fetches /api/feeds/checkpoint/blocklist.',
+      },
+    ],
+    docs_url: 'https://sc1.checkpoint.com/documents/R81.20/WebAdminGuides/EN/CP_R81.20_SecurityManagement_AdminGuide/Content/Topics-SECMG/Generic-Data-Center.htm',
+  },
+  {
     id: 'cloudflare',
     name: 'Cloudflare',
     category: 'Network Security',

@@ -44,6 +44,13 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **response (W0.60):** a Check Point executor (Experimental). `block_ip`
+  puts the address on a block list that AutoSecOps serves as a Generic Data
+  Center feed (`/api/feeds/checkpoint/blocklist`, or `.txt` one per line) for
+  the gateway to poll; a drop rule using it blocks without a policy install per
+  action, and nothing is sent to the firewall, so it works air-gapped. The feed
+  needs the integration's `feed_token` (404 while off, 401 on a wrong token);
+  expired entries leave the feed at once.
 * **notify (W0.58):** urgent case events are texted to on-call numbers
   (`CASE_NOTIFY_SMS_TO`, E.164 only; `CASE_NOTIFY_SMS_PRIORITIES`, default
   `urgent`) through an HTTPS SMS gateway taking `{"to", "message"}`

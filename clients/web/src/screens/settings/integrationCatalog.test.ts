@@ -6,7 +6,7 @@ describe('buildCatalog', () => {
   // SA-01: the executors the product advertises could not be connected from Add integration
   it('offers the response executors with a setup form and the Experimental label (W0.37)', () => {
     const entries = buildCatalog(getAllIntegrations(), [], new Set())
-    for (const id of ['microsoft-defender', 'azure-ad', 'palo-alto', 'fortigate']) {
+    for (const id of ['microsoft-defender', 'azure-ad', 'palo-alto', 'fortigate', 'checkpoint']) {
       const entry = entries.find((e) => e.server === id)
       expect(entry, id).toBeDefined()
       expect(entry?.experimental, id).toBe(true)

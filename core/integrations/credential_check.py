@@ -26,6 +26,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 from core.integrations._base.config import missing, resolve
 from core.integrations.azure_ad.descriptor import AZURE_AD
+from core.integrations.checkpoint.descriptor import CHECKPOINT
 from core.integrations.elastic.descriptor import ELASTIC
 from core.integrations.fortinet.descriptor import FORTIGATE
 from core.integrations.microsoft_defender.descriptor import MICROSOFT_DEFENDER
@@ -204,6 +205,23 @@ def _fortigate_check() -> Outcome:
     return True, f"API token accepted{f' ({detail})' if detail else ''}"
 
 
+def _checkpoint_check() -> Outcome:
+    """No call: the gateway polls AutoSecOps. Says whether it can."""
+    from core.integrations.checkpoint import feed
+    from core.storage.unit_of_work import unit_of_work
+
+    config = resolve(CHECKPOINT)
+    absent = missing(config, "feed_token")
+    if absent:
+        return _absent(absent)
+    with unit_of_work() as session:
+        count = len(feed.entries(session))
+    return True, (
+        f"Feed token set; {count} address(es) on the block list at "
+        "/api/feeds/checkpoint/blocklist"
+    )
+
+
 async def _defender() -> Outcome:
     return await asyncio.to_thread(_defender_check)
 
@@ -220,6 +238,10 @@ async def _fortigate() -> Outcome:
     return await asyncio.to_thread(_fortigate_check)
 
 
+async def _checkpoint() -> Outcome:
+    return await asyncio.to_thread(_checkpoint_check)
+
+
 _CHECKS: Dict[str, Callable[[], Awaitable[Outcome]]] = {
     SPLUNK.id: _splunk,
     ELASTIC.id: _elastic,
@@ -227,6 +249,7 @@ _CHECKS: Dict[str, Callable[[], Awaitable[Outcome]]] = {
     AZURE_AD.id: _entra,
     PALO_ALTO.id: _palo_alto,
     FORTIGATE.id: _fortigate,
+    CHECKPOINT.id: _checkpoint,
 }
 
 
