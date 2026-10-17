@@ -392,6 +392,26 @@
       "id": "W0.39",
       "topic": "init SQL her adlı veritabanı kullanıcısıyla uygulanır (Helm db-init ve compose)",
       "topic_en": "init SQL applies for a database user of any name (Helm db-init and compose)"
+    },
+    {
+      "id": "W0.33",
+      "topic": "ilk yönetici tek kullanımlık kurulum belirteci ister; kurulum sihirbazı hazırlığı sunucudan okur ve ilerlemeyi sunucuda tutar; reset-setup.sh CSRF ile çalışır",
+      "topic_en": "the first admin needs a one-time setup token; the setup wizard reads readiness from the server and keeps progress there; reset-setup.sh works under CSRF"
+    },
+    {
+      "id": "W0.34",
+      "topic": "Helm'de konsoldan girilen sırlar PostgreSQL'de şifreli (init SQL 64), tüm kopyalar paylaşır; MFA sırları ayrı veri anahtarıyla, JWT döndürme yalnızca oturumları bitirir; grafik veri anahtarını üretir; sır döndürme runbook'u",
+      "topic_en": "console secrets on Helm encrypted in PostgreSQL (init SQL 64) and shared by every replica; MFA secrets under a separate data key, so JWT rotation only ends sessions; the chart mints the data key; secret rotation runbook"
+    },
+    {
+      "id": "W0.36",
+      "topic": "imza anahtarları kurulumda üretilir (kontrol noktası, kanıt paketi), sağlık uyarısı ve açık anahtar dışa aktarımı; yanıt politikası konsoldan yönetilir, sınırlı, sürümlü ve denetlenir",
+      "topic_en": "signing keys provisioned at install (checkpoint, evidence pack), health warning and public-key export; the response policy is managed from the console, bounded, versioned and audited"
+    },
+    {
+      "id": "W0.38",
+      "topic": "AutoSecOps markası, LICENSE/NOTICE/THIRD_PARTY_LICENSES her imajda, Redis 7.2.16 (BSD) sabitlendi (tek seferlik yeniden giriş), Node 22, CI koşucuları sabit, VEX, SECURITY.md 2.x",
+      "topic_en": "AutoSecOps brand, LICENSE/NOTICE/THIRD_PARTY_LICENSES in every image, Redis pinned to 7.2.16 (BSD; one forced re-login), Node 22, pinned CI runners, VEX, SECURITY.md for 2.x"
     }
   ],
   "highlights": [
@@ -787,6 +807,24 @@
         "W0.32"
       ],
       "text": "**Otonomi varsayılanı (W0.32):** yeni kurulumda kip Assist'tir: her müdahale eylemini bir kişi onaylar. Yükseltmede `approval.force_manual_approval` satırı yalnızca hiç dokunulmamış eski Act tohumuysa (kimse yazmamış, `config_audit_log`'da kaydı yok) Assist'e alınır ve bu değişiklik `system:w0.32-default` adıyla denetim kaydına yazılır (`63_approval_default_assist.sql`). Konsoldan seçilmiş Act ya da Assist ve `DAEMON_FORCE_APPROVAL` olduğu gibi kalır; Act'i sürdürmek isteyen ve daha önce hiç seçmemiş kurulum onu Ayarlar → Limits & autonomy'de yeniden seçer. Çevreleme sınıfları (`isolate_host`, `disable_user`, `revoke_sessions`, `access_revoke`, `block_ip`, `waf_block`, `quarantine_file`) artık hiçbir katmanda Autonomous olamaz; bunlar için önceden yazılmış Autonomous satırı silinmez, matriste \"not applied\" notuyla görünür ve karar anında Approve gibi işlenir. Otonom olabilen sınıflar `block_domain` ve `gateway_block`'tur. `GET /api/config/autonomy` yeni `mode` ve `autonomous_tiers` alanlarını döner; çip Act'i yalnızca bir katman gerçekten Autonomous iken gösterir."
+    },
+    {
+      "when": [
+        "W0.38"
+      ],
+      "text": "**Redis (W0.38):** gömülü Redis 7.4'ten BSD lisanslı 7.2.16'ya sabitlendi. 7.2, 7.4'ün verisini okuyamadığı için ilk açılışta eski veri `/data/redis-7.4-data-<UTC>/` altına taşınır (silinmez) ve Redis boş başlar: herkes bir kez yeniden oturum açar; bekleyen kuyruk işleri yeniden çalışır (bulgular Postgres'ten yeniden triyaja girer, karar verilmiş bulgular tekrarlanmaz)."
+    },
+    {
+      "when": [
+        "W0.34"
+      ],
+      "text": "**Veri anahtarı (W0.34):** Helm grafiği `VIGIL_DATA_KEY`'i `<fullname>-data-key` Secret'ına üretir ve korur; bu Secret'ı veritabanıyla birlikte yedekleyin. `helm template`/Argo CD/Flux kullanıyorsanız anahtarı kendiniz verin (`dataKey.existingSecret` ya da `secrets.dataEncryptionKey`). Yükseltmeden önce konsoldan girilmiş sırlar pod'un geçici diskinde olduğu için yeniden girilmelidir."
+    },
+    {
+      "when": [
+        "W0.33"
+      ],
+      "text": "**Kurulum belirteci (W0.33):** hesabı olan bir kurulumda bir şey gerekmez. Yeni kurulumda ilk yönetici, backend'in ilk açılışta günlüğe bir kez yazdığı (ve durum dizininde `setup-token` dosyasına kaydettiği) belirteçle oluşturulur; `python -m core.auth.setup_token regenerate` yenisini verir."
     }
   ],
   "known_issues": [
