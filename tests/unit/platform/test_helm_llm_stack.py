@@ -160,3 +160,61 @@ def test_airgap_profile_leaves_the_stack_to_the_installer():
     stack = airgap.get("llmStack") or {}
     assert not (stack.get("bifrost") or {}).get("enabled")
     assert not (stack.get("ollama") or {}).get("enabled")
+
+
+# --- W0.61: Bifrost starts offline -------------------------------------------
+
+
+def _bifrost_volume_mounts(docs):
+    pod = _get(docs, "Deployment", "rc-vigil-bifrost")["spec"]["template"]["spec"]
+    return {m["mountPath"] for m in pod["containers"][0]["volumeMounts"]}
+
+
+@pytest.mark.parametrize(
+    "switch",
+    [
+        "llmStack.bifrost.offlineCatalog=true",
+        "networkPolicies.egress.inClusterOnly=true",
+    ],
+)
+def test_offline_bifrost_reads_its_catalogs_from_the_seed(chart, switch):
+    docs = _render(chart, *ON, switch)
+    seed = _get(docs, "ConfigMap", "rc-vigil-bifrost-seed")["data"]
+    pricing = json.loads(seed["config.json"])["framework"]["pricing"]
+    assert pricing["pricing_url"] == "file:///app/seed/pricing.json"
+    assert pricing["model_parameters_url"] == "file:///app/seed/model-parameters.json"
+    assert (
+        json.loads(seed["pricing.json"]) == {}
+        and json.loads(seed["model-parameters.json"]) == {}
+    )
+    assert "/app/seed" in _bifrost_volume_mounts(docs)
+
+
+def test_connected_bifrost_keeps_the_live_catalogs(chart):
+    docs = _render(chart, *ON)
+    seed = _get(docs, "ConfigMap", "rc-vigil-bifrost-seed")["data"]
+    assert "framework" not in json.loads(seed["config.json"])
+    assert "pricing.json" not in seed
+    assert "/app/seed" not in _bifrost_volume_mounts(docs)
+
+
+def test_airgap_manifest_points_bifrost_at_local_catalogs():
+    manifest = (ROOT / "infra" / "airgap" / "k8s" / "llm-stack.yaml").read_text(
+        encoding="utf-8"
+    )
+    docs = [d for d in yaml.safe_load_all(manifest) if d]
+    cm = next(d for d in docs if d["kind"] == "ConfigMap")
+    pricing = json.loads(cm["data"]["config.json"])["framework"]["pricing"]
+    assert pricing["pricing_url"].startswith("file:///app/seed/")
+    assert pricing["model_parameters_url"].startswith("file:///app/seed/")
+    dep = next(
+        d
+        for d in docs
+        if d["kind"] == "Deployment" and d["metadata"]["name"] == "bifrost"
+    )
+    mounts = {
+        m["mountPath"]
+        for m in dep["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
+    }
+    assert "/app/seed" in mounts
+    assert "getbifrost.ai" not in cm["data"]["config.json"]

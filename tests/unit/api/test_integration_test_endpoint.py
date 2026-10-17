@@ -303,7 +303,9 @@ def test_servers_up_and_credentials_accepted_passes(client, saved, credential_ou
 
 
 def test_failed_servers_skip_the_credential_check(client, saved, credential_outcome):
-    mcp = _Client({"virustotal": (False, "connection refused", None)}, enabled=("virustotal",))
+    mcp = _Client(
+        {"virustotal": (False, "connection refused", None)}, enabled=("virustotal",)
+    )
     _post(client, "virustotal", _bridge({"virustotal": {}}), mcp, saved)
 
     assert credential_outcome["asked"] == []
@@ -486,3 +488,38 @@ async def test_persistent_connect_failure_is_recorded():
 
     assert ok is False
     assert client.get_last_error("demo") == "FileNotFoundError: uvx"
+
+
+# --- W0.61: an integration with no MCP server but a credential check ----------
+
+
+@pytest.mark.parametrize("integration_id", ["fortigate", "checkpoint"])
+def test_a_serverless_executor_is_tested_by_its_credential_check(
+    client, saved, credential_outcome, integration_id
+):
+    credential_outcome["outcome"] = (True, "API token accepted")
+    mcp = _Client({})
+    response = _post(
+        client,
+        integration_id,
+        _bridge({integration_id: {}}, [integration_id]),
+        mcp,
+        saved,
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body.get("reason") != "not_testable"
+    assert body["success"] is True
+    assert body["credentials"] == {"success": True, "message": "API token accepted"}
+    assert body["servers"] == []
+    assert mcp.calls == []
+    assert credential_outcome["asked"] == [integration_id]
+    assert [t["integration_id"] for t in saved.tests] == [integration_id]
+
+
+def test_a_failing_serverless_check_is_a_failed_test(client, saved, credential_outcome):
+    credential_outcome["outcome"] = (False, "Missing feed_token")
+    response = _post(client, "checkpoint", _bridge({"checkpoint": {}}), None, saved)
+    body = response.json()
+    assert body["success"] is False and body["message"] == "Missing feed_token"

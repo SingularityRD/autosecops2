@@ -26,7 +26,7 @@ from core.deps import (
 )
 from core.detections.detection_rules_service import DetectionRulesService
 from core.integrations._base.descriptor import iter_descriptors
-from core.integrations.credential_check import check_credentials
+from core.integrations.credential_check import check_credentials, has_credential_check
 from core.integrations.integration_bridge_service import IntegrationBridgeService
 from core.integrations.integration_secrets import (
     credentials_to_resupply,
@@ -1193,7 +1193,9 @@ async def test_integration(
 
     server_names = list(bridge.server_names_for(integration_id))
     status = bridge.get_integration_status(integration_id)
-    if not server_names:
+    # W0.61: an integration with no MCP server (FortiGate, Check Point) is
+    # still tested when it has a credential check.
+    if not server_names and not has_credential_check(integration_id):
         return {
             "success": False,
             "reason": "not_testable",
@@ -1206,7 +1208,7 @@ async def test_integration(
     if not status["configured"]:
         raise HTTPException(status_code=400, detail="Integration not configured")
 
-    if mcp_client is None:
+    if server_names and mcp_client is None:
         return {
             "success": False,
             "message": "MCP client is not available.",
@@ -1216,7 +1218,7 @@ async def test_integration(
         }
 
     mcp_service = getattr(mcp_client, "mcp_service", None)
-    if mcp_service is not None:
+    if server_names and mcp_service is not None:
         try:
             mcp_service.reload_server_configs()
         except Exception as exc:  # noqa: BLE001
@@ -1232,7 +1234,7 @@ async def test_integration(
     targets = server_names if temporary else enabled
 
     servers = []
-    for name in targets:
+    for name in targets if server_names else ():
         servers.append(
             await _probe_mcp_server(
                 mcp_client,

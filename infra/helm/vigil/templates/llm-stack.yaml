@@ -24,6 +24,13 @@ air-gap installer applies infra/airgap/k8s/llm-stack.yaml instead.
 {{- $_ := set $providers "ollama" (dict "network_config" $onet "keys" (list $okey)) }}
 {{- end }}
 {{- $seed := dict "client" (dict "enable_logging" true "disable_content_logging" false) "logs_store" (dict "enabled" true "type" "sqlite" "config" (dict "path" "/app/data/logs.db")) "providers" $providers }}
+{{- /* Bifrost v2 fetches its pricing and model-parameter catalogs from
+       getbifrost.ai at start-up and exits without them (W0.61). Offline (or
+       with egress kept in-cluster) it reads empty catalogs from the seed. */ -}}
+{{- $offline := or $s.bifrost.offlineCatalog (.Values.networkPolicies.egress).inClusterOnly }}
+{{- if $offline }}
+{{- $_ := set $seed "framework" (dict "pricing" (dict "pricing_url" "file:///app/seed/pricing.json" "model_parameters_url" "file:///app/seed/model-parameters.json" "pricing_sync_interval" 86400)) }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -35,6 +42,10 @@ data:
   # First-boot seed only; Bifrost keeps what it is told later on its volume.
   config.json: |
     {{- toPrettyJson $seed | nindent 4 }}
+  {{- if $offline }}
+  pricing.json: "{}"
+  model-parameters.json: "{}"
+  {{- end }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -101,6 +112,11 @@ spec:
               mountPath: /app/data/config.json
               subPath: config.json
               readOnly: true
+            {{- if $offline }}
+            - name: seed
+              mountPath: /app/seed
+              readOnly: true
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /health

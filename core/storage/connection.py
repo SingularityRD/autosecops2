@@ -73,6 +73,9 @@ from core.version import __version__
 
 logger = logging.getLogger(__name__)
 
+# pg_advisory_xact_lock key serialising create_all across processes ("CRTTBL").
+_CREATE_TABLES_LOCK_KEY = 0x4352_5454_424C
+
 
 # Secrets-store keys for the platform DB proxy. Read at boot before
 # the DB engine exists, so they must live in the encrypted secrets
@@ -741,7 +744,18 @@ class DatabaseManager:
             raise RuntimeError("Database not initialized. Call initialize() first.")
 
         try:
-            Base.metadata.create_all(self._engine)
+            with self._engine.begin() as conn:
+                if conn.dialect.name == "postgresql":
+                    # One process at a time (W0.61): uvicorn workers and
+                    # replicas start together on a fresh database, and two
+                    # concurrent create_all calls race on CREATE TYPE / TABLE
+                    # (pg_type unique violation). The lock is held until this
+                    # transaction ends, so the second caller sees the tables.
+                    conn.execute(
+                        text("SELECT pg_advisory_xact_lock(:k)"),
+                        {"k": _CREATE_TABLES_LOCK_KEY},
+                    )
+                Base.metadata.create_all(conn)
             logger.info("Database tables created successfully")
         except Exception as e:
             logger.error(f"Failed to create database tables: {e}")
