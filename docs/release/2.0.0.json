@@ -472,6 +472,11 @@
       "id": "W0.51",
       "topic": "internetsiz kurulumda yerel Prometheus metrikleri (VIGIL_METRICS_ENABLED, dışa aktarım yok); Helm'de backend ServiceMonitor, alarm kuralları ve Grafana panosu",
       "topic_en": "local Prometheus metrics in air-gapped installs (VIGIL_METRICS_ENABLED, nothing exported); a backend ServiceMonitor, alert rules and a Grafana dashboard in the chart"
+    },
+    {
+      "id": "W0.52",
+      "topic": "analist kılavuzu; belge seti güncel tabanı anlatır, SBOM ve imzalı imajlar var olarak belgelendi",
+      "topic_en": "analyst guide; the guide set describes the current base, SBOMs and signed images documented as present"
     }
   ],
   "highlights": [
