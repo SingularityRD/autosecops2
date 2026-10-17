@@ -124,7 +124,8 @@ Release sayfası "Latest" görünüyordu; pre-release işaretlenmeli (insan).
 | G15 model kapısı, canlı injection sayaçları | W0.53 | Kapandı (kapı varsayılan olarak zorlanmaz) |
 | O2 OpenShift | W0.54 | Önizleme (gerçek kümede doğrulanmadı) |
 | O4 LLM yığını Helm'de | W0.55 | Kapandı (gerçek kümede doğrulanmadı) |
-| P5 SMS, K2 silme aracı, Fortinet/Check Point yürütücüleri | — | Açık (müşteri talebiyle) |
+| P4 FortiGate yürütücüsü | W0.57 | Kapandı (Deneysel; Check Point müşteri talebiyle) |
+| P5 SMS, K2 silme aracı | — | Açık (müşteri talebiyle) |
 | T2, T4, P1, H1–H6, K3, K5, K6 | — | Sahip kararı / hukuk / ölçüm bekliyor |
 
 ## 5. Önerilen sıra

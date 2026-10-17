@@ -497,6 +497,11 @@
       "id": "W0.56",
       "topic": "DB testlerinde sıra bağımlılığı giderildi (izin yaması sızıntısı, init SQL 65)",
       "topic_en": "DB-backed tests no longer depend on order (a leaked permission mock, init SQL 65)"
+    },
+    {
+      "id": "W0.57",
+      "topic": "Fortinet FortiGate yürütücüsü (Deneysel): block_ip bir adres grubuna üye ekler, unblock_ip ve süre dolumu geri alır",
+      "topic_en": "Fortinet FortiGate executor (Experimental): block_ip adds a member to an address group, unblock_ip and the TTL sweep undo it"
     }
   ],
   "highlights": [
