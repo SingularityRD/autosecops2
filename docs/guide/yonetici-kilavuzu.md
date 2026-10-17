@@ -1039,11 +1039,24 @@ gözden geçirin. Her arama ve dışa aktarım `config_audit_log`'a başvurunun
 numarasıyla yazılır. Yanıt verildiğinde `.../close` (`outcome`) ile kapatın;
 kapalı başvuruda arama yapılamaz.
 
-Silme ve düzeltme bu uçlarla yapılmaz: saklama araçlarını (sınıf başına
-`anonymise` ya da `delete`, bkz. [Saklama ve imha](#saklama-ve-imha)) hukuki
-değerlendirmeden sonra kullanın. Zincirli denetim kayıtları (`audit_chain`,
-`case_audit_logs`) bütünlük için silinmez; bunların saklanması yasal yükümlülüğe
-dayanır.
+**Silme (W0.59).** Türü `erasure` olan açık bir başvuruda
+`POST /api/compliance/data-subject/requests/{request_id}/erase` (`identifier`,
+`confirm: true`) kimlik bilgisinin her geçtiği yeri `[erased]` ile değiştirir:
+bulguların başlığı, açıklaması, varlık bağlamı ve AI zenginleştirmesi; vakaların
+başlığı, açıklaması, notları ve zaman çizelgesi; vaka yorumları. Yasal saklamadaki
+bir vakaya bağlı satırlar ve sınıf düzeyinde yasal saklamadaki veri sınıfları
+değiştirilmez, `held` olarak sayılır. Yanıt kaynak başına `matched` / `erased` /
+`held` sayılarını verir ve başvurunun denetim izine kimlik bilgisi olmadan yazılır.
+Geri alınamaz; önce `.../export` ile yanıtı hazırlayın.
+
+Bu uçla değiştirilmeyenler: kullanıcı hesapları (kullanıcı yönetiminden devre dışı
+bırakın ya da silin; yanıt eşleşen hesap sayısını verir), sohbet geçmişi ve LLM
+kayıtları (saklama araçlarıyla `anonymise`, bkz. [Saklama ve imha](#saklama-ve-imha)),
+zincirli kayıtlar (`audit_chain`, `agent_events`) ve denetim kayıtları
+(`case_audit_logs`, `config_audit_log`). Bunlar bütünlük ve yasal yükümlülük için
+saklanır ve saklama süresi dolunca saklama araçlarıyla çıkar; ilgili kişiye bu
+gerekçe yanıtta bildirilir. Düzeltme (`rectification`) kaydın kendisinde,
+konsoldan yapılır.
 
 
 ## Denetim kayıtları ve dışa aktarım

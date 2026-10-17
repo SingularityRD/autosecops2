@@ -44,6 +44,13 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **compliance (W0.59):** erasure for a data-subject request.
+  `POST /api/compliance/data-subject/requests/{request_id}/erase` (an open
+  `erasure` request, the same identifier, `confirm: true`) replaces the
+  identifier with `[erased]` in findings, cases and case comments, leaves rows
+  under legal hold, and records per-source counts without the identifier. User
+  accounts, chat and LLM logs, and the chained and audit logs are not changed
+  here (user management and the retention tools).
 * **response (W0.57):** a Fortinet FortiGate executor (Experimental).
   `block_ip` adds an `autosecops-<ip>` address object to an address group that a
   deny policy uses (IPv4 and IPv6, no policy edits, members added one at a time);

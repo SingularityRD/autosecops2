@@ -2887,6 +2887,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/compliance/data-subject/requests/{request_id}/erase": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Erase Request
+         * @description Erase the identifier from findings, cases and comments (erasure requests
+         *     only, ``confirm`` required; legal holds respected; cannot be undone).
+         */
+        post: operations["post_api_compliance_data-subject_requests_request_id_erase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/compliance/data-subject/requests/{request_id}/export": {
         parameters: {
             query?: never;
@@ -10674,6 +10695,38 @@ export interface components {
             source_evidence?: components["schemas"]["SourceEvidence"] | null;
         } & {
             [key: string]: unknown;
+        };
+        /** EraseBody */
+        EraseBody: {
+            /**
+             * Confirm
+             * @default false
+             */
+            confirm: boolean;
+            /** Identifier */
+            identifier: string;
+        };
+        /** EraseCounts */
+        EraseCounts: {
+            /** Erased */
+            erased: number;
+            /** Held */
+            held: number;
+            /** Matched */
+            matched: number;
+        };
+        /** EraseView */
+        EraseView: {
+            /** Not Erased Here */
+            not_erased_here: string;
+            /** Request Id */
+            request_id: string;
+            /** Results */
+            results: {
+                [key: string]: components["schemas"]["EraseCounts"];
+            };
+            /** User Accounts Matched */
+            user_accounts_matched: number;
         };
         /**
          * EscalationAdd
@@ -19367,6 +19420,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RequestView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "post_api_compliance_data-subject_requests_request_id_erase": {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EraseBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EraseView"];
                 };
             };
             /** @description Validation Error */

@@ -194,3 +194,85 @@ def test_masking():
     assert data_subject.identifier_hash(
         " Ali@Corp.Example "
     ) == data_subject.identifier_hash("ali@corp.example")
+
+
+# --- W0.59: erasure -------------------------------------------------------------
+
+
+def _erasure(client):
+    return _register(client, kind="erasure")["request_id"]
+
+
+def test_erasure_replaces_the_identifier_everywhere_it_may(client, session):
+    rid = _erasure(client)
+    r = client.post(
+        f"{PREFIX}/requests/{rid}/erase", json={"identifier": WHO, "confirm": True}
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["results"]["findings"] == {"matched": 1, "erased": 1, "held": 0}
+    assert body["results"]["cases"]["erased"] == 1
+    assert body["results"]["case_comments"]["erased"] == 1
+    ctx = session.execute(
+        text("SELECT entity_context FROM findings WHERE finding_id = 'w048-f1'")
+    ).scalar()
+    assert ctx == {"usernames": ["[erased]"]}
+    desc = session.execute(
+        text("SELECT description FROM cases WHERE case_id = 'w048-c1'")
+    ).scalar()
+    assert desc == "Reported by [erased]"
+    comment = session.execute(
+        text("SELECT content, author FROM case_comments WHERE case_id = 'w048-c1'")
+    ).one()
+    assert comment == ("called [erased] back", "ayse")
+    # nothing left to find; the request records counts, not the identifier
+    found = client.post(
+        f"{PREFIX}/requests/{rid}/search", json={"identifier": WHO}
+    ).json()
+    assert all(found["results"][s]["count"] == 0 for s in ("findings", "cases"))
+    row = (
+        session.query(ConfigAuditLog)
+        .filter(ConfigAuditLog.config_key == rid, ConfigAuditLog.action == "erase")
+        .one()
+    )
+    assert WHO.lower() not in str(row.new_value).lower()
+
+
+def test_erasure_needs_an_erasure_request_and_confirm(client):
+    access = _register(client)["request_id"]
+    r = client.post(
+        f"{PREFIX}/requests/{access}/erase", json={"identifier": WHO, "confirm": True}
+    )
+    assert r.status_code == 422 and "erasure request" in r.text
+    rid = _erasure(client)
+    r = client.post(f"{PREFIX}/requests/{rid}/erase", json={"identifier": WHO})
+    assert r.status_code == 422 and "confirm" in r.text
+    r = client.post(
+        f"{PREFIX}/requests/{rid}/erase",
+        json={"identifier": "someone@else.example", "confirm": True},
+    )
+    assert r.status_code == 422
+
+
+def test_erasure_leaves_a_case_under_legal_hold(client, session, monkeypatch):
+    monkeypatch.setattr(
+        "core.compliance.retention.list_legal_holds",
+        lambda s: {"w048-c1": {"reason": "litigation"}},
+    )
+    session.execute(
+        text(
+            "INSERT INTO case_findings (case_id, finding_id, added_at)"
+            " VALUES ('w048-c1', 'w048-f1', now())"
+        )
+    )
+    rid = _erasure(client)
+    body = client.post(
+        f"{PREFIX}/requests/{rid}/erase", json={"identifier": WHO, "confirm": True}
+    ).json()
+    assert body["results"]["findings"] == {"matched": 1, "erased": 0, "held": 1}
+    assert body["results"]["cases"]["held"] == 1
+    assert body["results"]["case_comments"]["held"] == 1
+    desc = session.execute(
+        text("SELECT description FROM cases WHERE case_id = 'w048-c1'")
+    ).scalar()
+    assert WHO in desc
