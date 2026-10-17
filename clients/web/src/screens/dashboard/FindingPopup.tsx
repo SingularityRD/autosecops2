@@ -12,6 +12,8 @@ import SourceChip from '../../shared/SourceChip'
 import type { Phase } from '../cases/useCases'
 import { parseSourceEvidence } from '../../data/sourceEvidence'
 import { SourceEvidenceSection } from './SourceEvidenceSection'
+import { VerdictBody } from '../../shared/AiVerdict'
+import { verdictFromEnrichment } from '../../data/aiVerdict'
 
 interface RawFinding extends ApiFinding {
   description?: string
@@ -470,6 +472,17 @@ export default function FindingPopup({
           )}
 
           <SourceEvidenceSection evidence={sourceEvidence} />
+
+          {/* W0.45: the daemon's structured triage verdict, when it has one */}
+          {(() => {
+            const verdict = verdictFromEnrichment(raw?.ai_enrichment)
+            return verdict ? (
+              <div className="modal-section" aria-label="AI triage verdict">
+                <h4 style={{ margin: 0 }}><Icon name="shield" size={14} /> AI triage verdict</h4>
+                <VerdictBody verdict={verdict} />
+              </div>
+            ) : null
+          })()}
 
           {/* AI enrichment — on-demand */}
           <div className="modal-section">

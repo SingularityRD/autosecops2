@@ -1376,6 +1376,24 @@ export const overviewApi = {
     api.get<OverviewFeedItem>(`/overview/alerts/${encodeURIComponent(findingId)}`),
 }
 
+/** The structured triage verdict (W1.2) as the queue shows it (W0.45). */
+export type TriageVerdict =
+  | {
+      state: 'verdict'
+      verdict: 'malicious' | 'benign' | 'inconclusive'
+      confidence: number
+      category: string
+      /** authored is resolved by code from the source's provenance map, never the model's claim */
+      cited_fields: { field: string; authored: 'sensor' | 'adversary' | 'third_party' }[]
+      gaps: string[]
+      recommended_action: { type: string; target: string } | null
+      model: string
+      prompt_version: string
+      at: string | null
+    }
+  | { state: 'failed'; error: string }
+  | { state: 'unreadable' }
+
 export interface TriageRow {
   id: number
   kind: string
@@ -1396,6 +1414,7 @@ export interface TriageRow {
   document: string | null
   source_link: string | null
   source_evidence: Record<string, unknown> | null
+  verdict?: TriageVerdict | null
   title: string | null
   description: string | null
   finding_id: string | null

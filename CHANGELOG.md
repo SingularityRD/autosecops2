@@ -44,6 +44,16 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **triage (W0.45):** the structured AI verdict (W1.2) is on screen. The
+  triage queue has an **AI verdict** column (Malicious / Benign / Inconclusive
+  and the confidence, or Triage failed / Unreadable), and an alert's row opens
+  to the category, the recommended action (always "needs approval"), each field
+  the verdict cites with who wrote it (from the sensor, attacker-controlled,
+  third party: resolved by code from the source, never the model's claim),
+  what it could not see, and the model and prompt version. The finding popup
+  shows the same. `GET /api/triage` rows carry `verdict`, read back through the
+  verdict contract: a stored document that does not validate is shown as
+  unreadable, not as a verdict.
 * **hardening (W0.44):** follow-ups from the batch-1 reviews.
   The integration **Test** refuses a saved address that is, or resolves to, a
   cloud metadata, link-local or scoped address before any call (private

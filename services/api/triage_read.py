@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional
 
+from core.contracts.verdict import validate_verdict
 from core.federation.lag import source_collection_lag
 from core.findings.arrival_counts import arrivals_today_by_source, utc_day_bounds
 from core.findings.source_evidence import project_finding_source_evidence_for_list
@@ -187,6 +188,12 @@ def _load() -> tuple[list[dict], dict[str, dict], dict[str, str], set[str]]:
                     "entity_context": finding.entity_context,
                     "title": finding.title,
                     "description": finding.description,
+                    # Only what the verdict view reads (W0.45).
+                    "ai_enrichment": {
+                        k: v
+                        for k, v in (finding.ai_enrichment or {}).items()
+                        if k in ("ai_triage", "ai_triage_error")
+                    },
                 }
         inv_ids = {row.investigation_id for row in triggers if row.investigation_id}
         workflows: dict[str, str] = {}
@@ -225,6 +232,50 @@ def _load() -> tuple[list[dict], dict[str, dict], dict[str, str], set[str]]:
                 }
             )
     return rows, findings, workflows, case_ids
+
+
+def _verdict(finding: Optional[dict]) -> Optional[dict]:
+    """The structured triage verdict (W1.2) as the analyst sees it (W0.45).
+
+    Read back through the verdict contract: a stored document that does not
+    validate is not shown as a verdict. A failed triage shows as its error.
+    ``authored`` on each cited field is what code resolved, never the
+    model's claim.
+    """
+    enrichment = (finding or {}).get("ai_enrichment")
+    if not isinstance(enrichment, dict):
+        return None
+    triage = enrichment.get("ai_triage")
+    if not isinstance(triage, dict):
+        error = enrichment.get("ai_triage_error")
+        if error:
+            return {"state": "failed", "error": str(error)[:300]}
+        return None
+    try:
+        verdict = validate_verdict(triage.get("verdict"))
+    except Exception:  # noqa: BLE001 - a malformed stored document is not a verdict
+        return {"state": "unreadable"}
+    return {
+        "state": "verdict",
+        "verdict": verdict.verdict,
+        "confidence": verdict.confidence,
+        "category": verdict.category,
+        "cited_fields": [
+            {"field": c.field, "authored": c.authored} for c in verdict.cited_fields
+        ],
+        "gaps": list(verdict.gaps),
+        "recommended_action": (
+            {
+                "type": verdict.recommended_action.type,
+                "target": verdict.recommended_action.target,
+            }
+            if verdict.recommended_action
+            else None
+        ),
+        "model": verdict.model,
+        "prompt_version": verdict.prompt_version,
+        "at": triage.get("timestamp"),
+    }
 
 
 def _evidence(finding: Optional[dict]) -> Optional[dict]:
@@ -284,6 +335,7 @@ def _present(
             else None
         ),
         "source_evidence": _evidence(finding) if kind == "detection" else None,
+        "verdict": _verdict(finding) if kind == "detection" else None,
         "title": finding.get("title") if finding else None,
         "description": finding.get("description") if finding else None,
         "finding_id": row.get("finding_id"),
