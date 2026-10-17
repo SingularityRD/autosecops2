@@ -2587,14 +2587,6 @@
    "role-manager": "allow",
    "role-admin": "allow"
   },
-  "POST /api/config/secrets/reinit": {
-   "gate": "login + perm:settings.write",
-   "role-viewer": "deny",
-   "role-analyst": "deny",
-   "role-senior-analyst": "deny",
-   "role-manager": "allow",
-   "role-admin": "allow"
-  },
   "POST /api/config/theme": {
    "gate": "login + perm:settings.write",
    "role-viewer": "deny",

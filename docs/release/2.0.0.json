@@ -412,6 +412,11 @@
       "id": "W0.38",
       "topic": "AutoSecOps markası, LICENSE/NOTICE/THIRD_PARTY_LICENSES her imajda, Redis 7.2.16 (BSD) sabitlendi (tek seferlik yeniden giriş), Node 22, CI koşucuları sabit, VEX, SECURITY.md 2.x",
       "topic_en": "AutoSecOps brand, LICENSE/NOTICE/THIRD_PARTY_LICENSES in every image, Redis pinned to 7.2.16 (BSD; one forced re-login), Node 22, pinned CI runners, VEX, SECURITY.md for 2.x"
+    },
+    {
+      "id": "W0.43",
+      "topic": "upstream radar 2 (17 Ekim): 10 commit alındı (başlatma bekleme, park edilen hunt, erken başarısızlık, parola değişimi 400, Secure çerez iletisi, WSL2, Shodan 1.0.34, sır reinit kaldırıldı); 6 commit ertelendi",
+      "topic_en": "upstream radar 2 (17 Oct): 10 commits taken (start-up wait, parked hunt, early failure, change-password 400, Secure cookie message, WSL2, Shodan 1.0.34, secrets reinit removed); 6 deferred"
     }
   ],
   "highlights": [
