@@ -63,7 +63,7 @@ describe('EXPERIMENTAL_SERVERS', () => {
   })
 
   it('offers the three response executors as experimental, not WIP (W0.37)', () => {
-    for (const server of ['microsoft-defender', 'azure-ad', 'palo-alto', 'fortigate']) {
+    for (const server of ['microsoft-defender', 'azure-ad', 'palo-alto', 'fortigate', 'checkpoint']) {
       expect(connectorSupport(server), server).toBe('experimental')
       expect(getIntegrationForServer(server)?.fields?.length, server).toBeGreaterThan(0)
       expect(isExperimentalIntegration(server), server).toBe(true)

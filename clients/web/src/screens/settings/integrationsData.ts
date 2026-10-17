@@ -42,7 +42,7 @@ const SERVER_SUPPORT: Record<string, Exclude<ConnectorSupport, 'supported'>> = {
   // against a live tenant or firewall (W0.37)
   'microsoft-defender': 'experimental', 'azure-ad': 'experimental', 'palo-alto': 'experimental',
   // the same, for FortiGate (W0.57)
-  'fortigate': 'experimental',
+  'fortigate': 'experimental', 'checkpoint': 'experimental',
   // unit-tested against recorded offense answers, no live console yet (W0.41)
   'qradar': 'experimental',
 }
@@ -92,7 +92,7 @@ export const MCP_CATEGORIES: McpCategory[] = [
   { label: 'Threat Intelligence', servers: ['virustotal', 'gcp-threat-intel', 'shodan', 'alienvault-otx', 'misp', 'firecrawl', 'cloudforce_one'] },
   { label: 'Cloud Security', servers: ['aws-security', 'gcp-scc', 'palo-alto'] },
   { label: 'Identity & Access', servers: ['okta', 'azure-ad'] },
-  { label: 'Network Security', servers: ['vstrike', 'cloudflare', 'fortigate'] },
+  { label: 'Network Security', servers: ['vstrike', 'cloudflare', 'fortigate', 'checkpoint'] },
   { label: 'Incident Management', servers: ['jira', 'pagerduty', 'slack', 'microsoft-teams'] },
   { label: 'Sandbox / Analysis', servers: ['joe-sandbox', 'hybrid-analysis', 'anyrun', 'url-analysis', 'ip-geolocation', 'cape-sandbox'] },
   { label: 'Adversary Emulation', servers: ['atomic-red-team'] },

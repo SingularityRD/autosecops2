@@ -112,7 +112,7 @@ def offline(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "integration_id", ["microsoft-defender", "azure-ad", "palo-alto", "fortigate"]
+    "integration_id", ["microsoft-defender", "azure-ad", "palo-alto", "fortigate", "checkpoint"]
 )
 async def test_every_executor_has_a_check(integration_id):
     assert integration_id in credential_check._CHECKS

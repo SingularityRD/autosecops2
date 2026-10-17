@@ -1064,6 +1064,22 @@
    "role-manager": "allow",
    "role-admin": "allow"
   },
+  "GET /api/feeds/checkpoint/blocklist": {
+   "gate": "webhook-hmac",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
+   "role-manager": "deny",
+   "role-admin": "deny"
+  },
+  "GET /api/feeds/checkpoint/blocklist.txt": {
+   "gate": "webhook-hmac",
+   "role-viewer": "deny",
+   "role-analyst": "deny",
+   "role-senior-analyst": "deny",
+   "role-manager": "deny",
+   "role-admin": "deny"
+  },
   "GET /api/findings": {
    "gate": "login",
    "role-viewer": "allow",

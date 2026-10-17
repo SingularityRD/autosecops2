@@ -252,14 +252,18 @@ def test_every_non_required_router_has_a_reason():
     ``oidc`` (single sign-on, W1.9) is ``ROUTER_MANAGED`` like ``auth``: its
     login and callback run before a session exists, and its /admin routes gate
     themselves on settings.write + users.write.
+
+    ``checkpoint_feed`` (W0.60) is ``ROUTER_MANAGED``: a Check Point gateway polls
+    the block list with a feed token, compared in constant time; 404 unless the
+    integration is enabled with a token.
     """
     from core.routing import Auth
 
     deviations = [
         (name, meta) for name, _r, meta in _specs() if meta.auth is not Auth.REQUIRED
     ]
-    assert len(deviations) == 9, (
-        f"expected 9 non-REQUIRED routers, found {len(deviations)}: "
+    assert len(deviations) == 10, (
+        f"expected 10 non-REQUIRED routers, found {len(deviations)}: "
         f"{sorted(n for n, _ in deviations)}. A new one needs review."
     )
     for name, meta in deviations:

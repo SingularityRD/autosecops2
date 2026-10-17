@@ -83,6 +83,10 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset(
         "/api/health/ready",
         # VStrike inbound receiver uses its own bearer API-key dependency.
         "/api/integrations/vstrike/findings",
+        # The Check Point gateway polls the block list with a feed token; 404
+        # unless the integration is enabled (core/integrations/checkpoint, W0.60).
+        "/api/feeds/checkpoint/blocklist",
+        "/api/feeds/checkpoint/blocklist.txt",
     }
 )
 
