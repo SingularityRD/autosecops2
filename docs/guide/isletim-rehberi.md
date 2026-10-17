@@ -109,6 +109,17 @@ helm upgrade --install autosecops infra/helm/vigil \
   (bkz. [kurulum sonrası](kurulum-internetsiz.md#7-kurulum-sonrası-ilk-15-dakika)).
 - Bulut model sağlayıcısı kullanacaksanız anahtarını konsoldan girin; bu durumda
   bulgu içeriği sağlayıcıya gider (KVKK md. 9 değerlendirmesi kurumundur).
+- **LLM yığını (W0.55):** grafik varsayılan olarak ad alanında `bifrost` ve
+  `ollama` servislerini bekler. `llmStack.bifrost.enabled=true` Bifrost'u (tek LLM
+  çıkışı), `llmStack.ollama.enabled=true` Ollama'yı grafiğin içinde kurar ve
+  `BIFROST_URL` / `OLLAMA_URL` değerlerini bu servislere yöneltir. Bulut sağlayıcı
+  anahtarları için `llmStack.bifrost.providerKeysSecret` hazır bir Secret'ın adını
+  alır (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`); anahtar values
+  dosyasına yazılmaz. Ağ politikaları açıkken Bifrost'a yalnız modeli çağıran
+  bileşenler erişir (yapılandırma API'si kimlik doğrulamasızdır). Ollama'ya modeli
+  operatör çeker (`ollama pull`); GPU için `llmStack.ollama.resources` ve
+  `llmStack.ollama.nodeSelector` kullanın. İnternetsiz kurulumda yığını kurulum
+  betiği kurar; orada bu ayarları açmayın.
 
 ## 3b. İzleme: metrikler, alarmlar, pano (W0.51)
 

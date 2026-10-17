@@ -44,6 +44,14 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **platform (W0.55):** the chart can run its own LLM stack. With
+  `llmStack.bifrost.enabled` and `llmStack.ollama.enabled` it deploys Bifrost
+  (the one LLM egress) and Ollama and points `BIFROST_URL` / `OLLAMA_URL` at
+  them; cloud provider keys come from an existing Secret
+  (`llmStack.bifrost.providerKeysSecret`), never from values. With network
+  policies on, only the components that call a model reach Bifrost, whose
+  config API is unauthenticated. Off by default; the air-gap installer keeps
+  deploying `k8s/llm-stack.yaml`.
 * **platform (W0.54):** OpenShift support (preview). With
   `openshift.enabled` the chart leaves `runAsUser`, `runAsGroup` and `fsGroup`
   out of every pod so the `restricted-v2` SCC assigns them, and

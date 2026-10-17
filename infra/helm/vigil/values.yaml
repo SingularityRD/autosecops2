@@ -570,6 +570,64 @@ backup:
   affinity: {}
 
 # -----------------------------------------------------------------------------
+# LLM stack: Bifrost (the one LLM egress, ADR 0011) and Ollama (W0.55)
+# -----------------------------------------------------------------------------
+# Off by default: the chart then expects Services "bifrost" and "ollama" in the
+# namespace (config.BIFROST_URL / config.OLLAMA_URL), as the air-gap installer
+# provides from k8s/llm-stack.yaml. Turned on, the chart runs them itself and
+# points BIFROST_URL / OLLAMA_URL at its own Services. Bifrost serves an
+# unauthenticated config API on its inference port, so with
+# networkPolicies.enabled only this release's pods may reach it.
+llmStack:
+  bifrost:
+    enabled: false
+    image:
+      repository: maximhq/bifrost
+      # A contract with the backend; keep in step with BIFROST_IMAGE_TAG in
+      # infra/docker/docker-compose.yml and k8s/llm-stack.yaml.
+      tag: v2.2.1
+      pullPolicy: IfNotPresent
+    # An existing Secret whose keys ANTHROPIC_API_KEY, OPENAI_API_KEY and
+    # GEMINI_API_KEY (any of them) seed those providers on first boot. Empty:
+    # no cloud provider is seeded; add one later in the console.
+    providerKeysSecret: ""
+    # Cloud providers seeded from providerKeysSecret.
+    providers:
+      - anthropic
+      - openai
+      - gemini
+    persistence:
+      size: 1Gi
+      storageClassName: ""
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+  ollama:
+    enabled: false
+    image:
+      repository: ollama/ollama
+      tag: "0.6.5"
+      pullPolicy: IfNotPresent
+    # Models are pulled by an operator (`ollama pull` in the pod) or copied in;
+    # a request never triggers a pull.
+    persistence:
+      size: 40Gi
+      storageClassName: ""
+    # e.g. limits: {nvidia.com/gpu: 1} with a matching nodeSelector/tolerations.
+    resources:
+      requests:
+        cpu: "1"
+        memory: 8Gi
+      limits:
+        memory: 16Gi
+    nodeSelector: {}
+    tolerations: []
+
+# -----------------------------------------------------------------------------
 # Ingress
 # -----------------------------------------------------------------------------
 ingress:
