@@ -13,6 +13,8 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Request,
+    Response,
     UploadFile,
 )
 from pydantic import BaseModel, Field, field_validator
@@ -266,6 +268,90 @@ async def generate_case_report(case_id: str):
         "path": os.path.join("TestOutputs", filename),
         "case_id": case_id,
     }
+
+
+# A case report carries the case's findings, notes and timeline (personal data,
+# KVKK art. 12) off the console, so each download is a case_audit_logs row
+# (entity_type case_report_export): in the W1.10 chain and the SIEM export.
+REPORT_AUDIT_ENTITY = "case_report_export"
+
+
+def _record_report_download(
+    user: User, request: Request, case_id: str, size: int
+) -> None:
+    """Commit the download's audit row on its own. Raises if it cannot."""
+    import json
+
+    from core.storage.models import CaseAuditLog
+    from core.storage.unit_of_work import unit_of_work
+
+    client = getattr(request, "client", None)
+    with unit_of_work() as session:
+        session.add(
+            CaseAuditLog(
+                entity_type=REPORT_AUDIT_ENTITY,
+                entity_id=case_id[:100],
+                action="export",
+                field_name="pdf",
+                new_value=json.dumps({"format": "pdf", "bytes": size}, sort_keys=True),
+                change_summary=f"Case report for {case_id} downloaded as PDF",
+                changed_by=principal_name(user)[:100],
+                user_agent=(request.headers.get("user-agent") or "")[:200] or None,
+                ip_address=getattr(client, "host", None),
+            )
+        )
+
+
+@router.get(
+    "/{case_id}/report.pdf",
+    response_class=Response,
+    responses={200: {"content": {"application/pdf": {}}}},
+    dependencies=[permission_gate("cases.read")],
+)
+def download_case_report(
+    case_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """The case report as a PDF download (Turkish text included), built in a
+    temporary file that is removed before the response is sent. No report is
+    handed out without its audit row."""
+    import tempfile
+
+    if not report_service:
+        raise HTTPException(
+            status_code=501, detail="Report generation is not available"
+        )
+    case = data_service.get_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    finding_ids = case.get("finding_ids", [])
+    linked = data_service.get_findings_by_case(case_id) if finding_ids else []
+    by_id = {f.get("finding_id"): f for f in linked}
+    findings = [by_id[fid] for fid in finding_ids if fid in by_id]
+
+    with tempfile.TemporaryDirectory(prefix="case-report-") as tmp:
+        path = Path(tmp) / "report.pdf"
+        if not report_service.generate_case_report(path, case, findings):
+            raise HTTPException(status_code=500, detail="Failed to generate report")
+        body = path.read_bytes()
+    try:
+        _record_report_download(current_user, request, case_id, len(body))
+    except Exception as exc:  # noqa: BLE001 - no report without its record
+        logger.error("Case report download not recorded: %s", exc)
+        raise HTTPException(
+            status_code=500, detail="Failed to generate report"
+        ) from None
+    # The id is the server's own (CASE-...); keep only filename-safe characters.
+    safe = "".join(c for c in case_id if c.isalnum() or c in "-_")[:80] or "case"
+    return Response(
+        content=body,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe}-report.pdf"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.delete(

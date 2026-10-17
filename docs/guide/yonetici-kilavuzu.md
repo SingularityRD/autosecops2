@@ -96,6 +96,7 @@ bunu değişiklik yönetimi sürecinize alın.
 | Uygulanmış eylemi geri alma (`POST /api/response/actions/{action_id}/revert`, gerekçe zorunlu) | `ai_decisions.approve` |
 | Saklama politikası, yasal saklama, imha çalıştırma (`/api/compliance/retention/...`) | okuma `settings.read`, yazma ve imha `settings.write` |
 | Vaka kanıt paketini indirme (`GET /api/cases/{case_id}/evidence-pack`) | `cases.read` |
+| Vaka raporunu PDF olarak indirme (`GET /api/cases/{case_id}/report.pdf`; vaka sayfası › ⋯ › Download report). Türkçe karakterler gömülü DejaVu Sans fontuyla basılır; her indirme `case_audit_logs` satırıdır (`entity_type` `case_report_export`) | `cases.read` |
 | Dersleri görme (`GET /api/lessons`, `GET /api/lessons/{lesson_id}`, `.../events`) | `findings.read` |
 | Ders önerme, replay, geri alma (`POST /api/lessons`, `POST /api/lessons/{lesson_id}/replay`, `.../rollback`) | `findings.write` |
 | Dersi etkinleştirme (`POST /api/lessons/{lesson_id}/promote`; öneren kendi dersini etkinleştiremez, 403) | `ai_decisions.approve` |

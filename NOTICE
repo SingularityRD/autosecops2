@@ -54,6 +54,15 @@ Redis is pinned to 7.2.x on purpose: Redis 7.4 and later are not under an open
 source licence (RSALv2 / SSPLv1).
 
 
+DejaVu Sans (case report PDF font)
+----------------------------------
+
+core/reporting/fonts/DejaVuSans.ttf and DejaVuSans-Bold.ttf are DejaVu fonts,
+derived from Bitstream Vera: Copyright (c) 2003 by Bitstream, Inc. All Rights
+Reserved. Bitstream Vera is a trademark of Bitstream, Inc. DejaVu changes are in
+the public domain. Licence: core/reporting/fonts/LICENSE-DejaVu.txt.
+
+
 Llama
 -----
 

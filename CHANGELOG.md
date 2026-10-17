@@ -37,6 +37,13 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
 
 ### Changed / contract
 
+* **cases (W0.40):** the case report prints Turkish: ReportLab's Helvetica
+  (WinAnsi) printed ş, ğ, ı and İ as boxes, so the report now embeds DejaVu
+  Sans (shipped in `core/reporting/fonts/`, Bitstream Vera licence) for every
+  style and table cell. `GET /api/cases/{case_id}/report.pdf` (`cases.read`)
+  answers with the PDF itself, built in a temporary file that is removed; each
+  download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
+  is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
 * **upstream (W0.43):** taken from upstream Vigil: `start.sh` waits for the LLM
   worker and daemon before printing Ready; a parked hunt's investigation reads
   paused, frees its slot and is announced once; a run that fails before its
