@@ -317,4 +317,88 @@ spec:
         - protocol: TCP
           port: {{ .Values.redis.service.port }}
 {{- end }}
+{{- /* The chart's LLM stack (W0.55). Bifrost's inference port also serves an
+       unauthenticated config API, so only the components that call a model
+       may reach it -- not the namespace, not Medic. */}}
+{{- if .Values.llmStack.bifrost.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "vigil.fullname" . }}-bifrost
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vigil.componentLabels" (dict "context" . "component" "bifrost") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "vigil.componentSelectorLabels" (dict "context" . "component" "bifrost") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "vigil.componentSelectorLabels" (dict "context" . "component" "backend") | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "vigil.componentSelectorLabels" (dict "context" . "component" "daemon") | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "vigil.componentSelectorLabels" (dict "context" . "component" "llm-worker") | nindent 14 }}
+        {{- if .Values.agentWorker.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "vigil.componentSelectorLabels" (dict "context" . "component" "agent-worker") | nindent 14 }}
+        {{- end }}
+        {{- if .Values.agentServe.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "vigil.componentSelectorLabels" (dict "context" . "component" "agent-serve") | nindent 14 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 8080
+{{- end }}
+{{- if .Values.llmStack.ollama.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "vigil.fullname" . }}-ollama
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vigil.componentLabels" (dict "context" . "component" "ollama") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "vigil.componentSelectorLabels" (dict "context" . "component" "ollama") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "vigil.componentSelectorLabels" (dict "context" . "component" "bifrost") | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "vigil.componentSelectorLabels" (dict "context" . "component" "backend") | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "vigil.componentSelectorLabels" (dict "context" . "component" "daemon") | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "vigil.componentSelectorLabels" (dict "context" . "component" "llm-worker") | nindent 14 }}
+        {{- if .Values.agentWorker.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "vigil.componentSelectorLabels" (dict "context" . "component" "agent-worker") | nindent 14 }}
+        {{- end }}
+        {{- if .Values.agentServe.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "vigil.componentSelectorLabels" (dict "context" . "component" "agent-serve") | nindent 14 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 11434
+{{- end }}
 {{- end }}

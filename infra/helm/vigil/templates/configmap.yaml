@@ -41,6 +41,13 @@ data:
   {{- $_ := set $computed "VIGIL_RUNS_URL" (printf "%s/internal/runs" $backend) }}
   {{- $_ := set $computed "VIGIL_TOOLS_URL" (printf "%s/internal/tools/invoke" $backend) }}
   {{- end }}
+  {{- /* The chart's own LLM stack (W0.55). */ -}}
+  {{- if .Values.llmStack.bifrost.enabled }}
+  {{- $_ := set $computed "BIFROST_URL" (printf "http://%s:8080" (include "vigil.bifrost.fullname" .)) }}
+  {{- end }}
+  {{- if .Values.llmStack.ollama.enabled }}
+  {{- $_ := set $computed "OLLAMA_URL" (printf "http://%s:11434" (include "vigil.ollama.fullname" .)) }}
+  {{- end }}
   {{- range $k, $v := .Values.config }}
   {{- if not (hasKey $computed $k) }}
   {{ $k }}: {{ $v | quote }}
