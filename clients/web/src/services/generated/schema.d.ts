@@ -11505,6 +11505,10 @@ export interface components {
             last_test_at: string | null;
             /** Last Test Success */
             last_test_success: boolean | null;
+            /** Model Gate */
+            model_gate?: {
+                [key: string]: unknown;
+            } | null;
             /** Name */
             name: string;
             /** Provider Id */

@@ -73,6 +73,14 @@ spec:
           annotations:
             summary: A known-answer probe was not triaged as expected
             description: The daemon's self-test did not get the expected verdict; check the Health screen.
+        - alert: AutoSecOpsInjectionSignals
+          expr: sum(increase(soc_daemon_injection_benign_downgraded_total[1h])) + sum(increase(soc_daemon_injection_value_withheld_total[1h])) > 10
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: Alerts are carrying text that tries to steer the triage
+            description: Benign verdicts citing only attacker-writable fields were downgraded, or steering values were withheld (W0.53). Review the affected findings.
         - alert: AutoSecOpsWebhookRejections
           expr: sum(increase(vigil_webhook_rejections_total[15m])) > 20
           for: 15m

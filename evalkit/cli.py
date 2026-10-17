@@ -296,7 +296,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="keep reviews whose verdict is inconclusive",
     )
     reviewed.set_defaults(func=cmd_export_reviewed)
+
+    gate = sub.add_parser(
+        "gate",
+        help="has this model passed the eval gate for the current prompt? (exit 0 = yes)",
+    )
+    gate.add_argument("--model", required=True)
+    gate.add_argument("--min-f1", type=float, default=None)
+    gate.add_argument("--max-asr", type=float, default=None)
+    gate.set_defaults(func=cmd_gate)
     return parser
+
+
+def cmd_gate(args: argparse.Namespace) -> int:
+    """W0.53: the model-change gate against the eval_runs table."""
+    import json as _json
+
+    from core.quality import model_gate
+    from core.storage.connection import get_db_manager
+    from core.storage.unit_of_work import unit_of_work
+
+    limits = model_gate.thresholds()
+    if args.min_f1 is not None:
+        limits["min_f1"] = args.min_f1
+    if args.max_asr is not None:
+        limits["max_asr"] = args.max_asr
+    manager = get_db_manager()
+    if manager.engine is None:
+        manager.initialize()
+    with unit_of_work() as session:
+        result = model_gate.evaluate(session, args.model, prompt_version(), **limits)
+    print(_json.dumps(result, indent=2, default=str))
+    return 0 if result["state"] == "passed" else 1
 
 
 def cmd_export_reviewed(args: argparse.Namespace) -> int:

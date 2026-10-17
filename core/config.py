@@ -301,6 +301,12 @@ class Settings(BaseSettings):
     # Observability
     sentry_dsn: str = ""
     vigil_otel_enabled: bool = False
+    # W0.53 model-change gate (core/quality/model_gate.py): a provider's model
+    # becoming the default is checked against the latest eval runs. Enforce
+    # refuses one that has not passed; off: the result is returned and audited.
+    model_gate_enforce: bool = False
+    model_gate_min_f1: float = Field(default=0.85, ge=0, le=1)
+    model_gate_max_asr: float = Field(default=0.05, ge=0, le=1)
     # W0.51: Prometheus metrics on the processes' own /metrics (backend) and
     # :9090 (daemon), with no OTEL export and no tracing. For air-gapped
     # installs scraped by their own Prometheus. Ignored when OTEL is on.

@@ -44,6 +44,14 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **quality (W0.53):** a model-change gate. Making a provider's model the
+  default checks the latest eval runs for that model and the current triage
+  prompt (held-out F1 at least `MODEL_GATE_MIN_F1`, injection attack success at
+  most `MODEL_GATE_MAX_ASR`, a customer run when there is one); the result is in
+  the response (`model_gate`) and the audit row, and with `MODEL_GATE_ENFORCE`
+  a model that has not passed is refused. `python -m evalkit gate --model`
+  checks the same. Live, the daemon counts downgraded benign verdicts and
+  withheld steering values, and the chart's alert rules warn when they rise.
 * **docs (W0.52):** an analyst guide (`docs/guide/analist-kilavuzu.md`). The
   guide set now describes `main` @ `3c7d30b5`: SBOMs and signed images (W4.7)
   are described as present, with the verification guide, instead of planned.
