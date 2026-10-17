@@ -44,6 +44,13 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **response (W0.57):** a Fortinet FortiGate executor (Experimental).
+  `block_ip` adds an `autosecops-<ip>` address object to an address group that a
+  deny policy uses (IPv4 and IPv6, no policy edits, members added one at a time);
+  `unblock_ip` and the TTL sweep undo it. The same target checks as PAN-OS
+  apply, connection and Test (`monitor/system/status`, read only) come from the
+  console form, and the token is kept in the encrypted secret store. With both
+  Palo Alto and FortiGate enabled, Palo Alto keeps `block_ip`.
 * **platform (W0.55):** the chart can run its own LLM stack. With
   `llmStack.bifrost.enabled` and `llmStack.ollama.enabled` it deploys Bifrost
   (the one LLM egress) and Ollama and points `BIFROST_URL` / `OLLAMA_URL` at

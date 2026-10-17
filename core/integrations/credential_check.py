@@ -27,6 +27,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 from core.integrations._base.config import missing, resolve
 from core.integrations.azure_ad.descriptor import AZURE_AD
 from core.integrations.elastic.descriptor import ELASTIC
+from core.integrations.fortinet.descriptor import FORTIGATE
 from core.integrations.microsoft_defender.descriptor import MICROSOFT_DEFENDER
 from core.integrations.palo_alto.descriptor import PALO_ALTO
 from core.integrations.splunk.descriptor import SPLUNK
@@ -178,6 +179,31 @@ def _palo_alto_check() -> Outcome:
     return True, f"API key accepted ({model}{f' PAN-OS {version}' if version else ''})"
 
 
+def _fortigate_check() -> Outcome:
+    from core.integrations.fortinet.client import (
+        FortiApiError,
+        FortiConfigError,
+        FortiConnection,
+    )
+
+    config = resolve(FORTIGATE)
+    absent = missing(config, "hostname", "api_token")
+    if absent:
+        return _absent(absent)
+    try:
+        connection = FortiConnection.from_config(
+            {**config, "timeout": EXECUTOR_CHECK_TIMEOUT}
+        )
+        # read-only: system status
+        payload = connection.call("GET", "monitor/system/status")
+    except (FortiApiError, FortiConfigError) as exc:
+        return False, str(exc)
+    version = payload.get("version")
+    serial = payload.get("serial")
+    detail = " ".join(str(p) for p in (serial, version) if p)
+    return True, f"API token accepted{f' ({detail})' if detail else ''}"
+
+
 async def _defender() -> Outcome:
     return await asyncio.to_thread(_defender_check)
 
@@ -190,12 +216,17 @@ async def _palo_alto() -> Outcome:
     return await asyncio.to_thread(_palo_alto_check)
 
 
+async def _fortigate() -> Outcome:
+    return await asyncio.to_thread(_fortigate_check)
+
+
 _CHECKS: Dict[str, Callable[[], Awaitable[Outcome]]] = {
     SPLUNK.id: _splunk,
     ELASTIC.id: _elastic,
     MICROSOFT_DEFENDER.id: _defender,
     AZURE_AD.id: _entra,
     PALO_ALTO.id: _palo_alto,
+    FORTIGATE.id: _fortigate,
 }
 
 
@@ -207,6 +238,7 @@ _TARGETS: Dict[str, Callable[[], Optional[str]]] = {
     ELASTIC.id: lambda: resolve(ELASTIC).get("elasticsearch_url"),
     MICROSOFT_DEFENDER.id: lambda: _stored(MICROSOFT_DEFENDER.id).get("api_base"),
     PALO_ALTO.id: lambda: resolve(PALO_ALTO).get("hostname"),
+    FORTIGATE.id: lambda: resolve(FORTIGATE).get("hostname"),
 }
 
 # A message shown in the console is at most this long.

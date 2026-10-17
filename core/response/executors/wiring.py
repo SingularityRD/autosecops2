@@ -70,6 +70,9 @@ EXECUTOR_SOURCES: tuple[ExecutorSource, ...] = (
     ),
     ExecutorSource("azure-ad", "core.integrations.azure_ad.executor"),
     ExecutorSource("palo-alto", "core.integrations.palo_alto.executor"),
+    # Also block_ip / unblock_ip: with both firewalls enabled, Palo Alto keeps
+    # them and FortiGate is logged as a conflict and left out.
+    ExecutorSource("fortigate", "core.integrations.fortinet.executor"),
 )
 
 
