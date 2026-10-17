@@ -1,10 +1,10 @@
-# AutoSecOps 2.0 — İş paketi durumu (15 Ekim 2026)
+# AutoSecOps 2.0 — İş paketi durumu (17 Ekim 2026)
 
 > Yeni oturumda devam etmek için önce `docs/wp/HANDOFF.md` (kurulum + başlangıç komutu), sonra bu dosya.
 Hedef: düzenlenmiş sektör GA, 30 Ekim 2026 (31 Ekim tampon). Plan: `docs/wp/NORTHSTAR_PLAN.md`.
 Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) → yalnızca spec + diff gören bağımsız doğrulayıcı → PASS → `integration`'a merge → tam test + gates → `integration` ve `main` push.
 
-**`main` == `integration` == bu commit (W0.24–W0.31 sonrası; upstream alımı tamam)** (remote `target` = SingularityRD/autosecops2). Ürün sürümü **2.0.0** (`release_tool.py check-versions`); sürüm notları `docs/release/2.0.0.md` (58 dahil, 4 hariç: W0.8, W1.4, W2.9, W4.4). **`v2.0.0` etiketi yok.**
+**`main` == `integration` == bu commit (W0.57 sonrası; GA boşlukları listesi §4b)** (remote `target` = SingularityRD/autosecops2). Ürün sürümü **2.0.0** (`release_tool.py check-versions`); sürüm notları `docs/release/2.0.0.md` (92 dahil, 4 hariç: W0.8, W1.4, W2.9, W4.4). **`v2.0.0` etiketi yok.**
 
 ## 1. main'de (doğrulandı, birleşti)
 
@@ -69,6 +69,24 @@ Süreç: her iş paketi (WP) kendi dalında (`wp/<id>-<slug>`) → yalnızca spe
 | 9 | Türkçe sürüm notlarının anadil okuması | İnsan | bekliyor |
 | 10 | Doküman tabanını (`main` @ `b8795def`) GA öncesi son `main`'e taşı | Ajan | W0.20 bunu zorlamıyor (DÜŞÜK) |
 | 11 | Katalog artifact'ı: iletişim yer tutucuları, "2.0 GA" rozetleri | İnsan/ajan | bekliyor |
+
+### 16–17 Ekim — GA boşlukları (`docs/wp/GA_GAPS.md` §4b)
+
+W0.32–W0.57 bu oturumda birleşti. Doğrulayıcı ajanlar kullanıcı tarafından
+durduruldu; W0.40 sonrası paketler bağımsız doğrulayıcı yerine gates
+(`RESULT: PASS`), ilgili tam test kümeleri ve main CI ile birleşti.
+
+| WP | Konu |
+|---|---|
+| W0.32–W0.39 | Otonomi varsayılanları, kurulum belirteci, sırlar Postgres'te, kimlik denetimi, imza anahtarları, yürütücüler konsoldan, marka/lisans, init SQL kullanıcı adı |
+| W0.40–W0.43 | Türkçe PDF, syslog/CEF/LEEF + QRadar, KVKK/BDDK/USOM saatleri, upstream radar 2 |
+| W0.44–W0.48 | Sertleştirme, AI kararı UI'da, e-posta/Teams bildirimi, işletim rehberi, ilgili kişi başvuruları |
+| W0.49–W0.53 | POC raporu ve müşteri eval'i, demo senaryosu, air-gap metrikleri, analist kılavuzu, model kapısı |
+| W0.54–W0.57 | OpenShift (önizleme), Helm'de LLM yığını, DB test sırası (main CI), FortiGate yürütücüsü |
+
+Açık (müşteri talebiyle): P5 SMS, K2 silme aracı (denetim zinciriyle çatışma —
+hukuk kararı), Check Point yürütücüsü. Canlı ortamda doğrulanmayanlar: OpenShift,
+Helm LLM yığını, Deneysel yürütücüler ve QRadar.
 
 ## 4. Birleşmiş ama takip gerektiren (engelleyici değil)
 
