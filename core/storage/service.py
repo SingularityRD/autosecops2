@@ -559,8 +559,10 @@ class DatabaseService:
         later success (ai_triage_error recorded, no ai_triage — #965):
         ``UNRATED_WHERE``. Live Findings before bulk imports, oldest stored first.
         Returns dicts (FindingSchema.dump inside the session) so callers get
-        detached-safe data. ``max_age_hours`` bounds the working set so ancient,
-        un-enrichable findings aren't retried forever."""
+        detached-safe data. ``max_age_hours`` bounds the working set by
+        ``created_at`` (when the row was stored), not the event ``timestamp``, so
+        replayed or undated findings still get triaged (#2320) while
+        un-enrichable ones aren't retried forever."""
         with self.db_manager.session_scope() as session:
             query = (
                 select(Finding)

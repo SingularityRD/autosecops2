@@ -70,7 +70,7 @@ the last radar:
 ```bash
 git fetch upstream
 git log --oneline --no-merges <last-reviewed-sha>..upstream/main
-# next radar: start from 7eea6a18 (the last commit of the 15 Oct 2026 radar)
+# next radar: start from fa900992 (the last commit of the 17 Oct 2026 radar)
 ```
 
 Also check upstream's security advisories (GitHub Security tab) and releases.
@@ -143,6 +143,43 @@ connectors, **W0.30** agent guards and OTel. Next radar starts from
 | `2acef19f` | #2357 | connectors-live probes through a runner | ATLA | CI-only, needs `tests/live`; the Cloudflare gate removal belongs to the MCP runner WP |
 | `c5f49d69` | #2358 | Only a generated analysis counts as cached enrichment | AL | W0.25 (taken) (also fixes the popup for `alert_lane`-only rows) |
 | `7eea6a18` | #2359 | Triage and AI analysis replace only their own keys | UYARLA | W0.25 (taken): `alert_lane` is a daemon key, `_persist_settled` writes as the daemon, the backfill predicate (`UNRATED_WHERE` + partial index) counts `alert_lane` as triaged |
+
+Radar of 17 October 2026: upstream `7eea6a18..fa900992`, 17 commits. Work
+package **W0.43**. Next radar starts from **`fa900992`**. Upstream's issue
+tracker is not readable from this repository's tooling; the issue numbers below
+come from the commit subjects.
+
+| Upstream | PR | Subject | Decision | Taken by / reason |
+|---|---|---|---|---|
+| `6f73d662` | #2361 | `start.sh` waits for the LLM worker and daemon before "Ready" | AL | W0.43 |
+| `13de3b1d` | #2362 | Triage backfill bounds by ingest time | AL | W0.43: the query already filtered on `created_at` here (W0.25); comments, settings text and the DB test taken |
+| `cf2575cf` | #2363 | Autonomy banner and header badge refresh after a save | UYARLA | W0.43: re-read on `AUTONOMY_CHANGED`, label from W0.32's `autonomyLabel` |
+| `0b19987e` | #2365 | VStrike MCP server reads config through `resolve()` | ERTELE | needs `core/integrations/mcp/runner` (MCP runner chain, deferred) |
+| `ffa6a2b7` | #2364 | Windows via WSL2: LF endings, WSL-aware `start.sh` | UYARLA | W0.43: AutoSecOps wording; the Linux Ollama hint names no host (egress inventory) |
+| `118ed65f` | #2371 | Name the dropped Secure cookie; document HTTPS | AL | W0.43 |
+| `d545ca03` | #2372 | Daemon restart no longer relaunches the scheduled hunt | ERTELE | needs `ScheduledTask(run_on_start=...)` from an upstream scheduler change not taken here |
+| `1c2b0029` | #2376 | A parked hunt reads paused, frees its slot, announced once | AL | W0.43 |
+| `748258c0` | #2378 | Shodan live probe uses `api_info`; `mcp-shodan` 1.0.34 | UYARLA | W0.43: `tests/live` hunks dropped; licence inventory regenerated |
+| `28eb3592` | #2381 | LogLM MITRE tactic map order | ATLA | LogLM removed (W0.29) |
+| `3ce283df` | #2402 | A run that fails before its ledger opens reports failed | AL | W0.43 (keeps W0.30's outbound ledger) |
+| `a2a41eaa` | #2403 | Investigation record on the case page | ERTELE | built on the agent-kernel projections (kernel rewrite deferred) |
+| `ff5e8a71` | #2224 | Wrong current password on change-password: 400, not 401 | AL | W0.43 |
+| `cf513828` | #2377 | A completed investigation completes, with no review stage | ERTELE | removes orchestrator routes and the AutoOps review UI; needs its own review of W0.25/W0.26 orchestration changes |
+| `92e748e4` | #2295 | Drop dispatch policy and worker roles the kernel plugins no longer use | ERTELE | agent-kernel rewrite (deferred) |
+| `5e9d519e` | #2404 | Drop secrets reinit; migrate-to-encrypted honest, failing, audited | AL | W0.43 (on top of W0.34's database store) |
+| `fa900992` | #2405 | Reload tool servers reconnects changed servers | ERTELE | needs `MCPServer(declared_env=...)` from the MCP runner chain |
+
+Watch list (17 Oct 2026, unmerged upstream branches, not taken): case account
+and disagreements (`pr/case-account-*`, `pr/case-disagreements`,
+`pr/run-account`, `pr/investigate-account`), hunt evidence receipt and case
+record counting (`feat/hunt-evidence-receipt`, `feat/case-record-plain-text`,
+`feat/case-checked-searches`), `fix/empty-model-reply`,
+`fix/hunt-account-without-model`, `fix/hunt-handoff-case-link`,
+`feat/case-primary-run`, `fix/2322-responder-src-ip` (responder isolates
+`src_ip` too), `fix/2321-llm-worker-liveness`, `fix/2327-dashboard-send-to-triage`,
+the Pulse / Fleet Wall dashboards (`feat/pulse*`, `feat/fleet-wall`), and the
+0.8.0 release branch. Re-check them when they merge upstream; `fix/2322` is a
+response-correctness fix to take first.
 
 ## Where this repository differs from upstream
 
