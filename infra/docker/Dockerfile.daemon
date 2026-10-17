@@ -67,8 +67,12 @@ COPY --chown=vigil:vigil INTENT.md    ./INTENT.md
 # Persistent investigation artifacts (mount a PVC here in K8s) and user home state
 # .vigil/evidence is the case evidence store (CaseEvidenceService); created here
 # so the vigil_home volume and the Helm evidence mount come up owned by 1000.
+# OpenShift runs the image under a random uid in group 0, so the same paths
+# are group-0 writable too (W0.54).
 RUN mkdir -p /app/data/investigations /home/vigil/.vigil/evidence \
-    && chown -R vigil:vigil /app/data /home/vigil
+    && chown -R vigil:vigil /app/data /home/vigil \
+    && chgrp -R 0 /app/data /home/vigil \
+    && chmod -R g=u /app/data /home/vigil
 
 RUN if [ -n "${VIGIL_VERSION}" ]; then echo "${VIGIL_VERSION}" > /app/VERSION; fi
 

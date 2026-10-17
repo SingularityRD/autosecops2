@@ -40,7 +40,7 @@ spec:
       serviceAccountName: {{ include "vigil.serviceAccountName" . }}
       {{- include "vigil.imagePullSecrets" . | nindent 6 }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- include "vigil.podSecurityContext" (dict "context" . "sc" .Values.podSecurityContext) | nindent 8 }}
       containers:
         - name: agent-worker
           image: {{ include "vigil.image" (dict "context" . "component" "agentWorker") | quote }}

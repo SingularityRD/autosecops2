@@ -41,7 +41,7 @@ spec:
       serviceAccountName: {{ include "vigil.serviceAccountName" . }}
       {{- include "vigil.imagePullSecrets" . | nindent 6 }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- include "vigil.podSecurityContext" (dict "context" . "sc" .Values.podSecurityContext) | nindent 8 }}
       {{- /* An SSE stream can sit on one model call for minutes, and killing it
              loses the conversation rather than merely retrying it. */}}
       terminationGracePeriodSeconds: {{ .Values.agentServe.terminationGracePeriodSeconds }}

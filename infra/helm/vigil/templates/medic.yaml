@@ -111,10 +111,12 @@ spec:
       # supports it; no root init container.
       securityContext:
         runAsNonRoot: true
+        {{- if not $.Values.openshift.enabled }}
         runAsUser: 10001
         runAsGroup: 10001
         fsGroup: 10001
         fsGroupChangePolicy: OnRootMismatch
+        {{- end }}
         seccompProfile:
           type: RuntimeDefault
       containers:

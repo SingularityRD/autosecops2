@@ -44,6 +44,13 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **platform (W0.54):** OpenShift support (preview). With
+  `openshift.enabled` the chart leaves `runAsUser`, `runAsGroup` and `fsGroup`
+  out of every pod so the `restricted-v2` SCC assigns them, and
+  `openshift.route.enabled` puts a Route in front of the backend. The backend and
+  daemon images keep their writable paths group-0 writable. Bundled PostgreSQL
+  and Redis expect their own uids; use external ones on OpenShift. Not yet
+  verified on a live cluster.
 * **quality (W0.53):** a model-change gate. Making a provider's model the
   default checks the latest eval runs for that model and the current triage
   prompt (held-out F1 at least `MODEL_GATE_MIN_F1`, injection attack success at
