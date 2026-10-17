@@ -498,6 +498,17 @@ bulut metadata ve link-local adresler reddedilir, yönlendirme izlenmez, yanıt
 içeriği değil yalnızca HTTP durumu kaydedilir. Teams bir bulut hizmetidir: internetsiz
 profilde kapalıdır.
 
+**SMS (W0.58).** Acil vaka olayları nöbetçi numaralara kısa mesajla da gider:
+`CASE_NOTIFY_SMS_TO` (virgülle, yalnız uluslararası biçim, ör. `+905321234567`;
+başka biçimdeki numara atlanır) ve `CASE_NOTIFY_SMS_PRIORITIES` (varsayılan
+`urgent`). Mesaj `CASE_NOTIFY_SMS_GATEWAY_URL` sırrındaki HTTPS adrese
+`{"to": "+90…", "message": "…"}` JSON'u olarak gönderilir; isteğe bağlı
+`CASE_NOTIFY_SMS_GATEWAY_TOKEN` `Authorization: Bearer` başlığına konur. Sağlayıcının
+API'si bu biçimi almıyorsa (Netgsm, İleti Merkezi vb.) kurum ağında küçük bir aktarıcı
+kullanın; internetsiz kurulumda da aktarıcı ağ içinde kalır. Metin vaka başlığı ve
+numarasıdır (en çok 3 SMS); vaka içeriği SMS'e konmaz. Yönlendirme izlenmez, yanıt
+içeriği değil yalnızca HTTP durumu kaydedilir.
+
 ### Bağlayıcı destek durumu
 
 Katalogdaki her MCP sunucusunun tek bir destek durumu vardır

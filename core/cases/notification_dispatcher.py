@@ -14,7 +14,9 @@ Two kinds of row (see ``BROADCAST_USER_ID`` in case_notification_service):
   Slack integration's default channel. W0.46: also emailed to the
   ``CASE_NOTIFY_EMAIL_TO`` list when the row's priority is in
   ``CASE_NOTIFY_EMAIL_TO_PRIORITIES``, and posted to a Microsoft Teams channel
-  when ``CASE_NOTIFY_TEAMS_ENABLED`` is on.
+  when ``CASE_NOTIFY_TEAMS_ENABLED`` is on. W0.58: texted to the
+  ``CASE_NOTIFY_SMS_TO`` numbers through the operator's SMS gateway when the
+  row's priority is in ``CASE_NOTIFY_SMS_PRIORITIES``.
 - **Personal** rows go to their recipient: by email when the row's channel is
   ``email`` or its priority is in ``CASE_NOTIFY_EMAIL_PRIORITIES``; to Slack
   when the channel is ``slack``. ``ui`` rows need no sending: being stored is
@@ -32,6 +34,7 @@ Runs in the daemon only (``CaseAutomationService.run``).
 from __future__ import annotations
 
 import logging
+import re
 from datetime import timedelta
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -204,6 +207,66 @@ def post_teams_message(
     return False, f"teams answered HTTP {response.status_code}"
 
 
+SMS_TIMEOUT_SECONDS = 10
+SMS_URL_SECRET = "CASE_NOTIFY_SMS_GATEWAY_URL"
+SMS_TOKEN_SECRET = "CASE_NOTIFY_SMS_GATEWAY_TOKEN"
+# Three SMS segments; a longer case event is cut, the console has the rest.
+SMS_MAX_CHARS = 459
+_PHONE_RE = re.compile(r"^\+[1-9][0-9]{6,14}$")
+
+
+def _numbers(raw: str) -> Tuple[str, ...]:
+    """E.164 numbers (``+905321234567``); anything else is dropped."""
+    out = []
+    for part in (raw or "").split(","):
+        number = re.sub(r"[\s()-]", "", part)
+        if _PHONE_RE.match(number):
+            out.append(number)
+    return tuple(out)
+
+
+def sms_text(title: str, case_id: Optional[str]) -> str:
+    text = f"AutoSecOps: {title}" + (f" ({case_id})" if case_id else "")
+    return text if len(text) <= SMS_MAX_CHARS else text[: SMS_MAX_CHARS - 1] + "…"
+
+
+def send_sms_message(to: str, text: str) -> Tuple[bool, str]:
+    """POST ``{"to", "message"}`` to the operator's SMS gateway (W0.58).
+
+    The gateway is any HTTPS endpoint that takes that JSON: the provider's own
+    API where it matches, otherwise a small relay in the customer network
+    (which also keeps an air-gapped install's SMS on its own network). The URL
+    and the optional bearer token are secrets and never in the detail.
+    """
+    from core.platform.url_safety import UrlSafetyError, refuse_metadata_target
+    from core.secrets import get_secret
+
+    url = (get_secret(SMS_URL_SECRET) or "").strip()
+    if not url:
+        return False, "sms not configured"
+    if not url.startswith("https://"):
+        return False, "sms gateway url must be https"
+    try:
+        refuse_metadata_target(url)
+    except UrlSafetyError as exc:
+        return False, f"sms gateway url refused: {exc}"
+    token = (get_secret(SMS_TOKEN_SECRET) or "").strip()
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    try:
+        response = httpx.post(
+            url,
+            json={"to": to, "message": text},
+            headers=headers,
+            timeout=SMS_TIMEOUT_SECONDS,
+            follow_redirects=False,
+        )
+    except httpx.HTTPError as exc:
+        return False, f"sms request failed: {type(exc).__name__}"
+    if 200 <= response.status_code < 300:
+        return True, "sent"
+    return False, f"sms gateway answered HTTP {response.status_code}"
+
+
 def _addresses(raw: str) -> Tuple[str, ...]:
     return tuple(a.strip() for a in (raw or "").split(",") if "@" in a)
 
@@ -222,11 +285,13 @@ class CaseNotificationDispatcher:
         send_email: Callable[..., Tuple[bool, str]] = send_email_message,
         enqueue_webhook: Callable[..., int] = outbound_webhooks.enqueue_event,
         post_teams: Callable[..., Tuple[bool, str]] = post_teams_message,
+        send_sms: Callable[..., Tuple[bool, str]] = send_sms_message,
     ):
         self._post_slack = post_slack
         self._send_email = send_email
         self._enqueue_webhook = enqueue_webhook
         self._post_teams = post_teams
+        self._send_sms = send_sms
 
     def dispatch_pending(self, limit: int = 50) -> Dict[str, int]:
         settings = get_settings()
@@ -319,7 +384,8 @@ class CaseNotificationDispatcher:
     def _broadcast_extra(
         self, row: CaseNotification, case: Optional[Case]
     ) -> Dict[str, str]:
-        """The W0.46 broadcast channels: a mail list and a Teams channel."""
+        """The W0.46 broadcast channels (a mail list, a Teams channel) and
+        W0.58's SMS to on-call numbers."""
         settings = get_settings()
         out: Dict[str, str] = {}
         recipients = _addresses(settings.case_notify_email_to)
@@ -348,6 +414,17 @@ class CaseNotificationDispatcher:
                 facts["Case"] = row.case_id
             ok, detail = self._post_teams(row.title, row.message, facts)
             out["teams"] = detail
+        numbers = _numbers(settings.case_notify_sms_to)
+        if numbers and (row.priority or "").lower() in _priorities(
+            settings.case_notify_sms_priorities
+        ):
+            text = sms_text(row.title, row.case_id)
+            results = [self._send_sms(to=n, text=text) for n in numbers]
+            sent = sum(1 for ok, _ in results if ok)
+            out["sms"] = f"sent {sent}/{len(numbers)}"
+            failed = sorted({d for ok, d in results if not ok})
+            if failed:
+                out["sms"] += f" ({'; '.join(failed)})"
         return out
 
     def _email(self, session: Session, row: CaseNotification) -> str:

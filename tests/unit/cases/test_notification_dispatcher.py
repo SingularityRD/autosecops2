@@ -61,6 +61,7 @@ class Recorder:
         self.email = []
         self.webhooks = []
         self.teams = []
+        self.sms = []
 
     def post_slack(self, text, channel=None):
         self.slack.append(text)
@@ -74,6 +75,10 @@ class Recorder:
         self.teams.append((title, text, facts))
         return True, "sent"
 
+    def send_sms(self, to, text):
+        self.sms.append((to, text))
+        return True, "sent"
+
     def enqueue(self, event_type, event_id, data, session=None):
         self.webhooks.append((event_type, event_id, data))
         return 1
@@ -84,6 +89,7 @@ class Recorder:
             send_email=self.send_email,
             enqueue_webhook=self.enqueue,
             post_teams=self.post_teams,
+            send_sms=self.send_sms,
         )
 
 
@@ -507,3 +513,109 @@ def test_post_teams_reports_the_status_without_the_url(monkeypatch):
     assert "SECRETSIG" not in detail
     assert seen["follow_redirects"] is False
     assert seen["json"]["type"] == "message"
+
+
+# --- W0.58: SMS to on-call numbers ------------------------------------------------
+
+
+@pytest.mark.external_service
+@pytest.mark.database
+def test_an_urgent_broadcast_is_texted_to_valid_numbers(db, monkeypatch):
+    monkeypatch.setenv(
+        "CASE_NOTIFY_SMS_TO", "+90 532 123 45 67, 05321234567, +4915112345678"
+    )
+    monkeypatch.setenv("CASE_NOTIFY_SMS_PRIORITIES", "urgent,high")
+    get_settings.cache_clear()
+    try:
+        case = _case(db, "s1")
+        CaseNotificationService().notify_sla_warning(case.case_id, 90, "response")
+        rec = Recorder()
+        rec.dispatcher().dispatch_pending()
+    finally:
+        get_settings.cache_clear()
+    broadcast = next(r for r in _rows(db) if r.user_id == BROADCAST_USER_ID)
+    if broadcast.priority not in ("urgent", "high"):
+        pytest.skip(f"SLA warning priority is {broadcast.priority}")
+    # the national-format number is dropped: only E.164 is texted
+    assert [to for to, _ in rec.sms] == ["+905321234567", "+4915112345678"]
+    assert all(case.case_id in text for _, text in rec.sms)
+    assert broadcast.notification_metadata["dispatch"]["channels"]["sms"] == "sent 2/2"
+
+
+@pytest.mark.external_service
+@pytest.mark.database
+def test_sms_is_off_by_default_and_for_canaries(db, monkeypatch):
+    case = _case(db, "s2")
+    CaseNotificationService().notify_sla_warning(case.case_id, 90, "response")
+    rec = Recorder()
+    rec.dispatcher().dispatch_pending()
+    assert rec.sms == []
+    monkeypatch.setenv("CASE_NOTIFY_SMS_TO", "+905321234567")
+    monkeypatch.setenv("CASE_NOTIFY_SMS_PRIORITIES", "urgent,high,medium,low")
+    get_settings.cache_clear()
+    try:
+        canary = _case(db, "s3", canary=True)
+        CaseNotificationService().notify_sla_warning(canary.case_id, 90, "response")
+        rec = Recorder()
+        rec.dispatcher().dispatch_pending()
+    finally:
+        get_settings.cache_clear()
+    assert rec.sms == []
+
+
+def test_sms_text_is_short_and_names_the_case():
+    from core.cases.notification_dispatcher import SMS_MAX_CHARS, sms_text
+
+    assert sms_text("SLA Warning", "c-1") == "AutoSecOps: SLA Warning (c-1)"
+    long = sms_text("x" * 2000, "c-1")
+    assert len(long) == SMS_MAX_CHARS and long.endswith("…")
+
+
+@pytest.mark.parametrize(
+    "url,detail",
+    [
+        ("", "sms not configured"),
+        ("http://sms.corp.test/send", "sms gateway url must be https"),
+        ("https://169.254.169.254/x", "sms gateway url refused"),
+    ],
+)
+def test_send_sms_refuses_before_any_call(monkeypatch, url, detail):
+    from core.cases import notification_dispatcher as nd
+
+    monkeypatch.setattr("core.secrets.get_secret", lambda name: url)
+
+    def boom(*a, **k):
+        raise AssertionError("no request may be made")
+
+    monkeypatch.setattr(nd.httpx, "post", boom)
+    ok, got = nd.send_sms_message("+905321234567", "x")
+    assert ok is False and got.startswith(detail)
+
+
+def test_send_sms_posts_json_with_the_token_and_hides_secrets(monkeypatch):
+    from core.cases import notification_dispatcher as nd
+
+    secrets = {
+        nd.SMS_URL_SECRET: "https://sms.corp.test/send?key=URLSECRET",
+        nd.SMS_TOKEN_SECRET: "TOKSECRET",
+    }
+    monkeypatch.setattr("core.secrets.get_secret", lambda name: secrets.get(name))
+    monkeypatch.setattr(
+        "core.platform.url_safety.refuse_metadata_target", lambda u: None
+    )
+    seen = {}
+
+    class R:
+        status_code = 502
+
+    def post(url, json, headers, timeout, follow_redirects):
+        seen.update(json=json, headers=headers, follow=follow_redirects)
+        return R()
+
+    monkeypatch.setattr(nd.httpx, "post", post)
+    ok, detail = nd.send_sms_message("+905321234567", "hello")
+    assert seen["json"] == {"to": "+905321234567", "message": "hello"}
+    assert seen["headers"] == {"Authorization": "Bearer TOKSECRET"}
+    assert seen["follow"] is False
+    assert (ok, detail) == (False, "sms gateway answered HTTP 502")
+    assert "SECRET" not in detail

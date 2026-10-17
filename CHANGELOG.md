@@ -44,6 +44,13 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **notify (W0.58):** urgent case events are texted to on-call numbers
+  (`CASE_NOTIFY_SMS_TO`, E.164 only; `CASE_NOTIFY_SMS_PRIORITIES`, default
+  `urgent`) through an HTTPS SMS gateway taking `{"to", "message"}`
+  (`CASE_NOTIFY_SMS_GATEWAY_URL`, optional bearer
+  `CASE_NOTIFY_SMS_GATEWAY_TOKEN`, both secrets). The text is the case title and
+  id only. Works air-gapped with a gateway inside the network; canaries never
+  leave the system.
 * **response (W0.57):** a Fortinet FortiGate executor (Experimental).
   `block_ip` adds an `autosecops-<ip>` address object to an address group that a
   deny policy uses (IPv4 and IPv6, no policy edits, members added one at a time);
