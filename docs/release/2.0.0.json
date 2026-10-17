@@ -422,6 +422,11 @@
       "id": "W0.40",
       "topic": "vaka raporu Türkçe basılır (gömülü DejaVu Sans) ve PDF olarak indirilir; her indirme denetim kaydında",
       "topic_en": "the case report prints Turkish (embedded DejaVu Sans) and downloads as a PDF; each download is audited"
+    },
+    {
+      "id": "W0.42",
+      "topic": "KVKK (Kurul bildirimi 72 saat), BDDK ve USOM / SOME bildirim sayaçları ve Türkçe rapor taslakları (init SQL 65); BDDK ve USOM süreleri kurum içi hedef",
+      "topic_en": "KVKK (Board notification in 72 hours), BDDK and USOM / SOME notification clocks with Turkish report drafts (init SQL 65); the BDDK and USOM durations are in-house targets"
     }
   ],
   "highlights": [
@@ -692,6 +697,12 @@
         "W0.40"
       ],
       "text": "**Türkçe vaka raporu:** vaka sayfasından PDF indirilir; ş, ğ, ı, İ doğru basılır (DejaVu Sans gömülü), metin aranabilir; her indirme zincirli denetim kaydına yazılır (W0.40)."
+    },
+    {
+      "when": [
+        "W0.42"
+      ],
+      "text": "**KVKK, BDDK ve USOM sayaçları:** vakada DORA ve NIS2'nin yanında KVKK Kurul bildirimi (farkına varma + 72 saat), BDDK bildirim ve sonuç raporu, USOM / SOME bildirimi; Türkçe taslaklar vakanın kanıtından. BDDK ve USOM süreleri mevzuattan değil kurum içi hedeftir ve ayarlanabilir (W0.42)."
     }
   ],
   "upgrade_notes": [
