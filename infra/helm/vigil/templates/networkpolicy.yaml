@@ -108,6 +108,25 @@ spec:
         - protocol: TCP
           port: {{ $.Values.daemon.ports.webhook }}
     {{- end }}
+    {{- with .Values.daemon.syslog }}
+    {{- if and .enabled .allowedSources }}
+    # Syslog (W0.41): only from the senders the listener itself accepts.
+    - from:
+        {{- range .allowedSources }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        {{- if .tcpPort }}
+        - protocol: TCP
+          port: {{ .tcpPort }}
+        {{- end }}
+        {{- if .udpPort }}
+        - protocol: UDP
+          port: {{ .udpPort }}
+        {{- end }}
+    {{- end }}
+    {{- end }}
     # Cluster-internal to all daemon ports (probes, in-cluster calls)
     - from:
         - namespaceSelector: {}

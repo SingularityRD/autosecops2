@@ -322,6 +322,17 @@ class Settings(BaseSettings):
     daemon_leader_database_url: str = ""
     daemon_webhook_enabled: bool = True
     daemon_webhook_port: int = 8081
+    # W0.41 syslog listener (services/daemon/syslog_listener.py): off by
+    # default; senders only from DAEMON_SYSLOG_ALLOWED_SOURCES (CIDRs, comma
+    # separated; empty refuses all). TLS when cert and key are set; a client
+    # CA makes it mutual TLS. UDP port 0 = no UDP.
+    daemon_syslog_enabled: bool = False
+    daemon_syslog_tcp_port: int = Field(default=5514, ge=0, le=65535)
+    daemon_syslog_udp_port: int = Field(default=0, ge=0, le=65535)
+    daemon_syslog_allowed_sources: str = ""
+    daemon_syslog_tls_cert: str = ""
+    daemon_syslog_tls_key: str = ""
+    daemon_syslog_tls_client_ca: str = ""
     daemon_auto_triage: bool = True
     daemon_auto_enrich: bool = True
     daemon_triage_timeout: int = 60

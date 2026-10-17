@@ -427,6 +427,11 @@
       "id": "W0.42",
       "topic": "KVKK (Kurul bildirimi 72 saat), BDDK ve USOM / SOME bildirim sayaçları ve Türkçe rapor taslakları (init SQL 65); BDDK ve USOM süreleri kurum içi hedef",
       "topic_en": "KVKK (Board notification in 72 hours), BDDK and USOM / SOME notification clocks with Turkish report drafts (init SQL 65); the BDDK and USOM durations are in-house targets"
+    },
+    {
+      "id": "W0.41",
+      "topic": "syslog alımı (CEF, LEEF 1.0/2.0, FortiGate key=value, Wazuh JSON; TCP/TLS/UDP dinleyici varsayılan kapalı ve izin listeli, HTTP /ingest/syslog) ve IBM QRadar offense alımı (Deneysel, salt okuma)",
+      "topic_en": "syslog intake (CEF, LEEF 1.0/2.0, FortiGate key=value, Wazuh JSON; TCP/TLS/UDP listener off by default and allowlisted, HTTP /ingest/syslog) and IBM QRadar offense ingestion (Experimental, read only)"
     }
   ],
   "highlights": [
@@ -703,6 +708,12 @@
         "W0.42"
       ],
       "text": "**KVKK, BDDK ve USOM sayaçları:** vakada DORA ve NIS2'nin yanında KVKK Kurul bildirimi (farkına varma + 72 saat), BDDK bildirim ve sonuç raporu, USOM / SOME bildirimi; Türkçe taslaklar vakanın kanıtından. BDDK ve USOM süreleri mevzuattan değil kurum içi hedeftir ve ayarlanabilir (W0.42)."
+    },
+    {
+      "when": [
+        "W0.41"
+      ],
+      "text": "**Syslog ve QRadar:** FortiGate, ArcSight, Logsign, Wazuh ve QRadar'ın syslog çıkışı (CEF, LEEF, FortiGate key=value, Wazuh JSON) doğrudan bulgu olur; dinleyici TCP, TLS (karşılıklı TLS dahil) ve UDP, varsayılan kapalı ve yalnızca izinli adreslerden okur. IBM QRadar offense'ları alarm toplamayla bulgu olarak gelir; inceleme ajanı offense'ları salt okuma araçlarıyla okur (Deneysel) (W0.41)."
     }
   ],
   "upgrade_notes": [

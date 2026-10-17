@@ -45,7 +45,7 @@ class TestTheMaps:
         builtins = {m.split(".")[2] for m in _BUILTIN_ADAPTER_MODULES}
         assert builtins <= set(_ADAPTER_FACTORIES)
         assert builtins == set(prov.ADAPTER_PROVENANCE)
-        assert len(prov.ADAPTER_PROVENANCE) == 7
+        assert len(prov.ADAPTER_PROVENANCE) == 8
 
     @pytest.mark.parametrize("name", sorted(ALL_MAPS))
     def test_every_map_is_well_formed(self, name):

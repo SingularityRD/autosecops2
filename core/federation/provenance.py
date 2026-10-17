@@ -54,7 +54,7 @@ Decisions that hold for every source:
 * Domains, URLs, user agents, command lines, process and file names, e-mail
   subjects and bodies, DNS questions and raw log lines are ``adversary``.
 
-A ``data_source`` that is not one of the seven Federation adapters or the
+A ``data_source`` that is not one of the eight Federation adapters or the
 known-answer probe (webhook pushes, ``kafka:<topic>``, imports, anything a
 sender names) gets :data:`WEBHOOK_PROVENANCE`. A webhook, Kafka or import
 sender chooses its own ``data_source``; it is authenticated by the webhook
@@ -459,6 +459,50 @@ OPENSEARCH: Dict[str, Authored] = {
     **_under("raw_event._source", _ECS_ADVERSARY, ADVERSARY),
 }
 
+QRADAR: Dict[str, Authored] = {
+    **_COMMON,
+    **_ENTITY_CONTEXT,
+    # QRadar's own numbers and ids for the offense (W0.41).
+    "metadata.offense_id": SENSOR,
+    "metadata.offense_type": SENSOR,
+    "metadata.offense_status": SENSOR,
+    "metadata.magnitude": SENSOR,
+    "metadata.credibility": SENSOR,
+    "metadata.relevance": SENSOR,
+    "metadata.event_count": SENSOR,
+    "metadata.flow_count": SENSOR,
+    "metadata.rule_ids": SENSOR,
+    "metadata.domain_id": SENSOR,
+    "metadata.categories": SENSOR,
+    # What the offense is about: an address, a user name, a log source name.
+    "metadata.offense_source": ADVERSARY,
+    **_under(
+        "raw_event",
+        (
+            "id",
+            "offense_type",
+            "status",
+            "magnitude",
+            "severity",
+            "credibility",
+            "relevance",
+            "start_time",
+            "last_updated_time",
+            "event_count",
+            "flow_count",
+            "domain_id",
+            "source_count",
+            "local_destination_count",
+            "remote_destination_count",
+            "categories",
+            "rules",
+            "log_sources",
+        ),
+        SENSOR,
+    ),
+    "raw_event.*": ADVERSARY,
+}
+
 SPLUNK: Dict[str, Authored] = {
     **_COMMON,
     **_ENTITY_CONTEXT,
@@ -544,6 +588,7 @@ ADAPTER_PROVENANCE: Dict[str, Dict[str, Authored]] = {
     "elastic": ELASTIC,
     "microsoft_defender": MICROSOFT_DEFENDER,
     "opensearch": OPENSEARCH,
+    "qradar": QRADAR,
     "splunk": SPLUNK,
 }
 

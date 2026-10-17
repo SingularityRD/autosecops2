@@ -60,6 +60,20 @@ spec:
             - name: health
               containerPort: {{ .Values.daemon.ports.health }}
               protocol: TCP
+            {{- with .Values.daemon.syslog }}
+            {{- if .enabled }}
+            {{- if .tcpPort }}
+            - name: syslog-tcp
+              containerPort: {{ .tcpPort }}
+              protocol: TCP
+            {{- end }}
+            {{- if .udpPort }}
+            - name: syslog-udp
+              containerPort: {{ .udpPort }}
+              protocol: UDP
+            {{- end }}
+            {{- end }}
+            {{- end }}
           envFrom:
             {{- include "vigil.signingKeyEnvFrom" (dict "context" . "key" "AUDIT_CHECKPOINT_SIGNING_KEY") | nindent 12 }}
             {{- include "vigil.envFrom" . | nindent 12 }}
@@ -85,6 +99,29 @@ spec:
               value: {{ .Values.daemon.leaderElection.leaseSeconds | toString | quote }}
             - name: DAEMON_LEADER_RETRY_SECONDS
               value: {{ .Values.daemon.leaderElection.retrySeconds | toString | quote }}
+            {{- end }}
+            {{- with .Values.daemon.syslog }}
+            {{- if .enabled }}
+            # W0.41 syslog listener
+            - name: DAEMON_SYSLOG_ENABLED
+              value: "true"
+            - name: DAEMON_SYSLOG_TCP_PORT
+              value: {{ .tcpPort | toString | quote }}
+            - name: DAEMON_SYSLOG_UDP_PORT
+              value: {{ .udpPort | toString | quote }}
+            - name: DAEMON_SYSLOG_ALLOWED_SOURCES
+              value: {{ join "," .allowedSources | quote }}
+            {{- if .tls.existingSecret }}
+            - name: DAEMON_SYSLOG_TLS_CERT
+              value: /etc/autosecops/syslog-tls/tls.crt
+            - name: DAEMON_SYSLOG_TLS_KEY
+              value: /etc/autosecops/syslog-tls/tls.key
+            {{- if .tls.clientCA }}
+            - name: DAEMON_SYSLOG_TLS_CLIENT_CA
+              value: /etc/autosecops/syslog-tls/ca.crt
+            {{- end }}
+            {{- end }}
+            {{- end }}
             {{- end }}
             {{- with .Values.daemon.extraEnv }}
             {{- toYaml . | nindent 12 }}
@@ -133,8 +170,19 @@ spec:
             - name: investigations
               mountPath: {{ .Values.daemon.persistence.mountPath }}
             {{- end }}
+            {{- if and .Values.daemon.syslog.enabled .Values.daemon.syslog.tls.existingSecret }}
+            - name: syslog-tls
+              mountPath: /etc/autosecops/syslog-tls
+              readOnly: true
+            {{- end }}
       volumes:
         {{- include "vigil.stateVolume" . | nindent 8 }}
+        {{- if and .Values.daemon.syslog.enabled .Values.daemon.syslog.tls.existingSecret }}
+        - name: syslog-tls
+          secret:
+            secretName: {{ .Values.daemon.syslog.tls.existingSecret | quote }}
+            defaultMode: 0440
+        {{- end }}
         {{- if .Values.evidence.persistence.enabled }}
         {{- include "vigil.evidenceVolume" . | nindent 8 }}
         {{- end }}

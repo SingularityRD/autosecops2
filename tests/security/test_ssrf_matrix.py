@@ -227,6 +227,7 @@ UNGUARDED_OUTBOUND = {
     "core/integrations/splunk/client.py": "stored Splunk server_url",
     "core/integrations/elastic/client.py": "stored Elasticsearch/Kibana url",
     "core/integrations/opensearch/client.py": "stored OpenSearch/Dashboards url",
+    "core/integrations/qradar/client.py": "stored QRadar console_url (redirects not followed)",
     "core/integrations/crowdstrike/client.py": "stored CrowdStrike base_url",
     "core/integrations/vstrike/client.py": "stored/env VStrike base_url",
     "core/integrations/palo_alto/client.py": "stored PAN-OS hostname (base_url_for)",
@@ -244,7 +245,9 @@ UNGUARDED_OUTBOUND = {
 @pytest.mark.parametrize("path", sorted(UNGUARDED_OUTBOUND))
 def test_unguarded_outbound_inventory_is_current(path):
     src = (REPO / path).read_text()
-    assert "validate_provider_url" not in src and "resolve_allowed_addresses" not in src, (
+    assert (
+        "validate_provider_url" not in src and "resolve_allowed_addresses" not in src
+    ), (
         f"{path} now calls url_safety: move it from UNGUARDED_OUTBOUND into "
         "ENTRY_POINTS and drive it with the payload corpus"
     )
@@ -288,7 +291,9 @@ def test_bifrost_never_overrides_the_stock_openai_host():
     assert _STOCK_OPENAI_HOSTS
     for host in _STOCK_OPENAI_HOSTS:
         assert _custom_openai_base_url(f"https://{host}/v1") is None
-    assert _custom_openai_base_url("https://llm.corp.test/v1") == "https://llm.corp.test"
+    assert (
+        _custom_openai_base_url("https://llm.corp.test/v1") == "https://llm.corp.test"
+    )
 
 
 def test_bifrost_custom_base_url_has_no_address_check():
@@ -296,4 +301,6 @@ def test_bifrost_custom_base_url_has_no_address_check():
     address is handed to Bifrost unchanged."""
     from core.llm.bifrost.admin import _custom_openai_base_url
 
-    assert _custom_openai_base_url("http://169.254.169.254/v1") == "http://169.254.169.254"
+    assert (
+        _custom_openai_base_url("http://169.254.169.254/v1") == "http://169.254.169.254"
+    )

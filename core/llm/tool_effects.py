@@ -251,6 +251,10 @@ INTEGRATIONS: Dict[str, Dict[str, str]] = {
         "opensearch_get_indices": READ_ONLY,
         "opensearch_get_findings": READ_ONLY,
     },
+    "qradar": {
+        "qradar_list_offenses": READ_ONLY,
+        "qradar_get_offense": READ_ONLY,
+    },
     "palo-alto": {
         "pan_block_ip": DESTRUCTIVE,
         "pan_get_threats": READ_ONLY,

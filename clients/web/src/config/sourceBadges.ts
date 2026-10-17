@@ -13,6 +13,8 @@ const SOURCE_BADGES: Record<string, SourceBadge> = {
   azure_sentinel: { label: 'Sentinel', color: '#2a7de1', icon: 'shield' },
   elastic: { label: 'Elastic', color: '#f0bf1a', icon: 'bolt' },
   opensearch: { label: 'OpenSearch', color: '#005eb8', icon: 'search' },
+  qradar: { label: 'QRadar', color: '#0f62fe', icon: 'search' },
+  syslog: { label: 'Syslog', color: '#8a90a6', icon: 'link' },
   aws_security_hub: { label: 'Security Hub', color: '#e88b1a', icon: 'shield' },
   darktrace: { label: 'Darktrace', color: '#8a90a6', icon: 'eye' },
   cloudflare_cloudy: { label: 'Cloudflare', color: '#8a90a6', icon: 'shield' },
@@ -29,6 +31,7 @@ export const CATALOG_TO_SOURCE: Record<string, string> = {
   'azure-sentinel': 'azure_sentinel',
   'aws-security-hub': 'aws_security_hub',
   'microsoft-defender': 'microsoft_defender',
+  qradar: 'qradar',
 }
 
 const DEFAULT_BADGE: Omit<SourceBadge, 'label'> = { color: '#8a90a6', icon: 'link' }
