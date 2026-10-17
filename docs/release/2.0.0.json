@@ -437,6 +437,11 @@
       "id": "W0.44",
       "topic": "sertleştirme: entegrasyon testi bulut metadata adresini reddeder ve iletileri temizler; e-posta değişikliği denetim kaydında; vaka ilişkisi ve yükseltme oturumdaki kullanıcıdan; politika gövde sınırı parçalı gövdede; ilk denetim noktası yeniden denenir",
       "topic_en": "hardening: the integration test refuses cloud metadata targets and scrubs its messages; email change is audited; case relationship and escalation come from the session; the policy body cap holds for chunked bodies; the first audit checkpoint is retried"
+    },
+    {
+      "id": "W0.45",
+      "topic": "yapılandırılmış AI kararı ekranda: triyaj kuyruğunda karar sütunu, alıntılanan alanlar ve kimin yazdığı, eksikler, önerilen eylem; bulgu penceresinde aynı",
+      "topic_en": "the structured AI verdict on screen: a verdict column in the triage queue, cited fields and who wrote them, gaps, recommended action; the same in the finding popup"
     }
   ],
   "highlights": [
@@ -719,6 +724,12 @@
         "W0.41"
       ],
       "text": "**Syslog ve QRadar:** FortiGate, ArcSight, Logsign, Wazuh ve QRadar'ın syslog çıkışı (CEF, LEEF, FortiGate key=value, Wazuh JSON) doğrudan bulgu olur; dinleyici TCP, TLS (karşılıklı TLS dahil) ve UDP, varsayılan kapalı ve yalnızca izinli adreslerden okur. IBM QRadar offense'ları alarm toplamayla bulgu olarak gelir; inceleme ajanı offense'ları salt okuma araçlarıyla okur (Deneysel) (W0.41)."
+    },
+    {
+      "when": [
+        "W0.45"
+      ],
+      "text": "**AI kararı ekranda:** triyaj kuyruğu her alarmın AI kararını (kötü amaçlı / zararsız / belirsiz ve güven) gösterir; satır açılınca kararın dayandığı alanlar ve her birini kimin yazdığı (sensör, saldırgan denetiminde, üçüncü taraf — modelden değil koddan), göremedikleri ve önerilen eylem (her zaman onaylı) görünür (W0.45)."
     }
   ],
   "upgrade_notes": [
