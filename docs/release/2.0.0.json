@@ -467,6 +467,11 @@
       "id": "W0.50",
       "topic": "iddiayı gösteren demo senaryosu (onay bekleyen izolasyon, geri alınan engel, alıntılı AI kararları, DORA/KVKK sayaçları, kanıt paketi); internetsiz kurulumda çalışır",
       "topic_en": "a demo scenario that shows the claim (pending isolation, reversed block, cited AI verdicts, DORA/KVKK clocks, evidence pack); works air-gapped"
+    },
+    {
+      "id": "W0.51",
+      "topic": "internetsiz kurulumda yerel Prometheus metrikleri (VIGIL_METRICS_ENABLED, dışa aktarım yok); Helm'de backend ServiceMonitor, alarm kuralları ve Grafana panosu",
+      "topic_en": "local Prometheus metrics in air-gapped installs (VIGIL_METRICS_ENABLED, nothing exported); a backend ServiceMonitor, alert rules and a Grafana dashboard in the chart"
     }
   ],
   "highlights": [
