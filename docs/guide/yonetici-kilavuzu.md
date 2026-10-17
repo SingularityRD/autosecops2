@@ -902,6 +902,27 @@ Diğer otonomi düğmeleri:
   yanlış negatif oranının tek taraflı %95 Clopper–Pearson üst sınırını gösterir
   (`GET /api/qa/scorecard`).
 
+### Demo senaryosu (W0.50)
+
+`DEMO_MODE` rastgele verisi ekranları doldurur ama ürünün iddiasını göstermez ve
+internetsiz profilde kapalıdır. Satış ve POC tanıtımı için tek, tutarlı bir olayı
+gerçek veritabanına yazan senaryo:
+
+```bash
+python -m core.platform.demo_scenario seed     # Helm: kubectl exec deploy/<backend> -- ...
+python -m core.platform.demo_scenario remove
+```
+
+Yazdıkları (hepsinin kimliği `demo-sc-` ile başlar): AI kararı, alıntıladığı alanlar
+ve yazarlarıyla üç bulgu (kimlik avı, C2 işareti, zararsız güncelleyici); bunları
+tutan bir vaka; onay bekleyen bir konak izolasyonu; uygulanıp geri alınmış bir IP
+engeli ve geri alma satırı (vakanın eylem zaman çizelgesinde); DORA ve KVKK
+sayaçları. Kanıt paketi vakadan istendiğinde üretilir. Hiçbir yürütücü çalışmaz,
+kurulumun dışına bir şey çıkmaz; internetsiz kurulumda da çalışır. `seed` iki kez
+çalıştırılırsa bir kez yazar; `remove` yalnız `demo-sc-` satırlarını siler. Müşteri
+verisinin bulunduğu bir kurulumda çalıştırmayın ya da tanıtımdan sonra kaldırın.
+
+
 ### Dersler
 
 Bir analist düzeltmesi (ör. "bu adresten gelen Entra uyarıları bizim

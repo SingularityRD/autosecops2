@@ -28,6 +28,11 @@ sayısını kendisi gösterir).
    sağlayıcıya gider (KVKK değerlendirmesi müşterinindir).
 4. Otonomi: POC boyunca **Assist** (her müdahale insan onaylı) önerilir.
 
+Tanıtım için müşteri verisi gelmeden önce: `python -m core.platform.demo_scenario seed`
+(onay, geri alma, kanıt paketi ve düzenleyici sayaçları gösteren tek olay; ayrıntı
+[yönetici kılavuzu](yonetici-kilavuzu.md#demo-senaryosu-w050)). Gerçek veriye
+geçmeden `remove` ile kaldırın.
+
 ## 3. Ölçümü açmak
 
 - **QA örnekleme:** analistler Karne (Scorecard) ekranından örnekleri inceler; örnek

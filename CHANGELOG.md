@@ -44,6 +44,13 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **demo (W0.50):** `python -m core.platform.demo_scenario seed` writes one
+  coherent incident into the database that shows the claim: findings with
+  verdicts that cite fields and who wrote them, a case, a host isolation waiting
+  for approval, a block that was executed and reversed, running DORA and KVKK
+  clocks, and an evidence pack on demand. No executor runs and nothing leaves
+  the install, so it works air-gapped; `remove` deletes exactly its `demo-sc-`
+  rows. `python -m evalkit export-reviewed` now initializes the database itself.
 * **quality (W0.49):** a POC on the customer's own alerts. `GET /api/qa/poc-report`
   (`settings.read`, JSON or a Markdown download) counts what the install measured
   over a window: alerts by source, AI triage verdicts, lanes, analyst review and
