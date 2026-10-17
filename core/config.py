@@ -398,6 +398,13 @@ class Settings(BaseSettings):
     # get_secret("CASE_NOTIFY_TEAMS_WEBHOOK_URL") since the URL carries its
     # signature. This switch turns it on.
     case_notify_teams_enabled: bool = False
+    # W0.58: text broadcast case events to on-call numbers (comma-separated
+    # E.164, e.g. "+905321234567") for the priorities below, through an HTTPS
+    # SMS gateway read with get_secret("CASE_NOTIFY_SMS_GATEWAY_URL") (and the
+    # optional bearer get_secret("CASE_NOTIFY_SMS_GATEWAY_TOKEN")). Works
+    # air-gapped with a gateway inside the customer network. Empty: off.
+    case_notify_sms_to: str = ""
+    case_notify_sms_priorities: str = "urgent"
     # Outbound webhooks. Targets resolving to loopback/private/link-local
     # addresses are refused unless inside one of these CIDRs (comma-separated).
     # The cloud-metadata address is refused regardless.

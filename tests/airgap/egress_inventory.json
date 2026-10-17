@@ -39,14 +39,15 @@
       "site": "core/cases/notification_dispatcher.py",
       "category": "gated",
       "kinds": {
-        "httpx": 2,
+        "httpx": 3,
         "host:slack.com": 1,
         "host:adaptivecards.io": 1
       },
       "gates": [
-        "integration:slack"
+        "integration:slack",
+        "operator-action:CASE_NOTIFY_SMS_TO and an SMS gateway URL configured"
       ],
-      "note": "Case notifications to Slack (only when the 'slack' integration is enabled with credentials) and to a Microsoft Teams workflow URL (W0.46; only with CASE_NOTIFY_TEAMS_ENABLED=true and CASE_NOTIFY_TEAMS_WEBHOOK_URL set). The air-gap profile enables neither. adaptivecards.io is only the Adaptive Card $schema string, never requested.",
+      "note": "Case notifications to Slack (only when the 'slack' integration is enabled with credentials) and to a Microsoft Teams workflow URL (W0.46; only with CASE_NOTIFY_TEAMS_ENABLED=true and CASE_NOTIFY_TEAMS_WEBHOOK_URL set). The air-gap profile enables neither. W0.58: SMS to the operator's HTTPS gateway, only with CASE_NOTIFY_SMS_TO and CASE_NOTIFY_SMS_GATEWAY_URL set; air-gapped, point it at a gateway inside the network. adaptivecards.io is only the Adaptive Card $schema string, never requested.",
       "switches": {
         "CASE_NOTIFY_TEAMS_ENABLED": "off"
       }
