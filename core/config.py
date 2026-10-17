@@ -377,6 +377,17 @@ class Settings(BaseSettings):
     # Comma-separated notification priorities (e.g. "urgent,high") that are also
     # emailed to their recipient. Empty: only rows whose channel is "email".
     case_notify_email_priorities: str = ""
+    # W0.46: broadcast case events (SLA warnings, stale cases) also go to this
+    # comma-separated list of addresses (a SOC distribution list), for the
+    # priorities in CASE_NOTIFY_EMAIL_TO_PRIORITIES. Works air-gapped through
+    # an internal SMTP relay. Empty: off.
+    case_notify_email_to: str = ""
+    case_notify_email_to_priorities: str = "urgent,high"
+    # W0.46: post broadcast case events to a Microsoft Teams channel through a
+    # Workflows ("When a Teams webhook request is received") URL, read with
+    # get_secret("CASE_NOTIFY_TEAMS_WEBHOOK_URL") since the URL carries its
+    # signature. This switch turns it on.
+    case_notify_teams_enabled: bool = False
     # Outbound webhooks. Targets resolving to loopback/private/link-local
     # addresses are refused unless inside one of these CIDRs (comma-separated).
     # The cloud-metadata address is refused regardless.

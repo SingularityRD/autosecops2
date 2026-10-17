@@ -176,6 +176,7 @@ ENV_CREDENTIAL_NAMES: frozenset[str] = frozenset(
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
         "CAPE_SANDBOX_API_KEY",
+        "CASE_NOTIFY_TEAMS_WEBHOOK_URL",
         "CLOUDFORCE_ONE_API_TOKEN",
         "CLOUDY_WEBHOOK_SECRET",
         "CRIBL_PASSWORD",

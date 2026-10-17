@@ -44,6 +44,15 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **notifications (W0.46):** broadcast case events (SLA warnings, stale cases)
+  can also go to an email distribution list (`CASE_NOTIFY_EMAIL_TO`, for the
+  priorities in `CASE_NOTIFY_EMAIL_TO_PRIORITIES`, default `urgent,high`; works
+  air-gapped through an internal SMTP relay) and to a Microsoft Teams channel
+  through a Workflows webhook (`CASE_NOTIFY_TEAMS_ENABLED` and the secret
+  `CASE_NOTIFY_TEAMS_WEBHOOK_URL`; https only, no redirects, metadata and
+  link-local targets refused; off in the air-gap profile). Canary cases reach
+  neither. Gates now always run the static egress inventory check; the staging
+  bootstrap and the syslog bind default pass shellcheck and Bandit again.
 * **triage (W0.45):** the structured AI verdict (W1.2) is on screen. The
   triage queue has an **AI verdict** column (Malicious / Benign / Inconclusive
   and the confidence, or Triage failed / Unreadable), and an alert's row opens

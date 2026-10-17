@@ -11,7 +11,10 @@ Two kinds of row (see ``BROADCAST_USER_ID`` in case_notification_service):
   to every subscribed outbound webhook endpoint (``case.<notification_type>``,
   event id = the row's ``event_key``, so a re-raised event is not delivered
   twice) and, when ``CASE_NOTIFY_SLACK_ENABLED`` is on, posted once to the
-  Slack integration's default channel.
+  Slack integration's default channel. W0.46: also emailed to the
+  ``CASE_NOTIFY_EMAIL_TO`` list when the row's priority is in
+  ``CASE_NOTIFY_EMAIL_TO_PRIORITIES``, and posted to a Microsoft Teams channel
+  when ``CASE_NOTIFY_TEAMS_ENABLED`` is on.
 - **Personal** rows go to their recipient: by email when the row's channel is
   ``email`` or its priority is in ``CASE_NOTIFY_EMAIL_PRIORITIES``; to Slack
   when the channel is ``slack``. ``ui`` rows need no sending: being stored is
@@ -137,6 +140,74 @@ def send_email_message(to: str, subject: str, body: str) -> Tuple[bool, str]:
     return True, "sent"
 
 
+TEAMS_TIMEOUT_SECONDS = 10
+TEAMS_URL_SECRET = "CASE_NOTIFY_TEAMS_WEBHOOK_URL"
+
+
+def teams_card(title: str, text: str, facts: Dict[str, str]) -> Dict[str, Any]:
+    """A Teams message with one Adaptive Card (what a Workflows webhook posts)."""
+    body: list = [
+        {"type": "TextBlock", "text": title, "weight": "Bolder", "wrap": True},
+        {"type": "TextBlock", "text": text, "wrap": True},
+    ]
+    if facts:
+        body.append(
+            {
+                "type": "FactSet",
+                "facts": [{"title": k, "value": v} for k, v in facts.items() if v],
+            }
+        )
+    return {
+        "type": "message",
+        "attachments": [
+            {
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                    "type": "AdaptiveCard",
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "version": "1.4",
+                    "body": body,
+                },
+            }
+        ],
+    }
+
+
+def post_teams_message(
+    title: str, text: str, facts: Optional[Dict[str, str]] = None
+) -> Tuple[bool, str]:
+    """Post one card to the Teams workflow URL. Returns (ok, detail); the URL,
+    which carries its signature, is never in the detail."""
+    from core.platform.url_safety import UrlSafetyError, refuse_metadata_target
+    from core.secrets import get_secret
+
+    url = (get_secret(TEAMS_URL_SECRET) or "").strip()
+    if not url:
+        return False, "teams not configured"
+    if not url.startswith("https://"):
+        return False, "teams url must be https"
+    try:
+        refuse_metadata_target(url)
+    except UrlSafetyError as exc:
+        return False, f"teams url refused: {exc}"
+    try:
+        response = httpx.post(
+            url,
+            json=teams_card(title, text, facts or {}),
+            timeout=TEAMS_TIMEOUT_SECONDS,
+            follow_redirects=False,
+        )
+    except httpx.HTTPError as exc:
+        return False, f"teams request failed: {type(exc).__name__}"
+    if 200 <= response.status_code < 300:
+        return True, "sent"
+    return False, f"teams answered HTTP {response.status_code}"
+
+
+def _addresses(raw: str) -> Tuple[str, ...]:
+    return tuple(a.strip() for a in (raw or "").split(",") if "@" in a)
+
+
 def _priorities(raw: str) -> frozenset:
     return frozenset(p.strip().lower() for p in (raw or "").split(",") if p.strip())
 
@@ -150,10 +221,12 @@ class CaseNotificationDispatcher:
         post_slack: Callable[..., Tuple[bool, str]] = post_slack_message,
         send_email: Callable[..., Tuple[bool, str]] = send_email_message,
         enqueue_webhook: Callable[..., int] = outbound_webhooks.enqueue_event,
+        post_teams: Callable[..., Tuple[bool, str]] = post_teams_message,
     ):
         self._post_slack = post_slack
         self._send_email = send_email
         self._enqueue_webhook = enqueue_webhook
+        self._post_teams = post_teams
 
     def dispatch_pending(self, limit: int = 50) -> Dict[str, int]:
         settings = get_settings()
@@ -228,6 +301,7 @@ class CaseNotificationDispatcher:
             if slack_broadcast:
                 ok, detail = self._post_slack(f"*{row.title}*\n{row.message}")
                 channels["slack"] = detail
+            channels.update(self._broadcast_extra(row, case))
             return {"channels": channels}
 
         channel = (row.delivery_channel or "ui").lower()
@@ -241,6 +315,40 @@ class CaseNotificationDispatcher:
         elif channel not in ("ui", "email"):
             channels[channel] = "unsupported channel"
         return {"channels": channels}
+
+    def _broadcast_extra(
+        self, row: CaseNotification, case: Optional[Case]
+    ) -> Dict[str, str]:
+        """The W0.46 broadcast channels: a mail list and a Teams channel."""
+        settings = get_settings()
+        out: Dict[str, str] = {}
+        recipients = _addresses(settings.case_notify_email_to)
+        wanted = _priorities(settings.case_notify_email_to_priorities)
+        if recipients and (row.priority or "").lower() in wanted:
+            body = row.message + (f"\n\nCase: {row.case_id}" if row.case_id else "")
+            results = [
+                self._send_email(
+                    to=address, subject=f"[AutoSecOps] {row.title}", body=body
+                )
+                for address in recipients
+            ]
+            sent = sum(1 for ok, _ in results if ok)
+            out["email_list"] = f"sent {sent}/{len(recipients)}"
+        if settings.case_notify_teams_enabled:
+            facts = {"Priority": row.priority or ""}
+            if case is not None:
+                facts.update(
+                    {
+                        "Case": case.case_id,
+                        "Status": case.status or "",
+                        "Assignee": case.assignee or "",
+                    }
+                )
+            elif row.case_id:
+                facts["Case"] = row.case_id
+            ok, detail = self._post_teams(row.title, row.message, facts)
+            out["teams"] = detail
+        return out
 
     def _email(self, session: Session, row: CaseNotification) -> str:
         user = (

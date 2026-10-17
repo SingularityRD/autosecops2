@@ -245,6 +245,9 @@ if [ ${#pyf[@]} -gt 0 ] || [ "$deleted_py" = 1 ] || any '^(infra/|env\.example$|
   add tests/unit/_ratchets
   # The frozen 0.7.1 init SQL and upgrade-path ratchet lives outside _ratchets (W0.44).
   add tests/unit/test_upgrade_database.py || true
+  # Every new outbound call site must be in the egress inventory (W0.46): a
+  # static scan, cheap, and outside the dirs the change maps to.
+  add tests/airgap/test_egress_inventory.py || true
 fi
 # Non-Python infra (shell, templates, values): the tests that read them live in
 # tests/unit/<area> (infra/staging -> tests/unit/staging, infra/airgap ->

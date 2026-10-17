@@ -108,6 +108,7 @@ config:
   # Outbound notifications and cloud services
   DAEMON_SLACK_ENABLED: "false"
   DAEMON_PAGERDUTY_ENABLED: "false"
+  CASE_NOTIFY_TEAMS_ENABLED: "false"
   JOE_SANDBOX_ENABLED: "false"
   CAPE_SANDBOX_ENABLED: "false"
   HYBRID_ANALYSIS_ENABLED: "false"
