@@ -44,6 +44,12 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **docs (W0.47):** an operations guide (`docs/guide/isletim-rehberi.md`):
+  sizing starting points from the chart's requests and limits (stated as not
+  measured), the port and firewall matrix for Helm and Compose, installing the
+  chart on a connected cluster from the release tag, and the exit procedure
+  (export, uninstall including the resources the chart keeps, secure deletion by
+  key destruction, a destruction record).
 * **notifications (W0.46):** broadcast case events (SLA warnings, stale cases)
   can also go to an email distribution list (`CASE_NOTIFY_EMAIL_TO`, for the
   priorities in `CASE_NOTIFY_EMAIL_TO_PRIORITIES`, default `urgent,high`; works
