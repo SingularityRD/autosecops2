@@ -30,18 +30,21 @@ def session():
     with manager.engine.connect() as conn:
         tx = conn.begin()
         try:
+            names = ["65_regulatory_tr_regimes.sql"]
             if (
                 conn.execute(
                     text("SELECT to_regclass('regulatory_clock_events')")
                 ).scalar()
                 is None
             ):
-                for name in (
+                names[:0] = [
                     "50_regulatory_clocks.sql",
                     "58_broadcast_unique_and_clock_heads.sql",
-                    "65_regulatory_tr_regimes.sql",
-                ):
-                    conn.execute(text((INIT / name).read_text(encoding="utf-8")))
+                ]
+            # 65 always: a table left by an earlier test can predate the KVKK
+            # regime, and the file is rerunnable (all rolled back below).
+            for name in names:
+                conn.execute(text((INIT / name).read_text(encoding="utf-8")))
             with Session(bind=conn, join_transaction_mode="create_savepoint") as s:
                 yield s
         finally:
