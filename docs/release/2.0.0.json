@@ -517,6 +517,11 @@
       "id": "W0.60",
       "topic": "Check Point yürütücüsü (Deneysel): block_ip, ağ geçidinin çektiği Generic Data Center beslemesine ekler; her engellemede policy install yok, internetsiz çalışır",
       "topic_en": "Check Point executor (Experimental): block_ip adds to a Generic Data Center feed the gateway polls; no policy install per block, works air-gapped"
+    },
+    {
+      "id": "W0.61",
+      "topic": "Canlı deneme düzeltmeleri: Bifrost internetsiz açılıyor (yerel fiyat/model katalogları), ilk açılışta şema yarışı yok, MCP sunucusu olmayan yürütücülerde Test çalışıyor",
+      "topic_en": "live trial fixes: Bifrost starts offline (local pricing/model catalogs), no schema race on first boot, Test works for executors with no MCP server"
     }
   ],
   "highlights": [
