@@ -1,6 +1,6 @@
 # Yönetici kılavuzu
 
-> **English summary.** Day-to-day administration of AutoSecOps at `main` @ `b8795def`: the five built-in roles and their permissions, local accounts with
+> **English summary.** Day-to-day administration of AutoSecOps at `main` @ `3c7d30b5`: the five built-in roles and their permissions, local accounts with
 > TOTP MFA, lockout and session revocation, OIDC single sign-on with group →
 > role mapping and break-glass local accounts, FIPS 140-3 mode (checkpoint and
 > evidence-pack signatures stay Ed25519; `ssh_tunnel` unsupported), integrations and where their credentials are stored, the response

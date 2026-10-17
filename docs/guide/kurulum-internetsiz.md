@@ -151,8 +151,9 @@ Aşağıdakilerden herhangi biri olursa `REFUSED: ...` ile durur ve hiçbir
 Paketin içinde bir açık anahtar olsa bile kullanılmaz; yalnızca `--pubkey` ile
 verdiğiniz anahtar geçerlidir.
 
-İmza paketin tamamını kapsar; paketteki konteyner imajları tek tek imzalı değildir
-ve bir SBOM eşlik etmez (Planlı — `wp/w4.7-release`, bu sürümde yok).
+İmza paketin tamamını kapsar. Paketteki imajlar, sürüm etiketinde GHCR'a imzalı
+yayımlanan imajlardır; imaj imzaları ve SBOM'lar internetsiz ortamda da doğrulanabilir:
+[docs/release/dogrulama.md](../release/dogrulama.md).
 
 ## 5. Kurulum (Kubernetes)
 

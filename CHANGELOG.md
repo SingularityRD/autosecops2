@@ -44,6 +44,9 @@ packages that are **not included**: [docs/release/2.0.0.md](docs/release/2.0.0.m
   answers with the PDF itself, built in a temporary file that is removed; each
   download is a chained `case_audit_logs` row (`case_report_export`), and no PDF
   is handed out without it. The case page's ⋯ menu has "Download report (PDF)".
+* **docs (W0.52):** an analyst guide (`docs/guide/analist-kilavuzu.md`). The
+  guide set now describes `main` @ `3c7d30b5`: SBOMs and signed images (W4.7)
+  are described as present, with the verification guide, instead of planned.
 * **observability (W0.51):** `VIGIL_METRICS_ENABLED` serves Prometheus metrics
   on the backend `/metrics` and the daemon's :9090 with no OTEL export and no
   tracing; it is on in the air-gap profile, so an air-gapped install can be

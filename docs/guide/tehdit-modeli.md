@@ -1,7 +1,7 @@
 # Tehdit modeli (STRIDE)
 
 > **English summary.** STRIDE threat model per component of AutoSecOps at
-> `main` @ `b8795def`. For each threat it lists the mitigation that is actually
+> `main` @ `3c7d30b5`. For each threat it lists the mitigation that is actually
 > implemented in this release and points to the open risk when there is one.
 > The open-risk register at the end combines the non-blocking follow-ups the
 > independent verifiers recorded for merged work packages, findings of the
@@ -150,7 +150,7 @@ sağlayıcısı ya da model çıktısını yönlendiren taraf.
 | T | Doğrulamadan sonra paketin değiştirilmesi | Paket özel hazırlık dizinine kopyalanır, kopya doğrulanır ve yalnızca kopyadan kurulur | — |
 | T | Arşivde sembolik bağ / yol geçişi | Listelenmemiş dosya, bağ, FIFO, aygıt reddi; kural/model arşivlerinde üye denetimi | — |
 | I | İmza anahtarının sızması | Anahtar yalnızca imzalama makinesinde; sızma prosedürü belgeli | — |
-| E | Bağımlılık/imaj zinciri | CI'da Trivy imaj taraması (düzeltilebilir CRITICAL'da başarısız), Bandit, Dependabot | SBOM ve imzalı imajlar Planlı — `wp/w4.7-release` (R21) |
+| E | Bağımlılık/imaj zinciri | CI'da Trivy imaj taraması (düzeltilebilir CRITICAL'da başarısız), Bandit, Dependabot | SBOM ve imzalı imajlar sürüm etiketinde (W4.7; R21 kapandı) |
 
 ## 10. Egress kanıtının sınırları
 
@@ -189,7 +189,7 @@ düzenlenmiş sektör kurulumu için.
 | R18 | Compose ve tek sunucuda `master.key` sır deposuyla aynı dizinde ve aynı yedekte. Döndürme komutu var (`python -m core.crypto.rekey rotate-master-key`); KMS/HSM yok | Orta | Kod incelemesi | `VIGIL_DATA_KEY`'i birimin dışından verin; entegrasyon kimlik bilgilerini Secret/ortamdan verin; restic parolasını ayrı saklayın. Kubernetes'te sırlar veritabanında, anahtar ayrı Secret'tadır (bkz. [yönetici kılavuzu](yonetici-kilavuzu.md#bilinen-sınırlar)) |
 | R19 | Kapatıldı (W3.6): `url_safety` global olmayan her adresi, CGNAT 100.64.0.0/10 dahil, reddeder; şirket içi LLM ağ geçidi için `LLM_PROVIDER_ALLOWED_CIDRS`, webhook için `WEBHOOK_ALLOWED_CIDRS`; metadata adresleri her durumda reddedilir | — | W3.6 | — |
 | R20 | Yük ve kaos test araçları var (`tests/perf/`, [docs/operations/load-chaos-runbook.md](../operations/load-chaos-runbook.md)): sürekli ve ani yük, şerit başına gecikme; model 5xx ve zaman aşımı, Postgres ve Redis yeniden başlatma, daemon öldürme, yedekli daemon öldürme, yavaş satıcı. Ancak isteğe bağlıdır ve CI'da koşmaz; yalnızca geliştirme makinesinde küçük bir duman koşusu kayıtlıdır. Bu sürüm için kapasite ölçümü ve SLO kanıtı yoktur; dış pentest yapılmadı | Yüksek | W4.1 (duman koşusu: `docs/wp/w4.1.md`); dış pentest için dal yok (W4.4) | Runbook'la staging'de tam yük ve kaos koşusu yapıp raporu saklayın; kurumun beklediği alarm hızında SLO'ları ölçün |
-| R21 | SBOM ve imzalı imajlar yok | Orta | Planlı — `wp/w4.7-release` | Air-gap paketi SHA-256 + imzalı |
+| R21 | SBOM ve imzalı imajlar yok | Kapandı | W4.7: her sürüm etiketinde CycloneDX SBOM ve anahtarsız cosign imzası | Air-gap paketi SHA-256 + imzalı; doğrulama [docs/release/dogrulama.md](../release/dogrulama.md) |
 | R22 | Kapatıldı (W0.10): Entra ID yürütücüsü yalnızca kimliği olan rol kaydını reddeder | — | W0.10 | — |
 | R23 | Egress tarayıcısında kural boşlukları (ör. asyncio.open_connection, ftplib, grpc tanınmıyor), `scripts/` taranmıyor; CI eylemleri SHA'ya sabitli değil | Düşük | FIXES.md, W3.4 takip | Çalışma zamanı testi ve NetworkPolicy |
 | R24 | Kapatıldı (W0.10): QA `seed` yalnızca test modunda kabul edilir | — | W0.10 | — |

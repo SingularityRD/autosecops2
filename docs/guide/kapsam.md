@@ -1,6 +1,6 @@
 # Sürüm kapsamı: bu sürümde ne var, ne yok
 
-> **English summary.** What `main` @ `b8795def` contains and what it does not.
+> **English summary.** What `main` @ `3c7d30b5` contains and what it does not.
 > Merged: the measurement core, structured JSON triage with code-assigned field
 > provenance and `prompt_version` on the live path, tool-effect gating (models
 > can no longer approve or reject a pending action; an approval is bound to the
@@ -28,13 +28,13 @@
 > W0.16), and no re-triage of already-decided findings after a Redis outage
 > (W0.15). Models cannot approve their own actions: `/mcp` and every other
 > model surface have no approve/reject tool; people decide on the AI
-> Decisions → Pending Approvals tab. Not merged: the injection-set gate, SBOM / signed images and an
-> external pentest. Those are marked **Planlı** everywhere in this guide.
+> Decisions → Pending Approvals tab. Not merged: the injection-set gate and an external pentest. SBOMs and
+> signed images are produced by the release workflow for every release tag (W4.7). Those are marked **Planlı** everywhere in this guide.
 
 Bu sayfa, belge setinin geri kalanının dayandığı tek kapsam listesidir. Bir özellik
 burada "var" değilse, belgelerin hiçbirinde "var" diye anlatılmaz.
 
-## Bu sürümde olanlar (main @ b8795def)
+## Bu sürümde olanlar (main @ 3c7d30b5)
 
 | İş paketi | Özellik | Varsayılan | Nerede |
 |---|---|---|---|
@@ -137,7 +137,7 @@ belge testi bu listedeki bir dalı "Planlı" diye anan satırı reddeder.
 |---|---|---|
 | W1.4 | Injection test setinin kapı olarak kullanılması (≤ %5) | Planlı — `wp/w1.4-injection-set`, bu sürümde yok |
 | W4.4 | Dış pentest | Planlı — dal yok, bu sürümde yok |
-| W4.7 | SBOM, imzalı imajlar, sürüm notları | Planlı — `wp/w4.7-release`, bu sürümde yok |
+| W4.7 | SBOM, imzalı imajlar, sürüm notları | Var: her sürüm etiketinde üretilir; doğrulama [docs/release/dogrulama.md](../release/dogrulama.md) |
 
 Canlı triage'ın etkin dersleri karar ipucu olarak kullanması ayrı bir iş
 paketidir; dalı yoktur (Planlı — dal yok, bu sürümde yok).

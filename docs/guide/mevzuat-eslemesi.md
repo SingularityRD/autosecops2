@@ -2,7 +2,7 @@
 
 > **Bu belge hukuki görüş değildir.** Aşağıdaki tablolar, düzenlemelerin
 > AutoSecOps'u kullanan kurumdan beklediği bazı kontrolleri ürünün bu sürümdeki
-> (`main` @ `b8795def`) özelliklerine ve bu özelliklerin üretebildiği kanıta
+> (`main` @ `3c7d30b5`) özelliklerine ve bu özelliklerin üretebildiği kanıta
 > eşler. Yükümlülük kurumundur; bir aracın varlığı uyumu kendi başına sağlamaz.
 > Eşleme, kurumun uyum ve hukuk ekibiyle doğrulanmalıdır. Madde numarası
 > verilmeyen satırlarda ilgili hükmün eşlenmesi kurumun uyum ekibine bırakılmıştır.
@@ -103,7 +103,7 @@ Tablolarda kısaltılarak anılan kanıtlar:
 | Md. 23 — 1 ay nihai rapor | Bildirim + 1 ay sayacı; rapor taslağı | K10 | Karşılanıyor |
 | Md. 21 — olay ele alma | Vaka yönetimi, onaylı müdahale | K7, K9 | Karşılanıyor |
 | Md. 21 — iş sürekliliği, yedek yönetimi | Şifreli yedek ve test geri yükleme; Helm yedek CronJob'u; daemon sıcak yedeği | K11, K15 | Kısmi — CronJob varsayılan kapalı, döküm şifresiz (R17) |
-| Md. 21 — tedarik zinciri güvenliği | İmzalı kurulum paketi; CI'da imaj taraması | K3 | Kısmi — SBOM ve imzalı imajlar Planlı — `wp/w4.7-release`, bu sürümde yok |
+| Md. 21 — tedarik zinciri güvenliği | İmzalı kurulum paketi; CI'da imaj taraması; SBOM ve imzalı imajlar | K3 | Kısmi — SBOM ve imzalı imajlar sürüm etiketinde üretilir (W4.7); dış pentest yok |
 | Md. 21 — kriptografi politikaları | Kriptografi envanteri (güvenlik teknik belgesi §8); FIPS 140-3 modu | K21 | Kısmi — FIPS modu FIPS etkin ayrı imaj ister; FIPS modunda kontrol noktası ve kanıt paketi imzaları Ed25519 kalır, `ssh_tunnel` desteklenmez |
 | Md. 21 — erişim denetimi, çok faktörlü kimlik doğrulama | Rol matrisi, TOTP MFA, OIDC SSO | K4, K5, K20 | Kısmi — MFA AutoSecOps'ta zorunlu kılınamaz (SSO ile IdP'de zorunlu kılınabilir) |
 
@@ -126,7 +126,7 @@ Tablolarda kısaltılarak anılan kanıtlar:
 | A.5.15 Erişim denetimi / A.5.18 Erişim hakları | Rol matrisi, rota başına izin, rol atama kısıtı | K4, K5 | Karşılanıyor |
 | A.5.16 Kimlik yönetimi | Yerel hesap yaşam döngüsü, hizmet hesabı Viewer'a kilitli; OIDC SSO ile ilk girişte hesap oluşturma ve grup → rol eşlemesi | K5, K20 | Kısmi — SCIM yok: IdP'de kapatılan hesabın açık oturumu için AutoSecOps'ta da devre dışı bırakma gerekir |
 | A.5.17 Kimlik doğrulama bilgisi / A.8.5 Güvenli kimlik doğrulama | Parola politikası, bcrypt ya da PBKDF2-HMAC-SHA256, TOTP, kilitleme, OIDC SSO | K5, K20 | Kısmi (MFA AutoSecOps'ta zorunlu değil) |
-| A.5.21 BİT tedarik zinciri | İmzalı paket, Trivy, Dependabot | K3 | Kısmi — SBOM Planlı — `wp/w4.7-release`, bu sürümde yok |
+| A.5.21 BİT tedarik zinciri | İmzalı paket, Trivy, Dependabot, CycloneDX SBOM | K3 | Karşılanıyor — SBOM ve imzalar sürüm etiketinde üretilir (W4.7) |
 | A.5.24–A.5.26 Olay yönetimi planlama, değerlendirme, müdahale | Triage, vaka, onaylı müdahale, eylem zaman çizelgesi | K7, K9 | Karşılanıyor |
 | A.5.28 Kanıt toplama | Gözetim zinciri dışa aktarımı, defter ve denetim zinciri, vaka başına imzalı kanıt paketi | K8, K13, K18 | Karşılanıyor (imza anahtarı kurumun) |
 | A.5.33 Kayıtların korunması | Defter ve `audit_chain` salt ekleme + hash zinciri; imzalı kontrol noktaları; `python -m core.audit.verify` | K8 | Kısmi — ayar kayıtları ve onay kararları zincirsiz (R6) |
