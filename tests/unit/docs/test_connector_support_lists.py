@@ -39,6 +39,8 @@ DOC_NAMES = {
         "palo-alto": "Palo Alto",
         # W0.41
         "qradar": "IBM QRadar",
+        # W0.57
+        "fortigate": "FortiGate",
     },
     "wip": {
         "carbon-black": "Carbon Black",

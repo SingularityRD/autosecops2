@@ -404,6 +404,17 @@
       "note": "Outbound webhook delivery; only to endpoints an admin registers via /api/webhook-endpoints, SSRF-checked by url_safety. Air-gap: register only in-network receivers or none."
     },
     {
+      "site": "core/integrations/fortinet/client.py",
+      "category": "gated",
+      "kinds": {
+        "httpx": 1
+      },
+      "gates": [
+        "integration:fortigate"
+      ],
+      "note": "FortiGate block_ip executor and its Test call (W0.57); runs only when the 'fortigate' integration is enabled with credentials. The air-gap profile enables none. Only the operator-configured firewall host."
+    },
+    {
       "site": "core/integrations/palo_alto/client.py",
       "category": "gated",
       "kinds": {

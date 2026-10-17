@@ -212,7 +212,7 @@ eksikleri sayar:
 |---|---|---|
 | Uyarı kaynağı (`data`) | zorunlu | uyarı kategorisinde (SIEM, EDR, ağ ve bulut güvenliği…) etkin bir entegrasyon, etkin bir Federation kaynağı, alınmış uyarılar ya da demo verisi |
 | Yapay zekâ modeli (`model`) | zorunlu | etkin varsayılan bir sağlayıcı ya da model ağ geçidinde (Bifrost) yönlendirilebilir bir anahtar |
-| Müdahale eylemleri (`executor`) | önerilen | eylem yürütebilen etkin bir entegrasyon (Cloudflare, Microsoft Defender, Entra ID, Palo Alto) |
+| Müdahale eylemleri (`executor`) | önerilen | eylem yürütebilen etkin bir entegrasyon (Cloudflare, Microsoft Defender, Entra ID, Palo Alto, FortiGate) |
 | Bildirim (`notify`) | önerilen | Slack ya da PagerDuty yolu |
 
 Zorunlu bir öğe eksikken özet "AutoSecOps is not ready yet" der ve eksikleri
@@ -449,7 +449,8 @@ hazırlığı, göç ve ayrıntı: [docs/fips.md](../fips.md).
   Elastic için gerçekten oturum açıp sunucu bilgisini okur. Müdahale yürütücüleri
   için de kaydedilen kimlik bilgisiyle tek bir salt-okuma çağrısı yapar: Defender
   bir makine listeler (MDE `machines`, `$top=1`), Entra ID bir kullanıcı okur
-  (Graph `users`, `$top=1`), PAN-OS `show system info` çalıştırır. Hiçbiri bir şey
+  (Graph `users`, `$top=1`), PAN-OS `show system info` çalıştırır, FortiGate
+  `monitor/system/status` okur. Hiçbiri bir şey
   değiştirmez; çağrı yeniden denenmez, ağ yoksa birkaç saniyede bağlantı hatasının
   adıyla başarısız olur. Diğer entegrasyonlarda yalnızca MCP sunucusunun yanıt
   verdiğini gösterir.
@@ -461,10 +462,11 @@ hazırlığı, göç ve ayrıntı: [docs/fips.md](../fips.md).
 - Air-gap'te bir entegrasyonu açtığınızda hedefinin küme içinde ya da
   `networkPolicies.egress.extraCIDRs` listesinde olması gerekir.
 - **Müdahale yürütücüleri** (Microsoft Defender for Endpoint, Entra ID, Palo Alto
-  PAN-OS) **Ayarlar → Integrations → Add integration**'dan bağlanır: form kiracı,
-  istemci kimliği ve istemci sırrını (Palo Alto için ana makine adı ve API
-  anahtarını) ister; sır, diğer kimlik bilgileri gibi şifreli sır deposuna gider ve
-  API hiçbir yanıtta geri vermez. Üçü de **Deneysel**'dir (bkz.
+  PAN-OS, Fortinet FortiGate) **Ayarlar → Integrations → Add integration**'dan
+  bağlanır: form kiracı, istemci kimliği ve istemci sırrını (Palo Alto için ana
+  makine adı ve API anahtarını, FortiGate için ana makine adı, REST API belirteci ve
+  VDOM'u) ister; sır, diğer kimlik bilgileri gibi şifreli sır deposuna gider ve
+  API hiçbir yanıtta geri vermez. Hepsi **Deneysel**'dir (bkz.
   [Bağlayıcı destek durumu](#bağlayıcı-destek-durumu)).
 - Yürütücüler yapılandırmayı izler; yeniden başlatma gerekmez. Bir yürütücüyü açmak,
   kapatmak ya da kimlik bilgisini değiştirmek, kaydedildiği API sürecinde hemen,
@@ -504,7 +506,7 @@ Katalogdaki her MCP sunucusunun tek bir destek durumu vardır
 | Durum | Bağlayıcılar | Konsolda |
 |---|---|---|
 | Destekli | Listede adı geçmeyen her bağlayıcı (ör. Splunk (Self-Hosted), Elastic, Okta, VirusTotal) | Etiketsiz |
-| Deneysel (**Experimental**) | CrowdStrike Falcon, SentinelOne, Microsoft Sentinel, resmî Splunk MCP sunucusu, Google SecOps, Google Threat Intelligence, Joe Sandbox, vStrike, Atomic Red Team, CAPE Sandbox, Microsoft Defender for Endpoint, Entra ID (Azure AD), Palo Alto PAN-OS, IBM QRadar | Bir bağlayıcıyı açan her ekranda etiket: Add integration kartı, Connected tablosu, Ayarlar kurulum çekmecesi, ilk kurulumdaki veri kaynağı seçimi ve formu (formda gerekçe metniyle) |
+| Deneysel (**Experimental**) | CrowdStrike Falcon, SentinelOne, Microsoft Sentinel, resmî Splunk MCP sunucusu, Google SecOps, Google Threat Intelligence, Joe Sandbox, vStrike, Atomic Red Team, CAPE Sandbox, Microsoft Defender for Endpoint, Entra ID (Azure AD), Palo Alto PAN-OS, Fortinet FortiGate, IBM QRadar | Bir bağlayıcıyı açan her ekranda etiket: Add integration kartı, Connected tablosu, Ayarlar kurulum çekmecesi, ilk kurulumdaki veri kaynağı seçimi ve formu (formda gerekçe metniyle) |
 | Sunulmuyor (WIP) | Carbon Black, Hybrid Analysis, ANY.RUN, AlienVault OTX, Slack, MISP, IP Geolocation, URL Analysis, Microsoft Teams | Add integration'da yok; önceden açılmışsa Connected tablosunda WIP etiketiyle |
 
 "Destekli", canlı bir ürün örneğine karşı test edilebilen bağlayıcı demektir:
@@ -512,7 +514,7 @@ bunlar AutoSecOps'un temel aldığı açık kaynak projenin haftalık canlı tes
 çalışır. Bu canlı test takımı AutoSecOps deposunda henüz yoktur (ertelendi:
 satıcı hesapları ve CI'dan dış erişim gerektirir). Deneysel bağlayıcılar ise canlı
 bir ürün örneğine karşı hiç çalıştırılmadı; çalışmayabilir. Üç müdahale yürütücüsü
-(Defender, Entra ID, PAN-OS) kayıtlı satıcı yanıtlarıyla birim testlerinden geçer,
+(Defender, Entra ID, PAN-OS, FortiGate) kayıtlı satıcı yanıtlarıyla birim testlerinden geçer,
 ama canlı bir kiracıya ya da güvenlik duvarına karşı hiç çalıştırılmadı. Etiket kapatılamaz ve kurulum tarafından
 "destekli" olarak işaretlenemez; bir bağlayıcı yalnızca canlı bir testi
 olduğunda bu durumdan çıkar. Birini kullanırsanız sonucu bir destek paketiyle
@@ -626,7 +628,8 @@ adı (ör. acme.okta.com, `https://` olmadan) ve API belirteci girilir.
    düşürdüyse) satır onay kuyruğuna döner. Politika reddi satırı `failed` yapar
    (`policy_refused: ...`). Kayıtlı yürütücüler: Cloudflare (`waf_block`,
    `gateway_block`, `access_revoke`) her zaman; Defender (`isolate_host`), Entra ID
-   (`disable_user`, `revoke_sessions`) ve PAN-OS (`block_ip`) entegrasyon etkinse.
+   (`disable_user`, `revoke_sessions`), PAN-OS ya da FortiGate (`block_ip`; ikisi
+   birden etkinse PAN-OS) entegrasyon etkinse.
    `isolate_host` için yürütücü yoksa satır "No EDR executor is configured" ile
    `failed` kaydedilir; hiçbir eylem başarılı gibi gösterilmez.
 5. **Doğrulama ve süre dolumu.** Yürütücü eylemden sonra sonucu doğrular. Geri
@@ -704,8 +707,9 @@ hedefi her durumda reddedilir. Satır okunamazsa politika "degraded" olur ve
 **her eylem reddedilir**. Yürütücülerin kendi güvenlik kuralları (korunan roller,
 yönetim IP'si, TTL üst sınırı, tek makineye çözümleme)
 [Defender](../../core/integrations/microsoft_defender/EXECUTOR.md),
-[Entra ID](../../core/integrations/azure_ad/EXECUTOR.md) ve
-[Palo Alto](../../core/integrations/palo_alto/EXECUTOR.md) belgelerinde yazılıdır.
+[Entra ID](../../core/integrations/azure_ad/EXECUTOR.md),
+[Palo Alto](../../core/integrations/palo_alto/EXECUTOR.md) ve
+[FortiGate](../../core/integrations/fortinet/EXECUTOR.md) belgelerinde yazılıdır.
 
 ### Araçların etki sınıfları
 

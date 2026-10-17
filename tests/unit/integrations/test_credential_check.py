@@ -112,7 +112,7 @@ def offline(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "integration_id", ["microsoft-defender", "azure-ad", "palo-alto"]
+    "integration_id", ["microsoft-defender", "azure-ad", "palo-alto", "fortigate"]
 )
 async def test_every_executor_has_a_check(integration_id):
     assert integration_id in credential_check._CHECKS
@@ -244,6 +244,37 @@ async def test_palo_alto_runs_one_operational_read(monkeypatch, nothing_stored):
     ]
 
 
+async def test_fortigate_runs_one_status_read(monkeypatch, nothing_stored):
+    _resolved(
+        monkeypatch,
+        hostname="fgt.example.test",
+        api_token="fgt-token-1",
+        vdom=None,
+        verify_ssl=True,
+        ca_cert_path=None,
+    )
+    calls = []
+
+    def call(self, method, path, body=None, **kwargs):
+        calls.append((method, path, self.vdom))
+        return {"status": "success", "serial": "FGT60F", "version": "v7.4.3"}
+
+    monkeypatch.setattr("core.integrations.fortinet.client.FortiConnection.call", call)
+
+    ok, message = await credential_check.check_credentials("fortigate")
+
+    assert (ok, message) == (True, "API token accepted (FGT60F v7.4.3)")
+    assert calls == [("GET", "monitor/system/status", "root")]
+
+
+async def test_fortigate_without_a_token_says_what_is_missing(
+    monkeypatch, nothing_stored
+):
+    _resolved(monkeypatch, hostname="fgt.example.test", api_token=None)
+    ok, message = await credential_check.check_credentials("fortigate")
+    assert ok is False and "api_token" in message
+
+
 # --- W0.44: the target may be private, never cloud metadata; messages scrubbed --
 
 
@@ -267,6 +298,7 @@ async def test_a_metadata_or_link_local_target_is_refused_before_any_call(
         username="u",
         password="p",
         api_key="k",
+        api_token="t",
     )
 
     def boom(*a, **k):
@@ -275,7 +307,7 @@ async def test_a_metadata_or_link_local_target_is_refused_before_any_call(
     monkeypatch.setattr(
         "core.integrations.splunk.client.SplunkService.test_connection", boom
     )
-    for integration in ("splunk", "palo-alto"):
+    for integration in ("splunk", "palo-alto", "fortigate"):
         ok, message = await credential_check.check_credentials(integration)
         assert ok is False
         assert message.startswith("Refused:"), message

@@ -42,7 +42,8 @@ anlatır. Henüz birleşmemiş bir iş paketinin getireceği özellik, satırın
 - [docs/medic/enable.md](../medic/enable.md) — Medic (kurulum sağlığı izleyicisi)
 - Yürütücüler: [Defender](../../core/integrations/microsoft_defender/EXECUTOR.md),
   [Entra ID](../../core/integrations/azure_ad/EXECUTOR.md),
-  [Palo Alto](../../core/integrations/palo_alto/EXECUTOR.md)
+  [Palo Alto](../../core/integrations/palo_alto/EXECUTOR.md),
+  [FortiGate](../../core/integrations/fortinet/EXECUTOR.md)
 - [INTENT.md](../../INTENT.md) — daemon'un beyan edilen otonomi değerleri
 - [SECURITY.md](../../SECURITY.md) — güvenlik açığı bildirimi
 
