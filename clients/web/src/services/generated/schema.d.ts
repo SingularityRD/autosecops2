@@ -5504,6 +5504,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/qa/poc-report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Poc Report
+         * @description What this install measured over the window, for a POC (W0.49).
+         *
+         *     Counts only; a section whose tables are missing says so. ``markdown``
+         *     downloads as a file.
+         */
+        get: operations["get_api_qa_poc-report"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/qa/samples": {
         parameters: {
             query?: never;
@@ -24067,6 +24090,40 @@ export interface operations {
             path: {
                 finding_id: string;
             };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_qa_poc-report": {
+        parameters: {
+            query?: {
+                days?: number;
+                format?: "json" | "markdown";
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;

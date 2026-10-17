@@ -275,3 +275,31 @@ def get_scorecard(
     """Per category: reviews, misses and the FN upper bound against the target."""
     data = sampling.scorecard(session, target=target, confidence=confidence)
     return QAScorecardResponse(**data)
+
+
+@router.get("/poc-report")
+def get_poc_report(
+    session: UnitOfWorkSession,
+    days: int = Query(30, ge=1, le=365),
+    format: Literal["json", "markdown"] = Query("json"),
+    _user: User = Depends(require_permission("settings.read")),
+):
+    """What this install measured over the window, for a POC (W0.49).
+
+    Counts only; a section whose tables are missing says so. ``markdown``
+    downloads as a file.
+    """
+    from fastapi.responses import JSONResponse, PlainTextResponse
+
+    from core.quality import poc_report
+
+    report = poc_report.build(session, days=days)
+    if format == "markdown":
+        return PlainTextResponse(
+            poc_report.to_markdown(report),
+            media_type="text/markdown; charset=utf-8",
+            headers={
+                "Content-Disposition": 'attachment; filename="autosecops-poc-report.md"'
+            },
+        )
+    return JSONResponse(report)

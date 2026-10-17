@@ -185,6 +185,10 @@ export const approvalsApi = {
 
 /** QA sampling of verdicts handled without a person, and the Scorecard (/api/qa). */
 export const qaApi = {
+  /** W0.49: what this install measured over the window, as a Markdown file. */
+  pocReport: (days: number) =>
+    api.get<Blob>('/qa/poc-report', { params: { days, format: 'markdown' }, responseType: 'blob' }),
+
   scorecard: (params?: { target?: number; confidence?: number }) =>
     api.get<Schema<'QAScorecardResponse'>>('/qa/scorecard', { params }),
 

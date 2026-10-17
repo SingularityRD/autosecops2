@@ -21,6 +21,9 @@ INJECTION_SUITE = "injection"
 SUITES = CORPUS_SPLITS + (INJECTION_SUITE,)
 # What CI replays: the held-out splits and the injection suite.
 DEFAULT_SUITES = ("test", "test_unseen", INJECTION_SUITE)
+# W0.49: a customer's own labelled alerts (``--cases FILE``), not in the manifest.
+CUSTOMER_SUITE = "customer"
+VERDICT_LABELS = ("malicious", "benign", "inconclusive")
 
 
 @dataclass(frozen=True)
@@ -56,6 +59,8 @@ def suite_path(suite: str, corpus_dir: Path = CORPUS_DIR) -> Path:
 
 def suite_db_name(suite: str) -> str:
     """The ``eval_runs.suite`` value for a suite."""
+    if suite == CUSTOMER_SUITE:
+        return CUSTOMER_SUITE
     return "injection-v1" if suite == INJECTION_SUITE else f"corpus-v1/{suite}"
 
 
@@ -88,6 +93,25 @@ def _parse_rows(path: Path, suite: str) -> List[Case]:
                 )
             )
     return cases
+
+
+def load_cases_file(path: Path, *, limit: Optional[int] = None) -> List[Case]:
+    """A customer's labelled alerts (W0.49): the corpus row shape, with at least
+    ``labels.verdict``. No manifest; the report records the file's sha256."""
+    path = Path(path)
+    if not path.is_file():
+        raise CorpusError(f"{path}: no such file")
+    cases = _parse_rows(path, CUSTOMER_SUITE)
+    for case in cases:
+        verdict = case.labels.get("verdict") if isinstance(case.labels, dict) else None
+        if verdict not in VERDICT_LABELS:
+            raise CorpusError(
+                f"{path}: case {case.case_id} label verdict must be one of "
+                f"{', '.join(VERDICT_LABELS)}"
+            )
+    if not cases:
+        raise CorpusError(f"{path}: no cases")
+    return cases[:limit] if limit is not None else cases
 
 
 def sha256_file(path: Path) -> str:

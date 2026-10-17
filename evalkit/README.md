@@ -44,6 +44,17 @@ Sık bayraklar: `--suite test,test_unseen,injection` (varsayılan; `train`,
 `--provenance off|enforce`, `--max-errors N`, `--no-verify` (manifest
 denetimini atla), `--db` / `--tenant`.
 
+## Müşteri verisi (W0.49)
+
+`--cases <dosya.jsonl>` müşterinin kendi etiketli alarmlarını `customer` paketi
+olarak puanlar (manifest yok; rapor dosya adını ve sha256'sını yazar). Tek başına
+verildiğinde yalnız bu dosya koşar; `--suite` ile birlikte korpus paketleri de.
+Satır biçimi korpusla aynıdır, `labels.verdict` zorunludur.
+
+`python -m evalkit export-reviewed --out <dosya.jsonl>` QA örneklemesinde analistlerin
+incelediği bulguları (kanaryalar hariç, analistin kararıyla etiketli) bu biçimde yazar.
+Bkz. [POC kılavuzu](../docs/guide/poc-kilavuzu.md).
+
 ## Arka uçlar
 
 ### `stub` — deterministik taban çizgisi

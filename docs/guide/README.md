@@ -22,6 +22,7 @@ anlatır. Henüz birleşmemiş bir iş paketinin getireceği özellik, satırın
 | [Güvenlik teknik belgesi](guvenlik-teknik-belgesi.md) | güvenlik mimarı, denetçi | Mimari, güven sınırları, köken/karar sözleşmesi, onaylar, denetim zinciri, egress denetimi, sırlar, kriptografi |
 | [Tehdit modeli](tehdit-modeli.md) | güvenlik ekibi, pentest | Bileşen başına STRIDE, uygulanmış önlemler, açık riskler |
 | [Mevzuat eşlemesi](mevzuat-eslemesi.md) | uyum ekibi | BDDK, KVKK, DORA, NIS2, SPK, ISO/IEC 27001 kontrolleri → ürün özelliği → kanıt (hukuki görüş değildir) |
+| [POC kılavuzu](poc-kilavuzu.md) | satış mühendisi, müşteri SOC'si | Müşterinin kendi alarmlarıyla ölçüm: QA incelemelerinden etiketli küme, `evalkit` ile çevrimdışı ölçüm, POC raporu |
 | [İşletim rehberi](isletim-rehberi.md) | kurulum ve işletim ekibi | Boyutlandırma başlangıç değerleri, port ve güvenlik duvarı matrisi, bağlantılı Helm kurulumu, çıkış prosedürü (dışa aktarım, kaldırma, güvenli silme, imha tutanağı) |
 
 İlgili, kodla birlikte yaşayan teknik belgeler (bu setin kaynakları):
