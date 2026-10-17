@@ -502,6 +502,16 @@
       "id": "W0.57",
       "topic": "Fortinet FortiGate yürütücüsü (Deneysel): block_ip bir adres grubuna üye ekler, unblock_ip ve süre dolumu geri alır",
       "topic_en": "Fortinet FortiGate executor (Experimental): block_ip adds a member to an address group, unblock_ip and the TTL sweep undo it"
+    },
+    {
+      "id": "W0.58",
+      "topic": "Acil vaka olayları nöbetçi numaralara SMS ile (HTTPS SMS ağ geçidi; internetsiz kurulumda ağ içi aktarıcı)",
+      "topic_en": "urgent case events by SMS to on-call numbers (HTTPS SMS gateway; an in-network relay when air-gapped)"
+    },
+    {
+      "id": "W0.59",
+      "topic": "İlgili kişi başvurusunda silme: bulgu, vaka ve yorumlarda kimlik bilgisi [erased] ile değiştirilir, yasal saklama korunur",
+      "topic_en": "erasure for a data-subject request: the identifier is replaced with [erased] in findings, cases and comments; legal holds respected"
     }
   ],
   "highlights": [

@@ -114,9 +114,9 @@ Release sayfası "Latest" görünüyordu; pre-release işaretlenmeli (insan).
 | K4 KVKK/BDDK/USOM saatleri | W0.42 | Kapandı (BDDK/USOM süreleri kurum içi hedef) |
 | Batch-1 doğrulayıcı takipleri | W0.44 | Kapandı |
 | T3 AI kararı UI'da | W0.45 | Kapandı (triyaj kuyruğu, bulgu penceresi) |
-| P5 bildirim | W0.46 | Kısmi: e-posta listesi ve Teams; SMS yok |
+| P5 bildirim | W0.46, W0.58 | Kapandı: e-posta listesi, Teams, SMS |
 | O1, G14, O3, O7 | W0.47 | Belgelendi (boyutlandırma ölçülmedi; grafik bir Helm deposunda yayımlanmıyor) |
-| K2 ilgili kişi hakları | W0.48 | Kısmi: kayıt, arama, dışa aktarım; silme saklama araçlarıyla |
+| K2 ilgili kişi hakları | W0.48, W0.59 | Kapandı: kayıt, arama, dışa aktarım, silme |
 | T5 müşteri verisiyle eval + POC raporu | W0.49 | Kapandı |
 | G18 demo tezi | W0.50 | Kapandı (air-gap'te çalışır) |
 | G13 air-gap metrikleri, alarmlar, pano | W0.51 | Kapandı |
@@ -125,7 +125,8 @@ Release sayfası "Latest" görünüyordu; pre-release işaretlenmeli (insan).
 | O2 OpenShift | W0.54 | Önizleme (gerçek kümede doğrulanmadı) |
 | O4 LLM yığını Helm'de | W0.55 | Kapandı (gerçek kümede doğrulanmadı) |
 | P4 FortiGate yürütücüsü | W0.57 | Kapandı (Deneysel; Check Point müşteri talebiyle) |
-| P5 SMS, K2 silme aracı | — | Açık (müşteri talebiyle) |
+| P5 SMS | W0.58 | Kapandı (HTTPS ağ geçidi ya da ağ içi aktarıcı) |
+| K2 silme | W0.59 | Kapandı (hesaplar kullanıcı yönetiminden; zincirli ve denetim kayıtları yasal yükümlülükle saklanır, saklama araçlarıyla çıkar) |
 | T2, T4, P1, H1–H6, K3, K5, K6 | — | Sahip kararı / hukuk / ölçüm bekliyor |
 
 ## 5. Önerilen sıra
