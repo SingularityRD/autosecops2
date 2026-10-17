@@ -88,10 +88,12 @@ durduruldu; W0.40 sonrası paketler bağımsız doğrulayıcı yerine gates
 
 Mühendislik listesinde açık boşluk yok. Canlı denendi (W0.61, konteynerde gerçek
 imajlar): backend + PostgreSQL + Redis + Bifrost, OpenShift UID koşulu, ilk
-yönetici, Check Point beslemesi, ilgili kişi silmesi. Hâlâ gerçek bir kümede ya
-da cihazda denenmesi gerekenler: Helm kurulumu ve OpenShift SCC (bu ortamda
-Kubernetes pod açamıyor), Deneysel yürütücülerin satıcı tarafı (Defender, Entra
-ID, PAN-OS, FortiGate, Check Point ağ geçidi) ve QRadar. Sahip
+yönetici, Check Point beslemesi, ilgili kişi silmesi. Sahip kararı (17 Ekim):
+küme ve satıcı doğrulaması staging'e ve ilk POC'ye bırakıldı: Helm kurulumu ve
+OpenShift SCC (bu ortamda Kubernetes pod açamıyor, `docs/wp/w0.61.md`),
+Deneysel yürütücülerin satıcı tarafı (Defender, Entra ID, PAN-OS, FortiGate,
+Check Point ağ geçidi) ve QRadar. `v2.0.0-rc.*` etiketi ve sahip kararları 1–7
+sahipte; main CI ef8f0bd1'de tüm iş akışlarında yeşil. Sahip
 kararları ve hukuk maddeleri §3'te.
 
 ## 4. Birleşmiş ama takip gerektiren (engelleyici değil)
