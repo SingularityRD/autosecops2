@@ -977,8 +977,12 @@ Bifrost, Ollama, Llama, rule corpora) are listed in NOTICE.
   yocto-queue  1.2.2  runtime  MIT
 
 == infra/docker/mcp-packages/package-lock.json ==
+  @apidevtools/json-schema-ref-parser  16.0.5  runtime  MIT
+  @apidevtools/openapi-schemas  2.1.0  runtime  MIT
+  @apidevtools/swagger-methods  3.0.2  runtime  MIT
+  @apidevtools/swagger-parser  13.1.0  runtime  MIT
   @borewit/text-codec  0.2.2  runtime  MIT
-  @burtthecoder/mcp-shodan  1.0.22  runtime  MIT
+  @burtthecoder/mcp-shodan  1.0.34  runtime  MIT
   @burtthecoder/mcp-virustotal  1.0.25  runtime  MIT
   @hono/node-server  2.1.1  runtime  MIT
   @iarna/toml  2.2.5  runtime  ISC
@@ -995,6 +999,7 @@ Bifrost, Ollama, Llama, rule corpora) are listed in NOTICE.
   @standard-schema/spec  1.1.0  runtime  MIT
   @tokenizer/inflate  0.4.1  runtime  MIT
   @tokenizer/token  0.3.0  runtime  MIT
+  @types/json-schema  7.0.15  runtime  MIT
   @types/node  22.20.4  runtime  MIT
   @types/node-fetch  2.6.13  runtime  MIT
   accepts  1.3.8  runtime  MIT
@@ -1003,10 +1008,12 @@ Bifrost, Ollama, Llama, rule corpora) are listed in NOTICE.
   acorn-walk  8.3.5  runtime  MIT
   agent-base  6.0.2  runtime  MIT
   ajv  8.20.0  runtime  MIT
+  ajv-draft-04  1.0.0  runtime  MIT
   ajv-formats  3.0.1  runtime  MIT
   ansi-regex  6.3.0  runtime  MIT
   ansi-styles  6.2.3  runtime  MIT
   arg  4.1.3  runtime  MIT
+  argparse  2.0.1  runtime  Python-2.0
   array-flatten  1.1.1  runtime  MIT
   asynckit  0.4.0  runtime  MIT
   axios  1.20.0  runtime  MIT
@@ -1021,6 +1028,7 @@ Bifrost, Ollama, Llama, rule corpora) are listed in NOTICE.
   bytes  3.1.2  runtime  MIT
   call-bind-apply-helpers  1.0.2  runtime  MIT
   call-bound  1.0.4  runtime  MIT
+  call-me-maybe  1.0.2  runtime  MIT
   chownr  1.1.4  runtime  ISC
   cliui  9.0.1  runtime  ISC
   combined-stream  1.0.8  runtime  MIT
@@ -1054,6 +1062,7 @@ Bifrost, Ollama, Llama, rule corpora) are listed in NOTICE.
   diff  4.0.4  runtime  BSD-3-Clause
   dotenv  16.6.1  runtime  BSD-2-Clause
   dotenv  17.4.2  runtime  BSD-2-Clause
+  dotenv  18.0.8  runtime  BSD-2-Clause
   dunder-proto  1.0.1  runtime  MIT
   ee-first  1.1.1  runtime  MIT
   emoji-regex  10.6.0  runtime  MIT
@@ -1076,7 +1085,7 @@ Bifrost, Ollama, Llama, rule corpora) are listed in NOTICE.
   fast-deep-equal  3.1.3  runtime  MIT
   fast-uri  3.1.8  runtime  BSD-3-Clause
   fastmcp  3.25.4  runtime  MIT
-  fastmcp  3.35.0  runtime  MIT
+  fastmcp  4.22.10  runtime  MIT
   fastmcp  4.3.2  runtime  MIT
   fetch-blob  3.2.0  runtime  MIT
   figures  6.1.0  runtime  MIT
@@ -1128,6 +1137,7 @@ Bifrost, Ollama, Llama, rule corpora) are listed in NOTICE.
   is-wsl  3.1.1  runtime  MIT
   isexe  2.0.0  runtime  ISC
   jose  6.2.12  runtime  MIT
+  js-yaml  5.4.3  runtime  MIT
   json-schema-traverse  1.0.0  runtime  MIT
   json-schema-typed  8.0.2  runtime  BSD-2-Clause
   keygrip  1.1.0  runtime  MIT
@@ -1256,6 +1266,7 @@ Bifrost, Ollama, Llama, rule corpora) are listed in NOTICE.
   yoctocolors  2.2.0  runtime  MIT
   zod  3.25.76  runtime  MIT
   zod  4.6.5  runtime  MIT
+  zod  4.6.7  runtime  MIT
   zod-to-json-schema  3.25.2  runtime  ISC
 
 == clients/desktop/package-lock.json ==
@@ -1486,11 +1497,11 @@ Bifrost, Ollama, Llama, rule corpora) are listed in NOTICE.
   yocto-queue  0.1.0  dev  MIT
 
 == runtime licence summary ==
-    510  MIT
+    519  MIT
      65  Apache-2.0
      30  ISC
      27  BSD-3-Clause
-      7  BSD-2-Clause
+      8  BSD-2-Clause
       5  BSD
       3  BSD License
       3  MIT License
@@ -1517,5 +1528,6 @@ Bifrost, Ollama, Llama, rule corpora) are listed in NOTICE.
       1  MIT OR AFL-2.1
       1  MIT-CMU
       1  MPL-2.0
+      1  Python-2.0
       1  Unlicense
       1  http://geraintluff.github.io/tv4/LICENSE.txt
