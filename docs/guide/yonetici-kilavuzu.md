@@ -524,7 +524,7 @@ karşı hiç çalıştırılmadı.
 **Syslog, CEF ve LEEF alımı (W0.41).** Daemon, QRadar, ArcSight, FortiGate,
 Logsign ve Wazuh'un syslog çıkışını doğrudan alır. Okunan gövdeler: CEF
 (`CEF:0|...`), LEEF 1.0 ve 2.0, FortiGate `key=value` kaydı (`devid=` ve
-`logid=` taşıyan) ve JSON (Wazuh `rule.description`, `rule.level`); başlık RFC
+`logid=` taşıyan) ve JSON (Wazuh'un kural açıklaması ve seviyesiyle); başlık RFC
 5424, RFC 3164 ya da yok. Bunlardan biri olmayan satır (sıradan syslog
 gürültüsü) bulgu olmaz, `unparsed` olarak sayılır. Aynı satır iki kez gelirse
 bir bulgu olur. Bulgunun `data_source` değeri `syslog`'dur ve webhook
@@ -546,7 +546,7 @@ metinler saldırgan yazımıdır.
   `dropped` olarak sayılır.
   Helm: `daemon.syslog.enabled`, `tcpPort`, `udpPort`, `allowedSources`,
   `tls.existingSecret` (`tls.crt`, `tls.key`, karşılıklı TLS için `ca.crt` ve
-  `tls.clientCA: true`) ve `service.type` (küme dışındaki göndericiler için
+  `tls.clientCA: true`) ve `daemon.syslog.service.type` (küme dışındaki göndericiler için
   `LoadBalancer`; ayrı `<ad>-daemon-syslog` Service'i, webhook portunu açmaz).
   `networkPolicies.enabled` iken aynı CIDR'lar için kural eklenir. Sıcak yedekte
   yalnızca lider dinler: yedeğe düşen bağlantı reddedilir ve gönderici yeniden
@@ -558,7 +558,7 @@ metinler saldırgan yazımıdır.
   `omhttp`, syslog-ng `http()`). 200 her bulgunun kalıcı olduğunu söyler; kuyruk
   doluysa 503 ve `Retry-After`.
 
-Sayaçlar daemon `/status` çıktısında `poller.syslog` altında: `lines`, `findings`,
+Sayaçlar daemon `/status` çıktısında, poller bölümünün syslog kısmında: `lines`, `findings`,
 `unparsed`, `refused`, `dropped`.
 
 **Okta.** Okta MCP sunucusu backend imajına bir commit'e sabitlenmiş uv aracı
