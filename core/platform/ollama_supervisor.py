@@ -104,12 +104,14 @@ def _no_post_start_sync() -> dict:
 
 def _install_hint(*, sentence: bool) -> str:
     """How to install Ollama here. Homebrew exists only on macOS; Linux and WSL2
-    get the vendor download page. The macOS text is what shipped before."""
+    get a pointer to the vendor installer (no URL here: an air-gapped install
+    brings Ollama in the bundle, and the egress scan forbids hosts in this
+    internal-only module). The macOS text is what shipped before."""
     if sys.platform == "darwin":
         if sentence:
             return "Install it with `brew install ollama`"
         return "Install with: brew install ollama"
-    return "Install it from https://ollama.com/download"
+    return "Install it with the Ollama Linux installer (or use the air-gap bundle's Ollama image)"
 
 
 def binary_path() -> Optional[str]:

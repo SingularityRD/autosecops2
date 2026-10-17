@@ -243,4 +243,4 @@ def test_ollama_install_hint_is_brew_only_on_macos(monkeypatch) -> None:
         for sentence in (True, False):
             hint = ollama_supervisor._install_hint(sentence=sentence)
             assert "brew" not in hint
-            assert "https://ollama.com/download" in hint
+            assert "Ollama Linux installer" in hint
