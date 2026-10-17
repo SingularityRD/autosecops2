@@ -21,7 +21,9 @@ spec:
       serviceAccountName: {{ include "vigil.serviceAccountName" . }}
       {{- include "vigil.imagePullSecrets" . | nindent 6 }}
       securityContext:
+        {{- if not $.Values.openshift.enabled }}
         fsGroup: 999
+        {{- end }}
       containers:
         - name: redis
           image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}"

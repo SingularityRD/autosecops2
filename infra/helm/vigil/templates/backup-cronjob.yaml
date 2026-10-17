@@ -82,6 +82,7 @@ spec:
           {{- include "vigil.imagePullSecrets" . | nindent 10 }}
           securityContext:
             runAsNonRoot: true
+            {{- if not .Values.openshift.enabled }}
             runAsUser: 70  # postgres user in the alpine image
             runAsGroup: 70
             {{- if $withEvidence }}
@@ -92,6 +93,7 @@ spec:
             fsGroupChangePolicy: OnRootMismatch
             {{- else }}
             fsGroup: 70
+            {{- end }}
             {{- end }}
             seccompProfile:
               type: RuntimeDefault

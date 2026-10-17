@@ -174,8 +174,12 @@ COPY --from=web-builder --chown=vigil:vigil /build/web/build ./clients/web/build
 # Writable dirs the app needs at runtime
 # .vigil/evidence is the case evidence store (CaseEvidenceService); created here
 # so the vigil_home volume and the Helm evidence mount come up owned by 1000.
+# OpenShift runs the image under a random uid in group 0, so the same paths
+# are group-0 writable too (W0.54).
 RUN mkdir -p /app/data/investigations /home/vigil/.vigil/evidence \
-    && chown -R vigil:vigil /app/data /home/vigil
+    && chown -R vigil:vigil /app/data /home/vigil \
+    && chgrp -R 0 /app/data /home/vigil \
+    && chmod -R g=u /app/data /home/vigil
 
 # core/version.py reads VERSION from disk. The COPY above already ships the repo
 # version; only an explicit --build-arg overrides it (an empty default keeps a

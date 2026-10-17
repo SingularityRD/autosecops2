@@ -392,3 +392,21 @@ dataKey.generate=false still starts.
 {{- end -}}
 {{- end -}}
 
+
+
+{{/*
+W0.54: a pod securityContext. On OpenShift (openshift.enabled) the restricted
+SCC assigns the uid, gid and fsGroup from the namespace's range, and a pod that
+names its own is refused: those keys are left out, the rest is kept.
+Usage: include "vigil.podSecurityContext" (dict "context" . "sc" .Values.podSecurityContext)
+*/}}
+{{- define "vigil.podSecurityContext" -}}
+{{- $sc := deepCopy (.sc | default dict) -}}
+{{- if .context.Values.openshift.enabled -}}
+{{- $_ := unset $sc "runAsUser" -}}
+{{- $_ := unset $sc "runAsGroup" -}}
+{{- $_ := unset $sc "fsGroup" -}}
+{{- $_ := unset $sc "fsGroupChangePolicy" -}}
+{{- end -}}
+{{- toYaml $sc -}}
+{{- end -}}

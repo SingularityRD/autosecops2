@@ -44,7 +44,7 @@ spec:
       serviceAccountName: {{ include "vigil.serviceAccountName" . }}
       {{- include "vigil.imagePullSecrets" . | nindent 6 }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- include "vigil.podSecurityContext" (dict "context" . "sc" .Values.podSecurityContext) | nindent 8 }}
       terminationGracePeriodSeconds: 60
       containers:
         - name: daemon

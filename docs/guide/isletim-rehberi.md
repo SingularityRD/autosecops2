@@ -131,6 +131,20 @@ helm upgrade --install autosecops infra/helm/vigil \
   ingress ya da ters vekilde bu yolu dışarıya kapatın; toplayıcı küme içinden
   servis adresine bağlanır.
 
+## 3c. OpenShift (önizleme, W0.54)
+
+- `openshift.enabled=true` her pod ve konteynerden sabit `runAsUser`, `runAsGroup`
+  ve `fsGroup` değerlerini kaldırır; OpenShift'in `restricted-v2` SCC'si kullanıcıyı
+  ad alanının aralığından atar. Backend ve daemon imajlarında yazılabilir yollar
+  0 grubuna da yazılabilirdir.
+- `openshift.route.enabled=true` backend servisine bir Route kurar
+  (`openshift.route.host`, varsayılan TLS sonlandırması `edge`).
+- Paketle gelen PostgreSQL ve Redis imajları kendi kullanıcı kimliklerini bekler;
+  OpenShift'te harici veritabanı ve Redis kullanın (`postgresql.enabled=false`,
+  `redis.enabled=false`).
+- Henüz gerçek bir OpenShift kümesinde doğrulanmadı; ilk kurulumu bir test ad
+  alanında yapın.
+
 ## 4. Çıkış prosedürü
 
 Hizmet sona erdiğinde ya da başka bir ürüne geçerken izlenecek sıra. Her adımın

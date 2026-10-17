@@ -591,6 +591,28 @@ ingress:
     #     - vigil.example.com
 
 # -----------------------------------------------------------------------------
+# OpenShift (preview)
+# -----------------------------------------------------------------------------
+# OpenShift's restricted-v2 SCC assigns each namespace its own uid range and
+# refuses pods that ask for a fixed uid or fsGroup. With enabled: true the chart
+# leaves runAsUser, runAsGroup and fsGroup out of every pod so the SCC fills
+# them in; the images keep their writable paths group-0 writable for that.
+# The bundled PostgreSQL and Redis images expect their own uids: on OpenShift
+# use an external database and Redis (postgresql.enabled=false with
+# postgresql.external, redis.enabled=false with redis.external).
+# Not yet verified on a live OpenShift cluster.
+openshift:
+  enabled: false
+  route:
+    # A Route to the backend Service, in place of (or beside) the Ingress.
+    enabled: false
+    host: ""
+    annotations: {}
+    tls:
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
+
+# -----------------------------------------------------------------------------
 # Service account
 # -----------------------------------------------------------------------------
 serviceAccount:
