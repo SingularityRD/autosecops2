@@ -60,6 +60,7 @@ class Recorder:
         self.slack = []
         self.email = []
         self.webhooks = []
+        self.teams = []
 
     def post_slack(self, text, channel=None):
         self.slack.append(text)
@@ -67,6 +68,10 @@ class Recorder:
 
     def send_email(self, to, subject, body):
         self.email.append((to, subject, body))
+        return True, "sent"
+
+    def post_teams(self, title, text, facts=None):
+        self.teams.append((title, text, facts))
         return True, "sent"
 
     def enqueue(self, event_type, event_id, data, session=None):
@@ -78,6 +83,7 @@ class Recorder:
             post_slack=self.post_slack,
             send_email=self.send_email,
             enqueue_webhook=self.enqueue,
+            post_teams=self.post_teams,
         )
 
 
@@ -353,3 +359,151 @@ def test_a_broadcast_lands_in_the_real_webhook_queue_once(db):
     ]
     assert rows[0].payload["data"]["case"]["case_id"] == case.case_id
     assert rows[0].payload["type"] == "case.sla_warning"
+
+
+# --- W0.46: a mail list and a Teams channel for broadcast events ------------------
+
+
+@pytest.mark.external_service
+@pytest.mark.database
+def test_a_broadcast_goes_to_the_mail_list_for_its_priorities(db, monkeypatch):
+    monkeypatch.setenv("CASE_NOTIFY_EMAIL_TO", "soc@corp.test, , ciso@corp.test")
+    get_settings.cache_clear()
+    try:
+        case = _case(db, "m1")
+        CaseNotificationService().notify_sla_warning(case.case_id, 90, "response")
+        rec = Recorder()
+        rec.dispatcher().dispatch_pending()
+    finally:
+        get_settings.cache_clear()
+    listed = [to for to, _, _ in rec.email]
+    assert listed == ["soc@corp.test", "ciso@corp.test"]
+    assert all("SLA Warning" in subject for _, subject, _ in rec.email)
+    assert all(case.case_id in body for _, _, body in rec.email)
+    broadcast = next(r for r in _rows(db) if r.user_id == BROADCAST_USER_ID)
+    assert (
+        broadcast.notification_metadata["dispatch"]["channels"]["email_list"]
+        == "sent 2/2"
+    )
+
+
+@pytest.mark.external_service
+@pytest.mark.database
+def test_a_lower_priority_broadcast_skips_the_mail_list(db, monkeypatch):
+    monkeypatch.setenv("CASE_NOTIFY_EMAIL_TO", "soc@corp.test")
+    monkeypatch.setenv("CASE_NOTIFY_EMAIL_TO_PRIORITIES", "urgent")
+    get_settings.cache_clear()
+    try:
+        case = _case(db, "m2")
+        CaseNotificationService().notify_sla_warning(case.case_id, 75, "response")
+        rec = Recorder()
+        rec.dispatcher().dispatch_pending()
+    finally:
+        get_settings.cache_clear()
+    assert [to for to, _, _ in rec.email if to == "soc@corp.test"] == []
+
+
+@pytest.mark.external_service
+@pytest.mark.database
+def test_teams_gets_one_card_per_broadcast_when_on(db, monkeypatch):
+    monkeypatch.setenv("CASE_NOTIFY_TEAMS_ENABLED", "true")
+    get_settings.cache_clear()
+    try:
+        case = _case(db, "t1")
+        CaseNotificationService().notify_sla_warning(case.case_id, 90, "response")
+        rec = Recorder()
+        rec.dispatcher().dispatch_pending()
+    finally:
+        get_settings.cache_clear()
+    [(title, _text, facts)] = rec.teams
+    assert "SLA Warning" in title
+    assert facts["Case"] == case.case_id and facts["Assignee"] == "alice"
+
+
+@pytest.mark.external_service
+@pytest.mark.database
+def test_teams_and_the_mail_list_are_off_by_default(db):
+    case = _case(db, "t2")
+    CaseNotificationService().notify_sla_warning(case.case_id, 90, "response")
+    rec = Recorder()
+    rec.dispatcher().dispatch_pending()
+    assert rec.teams == []
+    broadcast = next(r for r in _rows(db) if r.user_id == BROADCAST_USER_ID)
+    channels = broadcast.notification_metadata["dispatch"]["channels"]
+    assert "teams" not in channels and "email_list" not in channels
+
+
+@pytest.mark.external_service
+@pytest.mark.database
+def test_a_canary_never_reaches_teams_or_the_mail_list(db, monkeypatch):
+    monkeypatch.setenv("CASE_NOTIFY_TEAMS_ENABLED", "true")
+    monkeypatch.setenv("CASE_NOTIFY_EMAIL_TO", "soc@corp.test")
+    get_settings.cache_clear()
+    try:
+        case = _case(db, "t3", canary=True)
+        CaseNotificationService().notify_sla_warning(case.case_id, 90, "response")
+        rec = Recorder()
+        rec.dispatcher().dispatch_pending()
+    finally:
+        get_settings.cache_clear()
+    assert rec.teams == [] and rec.email == []
+
+
+def test_the_teams_card_is_an_adaptive_card():
+    from core.cases.notification_dispatcher import teams_card
+
+    card = teams_card("SLA Warning", "90% used", {"Case": "c-1", "Assignee": ""})
+    content = card["attachments"][0]["content"]
+    assert card["type"] == "message"
+    assert (
+        card["attachments"][0]["contentType"]
+        == "application/vnd.microsoft.card.adaptive"
+    )
+    assert content["type"] == "AdaptiveCard"
+    assert content["body"][0]["text"] == "SLA Warning"
+    assert content["body"][2]["facts"] == [{"title": "Case", "value": "c-1"}]
+
+
+@pytest.mark.parametrize(
+    "url,detail",
+    [
+        ("", "teams not configured"),
+        ("http://prod.westus.logic.azure.com/workflows/x", "teams url must be https"),
+        ("https://169.254.169.254/x", "teams url refused"),
+    ],
+)
+def test_post_teams_refuses_before_any_call(monkeypatch, url, detail):
+    from core.cases import notification_dispatcher as nd
+
+    monkeypatch.setattr("core.secrets.get_secret", lambda name: url)
+
+    def boom(*a, **k):
+        raise AssertionError("no request may be made")
+
+    monkeypatch.setattr(nd.httpx, "post", boom)
+    ok, got = nd.post_teams_message("t", "x")
+    assert ok is False and got.startswith(detail)
+
+
+def test_post_teams_reports_the_status_without_the_url(monkeypatch):
+    import httpx as real_httpx
+
+    from core.cases import notification_dispatcher as nd
+
+    url = "https://prod-00.westeurope.logic.azure.com/workflows/abc?sig=SECRETSIG"
+    monkeypatch.setattr("core.secrets.get_secret", lambda name: url)
+    monkeypatch.setattr(
+        "core.platform.url_safety.refuse_metadata_target", lambda u: None
+    )
+    seen = {}
+
+    def post(u, json, timeout, follow_redirects):
+        seen.update(url=u, json=json, follow_redirects=follow_redirects)
+        return real_httpx.Response(400)
+
+    monkeypatch.setattr(nd.httpx, "post", post)
+    ok, detail = nd.post_teams_message("t", "x", {"Case": "c"})
+    assert (ok, detail) == (False, "teams answered HTTP 400")
+    assert "SECRETSIG" not in detail
+    assert seen["follow_redirects"] is False
+    assert seen["json"]["type"] == "message"

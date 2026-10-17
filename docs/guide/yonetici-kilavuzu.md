@@ -483,6 +483,18 @@ link-local hedefler reddedilir, bulut metadata adresi her durumda reddedilir),
 `WEBHOOK_MAX_ATTEMPTS` (8), `CASE_AUTOMATION_ENABLED`, `CASE_NOTIFY_SLACK_ENABLED`,
 `CASE_NOTIFY_EMAIL_PRIORITIES`. Kanarya vakaları hiçbir dış kanala gitmez.
 
+**E-posta listesi ve Microsoft Teams (W0.46).** Vaka olayları (SLA uyarısı, bekleyen
+vaka) bir dağıtım listesine de gider: `CASE_NOTIFY_EMAIL_TO` (virgülle adresler) ve
+`CASE_NOTIFY_EMAIL_TO_PRIORITIES` (varsayılan `urgent,high`); posta `SMTP_*` ile
+gönderilir, internetsiz kurulumda iç SMTP aktarıcısını gösterin. Teams için bir
+Workflows akışı ("When a Teams webhook request is received") oluşturun, adresini
+`CASE_NOTIFY_TEAMS_WEBHOOK_URL` sırrına (adres imzasını taşır; konsolda ya da Secret'ta
+saklanır, destek paketinde maskelenir) yazın ve `CASE_NOTIFY_TEAMS_ENABLED=true`
+yapın. Her olay bir Adaptive Card olarak bir kez gönderilir; yalnızca `https://`,
+bulut metadata ve link-local adresler reddedilir, yönlendirme izlenmez, yanıt
+içeriği değil yalnızca HTTP durumu kaydedilir. Teams bir bulut hizmetidir: internetsiz
+profilde kapalıdır.
+
 ### Bağlayıcı destek durumu
 
 Katalogdaki her MCP sunucusunun tek bir destek durumu vardır

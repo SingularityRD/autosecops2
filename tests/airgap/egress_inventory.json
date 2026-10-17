@@ -39,13 +39,17 @@
       "site": "core/cases/notification_dispatcher.py",
       "category": "gated",
       "kinds": {
-        "httpx": 1,
-        "host:slack.com": 1
+        "httpx": 2,
+        "host:slack.com": 1,
+        "host:adaptivecards.io": 1
       },
       "gates": [
         "integration:slack"
       ],
-      "note": "Case notifications to Slack; sent only when the 'slack' integration is enabled with credentials. The air-gap profile enables none."
+      "note": "Case notifications to Slack (only when the 'slack' integration is enabled with credentials) and to a Microsoft Teams workflow URL (W0.46; only with CASE_NOTIFY_TEAMS_ENABLED=true and CASE_NOTIFY_TEAMS_WEBHOOK_URL set). The air-gap profile enables neither. adaptivecards.io is only the Adaptive Card $schema string, never requested.",
+      "switches": {
+        "CASE_NOTIFY_TEAMS_ENABLED": "off"
+      }
     },
     {
       "site": "core/compliance/audit_export.py",
@@ -608,9 +612,9 @@
       "site": "core/platform/url_safety.py",
       "category": "local-only",
       "kinds": {
-        "dns": 2
+        "dns": 3
       },
-      "note": "DNS resolution of an operator-entered URL to refuse private targets (SSRF guard); uses the host resolver only. Also resolves webhook endpoint hosts once and pins the connection to the checked address."
+      "note": "DNS resolution of an operator-entered URL to refuse private targets (SSRF guard); uses the host resolver only. Also resolves webhook endpoint hosts once and pins the connection to the checked address. W0.44: also resolves an integration's own server before its Test call to refuse cloud metadata and link-local targets."
     },
     {
       "site": "core/storage/db_proxy.py",
